@@ -56,6 +56,7 @@ def _new_segment(event, binding, policy):
         session=session, camera=event.camera,
         number_camera=binding.number_camera if binding else "",
         configured_recognition_model=model, recognition_model=model,
+        loading_zone=binding.loading_zone if binding else None,
         started_at=event.occurred_at, last_counted_at=event.occurred_at,
         idle_timeout_seconds=policy.idle_timeout_seconds,
         first_event=event, last_event=event,
@@ -93,6 +94,7 @@ def ingest_camera(camera, *, now=None, limit=MAX_PAGE_SIZE):
             configuration_matches = segment is not None and (
                 segment.number_camera == (binding.number_camera if binding else "")
                 and segment.configured_recognition_model == (binding.recognition_model if binding else "")
+                and segment.loading_zone == (binding.loading_zone if binding else None)
             )
             continues = segment is not None and configuration_matches and (
                 event.occurred_at - segment.last_counted_at < timedelta(seconds=segment.idle_timeout_seconds)

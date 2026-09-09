@@ -76,6 +76,7 @@ class Migration(migrations.Migration):
                     "configured_recognition_model",
                     models.CharField(blank=True, default="", max_length=32),
                 ),
+                ("loading_zone", models.JSONField(blank=True, default=None, null=True)),
                 (
                     "recognition_model",
                     models.CharField(blank=True, default="", max_length=32),

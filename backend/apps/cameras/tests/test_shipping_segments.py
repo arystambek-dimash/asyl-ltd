@@ -41,8 +41,8 @@ def add_events(start, seconds, *, camera="cam2", scope=ANALYTICS_SCOPE_SHIPPING,
     return rows
 
 
-def binding(camera="cam2", number_camera="cam8", model="vehicle_number"):
-    return ShippingTransportCamera.objects.create(conveyor_camera=camera, number_camera=number_camera, recognition_model=model)
+def binding(camera="cam2", number_camera="cam8", model="vehicle_number", zone=None):
+    return ShippingTransportCamera.objects.create(conveyor_camera=camera, number_camera=number_camera, recognition_model=model, loading_zone=zone)
 
 
 def identify(segment, number="123ABC13", model="vehicle_number"):
@@ -56,11 +56,50 @@ def test_first_count_starts_without_order_number_camera_or_ocr(start):
     session = segment.session
     assert result["processed"] == 3 and result["created_segment_ids"] == [segment.pk]
     assert segment.identity_status == "pending" and segment.number == "" and not segment.photo
+    assert segment.loading_zone is None
     assert segment.first_event_id == events[0].pk and segment.last_event_id == events[-1].pk
     assert segment.total_bags == session.total_bags == 3
     assert session.order_id is None and session.status == "active"
     assert session.started_at == start and session.last_counted_at == start+timedelta(seconds=20)
     assert ShippingLoadingEvent.objects.count() == 3
+
+
+def test_loading_zone_snapshot_survives_binding_changes_and_splits_segment(start):
+    original_zone = [0.1, 0.2, 0.8, 0.9]
+    changed_zone = [0.2, 0.1, 0.9, 0.8]
+    camera_binding = binding(zone=original_zone)
+    add_events(start, [0, 10])
+    segments.ingest_camera("cam2")
+    original = ShippingLoadingSegment.objects.get()
+    assert original.loading_zone == original_zone
+
+    # Equal zone values retain the segment. A different configured crop must
+    # capture new evidence without changing the old segment's identity input.
+    camera_binding.save(update_fields=["loading_zone"])
+    add_events(start, [20])
+    assert segments.ingest_camera("cam2")["created_segment_ids"] == []
+    camera_binding.loading_zone = changed_zone
+    camera_binding.save(update_fields=["loading_zone"])
+    add_events(start, [30])
+    result = segments.ingest_camera("cam2")
+    newer = ShippingLoadingSegment.objects.last()
+    original.refresh_from_db()
+    assert result["created_segment_ids"] == [newer.pk]
+    assert original.pk != newer.pk
+    assert original.loading_zone == original_zone
+    assert original.total_bags == 3 and original.ended_at == start+timedelta(seconds=20)
+    assert newer.loading_zone == changed_zone and newer.total_bags == 1
+
+    camera_binding.loading_zone = None
+    camera_binding.save(update_fields=["loading_zone"])
+    add_events(start, [40])
+    result = segments.ingest_camera("cam2")
+    without_zone = ShippingLoadingSegment.objects.last()
+    newer.refresh_from_db()
+    assert result["created_segment_ids"] == [without_zone.pk]
+    assert without_zone.loading_zone is None
+    assert newer.loading_zone == changed_zone and newer.ended_at == start+timedelta(seconds=30)
+    assert ShippingLoadingEvent.objects.count() == 5
 
 
 def test_replay_restart_and_cursor_rebuild_do_not_double_count(start):

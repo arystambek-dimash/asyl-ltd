@@ -1092,6 +1092,7 @@ class ShippingLoadingSegment(models.Model):
     camera = models.CharField(max_length=32)
     number_camera = models.CharField(max_length=32, blank=True, default="")
     configured_recognition_model = models.CharField(max_length=32, blank=True, default="")
+    loading_zone = models.JSONField(null=True, blank=True, default=None)
     recognition_model = models.CharField(max_length=32, blank=True, default="")
     number = models.CharField(max_length=32, blank=True, default="")
     number_source = models.CharField(max_length=12, blank=True, default="")
