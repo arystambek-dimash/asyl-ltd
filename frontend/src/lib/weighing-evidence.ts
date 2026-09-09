@@ -29,10 +29,23 @@ export function weighingReasonLabel(reason: string, detail?: string) {
   return REASONS[reason] || detail || (reason ? "Требуется проверка взвешивания" : "");
 }
 
-export function identityReviewLabel(reason?: string) {
+export function identityReviewLabel(reason?: string, orientation?: string) {
   const labels: Record<string, string> = {
-    entry_missing: "Нет подходящего открытого заезда с фото — выберите рейс или сохранённую тару",
+    entry_missing:
+      orientation === "front"
+        ? "Не удалось подтвердить номер для создания заезда"
+        : "Не найден подходящий заезд или сохранённая тара",
+    saved_tare_missing: "Номер определён, но открытого заезда и сохранённой тары нет",
+    plate_unreadable: "Номер не прочитан после автоматического распознавания и проверки ИИ",
     plate_unclear: "ИИ не смог уверенно прочитать все символы номера",
+    photo_unavailable: "Кадр этого взвешивания недоступен — ИИ не может проверить номер",
+    photo_not_bound: "Кадр не связан со взвешиванием — требуется проверка",
+    orientation_unknown: "Номер проверен, но направление проезда не определено",
+    ambiguous_active_passage: "Для номера найдено несколько открытых рейсов — требуется сверка",
+    passage_time_conflict: "Время взвешивания не соответствует найденному рейсу",
+    exit_weight_not_greater: "Вес выезда не больше сохранённой тары — требуется проверка",
+    booking_conflict: "Не удалось оформить рейс автоматически — требуется проверка",
+    verification_window_expired: "Срок автоматической проверки истёк — взвешивание сохранено",
     image_binding_conflict: "ИИ противоречиво определил фотографии — требуется сверка",
     appearance_unconfirmed: "Номер прочитан, но соответствие машины по фото не подтверждено",
   };

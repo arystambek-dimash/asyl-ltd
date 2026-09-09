@@ -78,6 +78,35 @@ it("does not show a loading error as an empty history", async () => {
   expect(screen.queryByText("Попыток взвешивания пока нет.")).not.toBeInTheDocument();
 });
 
+it("distinguishes automatic resolution from operator action without showing stale failure reasons", async () => {
+  useApiMock.mockReturnValue({
+    data: {
+      results: ["automatic", "manual", "discarded"].map((resolution, index) => ({
+        id: index + 20,
+        occurred_at: "2026-08-01T08:00:00Z",
+        weight_kg: 9100,
+        vehicle_number: "314XYZ01",
+        status: "completed",
+        action: "unassigned",
+        reason: "entry_missing",
+        resolved: true,
+        resolution,
+        photo_status: "saved",
+      })),
+      next_cursor: null,
+    },
+    loading: false,
+    error: "",
+    reload: vi.fn(),
+  });
+  render(<PassageHistory />);
+  await userEvent.click(screen.getByRole("button", { name: "Журнал взвешиваний" }));
+  expect(screen.getByText("Оформлено автоматически")).toBeInTheDocument();
+  expect(screen.getByText("Обработано оператором")).toBeInTheDocument();
+  expect(screen.getByText("Отклонено")).toBeInTheDocument();
+  expect(screen.queryByText(/выезд без заезда/)).not.toBeInTheDocument();
+});
+
 it("distinguishes an expected exit photo from a retrying entry photo", () => {
   render(
     <WagonPhotos

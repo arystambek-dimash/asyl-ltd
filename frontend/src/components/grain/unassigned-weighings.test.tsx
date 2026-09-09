@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UnassignedWeighingsPanel } from "./unassigned-weighings";
@@ -98,15 +98,97 @@ describe("UnassignedWeighingsPanel", () => {
     expect(postMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["waiting_photo", "Ожидаем фото для ИИ"],
-    ["waiting_budget", "Лимит ИИ на сегодня исчерпан"],
-  ])("shows %s explicitly while keeping the saved weight actionable", (status, text) => {
-    mockApi([{ ...item, identity_check: { status, reason: "", plate: "" } }], [loaded]);
+  it("keeps the saved weight actionable when the daily AI budget is exhausted", () => {
+    mockApi([{ ...item, identity_check: { status: "waiting_budget", reason: "", plate: "" } }], [loaded]);
     render(<UnassignedWeighingsPanel canWeigh />);
-    expect(screen.getByText(new RegExp(text))).toBeInTheDocument();
+    expect(screen.getByText(/Лимит ИИ на сегодня исчерпан/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Привязать" })).toBeEnabled();
     expect(screen.queryByText(/ИИ сверяет номер/)).not.toBeInTheDocument();
+  });
+
+  it.each(["pending", "processing", "retrying", "waiting_photo", "matched"])(
+    "shows %s as automatic work without inviting an operator to resolve it",
+    (status) => {
+      mockApi([{ ...item, identity_check: { status, reason: "", plate: "" }, photo_status: "pending" }], []);
+      render(<UnassignedWeighingsPanel canWeigh />);
+      const queue = screen.getByRole("region", { name: "Автоматическая обработка" });
+      expect(within(queue).getByText("30 010 кг")).toBeInTheDocument();
+      expect(within(queue).getByText(/действия оператора не нужны/)).toBeInTheDocument();
+      expect(within(queue).queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Неопознанные взвешивания" })).not.toBeInTheDocument();
+      expect(postMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps automatic work and terminal failures in separate visible queues", () => {
+    mockApi(
+      [
+        {
+          ...item,
+          id: 31,
+          weight_kg: 4_320,
+          orientation: "front",
+          identity_check: { status: "processing", reason: "", plate: "" },
+        },
+        {
+          ...item,
+          id: 32,
+          weight_kg: 9_120,
+          orientation: "rear",
+          identity_check: { status: "review", reason: "saved_tare_missing", plate: "314XYZ01" },
+        },
+      ],
+      [],
+    );
+    render(<UnassignedWeighingsPanel canWeigh />);
+    const automatic = screen.getByRole("region", { name: "Автоматическая обработка" });
+    const exceptions = screen.getByRole("region", { name: "Неопознанные взвешивания" });
+    expect(within(automatic).getByText("4 320 кг")).toBeInTheDocument();
+    expect(within(automatic).queryByText("9 120 кг")).not.toBeInTheDocument();
+    expect(within(exceptions).getByText("9 120 кг")).toBeInTheDocument();
+    expect(within(exceptions).getByText(/открытого заезда и сохранённой тары нет/)).toBeInTheDocument();
+    expect(within(exceptions).getByRole("button", { name: "Привязать" })).toBeEnabled();
+  });
+
+  it("does not wait indefinitely when photo capture has already failed", () => {
+    mockApi(
+      [
+        {
+          ...item,
+          photo_url: null,
+          photo_status: "unavailable",
+          identity_check: { status: "waiting_photo", reason: "photo_pending", plate: "" },
+        },
+      ],
+      [],
+    );
+    render(<UnassignedWeighingsPanel canWeigh />);
+    expect(screen.getByText(/Кадр этого взвешивания недоступен/)).toBeInTheDocument();
+    expect(screen.getByText("Фото недоступно")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Привязать" })).toBeEnabled();
+    expect(screen.queryByRole("region", { name: "Автоматическая обработка" })).not.toBeInTheDocument();
+  });
+
+  it("does not tell a front-facing entry to find a prior entry", () => {
+    mockApi(
+      [
+        {
+          ...item,
+          orientation: "front",
+          identity_check: {
+            status: "review",
+            review_reason: "entry_missing",
+            reason: "entry_evidence_pending",
+            plate: "",
+          },
+        },
+      ],
+      [],
+    );
+    render(<UnassignedWeighingsPanel canWeigh />);
+    expect(screen.getByText(/Не удалось подтвердить номер для создания заезда/)).toBeInTheDocument();
+    expect(screen.queryByText(/открытого заезда/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Выезд с сохранённой тарой" })).not.toBeInTheDocument();
   });
 
   it("distinguishes an empty queue from an invalid response", () => {

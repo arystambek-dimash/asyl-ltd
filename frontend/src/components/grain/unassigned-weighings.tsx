@@ -37,6 +37,36 @@ function orientationHint(item: GrainUnassignedWeighing) {
   return "";
 }
 
+/** Only an active backend attempt belongs to the processing queue. */
+function isProcessing(item: GrainUnassignedWeighing) {
+  const status = item.identity_check?.status;
+  // A terminal capture failure cannot recover by waiting for a different truck's photo.
+  if (status === "waiting_photo" && item.photo_status === "unavailable") return false;
+  return Boolean(status && ["pending", "processing", "retrying", "waiting_photo", "matched"].includes(status));
+}
+
+function identityStatusLabel(item: GrainUnassignedWeighing) {
+  const check = item.identity_check;
+  if (!check) return "";
+  if (check.status === "waiting_photo") {
+    return item.photo_status === "unavailable"
+      ? identityReviewLabel("photo_unavailable", item.orientation)
+      : "Сохраняем кадр этого взвешивания для распознавания номера…";
+  }
+  if (check.status === "waiting_budget") return "Лимит ИИ на сегодня исчерпан — нужна резервная ручная проверка";
+  if (check.status === "disabled") return "Проверка ИИ отключена — нужна резервная ручная проверка";
+  if (check.status === "review") return identityReviewLabel(check.review_reason || check.reason, item.orientation);
+  if (check.status === "matched") return "Номер подтверждён — обновляем рейс…";
+  if (check.status === "retrying") {
+    if (check.reason === "image_binding_recheck") return "ИИ повторно сверяет только фото этой машины…";
+    if (check.reason === "entry_evidence_pending" && item.orientation !== "front") {
+      return "Повторно проверяем номер, открытые рейсы и сохранённую тару…";
+    }
+    return "Повторяем автоматическое распознавание сохранённого кадра…";
+  }
+  return "Распознаём госномер и направление проезда…";
+}
+
 /** Validate the queue before offering physical weighing actions. */
 function isUnassignedWeighing(value: unknown): value is GrainUnassignedWeighing {
   if (!value || typeof value !== "object") return false;
@@ -131,9 +161,11 @@ function UnassignedRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const photo = apiFileUrl(item.photo_url);
+  const processing = isProcessing(item);
+  const identityLabel = identityStatusLabel(item);
 
   async function run(path: string, body: Record<string, unknown>) {
-    if (busy || !canWeigh) return;
+    if (busy || !canWeigh || processing) return;
     setBusy(true);
     onBusyChange?.(true);
     setError("");
@@ -179,40 +211,33 @@ function UnassignedRow({
             </span>
             <span className="text-xs text-[var(--muted-foreground)]">· {formatDateTime(item.stable_weight_at)}</span>
           </div>
-          {item.identity_check && item.identity_check.status !== "disabled" && (
+          {identityLabel && (
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-              {item.identity_check.status === "waiting_photo"
-                ? "Ожидаем фото для ИИ — вес сохранён, доступна ручная привязка"
-                : item.identity_check.status === "waiting_budget"
-                  ? "Лимит ИИ на сегодня исчерпан — доступна ручная привязка"
-                  : item.identity_check.status === "review"
-                    ? identityReviewLabel(item.identity_check.review_reason)
-                    : item.identity_check.status === "matched"
-                      ? "ИИ: номер и машина совпали"
-                      : item.identity_check.status === "retrying"
-                        ? item.identity_check.reason === "image_binding_recheck"
-                          ? "ИИ повторно сверяет только фото этой машины"
-                          : item.identity_check.reason === "entry_evidence_pending"
-                            ? "Ожидаем фото заезда для проверки ИИ"
-                            : "ИИ временно недоступен, повторим проверку"
-                        : "ИИ сверяет номер и машину с фото заезда…"}
-              {item.identity_check.plate && ` · вариант ИИ: ${item.identity_check.plate}`}
+              {identityLabel}
+              {item.identity_check?.plate &&
+                item.identity_check.plate !== item.vehicle_number &&
+                ` · вариант ИИ: ${item.identity_check.plate}`}
             </p>
           )}
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-            {exitWagon
-              ? `Сверьте фото с машиной ${exitWagon.number || `#${exitWagon.id}`}`
-              : item.reason && item.reason !== "open_passages_exist"
-                ? weighingReasonLabel(item.reason)
-                : loaded
-                  ? suggestedExit
-                    ? `похоже на выезд ${suggestedExit.number || `#${suggestedExit.id}`}`
-                    : "номер не распознан — выберите рейс по фото и времени"
-                  : "номер не распознан, похоже на новый заезд"}
+            {processing
+              ? "Вес сохранён · действия оператора не нужны"
+              : exitWagon
+                ? `Сверьте фото с машиной ${exitWagon.number || `#${exitWagon.id}`}`
+                : item.reason && item.reason !== "open_passages_exist"
+                  ? weighingReasonLabel(item.reason)
+                  : loaded
+                    ? suggestedExit
+                      ? `похоже на выезд ${suggestedExit.number || `#${suggestedExit.id}`}`
+                      : "номер не распознан — выберите рейс по фото и времени"
+                    : "номер не распознан, похоже на новый заезд"}
             {cameraHint && <span className="ml-1 text-amber-700">· {cameraHint}</span>}
           </div>
         </div>
-        {canWeigh && mode === "idle" && (
+        {processing && (
+          <LoaderCircle aria-label="Обработка взвешивания" className="size-4 animate-spin text-[var(--ring)]" />
+        )}
+        {canWeigh && !processing && mode === "idle" && (
           <div className="flex shrink-0 items-center gap-1.5">
             <Button
               size="sm"
@@ -246,7 +271,7 @@ function UnassignedRow({
         )}
       </div>
 
-      {!exitWagon && item.orientation !== "front" && (
+      {!processing && !exitWagon && item.orientation !== "front" && (
         <div className="px-3 pb-2">
           <HistoricalTareDialog
             disabled={!canWeigh || mode !== "idle"}
@@ -257,7 +282,7 @@ function UnassignedRow({
         </div>
       )}
 
-      {mode !== "idle" && (
+      {!processing && mode !== "idle" && (
         <div className="px-3 pb-3 sm:pl-[7.5rem]">
           {mode === "assign" && (
             <form
@@ -358,11 +383,105 @@ function UnassignedRow({
   );
 }
 
-/**
- * Веса автовесов, которые не удалось привязать без оператора. Панель сама
- * исчезает, когда очередь пуста, обновляется тем же ритмом, что таблица, и
- * показывает только последние строки, пока оператор не развернёт список.
- */
+function WeighingQueue({
+  items,
+  processing,
+  candidates,
+  canWeigh,
+  exitWagon,
+  onBusyChange,
+  onResolved,
+  loading,
+  error,
+  refresh,
+}: {
+  items: GrainUnassignedWeighing[];
+  processing: boolean;
+  candidates: GrainWagon[];
+  canWeigh: boolean;
+  exitWagon?: GrainWagon;
+  onBusyChange?: (busy: boolean) => void;
+  onResolved: () => void;
+  loading?: boolean;
+  error?: string;
+  refresh: () => Promise<unknown>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? items : items.slice(0, COLLAPSED_ROWS);
+  const hidden = items.length - visible.length;
+  const title = processing
+    ? "Автоматическая обработка"
+    : exitWagon
+      ? "Выезд без распознанного номера"
+      : "Неопознанные взвешивания";
+  return (
+    <section
+      aria-label={title}
+      className={cn(
+        "overflow-hidden rounded-xl border bg-[var(--card)]",
+        processing ? "border-[var(--ring)]/25" : "border-amber-200",
+      )}
+    >
+      <header
+        className={cn(
+          "flex flex-wrap items-center gap-2 border-b px-3 py-2",
+          processing ? "border-[var(--ring)]/25 bg-[var(--ring)]/5" : "border-amber-200 bg-amber-50/70",
+        )}
+      >
+        {processing ? (
+          <LoaderCircle className="size-4 animate-spin text-[var(--ring)]" />
+        ) : (
+          <Scale className="size-4 text-amber-700" />
+        )}
+        <span className="text-sm font-semibold">{title}</span>
+        <Badge tone={processing ? "primary" : "warning"}>{items.length}</Badge>
+        <span className="text-xs text-[var(--muted-foreground)]">
+          {processing
+            ? "Вес сохранён · система распознаёт машину и оформляет рейс"
+            : "Автоматическая обработка не завершилась · проверьте сохранённое взвешивание"}
+        </span>
+      </header>
+      {loading && (
+        <p role="status" className="p-3 text-sm">
+          Загружаем взвешивания…
+        </p>
+      )}
+      {error && (
+        <div role="alert" className="p-3 text-sm">
+          <p>{error}</p>
+          <Button size="sm" variant="outline" className="mt-2" onClick={() => void refresh()}>
+            Повторить загрузку
+          </Button>
+        </div>
+      )}
+      <ul>
+        {visible.map((item) => (
+          <UnassignedRow
+            key={item.id}
+            item={item}
+            candidates={candidates}
+            canWeigh={canWeigh}
+            exitWagon={exitWagon}
+            onBusyChange={onBusyChange}
+            onResolved={onResolved}
+          />
+        ))}
+      </ul>
+      {(hidden > 0 || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="flex w-full items-center justify-center gap-1 border-t border-[var(--border)]/70 px-3 py-2 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--muted)]/60"
+        >
+          <ChevronDown className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
+          {expanded ? "Свернуть" : `Показать ещё ${hidden}`}
+        </button>
+      )}
+    </section>
+  );
+}
+
+/** Active attempts stay visible separately from terminal exceptions requiring review. */
 export function UnassignedWeighingsPanel({
   canWeigh,
   active = true,
@@ -382,7 +501,6 @@ export function UnassignedWeighingsPanel({
     reload: reloadCandidates,
     error: candidatesError,
   } = useApi<GrainWagon[] | { results: GrainWagon[] }>(exitWagon ? null : CANDIDATES_URL);
-  const [expanded, setExpanded] = useState(false);
   const refresh = () => Promise.all([reload(), reloadCandidates()]);
   useVisiblePolling(refresh, 10_000, active);
   const invalidQueue = data !== null && (!Array.isArray(data) || !data.every(isUnassignedWeighing));
@@ -393,66 +511,32 @@ export function UnassignedWeighingsPanel({
   const rawCandidates = Array.isArray(candidatesData) ? candidatesData : (candidatesData?.results ?? []);
   const candidates = exitWagon ? [exitWagon] : Array.isArray(rawCandidates) ? rawCandidates.filter(isWagon) : [];
   if (!items.length && !loading && !loadError) return null;
-  const visible = expanded ? items : items.slice(0, COLLAPSED_ROWS);
-  const hidden = items.length - visible.length;
+  const processing = items.filter(isProcessing);
+  const exceptions = items.filter((item) => !isProcessing(item));
+  const shared = {
+    candidates,
+    canWeigh: canWeigh && !loadError && !candidatesError,
+    exitWagon,
+    onBusyChange,
+    refresh,
+    onResolved: () => {
+      void refresh();
+      onChanged?.();
+    },
+  };
 
   return (
-    <section
-      aria-label={exitWagon ? "Выезд без распознанного номера" : "Неопознанные взвешивания"}
-      className="overflow-hidden rounded-xl border border-amber-200 bg-[var(--card)]"
-    >
-      <header className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50/70 px-3 py-2">
-        <Scale className="size-4 text-amber-700" />
-        <span className="text-sm font-semibold">
-          {exitWagon ? "Выезд без распознанного номера" : "Неопознанные взвешивания"}
-        </span>
-        <Badge tone="warning">{items.length}</Badge>
-        <span className="text-xs text-[var(--muted-foreground)]">
-          {exitWagon
-            ? "Выберите взвешивание этой машины по фото и времени. Повторное распознавание номера не требуется."
-            : "Вес сохранён без привязки · выберите рейс по фото и времени или создайте новый"}
-        </span>
-      </header>
-      {loading && !data && (
-        <p role="status" className="p-3 text-sm">
-          Загружаем неопознанные взвешивания…
-        </p>
+    <div className="space-y-3">
+      {processing.length > 0 && <WeighingQueue {...shared} processing items={processing} />}
+      {(exceptions.length > 0 || loadError || (loading && !data)) && (
+        <WeighingQueue
+          {...shared}
+          processing={false}
+          items={exceptions}
+          loading={loading && !data}
+          error={loadError || (candidatesError ? `Не удалось обновить рейсы для привязки: ${candidatesError}` : "")}
+        />
       )}
-      {(loadError || candidatesError) && (
-        <div role="alert" className="p-3 text-sm">
-          <p>{loadError || `Не удалось обновить рейсы для привязки: ${candidatesError}`}</p>
-          <Button size="sm" variant="outline" className="mt-2" onClick={() => void refresh()}>
-            Повторить загрузку
-          </Button>
-        </div>
-      )}
-      <ul>
-        {visible.map((item) => (
-          <UnassignedRow
-            key={item.id}
-            item={item}
-            candidates={candidates}
-            canWeigh={canWeigh && !loadError && !candidatesError}
-            exitWagon={exitWagon}
-            onBusyChange={onBusyChange}
-            onResolved={() => {
-              void reload();
-              void reloadCandidates();
-              onChanged?.();
-            }}
-          />
-        ))}
-      </ul>
-      {(hidden > 0 || expanded) && (
-        <button
-          type="button"
-          onClick={() => setExpanded((value) => !value)}
-          className="flex w-full items-center justify-center gap-1 border-t border-[var(--border)]/70 px-3 py-2 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--muted)]/60"
-        >
-          <ChevronDown className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
-          {expanded ? "Свернуть" : `Показать ещё ${hidden}`}
-        </button>
-      )}
-    </section>
+    </div>
   );
 }

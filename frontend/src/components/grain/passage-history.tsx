@@ -20,6 +20,7 @@ type Capture = {
   reason: string;
   detail: string;
   resolved: boolean;
+  resolution?: "automatic" | "manual" | "discarded" | "";
   wagon_id: number | null;
   photo_url: string | null;
   photo_status: string;
@@ -56,7 +57,13 @@ export function PassageHistory() {
             {(data?.results ?? []).map((row) => {
               const photo = apiFileUrl(row.photo_url);
               const status = row.resolved
-                ? "Обработано оператором"
+                ? row.resolution === "automatic"
+                  ? "Оформлено автоматически"
+                  : row.resolution === "manual"
+                    ? "Обработано оператором"
+                    : row.resolution === "discarded"
+                      ? "Отклонено"
+                      : "Взвешивание обработано"
                 : row.status === "processing"
                   ? "Обрабатывается"
                   : row.status === "failed"
@@ -90,7 +97,7 @@ export function PassageHistory() {
                     </div>
                     <div>
                       {status}
-                      {row.reason ? ` · ${weighingReasonLabel(row.reason, row.detail)}` : ""}
+                      {row.reason && !row.resolved ? ` · ${weighingReasonLabel(row.reason, row.detail)}` : ""}
                     </div>
                   </div>
                   {row.wagon_id ? (
