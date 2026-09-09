@@ -370,6 +370,10 @@ def _record_weighing(
         # Deferred delivery keeps the physical measurement time. EventLog
         # still records when this database operation was performed.
         WeighingRecord.objects.filter(pk=record.pk).update(created_at=occurred_at)
+        record.created_at = occurred_at
+    if wagon.is_passage and kind == "gross" and source == "scale" and orientation == "front":
+        from .historical_tare import remember
+        remember(record, wagon.number)
     scale_payload = {}
     if occurred_at is not None:
         scale_payload["occurred_at"] = occurred_at.isoformat()
@@ -1891,7 +1895,7 @@ def _swap_missed_entry(
     booked_record = (
         WeighingRecord.objects.filter(wagon=wagon, kind="gross").order_by("-id").first()
     )
-    wagon.gross_weight_kg = _record_weighing(wagon, "gross", item.weight_kg, user, **kwargs)
+    wagon.gross_weight_kg = _record_weighing(wagon, "gross", item.weight_kg, user, occurred_at=item.stable_weight_at, **kwargs)
     wagon.silo_arrived_at = item.stable_weight_at
     wagon.unloading_started_at = item.stable_weight_at
     if wagon.arrived_at is None or wagon.arrived_at > item.stable_weight_at:
@@ -2688,6 +2692,12 @@ def set_passage_number(wagon: Wagon, raw_number, user) -> Wagon:
             f"Машина {number} уже находится на территории",
             "passage_already_on_site",
         ) from exc
+    from .historical_tare import remember
+    from .models import VehicleTareMemory
+    VehicleTareMemory.objects.filter(record__wagon=wagon).exclude(number=number).delete()
+    measured_entry = wagon.weighings.filter(kind="gross", source="scale", orientation="front", reference_record__isnull=True).order_by("-created_at", "-pk").first()
+    if measured_entry is not None:
+        remember(measured_entry, number)
     _log(
         wagon,
         "number",

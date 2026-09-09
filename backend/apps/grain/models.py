@@ -346,6 +346,17 @@ class WeighingRecord(models.Model):
         ordering = ["-id"]
 
 
+class VehicleTareMemory(models.Model):
+    """Latest real entry measurement for a normalized plate, never an AI weight."""
+
+    number = models.CharField(max_length=30, unique=True)
+    record = models.ForeignKey(
+        WeighingRecord, on_delete=models.CASCADE, related_name="current_tare_memories"
+    )
+    observed_at = models.DateTimeField(db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class UnassignedWeighing(models.Model):
     """Вес с автовесов, который не удалось привязать к рейсу без оператора.
 

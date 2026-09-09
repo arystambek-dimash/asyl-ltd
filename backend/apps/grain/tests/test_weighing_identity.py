@@ -95,14 +95,14 @@ def verify(item):
     with patch.object(
         identity, "request_verification", return_value=(result, "resp-test")
     ) as request:
-        identity.process_once()
+        identity.process_pair_once()
     return request
 
 
 def test_corrects_one_ocr_character_and_preserves_actual_weights(visit):
     wagon, entry, item = visit
     verify(item)
-    identity.process_once()
+    identity.process_pair_once()
     wagon.refresh_from_db()
     item.refresh_from_db()
     assert wagon.status == st.COMPLETED
@@ -156,7 +156,7 @@ def test_ambiguous_evidence_never_books_exit(visit, case):
     with patch.object(
         identity, "request_verification", return_value=(result, "resp-test")
     ):
-        identity.process_once()
+        identity.process_pair_once()
     wagon.refresh_from_db()
     item.refresh_from_db()
     assert wagon.tare_weight_kg is None and item.status == "open"
@@ -184,7 +184,7 @@ def test_recovers_saved_unassigned_entry_only_once():
     assert wagon.weighings.get(kind="gross").photo.name == entry.photo.name
     second_exit = parked()
     with patch.object(identity, "request_verification") as request:
-        identity.process_once()
+        identity.process_pair_once()
     request.assert_not_called()
     second_exit.refresh_from_db()
     assert second_exit.status == "open"
@@ -208,7 +208,7 @@ def test_ineligible_entry_not_sent_to_model(visit, case):
     wagon.save()
     entry.save()
     with patch.object(identity, "request_verification") as request:
-        identity.process_once()
+        identity.process_pair_once()
     request.assert_not_called()
     assert item.wagon_id is None
 
@@ -226,7 +226,7 @@ def test_manual_change_during_network_call_wins(visit, change):
         return result, "resp-test"
 
     with patch.object(identity, "request_verification", side_effect=respond):
-        identity.process_once()
+        identity.process_pair_once()
     wagon.refresh_from_db()
     assert wagon.tare_weight_kg is None
 
@@ -234,7 +234,7 @@ def test_manual_change_during_network_call_wins(visit, change):
 def test_no_key_does_not_dispatch(visit, settings):
     settings.OPENAI_API_KEY = ""
     with patch.object(identity, "request_verification") as request:
-        identity.process_once()
+        identity.process_pair_once()
     request.assert_not_called()
     assert not WeighingIdentityCheck.objects.exists()
 
@@ -247,7 +247,7 @@ def test_http_failure_retries_are_bounded(visit):
         side_effect=http.client.HTTPException("private"),
     ) as request:
         for _ in range(5):
-            identity.process_once()
+            identity.process_pair_once()
             WeighingIdentityCheck.objects.filter(weighing=item).update(
                 next_attempt_at=timezone.now() - timedelta(seconds=1)
             )
@@ -281,7 +281,10 @@ def test_exact_exit_ocr_also_deferred_when_enabled(visit):
     assert saved.photo_request_id == capture.idempotency_key
     assert identity.defer_exit(capture).unassigned_id == result.unassigned_id
     capture.orientation = "front"
-    assert identity.defer_exit(capture) is None
+    assert identity.defer_exit(capture).unassigned_id == result.unassigned_id
+    capture.vehicle_number = ""
+    capture.plate_unresolved = True
+    assert identity.defer_exit(capture).unassigned_id == result.unassigned_id
 
 
 def test_api_request_has_only_images_no_database_answers_or_tools(visit):
@@ -323,7 +326,7 @@ def test_mixed_image_answer_gets_one_isolated_recheck_not_unchecked_assignment(v
     for row in confused["entries"]:
         row["orientation"]="rear"
     with patch.object(identity,"request_verification",return_value=(confused,"first")):
-        identity.process_once()
+        identity.process_pair_once()
     check=WeighingIdentityCheck.objects.get(weighing=item)
     assert check.status == "retrying" and check.reason == "image_binding_recheck"
     wagon.refresh_from_db();assert wagon.tare_weight_kg is None
@@ -334,7 +337,7 @@ def test_mixed_image_answer_gets_one_isolated_recheck_not_unchecked_assignment(v
         if not pair_agrees: answer["entries"][0]["appearance"]="different"
         return answer,"second"
     with patch.object(identity,"request_verification",side_effect=pair_request):
-        identity.process_once()
+        identity.process_pair_once()
     check.refresh_from_db();wagon.refresh_from_db();other.refresh_from_db()
     assert check.attempts == 2
     assert check.status == ("matched" if pair_agrees else "review")
@@ -348,7 +351,7 @@ def test_entry_photo_arriving_later_is_retried_without_losing_weight(visit):
     entry.photo = None
     entry.save()
     with patch.object(identity, "request_verification") as request:
-        identity.process_once()
+        identity.process_pair_once()
     request.assert_not_called()
     assert item.identity_check.status == "retrying"
     entry.photo = photo
@@ -394,7 +397,7 @@ def test_other_candidate_changed_during_check_prevents_booking(visit):
         return result, "resp-test"
 
     with patch.object(identity, "request_verification", side_effect=respond):
-        identity.process_once()
+        identity.process_pair_once()
     wagon.refresh_from_db()
     assert wagon.tare_weight_kg is None
 
@@ -443,7 +446,7 @@ def test_budget_exhaustion_is_visible_and_retries_next_day(visit, settings):
     verify(visit[2])
     another = parked()
     with patch.object(identity, "request_verification") as request:
-        identity.process_once()
+        identity.process_pair_once()
     request.assert_not_called()
     check = WeighingIdentityCheck.objects.get(weighing=another)
     assert check.reason == "daily_budget_exhausted" and check.attempts == 0
@@ -480,8 +483,8 @@ def test_old_format_rejection_gets_one_fresh_check_without_resetting_attempts(
     with patch.object(
         identity, "request_verification", return_value=(fresh, "resp-new")
     ) as request:
-        identity.process_once()
-        identity.process_once()
+        identity.process_pair_once()
+        identity.process_pair_once()
     request.assert_called_once()
     check.refresh_from_db()
     wagon.refresh_from_db()
@@ -506,7 +509,7 @@ def test_format_retry_leaves_manually_resolved_weights_alone(visit):
         },
     )
     with patch.object(identity, "request_verification") as request:
-        identity.process_once()
+        identity.process_pair_once()
     request.assert_not_called()
     check.refresh_from_db()
     assert check.status == "review" and check.attempts == 1

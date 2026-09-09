@@ -14,7 +14,7 @@ class PassageScaleHistoryView(PermAPIViewMixin, APIView):
     def get(self, request):
         rows = (
             AutomaticPassageCapture.objects.select_related(
-                "wagon", "unassigned_weighing"
+                "wagon", "unassigned_weighing", "unassigned_weighing__identity_check"
             )
             .prefetch_related("photo_deliveries")
             .order_by("-id")
@@ -34,13 +34,14 @@ class PassageScaleHistoryView(PermAPIViewMixin, APIView):
             jobs = list(capture.photo_deliveries.all())
             photo = next((job for job in jobs if job.photo), None)
             item = getattr(capture, "unassigned_weighing", None)
+            from .weighing_identity import public_status
             results.append(
                 {
                     "id": capture.pk,
                     "occurred_at": capture.stable_weight_at or capture.started_at,
                     "weight_kg": capture.weight_kg,
                     "observed_weight_kg": capture.trigger_weight_kg,
-                    "vehicle_number": capture.vehicle_number,
+                    "vehicle_number": (item.vehicle_number if item else "") or capture.vehicle_number,
                     "orientation": capture.orientation,
                     "status": capture.status,
                     "stage": capture.stage,
@@ -50,6 +51,11 @@ class PassageScaleHistoryView(PermAPIViewMixin, APIView):
                     "wagon_id": capture.wagon_id or (item.wagon_id if item else None),
                     "unassigned_id": item.pk if item else None,
                     "resolved": bool(item and item.status != "open"),
+                    "resolution": (
+                        "discarded" if item and item.status == "discarded" else
+                        ("manual" if item.resolved_by_id else "automatic") if item and item.status == "assigned" else None
+                    ),
+                    "identity_check": public_status(item) if item and item.status == "open" else None,
                     "photo_url": photo_url("evidence", photo),
                     "photo_status": (
                         "saved"
