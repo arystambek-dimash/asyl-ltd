@@ -17,9 +17,14 @@ this script. The monitor switches to importing the outbox once its durable
 automatic poller; the collector retains events until a compatible importer is
 restored. Do not re-enable the old poller alongside an active collector.
 
-Each stable occupancy is committed to SQLite (`WAL`, `synchronous=FULL`) before
-camera calls. Original weight/time, UUID, photo bytes and OCR result stay in the
-queue. Independent bounded evidence workers never block the poller or queue
+Each stable occupancy keeps its original weight/time and UUID in a FIFO writer
+queue. The writer commits the weight to SQLite (`WAL`, `synchronous=FULL`) before
+its photo bytes and OCR result. A short SQLite lock delays this write, never
+replaces the sample with a later reading. Camera requests start immediately for
+the current occupancy while the writer retries independently. Uncommitted data
+is buffered in process memory, so power/process loss during a storage outage can
+still lose that buffer; a successful SQLite commit is the durability boundary.
+Independent bounded evidence workers never block the poller or queue
 a future truck's live snapshot. The importer commits PostgreSQL before marking
 the UUID acknowledged. A crash between those writes replays idempotently.
 Acknowledged data is retained for audit; monitor disk usage and archive offline

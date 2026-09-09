@@ -83,11 +83,12 @@ def test_late_camera_response_cannot_attach_to_next_truck(tmp_path):
         return {"vehicle_number":"123ABC13", "orientation":{"label":"rear","confidence":1}}
     with patch("apps.cameras.ai.recognize_vehicle_from_camera",side_effect=camera):
         collector.recognize(value)
+    collector.close()
     box.finish(value["id"],"photo")
     assert box.next()["recognition"] is None
     assert box.next()["orientation"] == ""
     assert box.next()["recognition_error"] == "recognition_after_departure"
-    collector.pool.shutdown()
+    collector.close()
 
 
 def test_camera_failure_cannot_lose_already_persisted_weight(tmp_path):
@@ -97,10 +98,11 @@ def test_camera_failure_cannot_lose_already_persisted_weight(tmp_path):
     collector.current=value["id"];collector.last_good=time.monotonic()
     with patch("apps.grain.scale._open_request",side_effect=TimeoutError):
         collector.snapshot(value)
+    collector.close()
     box.finish(value["id"],"ocr")
     assert box.next()["weight_kg"] == 4200
     assert box.next()["photo"] is None
-    collector.pool.shutdown()
+    collector.close()
 
 
 @pytest.mark.django_db(transaction=True)

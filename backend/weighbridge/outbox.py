@@ -59,23 +59,19 @@ class Outbox:
 
     def put(self, event):
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT body FROM events WHERE id=?", (event["id"],)).fetchone()
+            if existing:
+                body = json.loads(existing["body"])
+                if any(key not in body or body[key] != value for key, value in event.items()):
+                    raise ValueError("Conflicting immutable outbox event")
+                return
             db.execute("INSERT INTO events(id,body,created) VALUES(?,?,?)",
                        (event["id"], json.dumps(event), time.time()))
 
     def finish(self, key, part, *, updates=None, photo=None):
         if part not in {"photo", "ocr"}:
             raise ValueError("Unknown outbox part")
-        while True:
-            try:
-                return self._finish(key, part, updates=updates, photo=photo)
-            except sqlite3.OperationalError as exc:
-                if not is_busy(exc):
-                    raise
-                # Evidence workers retain the captured bytes while a competing
-                # writer finishes. They never reacquire a live replacement.
-                time.sleep(.05)
-
-    def _finish(self, key, part, *, updates=None, photo=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM events WHERE id=? AND ready=0", (key,)).fetchone()

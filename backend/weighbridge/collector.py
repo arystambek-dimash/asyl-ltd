@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +41,58 @@ class Collector:
         self.pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evidence")
         self.futures = {}
         self.last_queue_error = 0
+        self.writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="outbox")
+        self.pending_writes = deque()
+        self.write_lock = threading.Lock()
+        self.writer_future = None
+
+    def enqueue_write(self, method, *args, **kwargs):
+        # The event and evidence are immutable values owned by this capture.
+        # Contention may delay persistence, never cause a replacement reading
+        # or a delayed live camera request.
+        with self.write_lock:
+            self.pending_writes.append((method, args, kwargs))
+        self.start_writer()
+
+    def start_writer(self):
+        with self.write_lock:
+            if self.writer_future is not None:
+                if not self.writer_future.done():
+                    return
+                self.writer_future.result()
+            if self.pending_writes:
+                self.writer_future = self.writer.submit(self.flush_writes)
+
+    def flush_writes(self):
+        while True:
+            with self.write_lock:
+                if not self.pending_writes:
+                    return
+                method, args, kwargs = self.pending_writes[0]
+            try:
+                getattr(self.box, method)(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not is_busy(exc):
+                    raise
+                return  # retained FIFO; the next poll retries off-thread
+            with self.write_lock:
+                self.pending_writes.popleft()
+
+    def close(self):
+        self.pool.shutdown(wait=True)
+        # Each flush is bounded by SQLite's busy timeout; there is no infinite
+        # worker retry loop holding process shutdown. Normal shutdown drains all
+        # captured evidence before the writer exits.
+        deadline = time.monotonic() + 10
+        while self.pending_writes and time.monotonic() < deadline:
+            self.start_writer()
+            if self.writer_future is not None:
+                self.writer_future.result()
+            if self.pending_writes:
+                time.sleep(.05)
+        self.writer.shutdown(wait=True)
+        if self.pending_writes:
+            print("outbox_storage_unavailable_unflushed_evidence", flush=True)
 
     def same_episode(self, key):
         return self.current == key and time.monotonic() - self.last_good <= 5
@@ -65,7 +118,7 @@ class Collector:
                 error = "snapshot_invalid_or_late"
             except (OSError, ValueError):
                 error = "snapshot_unavailable"
-        self.box.finish(key, "photo", photo=photo,
+        self.enqueue_write("finish", key, "photo", photo=photo,
                         updates={"photo_error": "" if photo else error})
 
     def recognize(self, event):
@@ -92,7 +145,7 @@ class Collector:
             error = "recognition_unavailable"
         except (ai.AiUnavailable, ValueError):
             error = "recognition_unavailable"
-        self.box.finish(event["id"], "ocr", updates={
+        self.enqueue_write("finish", event["id"], "ocr", updates={
             "recognition": payload, "orientation": orientation, "recognition_error": error,
             "recognition_frame_bound": frame_bound,
             "recognition_finished_at": datetime.now(timezone.utc).isoformat(),
@@ -109,7 +162,7 @@ class Collector:
             busy = photo_slots >= 2 if part == "photo" else key in self.futures
             if busy:
                 field = "photo_error" if part == "photo" else "recognition_error"
-                self.box.finish(event["id"], part, updates={field: "evidence_worker_busy"})
+                self.enqueue_write("finish", event["id"], part, updates={field: "evidence_worker_busy"})
             else:
                 self.futures[key] = self.pool.submit(worker, event)
 
@@ -126,6 +179,7 @@ class Collector:
                 self.last_queue_error = time.monotonic()
 
     def _poll(self):
+        self.start_writer()
         self.futures = {part: f for part, f in self.futures.items() if not self._finished(f)}
         config = self.box.state("config") or {}
         self.lane.stable_seconds = max(2, min(30, int(config.get("stable_weight_seconds", 5))))
@@ -163,9 +217,12 @@ class Collector:
                         "stable_weight_at": (read_started - timedelta(seconds=float(reading.age_seconds))).isoformat(),
                         "scale_age_seconds": str(reading.age_seconds), "scale_updated_at": reading.updated_at,
                     }
-                    self.box.put(event)  # fsync BEFORE any camera request
+                    # Keep the exact authoritative sample even if SQLite is
+                    # briefly locked. Photo/OCR start now for this occupancy;
+                    # the independent writer commits weight before evidence.
                     self.current = event["id"]
                     self.lane.captured()
+                    self.enqueue_write("put", event)
                     self.start_evidence(event)
         except scale.TruckScaleNotReady:
             # A vehicle can move between the preview and strict read. Let it
@@ -183,6 +240,7 @@ class Collector:
             self.status = new_status
         self.box.state("heartbeat", {"updated_at": time.time(), "status": self.status,
                                      "armed": self.lane.armed, "current": self.current,
+                                     "pending_writes": len(self.pending_writes),
                                      "clear": self.lane.clear_count >= self.lane.clear_polls})
 
     @staticmethod
@@ -210,7 +268,7 @@ def main():
             collector.poll()
             stopped.wait(max(0, 1 - (time.monotonic() - started)))
     finally:
-        collector.pool.shutdown(wait=True)
+        collector.close()
 
 
 if __name__ == "__main__":
