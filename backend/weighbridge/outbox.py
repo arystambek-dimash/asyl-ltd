@@ -7,14 +7,25 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def is_busy(error):
+    return isinstance(error, sqlite3.OperationalError) and any(
+        text in str(error).lower() for text in ("database is locked", "database table is locked")
+    )
+
+
 class Outbox:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / "events.sqlite3"
         with self.connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.executescript("""
+            # Importer and health probes instantiate this class repeatedly.
+            # Reissuing schema/journal writes on every read caused lock races
+            # with the capture threads, including PRAGMA synchronous failures.
+            existing = db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('events','state','incidents')").fetchone()[0]
+            if existing != 3:
+                db.execute("PRAGMA journal_mode=WAL")
+                db.executescript("""
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
                     body TEXT NOT NULL, photo BLOB, photo_done INTEGER NOT NULL DEFAULT 0,
@@ -29,8 +40,18 @@ class Outbox:
     def connect(self):
         db = sqlite3.connect(self.path, timeout=2)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA synchronous=FULL")
         try:
+            # SQLite's busy handler does not cover every PRAGMA/schema-lock
+            # path. Keep the FULL durability setting and retry that narrow race.
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    db.execute("PRAGMA synchronous=FULL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if not is_busy(exc) or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.01)
             with db:
                 yield db
         finally:
@@ -44,6 +65,17 @@ class Outbox:
     def finish(self, key, part, *, updates=None, photo=None):
         if part not in {"photo", "ocr"}:
             raise ValueError("Unknown outbox part")
+        while True:
+            try:
+                return self._finish(key, part, updates=updates, photo=photo)
+            except sqlite3.OperationalError as exc:
+                if not is_busy(exc):
+                    raise
+                # Evidence workers retain the captured bytes while a competing
+                # writer finishes. They never reacquire a live replacement.
+                time.sleep(.05)
+
+    def _finish(self, key, part, *, updates=None, photo=None):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM events WHERE id=? AND ready=0", (key,)).fetchone()
@@ -70,6 +102,12 @@ class Outbox:
     def ack(self, key):
         with self.connect() as db:
             db.execute("UPDATE events SET acknowledged=1 WHERE id=? AND ready=1", (key,))
+
+    def evidence(self, key):
+        """Read an immutable, already finalized capture for photo repair."""
+        with self.connect() as db:
+            row = db.execute("SELECT body,photo FROM events WHERE id=? AND ready=1", (str(key),)).fetchone()
+            return {**json.loads(row["body"]), "photo": row["photo"]} if row else None
 
     def state(self, key, value=None):
         with self.connect() as db:

@@ -25,6 +25,58 @@ def enabled():
     return (directory() / "enabled").is_file()
 
 
+def _bound_camera_frame(event):
+    if "recognition_frame_bound" in event:
+        return event["recognition_frame_bound"] is True
+    # Compatibility with already persisted collector events: an error payload's
+    # direction was retained ONLY when the response arrived during this truck's
+    # occupancy. No direction/late response is not permission to retry a camera.
+    return bool(event.get("recognition")) or (
+        event.get("orientation") in {"front", "rear"}
+        and event.get("recognition_error") == "recognition_unavailable"
+    )
+
+
+def _store_evidence(photo, event):
+    if event.get("photo") and not photo.photo:
+        name = f"grain/evidence/{photo.request_id}.jpg"
+        if not photo.photo.storage.exists(name):
+            name = photo.photo.storage.save(name, ContentFile(event["photo"]))
+        photo.photo.name = name
+    photo.snapshot_attempted = True  # collector captures are never live-retried
+    if photo.photo:
+        photo.status, photo.error_code = "saved", ""
+    elif _bound_camera_frame(event):
+        photo.status, photo.error_code = "pending", "collector_frame_pending"
+        photo.next_attempt_at = timezone.now()
+    else:
+        photo.status, photo.error_code = "unavailable", "collector_photo_unavailable"
+    photo.save()
+    weighing_photos._link_photo(photo)
+
+
+def recover_collector_photos(box, *, limit=20):
+    """Recover acknowledged older releases' missing photos from the same UUID.
+
+    This does not reopen accounting events or issue a fresh camera capture.
+    Missing files already in the durable outbox can also be restored directly.
+    """
+    repaired = 0
+    jobs = WeighingPhotoDelivery.objects.filter(
+        status="unavailable", error_code="collector_photo_unavailable",
+    ).select_related("capture").order_by("-id")[:limit]
+    for job in jobs:
+        event = box.evidence(job.request_id)
+        if event and (event.get("photo") or _bound_camera_frame(event)):
+            with transaction.atomic():
+                locked = WeighingPhotoDelivery.objects.select_for_update().get(pk=job.pk)
+                if locked.status != "unavailable" or locked.error_code != "collector_photo_unavailable":
+                    continue
+                _store_evidence(locked, event)
+            repaired += 1
+    return repaired
+
+
 @transaction.atomic
 def import_event(event):
     if event.get("version") != 1:
@@ -50,17 +102,7 @@ def import_event(event):
     if not created and capture.status in {Capture.COMPLETED, Capture.FAILED}:
         return capture
     photo, _ = WeighingPhotoDelivery.objects.get_or_create(request_id=key, defaults={"camera": capture.camera, "capture": capture})
-    if event.get("photo") and not photo.photo:
-        # File names derive only from the validated UUID. Retries use the stored
-        # evidence, never request a live frame from a later vehicle.
-        name = f"grain/evidence/{key}.jpg"
-        if not photo.photo.storage.exists(name):
-            name = photo.photo.storage.save(name, ContentFile(event["photo"]))
-        photo.photo.name = name
-    photo.status = "saved" if photo.photo else "unavailable"
-    photo.snapshot_attempted = True
-    photo.error_code = "" if photo.photo else "collector_photo_unavailable"
-    photo.save()
+    _store_evidence(photo, event)
     if event.get("recognition"):
         try:
             automation._persist_recognition(capture.pk, event["recognition"])
@@ -85,6 +127,10 @@ def poll_once():
             break
         import_event(event)  # atomic decorator COMMITs before ack
         box.ack(event["id"])
+    last_repair = box.state("photo_recovery") or {}
+    if time.time() - last_repair.get("checked_at", 0) >= 30:
+        recover_collector_photos(box)
+        box.state("photo_recovery", {"checked_at": time.time()})
     heartbeat = box.state("heartbeat") or {}
     stale = time.time() - heartbeat.get("updated_at", 0) > 10
     state = "unavailable" if stale or heartbeat.get("status") != "running" else (

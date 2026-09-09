@@ -146,6 +146,8 @@ def deliver_photo(job_id, *, now=None):
             locked.status = (
                 "unavailable"
                 if now - locked.created_at >= timedelta(days=7)
+                or (error == "frame_not_available" and locked.attempts >= 3)
+                or error == "frame_after_occupancy_gap"
                 else "retrying"
             )
             locked.error_code = error
