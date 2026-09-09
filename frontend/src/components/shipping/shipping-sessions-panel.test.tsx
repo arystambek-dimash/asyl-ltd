@@ -200,6 +200,10 @@ describe("ShippingSessionsPanel", () => {
         ]}
       />,
     );
+    const toolbar = screen.getByRole("group", { name: "Фильтры и настройки сессий" });
+    expect(within(toolbar).getByRole("combobox", { name: "Конвейер" })).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: "Простой: 5 мин." })).toBeInTheDocument();
+    expect(within(toolbar).getByRole("button", { name: "Обновить сессии" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Следующая страница" }));
     expect(mocks.urls).toContain("/cameras/shipping-sessions/?cursor=9");
     await user.selectOptions(screen.getByRole("combobox", { name: "Конвейер" }), "cam3");

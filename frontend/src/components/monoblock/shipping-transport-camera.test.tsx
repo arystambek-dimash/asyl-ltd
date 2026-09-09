@@ -61,6 +61,9 @@ describe("ShippingTransportCamera", () => {
     render(<ShippingTransportCamera conveyorCamera="cam1" />);
     await ready();
     expect(screen.getByLabelText("Модель распознавания")).toHaveValue("");
+    expect(screen.getByText(/Номера вагонов распознаёт OpenAI/)).toHaveTextContent(
+      "Для грузовиков сначала работает модель номеров; если она не прочитала номер, подключается OpenAI.",
+    );
     expect(screen.queryByRole("option", { name: "Конвейер · cam1" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Другая модель/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Сохранить связь" })).toBeDisabled();

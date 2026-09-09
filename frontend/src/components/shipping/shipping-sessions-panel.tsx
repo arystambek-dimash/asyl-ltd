@@ -1,10 +1,11 @@
 "use client";
 
 import Image from "next/image";
-import { useId, useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { Camera, ChevronDown, Printer, RefreshCw, Settings2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
@@ -341,7 +342,15 @@ function IdleSettings({
   );
 }
 
-function SessionList({ camera, cameraNames }: { camera: string; cameraNames: Map<string, string> }) {
+function SessionList({
+  camera,
+  cameraNames,
+  toolbar,
+}: {
+  camera: string;
+  cameraNames: Map<string, string>;
+  toolbar: ReactNode;
+}) {
   const [cursors, setCursors] = useState<string[]>([""]);
   const query = new URLSearchParams();
   if (camera) query.set("camera", camera);
@@ -353,8 +362,19 @@ function SessionList({ camera, cameraNames }: { camera: string; cameraNames: Map
   const failure = list.error || (list.errorStatus ? "Сессии недоступны. Проверьте права доступа." : "");
   return (
     <div className="space-y-3">
-      <div className="flex justify-end">
-        <Button variant="ghost" size="sm" disabled={list.loading} onClick={() => void list.reload()}>
+      <div
+        role="group"
+        aria-label="Фильтры и настройки сессий"
+        className="flex flex-wrap items-center gap-2 border-b pb-3"
+      >
+        {toolbar}
+        <Button
+          className="ml-auto"
+          variant="ghost"
+          size="sm"
+          disabled={list.loading}
+          onClick={() => void list.reload()}
+        >
           <RefreshCw className="size-4" />
           Обновить сессии
         </Button>
@@ -362,7 +382,7 @@ function SessionList({ camera, cameraNames }: { camera: string; cameraNames: Map
       {failure && <ErrorAlert message={failure} onRetry={() => void list.reload()} />}
       {!list.data && !failure && <DataGate loading={list.loading} />}
       {list.data?.results.length === 0 && (
-        <div className="rounded-xl border border-dashed p-8 text-center">
+        <div className="rounded-lg bg-[var(--muted)]/35 px-4 py-6 text-center">
           <p className="font-medium">Отгрузок пока нет</p>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
             Первый посчитанный мешок создаст отрезок автоматически, даже если номер ещё не распознан.
@@ -411,38 +431,47 @@ export function ShippingSessionsPanel({ cameras = [] }: { cameras?: { src: strin
   const settings = useApi<ShippingSessionSettings>("/cameras/shipping-session-settings/");
   const cameraNames = new Map(cameras.map((item) => [item.src, item.name]));
   return (
-    <section aria-label="Сессии отгрузки" className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold">Сессии отгрузки</h2>
-          <p className="mt-1 max-w-2xl text-sm text-[var(--muted-foreground)]">
-            Мешки считаются независимо от заказа и распознавания номера. Паузы разделяют погрузку на отрезки с отдельной
-            накладной.
-          </p>
-        </div>
-        {settings.data?.can_manage ? (
-          <IdleSettings data={settings.data} saved={settings.setData} />
-        ) : settings.data ? (
-          <p className="text-sm text-[var(--muted-foreground)]">
-            Закрытие по простою: {settings.data.idle_timeout_seconds / 60} мин.
-          </p>
-        ) : null}
+    <Card role="region" aria-label="Сессии отгрузки" className="space-y-4 p-4 sm:p-5">
+      <div>
+        <h2 className="text-lg font-semibold">Сессии отгрузки</h2>
+        <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+          Отрезки погрузки, номера и накладные. Подсчёт сохраняется и без заказа.
+        </p>
       </div>
       {settings.error && <ErrorAlert message={settings.error} onRetry={() => void settings.reload()} />}
-      {cameras.length > 0 && (
-        <label className="flex flex-wrap items-center gap-2 text-sm">
-          Конвейер
-          <select className={INPUT_CLASS} value={camera} onChange={(event) => setCamera(event.target.value)}>
-            <option value="">Все камеры</option>
-            {cameras.map((item) => (
-              <option key={item.src} value={item.src}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      <SessionList key={camera} camera={camera} cameraNames={cameraNames} />
-    </section>
+      <SessionList
+        key={camera}
+        camera={camera}
+        cameraNames={cameraNames}
+        toolbar={
+          <>
+            {cameras.length > 0 && (
+              <label className="flex min-w-0 max-w-full items-center gap-2 text-sm">
+                Конвейер
+                <select
+                  className={cn(INPUT_CLASS, "h-8 min-w-0 max-w-full")}
+                  value={camera}
+                  onChange={(event) => setCamera(event.target.value)}
+                >
+                  <option value="">Все камеры</option>
+                  {cameras.map((item) => (
+                    <option key={item.src} value={item.src}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {settings.data?.can_manage ? (
+              <IdleSettings data={settings.data} saved={settings.setData} />
+            ) : settings.data ? (
+              <p className="text-sm text-[var(--muted-foreground)]">
+                Закрытие по простою: {settings.data.idle_timeout_seconds / 60} мин.
+              </p>
+            ) : null}
+          </>
+        }
+      />
+    </Card>
   );
 }

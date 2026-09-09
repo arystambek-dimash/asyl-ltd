@@ -224,6 +224,23 @@ beforeEach(() => {
 });
 
 describe("доступ к AI 24/7 на странице моноблока", () => {
+  it("separates sessions, conveyor controls and the order board in that order while preserving their settings", () => {
+    mocks.me = { ...employee, permissions: ["shipping.load", "sys_permissions.manage"] };
+    render(<MonoblockPage />);
+    const sessions = screen.getByRole("region", { name: "Сессии отгрузки" });
+    const conveyors = screen.getByRole("region", { name: "Конвейеры и счёт" });
+    const orders = screen.getByRole("region", { name: "Заказы отгрузки" });
+    expect(sessions.compareDocumentPosition(conveyors) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(conveyors.compareDocumentPosition(orders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(conveyors).getByRole("button", { name: /Камеры моноблока/ })).toBeInTheDocument();
+    expect(within(orders).getByRole("button", { name: /Отгруженные: сегодня/ })).toBeInTheDocument();
+    expect(within(orders).getByText("Ожидают погрузки")).toBeInTheDocument();
+    expect(within(orders).getByText("На погрузке")).toBeInTheDocument();
+    expect(within(orders).getByText("Готовы к выезду")).toBeInTheDocument();
+    expect(within(orders).getByText("Выехали")).toBeInTheDocument();
+    expect(within(conveyors).queryByText("Ожидают погрузки")).not.toBeInTheDocument();
+  });
+
   it("keeps count-driven shipping sessions accessible when the legacy order board cannot load", () => {
     mocks.orderError = "Заказы временно недоступны";
     render(<MonoblockPage />);

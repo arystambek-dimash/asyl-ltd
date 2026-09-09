@@ -275,6 +275,10 @@ function TransportCameraForm({ conveyorCamera }: { conveyorCamera: string }) {
           </Select>
         </Field>
       </div>
+      <p className="text-xs text-[var(--muted-foreground)]">
+        Номера вагонов распознаёт OpenAI. Для грузовиков сначала работает модель номеров; если она не прочитала номер,
+        подключается OpenAI.
+      </p>
       {!cameras.length && (
         <p className="text-sm text-[var(--muted-foreground)]">
           Другие камеры camN не найдены. Обновите список после подключения камеры.
