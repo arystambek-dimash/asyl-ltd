@@ -28,18 +28,18 @@ def configuration(settings, tmp_path):
         yield
 
 
-def segment(*, age=0, model="vehicle_number", number_camera="cam7"):
+def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3"):
     at = timezone.now() - timedelta(seconds=age)
-    AlwaysOnCounterCursor.objects.create(camera="cam3", last_event_id=1, last_total=1, event_compat_total=1)
+    AlwaysOnCounterCursor.objects.create(camera=camera, last_event_id=1, last_total=1, event_compat_total=1)
     event = AlwaysOnImportedEvent.objects.create(
-        camera="cam3", upstream_event_id=1, occurred_at=at, source="sub", mode="always_on",
+        camera=camera, upstream_event_id=1, occurred_at=at, source="sub", mode="always_on",
         analytics_scope="shipping", applied_to_analytics=True,
     )
     session = ShippingLoadingSession.objects.create(
-        camera="cam3", started_at=at, last_counted_at=at, total_bags=1,
+        camera=camera, started_at=at, last_counted_at=at, total_bags=1,
     )
     result = ShippingLoadingSegment.objects.create(
-        session=session, camera="cam3", number_camera=number_camera,
+        session=session, camera=camera, number_camera=number_camera,
         configured_recognition_model=model, recognition_model=model,
         started_at=at, last_counted_at=at, total_bags=1,
         first_event=event, last_event=event, first_upstream_event_id=1, last_upstream_event_id=1,
@@ -136,6 +136,25 @@ def test_late_replay_or_unconfigured_camera_preserves_count_without_new_live_pho
     assert row.identity_status == "unidentified"
     assert row.total_bags == 1
     assert ShippingLoadingEvent.objects.count() == 1
+
+
+def test_fresh_photo_is_claimed_before_eighty_expired_segments_and_old_rows_still_finish():
+    old_ids = [segment(age=60+index, camera=f"cam{index+10}").pk for index in range(80)]
+    fresh = segment()
+    with patch.object(identity, "capture_frame", return_value=JPEG) as frame:
+        assert identity.capture_once()
+        fresh.refresh_from_db()
+        assert fresh.photo.read() == JPEG
+        assert fresh.identity_status == "pending"
+        # Cleanup remains available once there are no fresh unclaimed photos.
+        for _ in old_ids:
+            assert identity.capture_once()
+        assert not identity.capture_once()
+    frame.assert_called_once_with("cam7")
+    assert ShippingLoadingSegment.objects.filter(
+        pk__in=old_ids, identity_status="unidentified", identity_error="photo_window_expired",
+    ).count() == 80
+    assert ShippingLoadingEvent.objects.count() == 81
 
 
 def test_snapshot_response_crossing_deadline_cannot_attach_later_transport():

@@ -17,7 +17,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.db import connection, transaction
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
 
 from . import ai, transport_recognition
@@ -68,7 +68,19 @@ def _terminal(segment, code):
 @transaction.atomic
 def _claim_photo(segment_id=None):
     now = timezone.now()
-    segment = _lock(_available(now, segment_id).filter(Q(photo="") | Q(photo__isnull=True))).first()
+    queryset = _available(now, segment_id).filter(Q(photo="") | Q(photo__isnull=True)).annotate(
+        photo_priority=Case(
+            When(
+                Q(photo_attempted=False, started_at__gte=now-MAX_FRAME_AGE, started_at__lte=now)
+                & ~Q(number_camera=""),
+                then=Value(0),
+            ),
+            default=Value(1), output_field=IntegerField(),
+        ),
+    ).order_by("photo_priority", "started_at", "pk")
+    # Old replay rows need terminal bookkeeping, but must not consume the
+    # short window in which a newly started segment can still be photographed.
+    segment = _lock(queryset).first()
     if segment is None:
         return None
     if segment.photo_attempted:
