@@ -41,3 +41,10 @@ and independently powered storage are needed.
 For collector upgrades, use a planned empty-scale handoff, retain the volume,
 and test replay before changing its pinned image. Application CI/CD should only
 verify its health, never upgrade it implicitly.
+After the new application image passes production health checks, explicitly run
+`sh deploy/weighbridge/install.sh upgrade` (or select `upgrade` in its manual
+workflow). It refuses a stale/occupied scale or undelivered events. The queue
+volume survives both container replacements. The video relay preloads only the
+weighbridge video track so a capture does not need to start a cold RTSP session.
+Short scale API errors restart stability confirmation; only a gap exceeding
+five seconds discards the previously confirmed occupancy state.

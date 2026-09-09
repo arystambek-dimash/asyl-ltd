@@ -132,7 +132,7 @@ class Collector:
             new_status = "running"
         except (APIException, OSError, ValueError):
             self.current = None
-            self.lane.gap()
+            self.lane.unavailable(time.monotonic())
             new_status = "hardware_unavailable"
         if new_status != self.status:
             self.box.incident(new_status)

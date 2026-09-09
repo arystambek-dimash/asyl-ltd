@@ -217,3 +217,28 @@ def test_independent_capture_cannot_be_duplicated_by_manual_hardware_button(tmp_
             vehicle_weight_capture._begin_capture(wagon_id=wagon.pk, action="entry", user=user, idempotency_key=uuid4(), now=timezone.now())
     hardware.assert_not_called()
     assert not PassageWeightCapture.objects.exists()
+
+
+def test_brief_network_timeout_restarts_stability_without_missing_armed_truck():
+    lane = Lane(stable_seconds=3)
+    for t in range(3): lane.observe(observation(0, t), t)
+    assert not lane.observe(observation(4200, 3), 3)
+    lane.unavailable(4)
+    assert lane.armed
+    for t in (5, 6, 7): assert not lane.observe(observation(4200, t), t)
+    assert lane.observe(observation(4200, 8), 8)
+    lane.captured()
+    lane.unavailable(9)
+    for t in range(10, 15): assert not lane.observe(observation(4200, t), t)
+
+
+def test_repeated_short_failures_cannot_hide_a_long_observation_gap():
+    lane = Lane(stable_seconds=2)
+    for t in range(3): lane.observe(observation(0, t), t)
+    for t in range(3, 9):
+        lane.observe(observation(0, t, state="unavailable"), t)
+    assert not lane.armed
+    for t in range(9, 15): assert not lane.observe(observation(4200, t), t)
+    for t in range(15, 18): lane.observe(observation(0, t), t)
+    assert not lane.observe(observation(4200, 18), 18)
+    assert lane.observe(observation(4200, 20), 20)

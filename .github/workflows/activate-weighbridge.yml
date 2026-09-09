@@ -1,6 +1,11 @@
 name: Activate independent weighbridge collector
 on:
   workflow_dispatch:
+    inputs:
+      upgrade:
+        description: Update the collector image on a freshly empty scale
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -16,6 +21,7 @@ jobs:
       PROD_USER: ${{ secrets.PROD_USER || 'ubuntu' }}
       PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
       PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+      UPGRADE_COLLECTOR: ${{ inputs.upgrade }}
     steps:
       - name: Activate only on a freshly empty scale
         shell: bash
@@ -29,8 +35,10 @@ jobs:
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/collector_key
           printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/collector_hosts
           trap 'rm -f ~/.ssh/collector_key ~/.ssh/collector_hosts' EXIT
+          collector_action=""
+          if [ "$UPGRADE_COLLECTOR" = "true" ]; then collector_action="upgrade"; fi
           ssh -i ~/.ssh/collector_key -p "$PROD_PORT" -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/collector_hosts" \
             -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 \
             "$PROD_USER@$PROD_HOST" \
-            "cd '/home/$PROD_USER/asyl-ltd' && sh deploy/weighbridge/install.sh"
+            "cd '/home/$PROD_USER/asyl-ltd' && sh deploy/weighbridge/install.sh $collector_action"

@@ -2,6 +2,8 @@ api:
   listen: ":1984"
 rtsp:
   listen: ":8554"
+preload:
+  cam1main: "video"
 streams:
   cam1main:
     - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1

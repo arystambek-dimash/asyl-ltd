@@ -98,23 +98,38 @@ class Lane:
         self.clear_count = 0
         self.since = self.weight = self.last_token = None
         self.last_time = None
+        self.last_valid_time = None
 
     def gap(self):
         self.armed = False
         self.clear_count = 0
         self.since = self.weight = self.last_token = None
+        self.last_valid_time = None
+
+    def unavailable(self, now):
+        # A single network timeout does not prove that another vehicle arrived.
+        # Restart stability confirmation, retaining occupancy only within the
+        # bounded observation window. A longer outage requires a fresh clear.
+        if self.last_valid_time is None or now - self.last_valid_time > 5:
+            self.gap()
+        else:
+            self.clear_count = 0
+            self.since = self.weight = self.last_token = None
 
     def observe(self, observation, now):
         if self.last_time is not None and now - self.last_time > 5:
             self.gap()
+        if self.last_valid_time is not None and now - self.last_valid_time > 5:
+            self.gap()
         self.last_time = now
         if observation.state not in {"ready", "unstable"} or observation.weight_kg is None:
-            self.gap()
+            self.unavailable(now)
             return False
         token = observation.updated_at
         if not token or token == self.last_token:
             return False
         self.last_token = token
+        self.last_valid_time = now
         weight = float(observation.weight_kg)
         if not observation.stable:
             self.clear_count = 0
