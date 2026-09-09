@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   aiAnalyticsAvailable: true,
   analyticsSyncPresent: true,
   analyticsApiError: "",
+  orderError: "",
 }));
 
 vi.mock("@/store/auth", () => ({
@@ -39,6 +40,9 @@ vi.mock("@/lib/use-api", () => ({
     mocks.urls.push(url);
     let data: unknown = null;
     if (url?.startsWith("/orders/?post_board=1") || url === "/cameras/ai/sessions/") data = [];
+    if (url?.startsWith("/orders/?post_board=1") && mocks.orderError) data = null;
+    if (url === "/cameras/shipping-sessions/") data = { results: [], next_cursor: null };
+    if (url === "/cameras/shipping-session-settings/") data = { idle_timeout_seconds: 300, can_manage: false };
     if (url === "/cameras/") data = mocks.cameras;
     if (url === "/cameras/monoblock-settings/") {
       data = {
@@ -174,7 +178,11 @@ vi.mock("@/lib/use-api", () => ({
     const isAnalyticsRequest = url?.endsWith("-analytics/") ?? false;
     return {
       data,
-      error: isAnalyticsRequest ? mocks.analyticsApiError : "",
+      error: isAnalyticsRequest
+        ? mocks.analyticsApiError
+        : url?.startsWith("/orders/?post_board=1")
+          ? mocks.orderError
+          : "",
       loading: false,
       reload: vi.fn().mockResolvedValue(undefined),
       setData: vi.fn(),
@@ -212,9 +220,18 @@ beforeEach(() => {
   mocks.aiAnalyticsAvailable = true;
   mocks.analyticsSyncPresent = true;
   mocks.analyticsApiError = "";
+  mocks.orderError = "";
 });
 
 describe("доступ к AI 24/7 на странице моноблока", () => {
+  it("keeps count-driven shipping sessions accessible when the legacy order board cannot load", () => {
+    mocks.orderError = "Заказы временно недоступны";
+    render(<MonoblockPage />);
+    expect(screen.getByRole("region", { name: "Сессии отгрузки" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Заказы временно недоступны");
+    expect(mocks.urls).toContain("/cameras/shipping-sessions/");
+    expect(mocks.urls).not.toContain("/cameras/shipping-transport/");
+  });
   it("показывает мониторинг и загружает его данные обычному сотруднику", async () => {
     const user = userEvent.setup();
     render(<MonoblockPage />);

@@ -33,7 +33,7 @@ import {
 } from "@/components/monoblock/always-on-production-panel";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
 import { ShippingTransportCamera } from "@/components/monoblock/shipping-transport-camera";
-import { ShippingTransportStatus } from "@/components/monoblock/shipping-transport-status";
+import { ShippingSessionsPanel } from "@/components/shipping/shipping-sessions-panel";
 import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
 import { ShippingTable } from "@/components/shipping/shipping-table";
@@ -1637,191 +1637,185 @@ function MonoblockPageInner() {
 
   return (
     <AppShell title="Моноблок" section="Работа">
-      {error && !orders ? (
-        <ErrorAlert message={error} onRetry={() => void reloadAll()} />
-      ) : (
-        <div className="flex flex-col gap-6">
-          {showHeader && (
-            <div className="flex flex-wrap items-center gap-3">
-              {canViewAlwaysOn && (
-                <Tabs
-                  tabs={pageTabs}
-                  active={activeTab}
-                  onChange={(key) => setTab(key as MonoblockTab)}
-                  label="Режим моноблока"
-                />
-              )}
-              <div className="ml-auto flex flex-wrap items-center gap-2">
-                {activeTab === "monoblock" ? (
-                  canManageAlwaysOn && (
-                    <AlwaysOnSettingsButton
-                      cameras={playable}
-                      settings={alwaysOnSettings}
-                      onSaved={setAlwaysOnSettings}
-                    />
-                  )
-                ) : canManage ? (
-                  <>
-                    <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadMonoblockPolicy} />
-                    <Button variant="outline" size="sm" onClick={() => setCompletedOpen(true)}>
-                      <CalendarDays className="size-4" /> Отгруженные: {completedLabel}
-                    </Button>
-                  </>
-                ) : null}
-              </div>
+      <div className="flex flex-col gap-6">
+        {showHeader && (
+          <div className="flex flex-wrap items-center gap-3">
+            {canViewAlwaysOn && (
+              <Tabs
+                tabs={pageTabs}
+                active={activeTab}
+                onChange={(key) => setTab(key as MonoblockTab)}
+                label="Режим моноблока"
+              />
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {activeTab === "monoblock" ? (
+                canManageAlwaysOn && (
+                  <AlwaysOnSettingsButton
+                    cameras={playable}
+                    settings={alwaysOnSettings}
+                    onSaved={setAlwaysOnSettings}
+                  />
+                )
+              ) : canManage ? (
+                <>
+                  <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadMonoblockPolicy} />
+                  <Button variant="outline" size="sm" onClick={() => setCompletedOpen(true)}>
+                    <CalendarDays className="size-4" /> Отгруженные: {completedLabel}
+                  </Button>
+                </>
+              ) : null}
             </div>
-          )}
+          </div>
+        )}
 
-          {(error || auxiliaryError) && (
-            <ErrorAlert message={error || auxiliaryError} onRetry={() => void reloadAll()} />
-          )}
+        {(error || auxiliaryError) && <ErrorAlert message={error || auxiliaryError} onRetry={() => void reloadAll()} />}
 
-          {activeTab === "monoblock" ? (
-            !alwaysOnSettings?.camera_sources.length ? (
-              <Card className="rounded-lg px-4 py-12 text-center">
-                <div className="text-[14px]">Бесконечный цикл пока не запущен</div>
-                <div className="mx-auto mt-1 max-w-md text-[12px] text-[var(--muted-foreground)]">
-                  {canManageAlwaysOn
-                    ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно; исходный substream будет храниться в техническом архиве 48 часов, а фоновый AI-overlay не публикуется."
-                    : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к сотруднику с правом управления AI 24/7."}
-                </div>
-              </Card>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <StatCard
-                    label="Сегодня"
-                    value={alwaysOnAnalyticsAvailable ? (alwaysOnAnalytics?.total ?? 0) : "—"}
-                    caption={alwaysOnAnalyticsAvailable ? "мешков" : "журнал не синхронизирован"}
-                  />
-                  <StatCard
-                    label="Всего"
-                    value={
-                      alwaysOnAnalyticsAvailable
-                        ? (alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0)
-                        : "—"
-                    }
-                    caption="за всё время"
-                  />
-                  <StatCard
-                    label="Камер считают"
-                    value={`${alwaysOnCounts.running}/${alwaysOnCounts.total}`}
-                    caption={alwaysOnCamerasCaption}
-                    tone={
-                      alwaysOnCounts.total > 0 && alwaysOnCounts.running === alwaysOnCounts.total
-                        ? "success"
-                        : undefined
-                    }
-                  />
-                  <StatCard label="Синхронизация" value={alwaysOnSync.value} caption={alwaysOnSync.caption} />
-                </div>
-
-                <section className="flex flex-col gap-3">
-                  <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
-                    <span>Камеры AI 24/7 · считают круглосуточно</span>
-                    <span>
-                      · {alwaysOnCounts.running} из {alwaysOnCounts.total} в работе
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                    {alwaysOnSettings.camera_sources.map((source) => (
-                      <ContinuousCameraTile
-                        key={source}
-                        scope="ai_247"
-                        source={source}
-                        settings={alwaysOnSettings}
-                        analytics={alwaysOnAnalytics}
-                        analyticsError={alwaysOnAnalyticsError}
-                        camera={camerasBySrc.get(source)}
-                        canManage={canManageAlwaysOn}
-                      />
-                    ))}
-                  </div>
-                </section>
-              </>
-            )
+        {activeTab === "monoblock" ? (
+          !alwaysOnSettings?.camera_sources.length ? (
+            <Card className="rounded-lg px-4 py-12 text-center">
+              <div className="text-[14px]">Бесконечный цикл пока не запущен</div>
+              <div className="mx-auto mt-1 max-w-md text-[12px] text-[var(--muted-foreground)]">
+                {canManageAlwaysOn
+                  ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно; исходный substream будет храниться в техническом архиве 48 часов, а фоновый AI-overlay не публикуется."
+                  : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к сотруднику с правом управления AI 24/7."}
+              </div>
+            </Card>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <StatCard label="Ожидают погрузки" value={counts.waiting} caption={waitingCaption} />
                 <StatCard
-                  label="На погрузке"
-                  value={counts.loading}
-                  caption={`${sessions?.length ?? 0} с AI-подсчётом`}
+                  label="Сегодня"
+                  value={alwaysOnAnalyticsAvailable ? (alwaysOnAnalytics?.total ?? 0) : "—"}
+                  caption={alwaysOnAnalyticsAvailable ? "мешков" : "журнал не синхронизирован"}
                 />
                 <StatCard
-                  label="Готовы к выезду"
-                  value={counts.ready}
-                  caption="ожидают оформления выезда"
-                  tone={counts.ready > 0 && canShip ? "success" : undefined}
+                  label="Всего"
+                  value={
+                    alwaysOnAnalyticsAvailable
+                      ? (alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0)
+                      : "—"
+                  }
+                  caption="за всё время"
                 />
-                <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
+                <StatCard
+                  label="Камер считают"
+                  value={`${alwaysOnCounts.running}/${alwaysOnCounts.total}`}
+                  caption={alwaysOnCamerasCaption}
+                  tone={
+                    alwaysOnCounts.total > 0 && alwaysOnCounts.running === alwaysOnCounts.total ? "success" : undefined
+                  }
+                />
+                <StatCard label="Синхронизация" value={alwaysOnSync.value} caption={alwaysOnSync.caption} />
               </div>
 
-              {shippingContinuousSettings && (
-                <section className="flex flex-col gap-3">
-                  <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
-                    <span>Камеры отгрузки · работают 24/7</span>
-                    <span>
-                      · насчитано сегодня {shippingAnalyticsAvailable ? (shippingContinuousAnalytics?.total ?? 0) : "—"}
-                    </span>
-                    <span>
-                      ·{" "}
-                      {shippingContinuousSettings.sync_status !== "synced"
-                        ? "ожидает готовности"
-                        : shippingAnalyticsAvailable
-                          ? "синхронизировано"
-                          : "журнал не синхронизирован"}
-                    </span>
-                  </div>
-                  {stripSources.length ? (
-                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                      {stripSources.map((source) => (
-                        <ContinuousCameraTile
-                          key={source}
-                          scope="shipping"
-                          source={source}
-                          settings={shippingContinuousSettings}
-                          analytics={shippingContinuousAnalytics}
-                          analyticsError={shippingContinuousAnalyticsError}
-                          camera={camerasBySrc.get(source)}
-                          bound={tileBinding(source)}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-[12px] text-[var(--muted-foreground)]">
-                      Камеры отгрузки не назначены{canManage ? " — выберите их в «Камеры моноблока»" : ""}
-                    </p>
-                  )}
-                </section>
-              )}
-
-              <ShippingTransportStatus enabled={canViewContinuous} camerasBySrc={camerasBySrc} />
-
-              <ShippingTable
-                orders={orders}
-                sessions={sessions ?? []}
-                histories={histories ?? []}
-                camerasBySrc={camerasBySrc}
-                capabilities={{
-                  canLoad,
-                  canTrain,
-                  canShip,
-                  canRollback,
-                  canViewShipping,
-                  canOpenOrder,
-                }}
-                completedOrdersDays={completedDays}
-                filter={boardFilter}
-                reloadOrders={reloadOrders}
-                reloadSessions={reloadSessions}
-                reloadHistories={canViewShipping ? reloadHistories : undefined}
-              />
+              <section className="flex flex-col gap-3">
+                <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
+                  <span>Камеры AI 24/7 · считают круглосуточно</span>
+                  <span>
+                    · {alwaysOnCounts.running} из {alwaysOnCounts.total} в работе
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  {alwaysOnSettings.camera_sources.map((source) => (
+                    <ContinuousCameraTile
+                      key={source}
+                      scope="ai_247"
+                      source={source}
+                      settings={alwaysOnSettings}
+                      analytics={alwaysOnAnalytics}
+                      analyticsError={alwaysOnAnalyticsError}
+                      camera={camerasBySrc.get(source)}
+                      canManage={canManageAlwaysOn}
+                    />
+                  ))}
+                </div>
+              </section>
             </>
-          )}
-        </div>
-      )}
+          )
+        ) : (
+          <>
+            <ShippingSessionsPanel
+              cameras={stripSources.map((src) => ({ src, name: camerasBySrc.get(src)?.zone || src }))}
+            />
+            <h2 className="border-t pt-6 text-xl font-semibold">Заказы отгрузки</h2>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <StatCard label="Ожидают погрузки" value={counts.waiting} caption={waitingCaption} />
+              <StatCard
+                label="На погрузке"
+                value={counts.loading}
+                caption={`${sessions?.length ?? 0} с AI-подсчётом`}
+              />
+              <StatCard
+                label="Готовы к выезду"
+                value={counts.ready}
+                caption="ожидают оформления выезда"
+                tone={counts.ready > 0 && canShip ? "success" : undefined}
+              />
+              <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
+            </div>
+
+            {shippingContinuousSettings && (
+              <section className="flex flex-col gap-3">
+                <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
+                  <span>Камеры отгрузки · работают 24/7</span>
+                  <span>
+                    · насчитано сегодня {shippingAnalyticsAvailable ? (shippingContinuousAnalytics?.total ?? 0) : "—"}
+                  </span>
+                  <span>
+                    ·{" "}
+                    {shippingContinuousSettings.sync_status !== "synced"
+                      ? "ожидает готовности"
+                      : shippingAnalyticsAvailable
+                        ? "синхронизировано"
+                        : "журнал не синхронизирован"}
+                  </span>
+                </div>
+                {stripSources.length ? (
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                    {stripSources.map((source) => (
+                      <ContinuousCameraTile
+                        key={source}
+                        scope="shipping"
+                        source={source}
+                        settings={shippingContinuousSettings}
+                        analytics={shippingContinuousAnalytics}
+                        analyticsError={shippingContinuousAnalyticsError}
+                        camera={camerasBySrc.get(source)}
+                        bound={tileBinding(source)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[12px] text-[var(--muted-foreground)]">
+                    Камеры отгрузки не назначены{canManage ? " — выберите их в «Камеры моноблока»" : ""}
+                  </p>
+                )}
+              </section>
+            )}
+
+            <ShippingTable
+              orders={orders}
+              sessions={sessions ?? []}
+              histories={histories ?? []}
+              camerasBySrc={camerasBySrc}
+              capabilities={{
+                canLoad,
+                canTrain,
+                canShip,
+                canRollback,
+                canViewShipping,
+                canOpenOrder,
+              }}
+              completedOrdersDays={completedDays}
+              filter={boardFilter}
+              reloadOrders={reloadOrders}
+              reloadSessions={reloadSessions}
+              reloadHistories={canViewShipping ? reloadHistories : undefined}
+            />
+          </>
+        )}
+      </div>
 
       {canManage && (
         <CompletedOrdersSettingsModal
