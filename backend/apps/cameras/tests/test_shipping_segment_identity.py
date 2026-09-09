@@ -62,7 +62,6 @@ def photographed(**kwargs):
 
 @pytest.mark.parametrize("model,detection,path,number", [
     ("vehicle_number", _vehicle(), "/vehicle-number/detect", "123ABC02"),
-    ("wagon_number", _wagon(), "/wagon-number/detect", "00123455"),
 ])
 def test_one_primary_uses_saved_photo_and_never_repeats_during_segment(model, detection, path, number):
     row = photographed(model=model)
@@ -84,6 +83,44 @@ def test_one_primary_uses_saved_photo_and_never_repeats_during_segment(model, de
     assert (row.number, row.number_source, row.identity_status) == (number, "model", "identified")
     assert row.total_bags == row.session.total_bags == 1
     assert ShippingLoadingEvent.objects.count() == 1
+
+
+def test_wagon_uses_only_openai_once_even_when_native_model_could_read_it():
+    row = photographed(model="wagon_number")
+    with patch.object(ai, "_request", return_value=(200, _payload("wagon_number", [_wagon()]))) as primary, patch.object(
+        identity, "gpt_number", return_value=("00123455", "wagon_number", "wagon-response"),
+    ) as gpt, patch.object(identity, "capture_frame") as frame:
+        assert identity.process_once(row.pk)
+        assert not identity.process_once(row.pk)
+    primary.assert_not_called()
+    frame.assert_not_called()
+    gpt.assert_called_once_with(JPEG, recognition_model="wagon_number")
+    row.refresh_from_db()
+    assert (row.number, row.number_source, row.identity_status) == ("00123455", "gpt", "identified")
+    assert not row.primary_attempted
+    assert row.photo.read() == JPEG
+    assert row.total_bags == row.session.total_bags == 1
+
+
+@pytest.mark.parametrize("failure", ["missing_key", "unreadable", "wrong_type", "unavailable"])
+def test_wagon_never_falls_back_to_native_and_keeps_counts_on_openai_failure(settings, failure):
+    row = photographed(model="wagon_number")
+    if failure == "missing_key":
+        settings.OPENAI_API_KEY = ""
+    verdict = ("123ABC02", "vehicle_number", "response") if failure == "wrong_type" else ("", "unknown", "response")
+    with patch.object(ai, "_request") as primary, patch.object(identity, "gpt_number", return_value=verdict, side_effect=TimeoutError if failure == "unavailable" else None) as gpt:
+        attempts = 3 if failure == "unavailable" else 1
+        for _ in range(attempts):
+            ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_next_attempt_at=timezone.now())
+            assert identity.process_once(row.pk)
+        assert not identity.process_once(row.pk)
+    primary.assert_not_called()
+    assert gpt.call_count == (0 if failure == "missing_key" else attempts)
+    row.refresh_from_db()
+    assert not row.primary_attempted and row.number == ""
+    assert row.identity_status == "unidentified"
+    assert row.total_bags == row.session.total_bags == 1
+    assert row.photo.read() == JPEG
 
 
 def test_primary_failure_calls_gpt_with_exact_same_original_bytes():
@@ -153,8 +190,6 @@ def test_invalid_zone_does_not_silently_recognize_another_transport_from_full_fr
     ("vehicle_number", []),
     ("vehicle_number", [_vehicle(accepted=False)]),
     ("vehicle_number", [_vehicle("123ABC02"), _vehicle("456DEF02")]),
-    ("wagon_number", [_wagon(checksum_valid=False)]),
-    ("wagon_number", [_wagon("00123455"), _wagon("00123463")]),
 ])
 def test_rejected_or_multiple_native_numbers_go_to_gpt_without_using_first_candidate(model, detections):
     row = photographed(model=model)
@@ -341,7 +376,8 @@ def test_operator_correction_during_primary_is_not_overwritten_by_late_ai():
     assert row.total_bags == 1
 
 
-def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_image():
+@pytest.mark.parametrize("configured_model", [None, "wagon_number"])
+def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_image(configured_model):
     result = {"number": "00123455", "number_clear": True, "recognition_model": "wagon_number"}
     response = Mock(status=200)
     response.read.return_value = json.dumps({"status": "completed", "id": "response-test", "output": [{
@@ -350,7 +386,7 @@ def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_ima
     client = Mock()
     client.getresponse.return_value = response
     with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
-        assert identity.gpt_number(JPEG) == ("00123455", "wagon_number", "response-test")
+        assert identity.gpt_number(JPEG, recognition_model=configured_model) == ("00123455", "wagon_number", "response-test")
     body = json.loads(client.request.call_args.kwargs["body"])
     assert body["model"] == "gpt-5-mini"
     assert body["store"] is False
@@ -358,6 +394,26 @@ def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_ima
     image = body["input"][0]["content"][0]["image_url"]
     assert base64.b64decode(image.split(",", 1)[1]) == JPEG
     assert "00123455" not in json.dumps(body)
+    if configured_model:
+        assert body["text"]["format"]["schema"]["properties"]["recognition_model"]["enum"] == ["wagon_number", "unknown"]
+        assert "configured for wagon_number" in body["instructions"]
+    assert identity.GPT_SCHEMA["properties"]["recognition_model"]["enum"] == ["vehicle_number", "wagon_number", "unknown"]
+
+
+def test_late_wagon_gpt_response_cannot_overwrite_manual_number():
+    row = photographed(model="wagon_number")
+
+    def gpt(frame, **kwargs):
+        ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_status="unidentified", identity_lease_until=None)
+        shipping_segments.apply_identity(row.pk, "00123463", "manual")
+        return "00123455", "wagon_number", "late-response"
+
+    with patch.object(ai, "_request") as primary, patch.object(identity, "gpt_number", side_effect=gpt):
+        assert identity.process_once(row.pk)
+    primary.assert_not_called()
+    row.refresh_from_db()
+    assert (row.number, row.number_source) == ("00123463", "manual")
+    assert row.total_bags == row.session.total_bags == 1
 
 
 @pytest.mark.parametrize("value,model,expected", [

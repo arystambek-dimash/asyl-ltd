@@ -269,16 +269,30 @@ return number='' and number_clear=false. Never guess or infer a number from a
 vehicle's colour, cargo or context. Do not estimate weight, bags or quantities."""
 
 
-def gpt_number(frame):
+def gpt_number(frame, *, recognition_model=None):
+    if recognition_model is not None and recognition_model not in MODELS:
+        raise ValueError("invalid_recognition_model")
+    schema = GPT_SCHEMA
+    instructions = GPT_PROMPT
+    if recognition_model is not None:
+        schema = {**GPT_SCHEMA, "properties": {
+            **GPT_SCHEMA["properties"],
+            "recognition_model": {"type": "string", "enum": [recognition_model, "unknown"]},
+        }}
+        instructions += (
+            f"\nThis loading camera is configured for {recognition_model}. "
+            "Read only that transport type; ignore identifiers on other vehicles. "
+            "If it is not clearly visible, return number='' and number_clear=false."
+        )
     body = {
         "model": getattr(settings, "SHIPPING_IDENTITY_AI_MODEL", None) or settings.WEIGHING_AI_MODEL or "gpt-5-mini",
-        "store": False, "instructions": GPT_PROMPT,
+        "store": False, "instructions": instructions,
         "input": [{"role": "user", "content": [{
             "type": "input_image", "detail": "high",
             "image_url": "data:image/jpeg;base64," + base64.b64encode(frame).decode("ascii"),
         }]}],
         "max_output_tokens": 1200, "reasoning": {"effort": "low"},
-        "text": {"format": {"type": "json_schema", "name": "loading_transport_number", "strict": True, "schema": GPT_SCHEMA}},
+        "text": {"format": {"type": "json_schema", "name": "loading_transport_number", "strict": True, "schema": schema}},
     }
     client = http.client.HTTPSConnection("api.openai.com", timeout=45)
     try:
@@ -317,6 +331,8 @@ def gpt_number(frame):
             or result["recognition_model"] not in (*MODELS, "unknown")):
         raise ValueError("openai_invalid_verdict")
     number = valid_number(result["number"], result["recognition_model"]) if result["number_clear"] else ""
+    if recognition_model is not None and result["recognition_model"] != recognition_model:
+        number = ""
     return number, result["recognition_model"], str(payload.get("id", ""))[:100]
 
 
@@ -361,14 +377,17 @@ def process_once(segment_id=None):
         return True
     number, source, response_id = "", "model", ""
     model = segment.configured_recognition_model or segment.recognition_model
-    primary = _claim_primary(segment.pk, lease)
-    if primary is None:
-        return True
-    if primary:
-        try:
-            number = primary_number(frame, model)
-        except (ai.AiUnavailable, ai.AiError, http.client.HTTPException, OSError, ValueError, TypeError):
-            number = ""
+    # Wagon sessions deliberately bypass the camera-PC OCR, including retries.
+    # Vehicle sessions retain the one-primary-then-GPT policy on the same photo.
+    if model != "wagon_number":
+        primary = _claim_primary(segment.pk, lease)
+        if primary is None:
+            return True
+        if primary:
+            try:
+                number = primary_number(frame, model)
+            except (ai.AiUnavailable, ai.AiError, http.client.HTTPException, OSError, ValueError, TypeError):
+                number = ""
     if not number:
         lease = _renew_lease(segment.pk, lease)
         if lease is None:
@@ -377,7 +396,13 @@ def process_once(segment_id=None):
             _finish_failure(segment.pk, lease, "fallback_not_configured")
             return True
         try:
-            number, model, response_id = gpt_number(frame)
+            expected_model = model
+            number, model, response_id = (
+                gpt_number(frame, recognition_model="wagon_number")
+                if expected_model == "wagon_number" else gpt_number(frame)
+            )
+            if expected_model and model != expected_model:
+                number = ""
         except (http.client.HTTPException, OSError, ValueError, TypeError, KeyError):
             _finish_failure(segment.pk, lease, "fallback_unavailable", retry=True)
             return True
