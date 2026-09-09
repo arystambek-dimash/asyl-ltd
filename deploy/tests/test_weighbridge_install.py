@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class CollectorLifecycleTests(unittest.TestCase):
-    def run_install(self, action, busy=False, arrival_during_prep=False, video_failure=False):
+    def run_install(self, action, busy=False, arrival_during_prep=False, video_failure=False, pending_writes=False):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             shutil.copytree(ROOT / 'deploy/weighbridge', root / 'deploy/weighbridge')
@@ -18,7 +18,7 @@ class CollectorLifecycleTests(unittest.TestCase):
             binary.mkdir()
             docker = binary / 'docker'
             docker.write_text('''#!/usr/bin/env python3
-import os,sys
+import os,sys,time,types
 from pathlib import Path
 args=sys.argv[1:]
 with open(os.environ['COMMAND_LOG'],'a') as f:f.write(' '.join(args)+'\\n')
@@ -33,7 +33,13 @@ if args[:2]==['exec','-i']:
  else:
   with open(os.environ['COMMAND_LOG'],'a') as f:f.write('clear-guard\\n')
   arriving=os.environ['ARRIVAL_DURING_PREP']=='1' and Path(os.environ['PREP_MARKER']).exists()
-  sys.exit(int(os.environ['BUSY']=='1' or arriving))
+  heartbeat={'updated_at':time.time(), 'clear':not (os.environ['BUSY']=='1' or arriving),
+             'armed':True, 'pending_writes':int(os.environ['PENDING_WRITES'])}
+  outbox=types.ModuleType('weighbridge.outbox')
+  outbox.Outbox=lambda _:types.SimpleNamespace(state=lambda _:heartbeat, counts=lambda:{'pending':0})
+  sys.modules['weighbridge']=types.ModuleType('weighbridge')
+  sys.modules['weighbridge.outbox']=outbox
+  exec(compile(script, '<collector-upgrade-guard>', 'exec'), {})
 if args[-1:] == ['chown app:app /var/lib/weighbridge']:
  Path(os.environ['PREP_MARKER']).touch()
 if args[-3:]==['ps','-q','backend']:print('backend-current')
@@ -44,7 +50,8 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
             env = {**os.environ, 'PATH':str(binary)+os.pathsep+os.environ['PATH'],
                    'APP_DIR':str(root), 'COMMAND_LOG':str(log), 'BUSY':str(int(busy)),
                    'ARRIVAL_DURING_PREP':str(int(arrival_during_prep)),
-                   'PREP_MARKER':str(root / 'prepared'), 'VIDEO_FAILURE':str(int(video_failure))}
+                   'PREP_MARKER':str(root / 'prepared'), 'VIDEO_FAILURE':str(int(video_failure)),
+                   'PENDING_WRITES':str(int(pending_writes))}
             env.pop('WEIGHBRIDGE_IMAGE_REF', None)
             result = subprocess.run(['sh', str(root / 'deploy/weighbridge/install.sh'), action],
                                     env=env, capture_output=True, text=True)
@@ -83,6 +90,13 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
         self.assertNotIn(' up ', commands)
         self.assertNotIn('video-probe', commands)
         self.assertNotIn('activate_weighbridge_collector', commands)
+
+    def test_empty_scale_with_pending_memory_writes_cannot_replace_collector(self):
+        result, commands = self.run_install('upgrade', pending_writes=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Collector storage writes are pending', result.stderr)
+        self.assertNotIn(' up ', commands)
+        self.assertNotIn('chown app:app /var/lib/weighbridge', commands)
 
     def test_video_not_ready_fails_upgrade_even_when_containers_are_healthy(self):
         result, commands = self.run_install('upgrade', video_failure=True)
