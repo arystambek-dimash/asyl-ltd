@@ -287,6 +287,7 @@ def _begin_capture(
             now=now,
         )
 
+    grain_services._assert_manual_physical_capture_enabled()
     grain_services._assert_automatic_passage_lane_allows_manual_operation(
         automation_state,
         automation_capture,

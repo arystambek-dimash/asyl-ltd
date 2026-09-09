@@ -1409,9 +1409,21 @@ def _fence_automatic_passage_lane_for_manual_mutation(
 
 @transaction.atomic
 def _prepare_manual_passage_scale_operation() -> None:
+    _assert_manual_physical_capture_enabled()
     state, capture = _lock_automatic_passage_lane()
     _assert_automatic_passage_lane_allows_manual_operation(state, capture)
     _fence_automatic_passage_lane_for_manual_mutation(state)
+
+
+def _assert_manual_physical_capture_enabled() -> None:
+    from .outbox_importer import enabled
+
+    if enabled():
+        raise _error(
+            "Вес автоматически сохраняет отдельный сборщик. "
+            "Дождитесь записи в журнале и привяжите сохранённое взвешивание.",
+            "independent_scale_capture_active",
+        )
 
 
 @transaction.atomic

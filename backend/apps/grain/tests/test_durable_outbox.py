@@ -199,3 +199,21 @@ def test_recognized_entry_replays_original_photo_and_time_after_app_outage(tmp_p
     record = wagon.weighings.get()
     assert record.photo.read() == value["photo"]
     assert record.created_at.isoformat() == value["stable_weight_at"]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_independent_capture_cannot_be_duplicated_by_manual_hardware_button(tmp_path, monkeypatch, user_with_perms):
+    from apps.grain import services, vehicle_weight_capture, statuses
+    from apps.grain.models import Wagon, PassageWeightCapture
+    from rest_framework.exceptions import ValidationError
+    monkeypatch.setenv("WEIGHBRIDGE_OUTBOX_DIR", str(tmp_path))
+    (tmp_path / "enabled").write_text("1")
+    user = user_with_perms("collector-operator", codes=["grain.weigh"])
+    wagon = Wagon.objects.create(direction="passage", workflow="simple", number="123ABC02", status=statuses.ARRIVED)
+    with patch("apps.grain.scale.read_truck_scale") as hardware:
+        with pytest.raises(ValidationError):
+            services._prepare_manual_passage_scale_operation()
+        with pytest.raises(ValidationError):
+            vehicle_weight_capture._begin_capture(wagon_id=wagon.pk, action="entry", user=user, idempotency_key=uuid4(), now=timezone.now())
+    hardware.assert_not_called()
+    assert not PassageWeightCapture.objects.exists()
