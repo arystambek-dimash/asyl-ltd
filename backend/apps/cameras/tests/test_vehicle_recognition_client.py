@@ -93,6 +93,32 @@ def test_weight_triggered_retry_uses_lookup_only_endpoint(settings):
     )
 
 
+@pytest.mark.parametrize("reply_time", [
+    "2026-08-30T10:21:14.381Z",
+    "2026-08-30T10:21:14.381000+00:00",
+    "2026-08-30T15:21:14.381+05:00",
+])
+def test_camera_normalized_timestamp_keeps_valid_plate_reply(reply_time):
+    trigger = "2026-08-30T10:21:14.381000+00:00"
+    with patch.object(ai, "_request", return_value=(200, _recognized_payload(stable_weight_at=reply_time))):
+        result = ai.recognize_vehicle_from_camera("cam1", REQUEST_ID, trigger)
+    assert result["vehicle_number"] == "123ABC02"
+    assert result["stable_weight_at"] == trigger
+    assert result["request_id"] == REQUEST_ID
+
+
+@pytest.mark.parametrize("reply_time", [
+    "2026-08-30T10:21:14.381",  # No timezone cannot identify the instant.
+    "2026-08-30T10:21:14.382Z",  # A different sample, even one millisecond later.
+    "2026-08-30T10:21:14.381+05:00",
+    "not-a-timestamp", None, 123,
+])
+def test_camera_timestamp_validation_still_rejects_other_or_unknown_sample(reply_time):
+    with patch.object(ai, "_request", return_value=(200, _recognized_payload(stable_weight_at=reply_time))):
+        with pytest.raises(ai.AiProtocolError):
+            ai.recognize_vehicle_from_camera("cam1", REQUEST_ID, TRIGGER)
+
+
 def test_weight_triggered_client_requires_the_configured_roi_source(settings):
     settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = "sub"
 

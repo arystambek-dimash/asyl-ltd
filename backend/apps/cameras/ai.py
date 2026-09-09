@@ -328,6 +328,22 @@ def save_vehicle_roi(cam: str, payload: dict) -> tuple[int, dict]:
     )
 
 
+def _same_camera_timestamp(actual, expected: str) -> bool:
+    """Compare instants without rejecting equivalent ISO timezone spellings."""
+    if not isinstance(actual, str):
+        return False
+    try:
+        actual_time = datetime.fromisoformat(actual)
+        expected_time = datetime.fromisoformat(expected)
+    except (TypeError, ValueError):
+        return False
+    return (
+        actual_time.utcoffset() is not None
+        and expected_time.utcoffset() is not None
+        and actual_time == expected_time
+    )
+
+
 def _recognize_vehicle_from_camera(
     cam: str,
     request_id: UUID | str,
@@ -383,7 +399,11 @@ def _recognize_vehicle_from_camera(
         or not isinstance(frames_scanned, int)
         or not 1 <= frames_scanned <= 1_000_000
         or any(
-            field in payload and payload.get(field) != expected
+            field in payload and (
+                not _same_camera_timestamp(payload[field], expected)
+                if field == "stable_weight_at"
+                else payload[field] != expected
+            )
             for field, expected in expected_optional_metadata.items()
         )
         or (
