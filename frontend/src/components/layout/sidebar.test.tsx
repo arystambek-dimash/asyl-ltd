@@ -112,12 +112,17 @@ describe("подсветка активного пункта", () => {
     expect(screen.queryByRole("link", { name: "Моноблок" })).not.toBeInTheDocument();
   });
 
-  it("показывает журнал машин только с правом просмотра событий", () => {
+  it("оставляет общий журнал в управлении, без отдельного журнала машин", () => {
     const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["events.view"] }} />);
 
-    expect(screen.getByRole("link", { name: "Журнал машин" })).toHaveAttribute("href", "/vehicle-plate-events");
+    expect(screen.getByRole("link", { name: "Журнал" })).toHaveAttribute("href", "/events");
+    expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
 
     rerender(<Sidebar me={{ ...factoryUser, permissions: [] }} />);
+    expect(screen.queryByRole("link", { name: "Журнал" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
+
+    rerender(<Sidebar me={{ ...factoryUser, is_superuser: true }} />);
     expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
   });
 });

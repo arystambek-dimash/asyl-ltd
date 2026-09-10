@@ -14,6 +14,7 @@ import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { PassageNumberEditor } from "@/components/grain/passage-number-editor";
 import { WagonPhotos } from "@/components/grain/wagon-photos";
 import { HistoricalTareDialog } from "@/components/grain/historical-tare-dialog";
+import { ExitWeightCorrectionDialog } from "@/components/grain/exit-weight-correction-dialog";
 import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { can } from "@/lib/can";
 import {
@@ -248,6 +249,15 @@ function TripPageInner({ params, direction }: TripPageProps) {
           </Card>
 
           {!error && (
+            <ExitWeightCorrectionDialog
+              wagon={wagon}
+              onChanged={refresh}
+              onBusyChange={handleBusyChange}
+              disabled={mutationBusy || deleteOpen}
+            />
+          )}
+
+          {!error && (
             <fieldset disabled={mutationBusy} className="min-w-0">
               <StageAction
                 key={`${wagon.id}:${wagon.status}:${wagon.gross_weight_kg}:${wagon.tare_weight_kg}`}
@@ -387,9 +397,17 @@ function TripPageInner({ params, direction }: TripPageProps) {
                             : "Тара"
                     }
                   >
-                    <span className="tabular-nums">{formatKg(row.weight_kg)}</span>
+                    <span className="tabular-nums">
+                      {row.previous_weight_kg != null && (
+                        <span className="font-normal text-[var(--muted-foreground)]">
+                          {formatKg(row.previous_weight_kg)} →{" "}
+                        </span>
+                      )}
+                      {formatKg(row.weight_kg)}
+                    </span>
                     <span className="block text-[10px] font-normal text-[var(--muted-foreground)]">
                       {formatDateTime(row.created_at)}
+                      {row.source === "manual" ? " · ручной ввод" : ""}
                       {row.reference_record_at
                         ? ` · исходное взвешивание ${formatDateTime(row.reference_record_at)}`
                         : ""}

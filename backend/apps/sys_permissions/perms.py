@@ -17,7 +17,7 @@ _SECTIONS = {
     "sys_permissions": ("Системные права", ["view", "manage"]),
     "tasks": ("Задачи", ["view", "create"]),
     "grain": ("Приход зерна", [
-        "view", "supply", "arrive", "weigh", "lab", "dispatch", "unload",
+        "view", "supply", "arrive", "weigh", "correct_weighing", "lab", "dispatch", "unload",
         "inventory", "exit", "delete", "admin",
     ]),
 }
@@ -33,6 +33,7 @@ _ACTION_LABELS = {
     "correct_price": "Корректировка стоимости",
     "export": "Получение выписки",
     "supply": "Заявки на поставку", "weigh": "Взвешивание",
+    "correct_weighing": "Ручной заезд и исправление выездного веса",
     "lab": "Лаборатория", "dispatch": "Диспетчер",
     "unload": "Разгрузка", "inventory": "Оприходование",
     "exit": "Выезд", "admin": "Администрирование",

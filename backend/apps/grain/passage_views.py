@@ -8,7 +8,7 @@ from rest_framework import mixins, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from . import services
+from . import manual_passages, services
 from .models import Wagon
 from .serializers import PassageNumberSerializer, VehiclePlateCandidateSerializer
 from .views import GrainTripViewSet, _record_stage_weight, _require_empty_scale_command
@@ -21,6 +21,26 @@ class PassageCreateSerializer(serializers.Serializer):
     vehicle_plate_event_id = serializers.UUIDField(required=False, allow_null=True)
 
 
+class WholeKilogramsField(serializers.Field):
+    def to_internal_value(self, data):
+        return manual_passages.whole_kg(data)
+
+
+class ManualEntrySerializer(serializers.Serializer):
+    number = serializers.CharField(max_length=30)
+    cargo_name = serializers.CharField(max_length=100)
+    entry_weight_kg = WholeKilogramsField()
+    arrived_at = serializers.DateTimeField()
+    reason = serializers.CharField(min_length=5, max_length=300)
+    unassigned_weighing = serializers.IntegerField(min_value=1, required=False)
+
+
+class CorrectExitSerializer(serializers.Serializer):
+    exit_weight_kg = WholeKilogramsField()
+    expected_exit_weight_kg = WholeKilogramsField(allow_null=True)
+    reason = serializers.CharField(min_length=5, max_length=300)
+
+
 class PassageViewSet(mixins.CreateModelMixin, GrainTripViewSet):
     queryset = GrainTripViewSet.queryset.filter(direction=Wagon.PASSAGE)
     required_perms = {
@@ -30,6 +50,8 @@ class PassageViewSet(mixins.CreateModelMixin, GrainTripViewSet):
         "vehicle_plate_candidates": "grain.arrive",
         "entry_weight": "grain.weigh",
         "exit_weight": "grain.weigh",
+        "manual_entry": "grain.correct_weighing",
+        "correct_exit_weight": "grain.correct_weighing",
     }
 
     def create(self, request, *args, **kwargs):
@@ -63,3 +85,18 @@ class PassageViewSet(mixins.CreateModelMixin, GrainTripViewSet):
     def exit_weight(self, request, pk=None):
         _require_empty_scale_command(request)
         return self._done(_record_stage_weight(request, self.get_object(), "exit"))
+
+    @action(detail=False, methods=["post"], url_path="manual-entry")
+    def manual_entry(self, request):
+        serializer = ManualEntrySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        wagon = manual_passages.create_entry(request.user, **serializer.validated_data)
+        return Response(self.get_serializer(wagon).data, status=201)
+
+    @action(detail=True, methods=["post"], url_path="correct-exit-weight")
+    def correct_exit_weight(self, request, pk=None):
+        serializer = CorrectExitSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return self._done(manual_passages.correct_exit(
+            request.user, self.get_object(), **serializer.validated_data,
+        ))

@@ -2627,9 +2627,19 @@ def create_passage_from_unassigned_weighing(
 ) -> UnassignedWeighing:
     """Open a new passage for a parked weight and record it as the entry."""
 
+    # Keep the lane -> event -> wagon lock order shared with automatic booking
+    # and manual missing-entry recovery. Locking the item first could deadlock
+    # while create_passage waited for another writer that already owned the lane.
+    PassageScaleAutomationState.objects.select_for_update().get_or_create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+    )
+    state, capture = _lock_automatic_passage_lane()
+    _assert_automatic_passage_lane_allows_manual_operation(state, capture)
     locked = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
     if locked.status != UnassignedWeighing.OPEN:
         raise _error("Это взвешивание уже обработано", "unassigned_weighing_resolved")
+    if locked.orientation == VEHICLE_ORIENTATION_REAR:
+        raise _error("Камера видит выезд. Выберите существующий заезд или сохранённую тару.", "rear_cannot_be_entry")
     wagon = create_passage(
         user,
         number=number or locked.vehicle_number,

@@ -16,7 +16,7 @@ beforeEach(() => {
   useApiMock.mockReturnValue({ data: null, loading: false, error: "", reload: vi.fn() });
 });
 
-it("requests history only after opening and pauses live polling on older pages", async () => {
+it("loads the selected journal and pauses live polling on older pages", async () => {
   useApiMock.mockImplementation((url: string | null) => ({
     data: url ? { results: [], next_cursor: 42 } : null,
     loading: false,
@@ -24,12 +24,22 @@ it("requests history only after opening and pauses live polling on older pages",
     reload: vi.fn(),
   }));
   render(<PassageHistory />);
-  expect(useApiMock).toHaveBeenLastCalledWith(null);
-  await userEvent.click(screen.getByRole("button", { name: "Журнал взвешиваний" }));
   expect(useApiMock).toHaveBeenLastCalledWith("/grain/automatic-passage-scale/history/");
+  expect(pollingMock.mock.lastCall?.[2]).toBe(true);
   await userEvent.click(screen.getByRole("button", { name: "Более ранние" }));
   expect(useApiMock).toHaveBeenLastCalledWith("/grain/automatic-passage-scale/history/?before=42");
   expect(pollingMock.mock.lastCall?.[2]).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "Последние" }));
+  expect(useApiMock).toHaveBeenLastCalledWith("/grain/automatic-passage-scale/history/");
+  expect(pollingMock.mock.lastCall?.[2]).toBe(true);
+});
+
+it("refreshes the journal on demand", async () => {
+  const reload = vi.fn();
+  useApiMock.mockReturnValue({ data: { results: [], next_cursor: null }, loading: false, error: "", reload });
+  render(<PassageHistory />);
+  await userEvent.click(screen.getByRole("button", { name: "Обновить журнал" }));
+  expect(reload).toHaveBeenCalledOnce();
 });
 
 it("shows a failed stabilization separately from a saved weight awaiting assignment", async () => {
@@ -63,7 +73,6 @@ it("shows a failed stabilization separately from a saved weight awaiting assignm
     reload: vi.fn(),
   });
   render(<PassageHistory />);
-  await userEvent.click(screen.getByRole("button", { name: "Журнал взвешиваний" }));
   expect(screen.getByText("Вес не подтверждён")).toBeInTheDocument();
   expect(screen.getByText(/Машина съехала до подтверждения/)).toBeInTheDocument();
   expect(screen.getByText(/Нужна привязка/)).toBeInTheDocument();
@@ -73,7 +82,6 @@ it("shows a failed stabilization separately from a saved weight awaiting assignm
 it("does not show a loading error as an empty history", async () => {
   useApiMock.mockReturnValue({ data: null, loading: false, error: "offline", reload: vi.fn() });
   render(<PassageHistory />);
-  await userEvent.click(screen.getByRole("button", { name: "Журнал взвешиваний" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Не удалось загрузить журнал");
   expect(screen.queryByText("Попыток взвешивания пока нет.")).not.toBeInTheDocument();
 });
@@ -100,7 +108,6 @@ it("distinguishes automatic resolution from operator action without showing stal
     reload: vi.fn(),
   });
   render(<PassageHistory />);
-  await userEvent.click(screen.getByRole("button", { name: "Журнал взвешиваний" }));
   expect(screen.getByText("Оформлено автоматически")).toBeInTheDocument();
   expect(screen.getByText("Обработано оператором")).toBeInTheDocument();
   expect(screen.getByText("Отклонено")).toBeInTheDocument();

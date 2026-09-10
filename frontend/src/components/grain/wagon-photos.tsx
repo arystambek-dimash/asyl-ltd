@@ -53,7 +53,9 @@ export function WagonPhotos({ wagon }: { wagon: GrainWagon }) {
           hint={
             wagon.entry_weight_kg == null
               ? "появится после взвешивания пустой"
-              : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "gross")?.photo_status)
+              : wagon.weighings?.some((row) => row.kind === "gross" && row.source === "manual")
+                ? "Заезд внесён вручную без фото"
+                : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "gross")?.photo_status)
           }
         />
         <PhotoTile
@@ -62,7 +64,9 @@ export function WagonPhotos({ wagon }: { wagon: GrainWagon }) {
           hint={
             wagon.exit_weight_kg == null
               ? "появится после взвешивания гружёной"
-              : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "tare")?.photo_status)
+              : wagon.weighings?.some((row) => row.kind === "tare" && row.source === "manual")
+                ? "Выездной вес внесён вручную без фото"
+                : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "tare")?.photo_status)
           }
         />
       </CardContent>

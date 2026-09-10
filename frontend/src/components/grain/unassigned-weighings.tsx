@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { HistoricalTareDialog } from "./historical-tare-dialog";
+import { ManualPassageEntryDialog } from "./manual-passage-entry-dialog";
 import { photoStatusLabel, weighingReasonLabel, identityReviewLabel } from "@/lib/weighing-evidence";
 import { Camera, Check, ChevronDown, LoaderCircle, PackagePlus, Scale, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -272,9 +273,15 @@ function UnassignedRow({
       </div>
 
       {!processing && !exitWagon && item.orientation !== "front" && (
-        <div className="px-3 pb-2">
+        <div className="flex flex-wrap gap-2 px-3 pb-2">
           <HistoricalTareDialog
             disabled={!canWeigh || mode !== "idle"}
+            item={item}
+            onChanged={onResolved}
+            onBusyChange={onBusyChange}
+          />
+          <ManualPassageEntryDialog
+            disabled={mode !== "idle" || busy}
             item={item}
             onChanged={onResolved}
             onBusyChange={onBusyChange}

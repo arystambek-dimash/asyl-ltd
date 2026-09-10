@@ -75,6 +75,13 @@ vi.mock("@/components/grain/grain-toolbar", () => ({
     </div>
   ),
 }));
+vi.mock("@/components/grain/manual-passage-entry-dialog", () => ({
+  ManualPassageEntryDialog: ({ onBusyChange }: { onBusyChange?: (busy: boolean) => void }) => (
+    <button type="button" onClick={() => onBusyChange?.(true)}>
+      Заезд вручную
+    </button>
+  ),
+}));
 vi.mock("@/components/grain/wagon-number-camera", () => ({
   WagonNumberCameraWorkspace: () => <section aria-label="Камера вагонов на приход" />,
 }));
@@ -164,6 +171,54 @@ describe("Grain passage creation", () => {
     expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
     expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, true);
     expect(screen.getByText(/Доступность автоматики показана во вкладке «Камера проходной»/)).toBeInTheDocument();
+  });
+
+  it("opens weighing history as an export tab and loads it only while selected", async () => {
+    const historyUrl = "/grain/automatic-passage-scale/history/";
+    useApiMock.mockImplementation((url: string | null) => ({
+      data: url === historyUrl ? { results: [], next_cursor: null } : [],
+      loading: false,
+      error: "",
+      reload: reloadMock,
+    }));
+    const user = userEvent.setup();
+    render(<GrainPage />);
+    expect(screen.queryByRole("tab", { name: "Журнал взвешиваний" })).not.toBeInTheDocument();
+    expect(useApiMock).not.toHaveBeenCalledWith(historyUrl);
+
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    expect(screen.getByRole("tab", { name: "Журнал взвешиваний" })).toBeInTheDocument();
+    expect(useApiMock).not.toHaveBeenCalledWith(historyUrl);
+
+    await user.click(screen.getByRole("tab", { name: "Журнал взвешиваний" }));
+    expect(useApiMock).toHaveBeenCalledWith(historyUrl);
+    expect(screen.getByRole("tab", { name: "Журнал взвешиваний" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Журнал взвешиваний" })).toBeInTheDocument();
+    expect(screen.queryByTestId("wagon-table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Поиск" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Неопознанные взвешивания")).not.toBeInTheDocument();
+    expect(visiblePollingMock.mock.calls.filter(([, interval]) => interval === 10_000).at(-1)).toEqual([
+      reloadMock,
+      10_000,
+      false,
+    ]);
+
+    useApiMock.mockClear();
+    await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
+    expect(screen.queryByRole("tabpanel", { name: "Журнал взвешиваний" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
+    expect(useApiMock).not.toHaveBeenCalledWith(historyUrl);
+  });
+
+  it("offers manual entry only for exports and pauses list polling while it is open", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+    expect(screen.queryByRole("button", { name: "Заезд вручную" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    await user.click(screen.getByRole("button", { name: "Заезд вручную" }));
+    expect(
+      visiblePollingMock.mock.calls.filter(([poll, interval]) => poll === reloadMock && interval === 10_000).at(-1),
+    ).toEqual([reloadMock, 10_000, false]);
   });
 
   it("keeps the intake and export camera tabs isolated", async () => {

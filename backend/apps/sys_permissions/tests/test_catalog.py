@@ -16,6 +16,7 @@ def test_known_codes_are_present():
         "reports.export",
         "employees.manage",
         "grain.delete",
+        "grain.correct_weighing",
         "sys_permissions.manage",
     }
     assert expected <= ALL_CODES

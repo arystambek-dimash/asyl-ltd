@@ -23,15 +23,16 @@ import { useLocalDay } from "@/lib/use-local-day";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useAuth } from "@/store/auth";
-import { ArrowRight, ScanLine, Search, TrainFront, Truck } from "lucide-react";
+import { ArrowRight, Scale, ScanLine, Search, TrainFront, Truck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { ArrivalForm } from "./arrival-form";
 import { PassageForm } from "./passage-form";
+import { ManualPassageEntryDialog } from "./manual-passage-entry-dialog";
 import { SupplyForm } from "./supply-form";
 
-type GrainTab = "expected" | "on_site" | "finished" | "camera";
+type GrainTab = "expected" | "on_site" | "finished" | "history" | "camera";
 type GrainDirection = GrainWagon["direction"];
 
 const DIRECTION_TABS = [
@@ -49,6 +50,7 @@ const INTAKE_TABS = [
 const PASSAGE_TABS = [
   { key: "on_site", label: "На территории" },
   { key: "finished", label: "Завершённые" },
+  { key: "history", label: "Журнал взвешиваний", icon: Scale, panelId: "passage-history" },
   { key: "camera", label: "Камера проходной", icon: ScanLine },
 ];
 
@@ -163,6 +165,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
   const [passageOpen, setPassageOpen] = useState(false);
+  const [manualEntryBusy, setManualEntryBusy] = useState(false);
   const [arrivalSupply, setArrivalSupply] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
   // Завершённые по умолчанию идут за календарём: null — «сегодня» по часам
@@ -188,7 +191,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
     arriveOpen ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
     100,
   );
-  useVisiblePolling(wagons.reload, 10_000, pollWagons);
+  useVisiblePolling(wagons.reload, 10_000, pollWagons && !manualEntryBusy);
 
   /** Выбор сегодняшней даты возвращает режим «за календарём», а не замораживает день. */
   function pickFinishedDay(value: string) {
@@ -242,18 +245,23 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
           : "Вывоз можно оформлять автоматически по стабильному весу и номеру камеры либо вручную. Доступность автоматики показана во вкладке «Камера проходной»."
       }
       actions={
-        <GrainToolbar
-          direction={direction}
-          canArrive={canArrive}
-          canSupply={canSupply}
-          canWeigh={canWeigh}
-          onPassage={openPassage}
-          onArrival={() => openArrival()}
-          onSupply={() => {
-            selectDirection("intake");
-            setSupplyOpen(true);
-          }}
-        />
+        <>
+          <GrainToolbar
+            direction={direction}
+            canArrive={canArrive}
+            canSupply={canSupply}
+            canWeigh={canWeigh}
+            onPassage={openPassage}
+            onArrival={() => openArrival()}
+            onSupply={() => {
+              selectDirection("intake");
+              setSupplyOpen(true);
+            }}
+          />
+          {direction === "passage" && (
+            <ManualPassageEntryDialog onChanged={refreshAll} onBusyChange={setManualEntryBusy} />
+          )}
+        </>
       }
     >
       <div className="space-y-4">
@@ -276,6 +284,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
           active={tab}
           onChange={selectStatusTab}
           label="Статус рейсов"
+          className="overflow-x-auto [&>button]:shrink-0"
         />
 
         {listTab && (
@@ -314,13 +323,11 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
           </p>
         )}
 
-        {direction === "passage" && tab !== "camera" && (
-          <UnassignedWeighingsPanel canWeigh={canWeigh} onChanged={refreshAll} />
-        )}
+        {direction === "passage" && listTab && <UnassignedWeighingsPanel canWeigh={canWeigh} onChanged={refreshAll} />}
 
-        {direction === "passage" && <PassageHistory />}
-
-        {tab === "camera" ? (
+        {tab === "history" ? (
+          <PassageHistory />
+        ) : tab === "camera" ? (
           direction === "intake" ? (
             <WagonNumberCameraWorkspace canManage={Boolean(me?.is_superuser)} />
           ) : (
