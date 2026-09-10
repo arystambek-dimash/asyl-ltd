@@ -68,6 +68,8 @@ export interface ShippingTableProps {
   completedOrdersDays: number;
   /** Без фильтра шапка показывает только заголовок. */
   filter?: ShippingBoardFilter;
+  /** Только явный тип API; неизвестные старые сессии не считаем грузовиками. */
+  transportType?: "truck" | "train" | "unknown";
   reloadOrders: () => Promise<unknown>;
   reloadSessions: () => Promise<unknown>;
   /** Только при shipping.view. */
@@ -150,6 +152,7 @@ export function ShippingTable({
   capabilities,
   completedOrdersDays,
   filter,
+  transportType,
   reloadOrders,
   reloadSessions,
   reloadHistories,
@@ -191,6 +194,7 @@ export function ShippingTable({
     const waiting: Row[] = [];
     const shipped: Row[] = [];
     for (const order of orders ?? []) {
+      if (transportType && (order.transport_type ?? "unknown") !== transportType) continue;
       const row = rowOf(order, sessionsByOrderId.get(order.id) ?? null, historiesByOrderId.get(order.id) ?? null);
       if (isLoadingStatus(order.status)) loading.push(row);
       else if (order.status === "loaded") ready.push(row);
@@ -198,7 +202,11 @@ export function ShippingTable({
       else if (order.status === "shipped") shipped.push(row);
     }
     for (const session of sessions) {
-      if (!ordersById.has(session.order_id)) loading.push(sessionRowOf(session));
+      if (
+        !ordersById.has(session.order_id) &&
+        (!transportType || (session.order_transport_type ?? "unknown") === transportType)
+      )
+        loading.push(sessionRowOf(session));
     }
     const startedAt = (row: Row) => row.session?.started_at ?? null;
     loading.sort((a, b) => {
@@ -235,7 +243,17 @@ export function ShippingTable({
         always: false,
       },
     ];
-  }, [completedOrdersDays, historiesByOrderId, orders, ordersById, searching, sessions, sessionsByOrderId, viewingDay]);
+  }, [
+    completedOrdersDays,
+    historiesByOrderId,
+    orders,
+    ordersById,
+    searching,
+    sessions,
+    sessionsByOrderId,
+    viewingDay,
+    transportType,
+  ]);
 
   const rowsByKey = useMemo(() => {
     const map = new Map<string, Row>();

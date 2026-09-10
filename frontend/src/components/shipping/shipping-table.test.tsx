@@ -129,6 +129,32 @@ function rowOf(orderId: number) {
 }
 
 describe("ShippingTable", () => {
+  it.each(["truck", "train", "unknown"] as const)(
+    "filters %s by API transport type, including sessions without accessible orders",
+    (transportType) => {
+      renderTable({
+        transportType,
+        orders: [
+          order({ id: 21, transport_type: "truck", truck_number: "00123455" }),
+          order({ id: 22, transport_type: "train", truck_number: "123ABC02" }),
+          order({ id: 27, transport_type: undefined, truck_number: "123ABC02" }),
+        ],
+        sessions: [
+          session({ id: 23, order_id: 23, order_transport_type: "truck", order_truck_number: "00123455" }),
+          session({ id: 24, order_id: 24, order_transport_type: "train", order_truck_number: "" }),
+          session({ id: 25, order_id: 25, order_transport_type: undefined, order_truck_number: "00123455" }),
+          // A visible order owns the type even if a stale session disagrees.
+          session({ id: 26, order_id: 22, order_transport_type: "truck" }),
+        ],
+      });
+      const visibleIds = transportType === "truck" ? [21, 23] : transportType === "train" ? [22, 24] : [25, 27];
+      for (const id of [21, 22, 23, 24, 25, 27]) {
+        if (visibleIds.includes(id)) expect(screen.getByText(`#${id}`)).toBeInTheDocument();
+        else expect(screen.queryByText(`#${id}`)).not.toBeInTheDocument();
+      }
+    },
+  );
+
   it("shows full wagon identifiers for orders and independently visible sessions", () => {
     renderTable({
       orders: [order({ id: 45, transport_type: "train", truck_number: "00123456" })],

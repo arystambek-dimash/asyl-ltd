@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   BarChart3,
   Camera,
@@ -1487,6 +1487,10 @@ function MonoblockPageInner() {
   // камеры отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
   // Киоск и view-only видят «Отгрузку» без полосы вкладок.
   const [tab, setTab] = useState<MonoblockTab>("shipments");
+  const [shippingTab, setShippingTab] = useState("conveyors");
+  const shippingPanelId = useId();
+  const [transportType, setTransportType] = useState<"truck" | "train" | "unknown" | null>(null);
+  const defaultTransportType = (canTrain || can(me, "train.view")) && !canLoad && !canViewShipping ? "train" : "truck";
   const activeTab: MonoblockTab = canViewAlwaysOn ? tab : "shipments";
   const [completedOpen, setCompletedOpen] = useState(false);
 
@@ -1552,9 +1556,44 @@ function MonoblockPageInner() {
   };
 
   /* ── Метрики: считаются на клиенте из уже опрошенных данных ─────────── */
+  const transportCounts = useMemo(() => {
+    const totals = { truck: 0, train: 0, unknown: 0 };
+    for (const order of orders ?? []) {
+      if (["confirmed", "arrived", "loading", "loaded", "shipped"].includes(order.status)) {
+        totals[order.transport_type ?? "unknown"] += 1;
+      }
+    }
+    for (const session of sessions ?? []) {
+      if (!ordersById.has(session.order_id)) totals[session.order_transport_type ?? "unknown"] += 1;
+    }
+    return totals;
+  }, [orders, ordersById, sessions]);
+  const activeTransportType =
+    transportType === "unknown" && transportCounts.unknown === 0
+      ? defaultTransportType
+      : (transportType ?? defaultTransportType);
+  const transportTabs: TabDef[] = [
+    { key: "truck", label: "Грузовики", count: transportCounts.truck },
+    { key: "train", label: "Вагоны", count: transportCounts.train },
+    ...(transportCounts.unknown > 0 ? [{ key: "unknown", label: "Без типа", count: transportCounts.unknown }] : []),
+  ];
+  const boardOrders = useMemo(
+    () => orders?.filter((order) => (order.transport_type ?? "unknown") === activeTransportType) ?? [],
+    [activeTransportType, orders],
+  );
+  const boardSessions = useMemo(
+    () =>
+      (sessions ?? []).filter(
+        (session) =>
+          ((ordersById.has(session.order_id)
+            ? ordersById.get(session.order_id)?.transport_type
+            : session.order_transport_type) ?? "unknown") === activeTransportType,
+      ),
+    [activeTransportType, ordersById, sessions],
+  );
   const counts = useMemo(() => {
     const result = { waiting: 0, wagons: 0, loading: 0, ready: 0, shipped: 0, shippedBags: 0 };
-    for (const order of orders ?? []) {
+    for (const order of boardOrders) {
       if (order.status === "confirmed") {
         result.waiting += 1;
         if (order.transport_type === "train") result.wagons += 1;
@@ -1568,7 +1607,7 @@ function MonoblockPageInner() {
       }
     }
     return result;
-  }, [orders]);
+  }, [boardOrders]);
   const completedDays = shippingSettings?.completed_orders_days ?? 1;
   const completedLabel = completedDays <= 1 ? "сегодня" : `за ${completedDays} дн.`;
   // Плитки считаются из тех же строк, что и таблица: под поиском или чужим
@@ -1630,7 +1669,11 @@ function MonoblockPageInner() {
           };
 
   const pageTabs: TabDef[] = [
-    { key: "shipments", label: "Отгрузка", count: counts.loading },
+    {
+      key: "shipments",
+      label: "Отгрузка",
+      count: (orders ?? []).filter((order) => ["arrived", "loading"].includes(order.status)).length,
+    },
     { key: "monoblock", label: "AI 24/7", count: alwaysOnSettings?.camera_sources.length ?? 0 },
   ];
   const showHeader = canViewAlwaysOn;
@@ -1728,118 +1771,152 @@ function MonoblockPageInner() {
           )
         ) : (
           <>
-            <ShippingSessionsPanel
-              cameras={stripSources.map((src) => ({ src, name: camerasBySrc.get(src)?.zone || src }))}
+            <Tabs
+              tabs={[
+                { key: "conveyors", label: "Конвейеры и сессии", panelId: `${shippingPanelId}-conveyors` },
+                { key: "orders", label: "Заказы", panelId: `${shippingPanelId}-orders` },
+              ]}
+              active={shippingTab}
+              onChange={setShippingTab}
+              label="Разделы отгрузки"
             />
-            {canViewContinuous && (
-              <Card role="region" aria-label="Конвейеры и счёт" className="space-y-4 p-4 sm:p-5">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-semibold">Конвейеры и счёт</h2>
-                    <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                      Прямой эфир, счётчики мешков и камеры номеров.
-                    </p>
-                  </div>
-                  {canManage && (
-                    <CameraSettingsButton cameras={playable} settings={cameraSettings} reload={reloadMonoblockPolicy} />
-                  )}
-                </div>
-                {shippingContinuousSettings ? (
-                  <>
-                    <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
-                      <span>Камеры отгрузки · работают 24/7</span>
-                      <span>
-                        · насчитано сегодня{" "}
-                        {shippingAnalyticsAvailable ? (shippingContinuousAnalytics?.total ?? 0) : "—"}
-                      </span>
-                      <span>
-                        ·{" "}
-                        {shippingContinuousSettings.sync_status !== "synced"
-                          ? "ожидает готовности"
-                          : shippingAnalyticsAvailable
-                            ? "синхронизировано"
-                            : "журнал не синхронизирован"}
-                      </span>
-                    </div>
-                    {stripSources.length ? (
-                      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                        {stripSources.map((source) => (
-                          <ContinuousCameraTile
-                            key={source}
-                            scope="shipping"
-                            source={source}
-                            settings={shippingContinuousSettings}
-                            analytics={shippingContinuousAnalytics}
-                            analyticsError={shippingContinuousAnalyticsError}
-                            camera={camerasBySrc.get(source)}
-                            bound={tileBinding(source)}
-                          />
-                        ))}
+            {shippingTab === "conveyors" && (
+              <div
+                role="tabpanel"
+                id={`${shippingPanelId}-conveyors`}
+                aria-labelledby={`${shippingPanelId}-conveyors-tab`}
+                className="space-y-6"
+              >
+                <ShippingSessionsPanel
+                  cameras={stripSources.map((src) => ({ src, name: camerasBySrc.get(src)?.zone || src }))}
+                />
+                {canViewContinuous && (
+                  <Card role="region" aria-label="Конвейеры и счёт" className="space-y-4 p-4 sm:p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-lg font-semibold">Конвейеры и счёт</h2>
+                        <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                          Прямой эфир, счётчики мешков и камеры номеров.
+                        </p>
                       </div>
+                      {canManage && (
+                        <CameraSettingsButton
+                          cameras={playable}
+                          settings={cameraSettings}
+                          reload={reloadMonoblockPolicy}
+                        />
+                      )}
+                    </div>
+                    {shippingContinuousSettings ? (
+                      <>
+                        <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
+                          <span>Камеры отгрузки · работают 24/7</span>
+                          <span>
+                            · насчитано сегодня{" "}
+                            {shippingAnalyticsAvailable ? (shippingContinuousAnalytics?.total ?? 0) : "—"}
+                          </span>
+                          <span>
+                            ·{" "}
+                            {shippingContinuousSettings.sync_status !== "synced"
+                              ? "ожидает готовности"
+                              : shippingAnalyticsAvailable
+                                ? "синхронизировано"
+                                : "журнал не синхронизирован"}
+                          </span>
+                        </div>
+                        {stripSources.length ? (
+                          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                            {stripSources.map((source) => (
+                              <ContinuousCameraTile
+                                key={source}
+                                scope="shipping"
+                                source={source}
+                                settings={shippingContinuousSettings}
+                                analytics={shippingContinuousAnalytics}
+                                analyticsError={shippingContinuousAnalyticsError}
+                                camera={camerasBySrc.get(source)}
+                                bound={tileBinding(source)}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[12px] text-[var(--muted-foreground)]">
+                            Камеры отгрузки не назначены{canManage ? " — выберите их в «Камеры моноблока»" : ""}
+                          </p>
+                        )}
+                      </>
                     ) : (
-                      <p className="text-[12px] text-[var(--muted-foreground)]">
-                        Камеры отгрузки не назначены{canManage ? " — выберите их в «Камеры моноблока»" : ""}
+                      <p className="text-sm text-[var(--muted-foreground)]">
+                        {shippingContinuousSettingsError
+                          ? "Данные конвейеров недоступны."
+                          : "Данные конвейеров загружаются…"}
                       </p>
                     )}
-                  </>
-                ) : (
-                  <p className="text-sm text-[var(--muted-foreground)]">
-                    {shippingContinuousSettingsError
-                      ? "Данные конвейеров недоступны."
-                      : "Данные конвейеров загружаются…"}
-                  </p>
+                  </Card>
                 )}
-              </Card>
+              </div>
             )}
+            {shippingTab === "orders" && (
+              <div role="tabpanel" id={`${shippingPanelId}-orders`} aria-labelledby={`${shippingPanelId}-orders-tab`}>
+                <Card role="region" aria-label="Заказы отгрузки" className="space-y-4 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold">Заказы отгрузки</h2>
+                      <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                        Очередь, погрузка и оформление выезда.
+                      </p>
+                    </div>
+                    {canManage && (
+                      <Button variant="outline" size="sm" onClick={() => setCompletedOpen(true)}>
+                        <CalendarDays className="size-4" /> Отгруженные: {completedLabel}
+                      </Button>
+                    )}
+                  </div>
+                  <Tabs
+                    tabs={transportTabs}
+                    active={activeTransportType}
+                    onChange={(key) => setTransportType(key as typeof transportType)}
+                    label="Тип транспорта в очереди"
+                  />
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <StatCard label="Ожидают погрузки" value={counts.waiting} caption={waitingCaption} />
+                    <StatCard
+                      label="На погрузке"
+                      value={counts.loading}
+                      caption={`${boardSessions.length} с AI-подсчётом`}
+                    />
+                    <StatCard
+                      label="Готовы к выезду"
+                      value={counts.ready}
+                      caption="ожидают оформления выезда"
+                      tone={counts.ready > 0 && canShip ? "success" : undefined}
+                    />
+                    <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
+                  </div>
 
-            <Card role="region" aria-label="Заказы отгрузки" className="space-y-4 p-4 sm:p-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold">Заказы отгрузки</h2>
-                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">Очередь, погрузка и оформление выезда.</p>
-                </div>
-                {canManage && (
-                  <Button variant="outline" size="sm" onClick={() => setCompletedOpen(true)}>
-                    <CalendarDays className="size-4" /> Отгруженные: {completedLabel}
-                  </Button>
-                )}
+                  <ShippingTable
+                    orders={orders}
+                    sessions={sessions ?? []}
+                    histories={histories ?? []}
+                    camerasBySrc={camerasBySrc}
+                    capabilities={{
+                      canLoad,
+                      canTrain,
+                      canShip,
+                      canRollback,
+                      canViewShipping,
+                      canOpenOrder,
+                    }}
+                    completedOrdersDays={completedDays}
+                    filter={boardFilter}
+                    transportType={activeTransportType}
+                    reloadOrders={reloadOrders}
+                    reloadSessions={reloadSessions}
+                    reloadHistories={canViewShipping ? reloadHistories : undefined}
+                  />
+                </Card>
               </div>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <StatCard label="Ожидают погрузки" value={counts.waiting} caption={waitingCaption} />
-                <StatCard
-                  label="На погрузке"
-                  value={counts.loading}
-                  caption={`${sessions?.length ?? 0} с AI-подсчётом`}
-                />
-                <StatCard
-                  label="Готовы к выезду"
-                  value={counts.ready}
-                  caption="ожидают оформления выезда"
-                  tone={counts.ready > 0 && canShip ? "success" : undefined}
-                />
-                <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
-              </div>
-
-              <ShippingTable
-                orders={orders}
-                sessions={sessions ?? []}
-                histories={histories ?? []}
-                camerasBySrc={camerasBySrc}
-                capabilities={{
-                  canLoad,
-                  canTrain,
-                  canShip,
-                  canRollback,
-                  canViewShipping,
-                  canOpenOrder,
-                }}
-                completedOrdersDays={completedDays}
-                filter={boardFilter}
-                reloadOrders={reloadOrders}
-                reloadSessions={reloadSessions}
-                reloadHistories={canViewShipping ? reloadHistories : undefined}
-              />
-            </Card>
+            )}
           </>
         )}
       </div>

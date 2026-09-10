@@ -8,6 +8,8 @@ export interface TabDef {
   icon?: React.ElementType;
   /** Счётчик в пилюле рядом с названием (0 тоже показывается). */
   count?: number;
+  /** ID управляемой панели; её aria-labelledby ссылается на `${panelId}-tab`. */
+  panelId?: string;
 }
 
 function TabCount({ value, active }: { value: number; active: boolean }) {
@@ -75,6 +77,8 @@ export function Tabs({
           key={t.key}
           type="button"
           role="tab"
+          id={t.panelId ? `${t.panelId}-tab` : undefined}
+          aria-controls={t.panelId}
           aria-selected={active === t.key}
           aria-label={t.count === undefined ? undefined : `${t.label}, ${t.count}`}
           tabIndex={active === t.key ? 0 : -1}

@@ -10,6 +10,7 @@ import base64
 import http.client
 import io
 import json
+import logging
 import math
 import re
 import urllib.parse
@@ -30,6 +31,25 @@ MAX_FRAME_AGE = timedelta(seconds=15)
 MAX_JPEG_BYTES = 4 * 1024 * 1024
 MAX_IDENTITY_ATTEMPTS = 3
 MODELS = {"vehicle_number": "/vehicle-number/detect", "wagon_number": "/wagon-number/detect"}
+logger = logging.getLogger(__name__)
+
+
+def _response_id(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value) else ""
+
+
+class RecognitionFailure(ValueError):
+    """A safe diagnosis; never retains upstream bodies, images, or credentials."""
+
+    def __init__(self, code, *, retryable=False, response_id=""):
+        super().__init__(code)
+        self.code = code
+        self.retryable = retryable
+        self.response_id = _response_id(response_id)
+
+
+class NumberRejected(RecognitionFailure):
+    """The response completed, but its number must not enter accounting."""
 
 
 class InvalidLoadingZone(ValueError):
@@ -301,39 +321,72 @@ def gpt_number(frame, *, recognition_model=None):
         })
         response = client.getresponse()
         if response.status != 200:
-            raise ValueError(f"openai_http_{response.status}")
+            if response.status in (401, 403):
+                raise RecognitionFailure("openai_authentication_failed")
+            if response.status == 429:
+                raise RecognitionFailure("openai_rate_limited", retryable=True)
+            if response.status in (408, 409, 425) or 500 <= response.status <= 599:
+                raise RecognitionFailure("openai_unavailable", retryable=True)
+            raise RecognitionFailure("openai_request_rejected")
         raw = response.read(128 * 1024 + 1)
         if len(raw) > 128 * 1024:
-            raise ValueError("openai_response_too_large")
-        payload = json.loads(raw)
+            raise RecognitionFailure("openai_invalid_response")
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise RecognitionFailure("openai_invalid_response") from exc
+    except (http.client.HTTPException, OSError) as exc:
+        raise RecognitionFailure("openai_unavailable", retryable=True) from exc
     finally:
         client.close()
-    if not isinstance(payload, dict) or payload.get("status") != "completed":
-        raise ValueError("openai_incomplete")
+    if not isinstance(payload, dict):
+        raise RecognitionFailure("openai_invalid_response")
+    response_id = _response_id(payload.get("id"))
+    if payload.get("status") != "completed":
+        details = payload.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        if reason == "max_output_tokens":
+            raise RecognitionFailure("openai_output_limit", response_id=response_id)
+        if reason == "content_filter":
+            raise RecognitionFailure("openai_refused", response_id=response_id)
+        raise RecognitionFailure("openai_incomplete", retryable=True, response_id=response_id)
     outputs = payload.get("output")
     if not isinstance(outputs, list) or any(not isinstance(item, dict) for item in outputs):
-        raise ValueError("openai_invalid_output")
+        raise RecognitionFailure("openai_invalid_response", response_id=response_id)
     texts = []
     for output in outputs:
         if output.get("type") != "message" or output.get("role") != "assistant":
             continue
         parts = output.get("content")
         if not isinstance(parts, list) or any(not isinstance(part, dict) for part in parts):
-            raise ValueError("openai_invalid_output")
+            raise RecognitionFailure("openai_invalid_response", response_id=response_id)
+        if any(part.get("type") == "refusal" for part in parts):
+            raise RecognitionFailure("openai_refused", response_id=response_id)
         texts.extend(part.get("text") for part in parts if part.get("type") == "output_text")
     if len(texts) != 1 or not isinstance(texts[0], str):
-        raise ValueError("openai_no_verdict")
-    result = json.loads(texts[0])
+        raise RecognitionFailure("openai_invalid_response", response_id=response_id)
+    try:
+        result = json.loads(texts[0])
+    except (ValueError, TypeError) as exc:
+        raise RecognitionFailure("openai_invalid_response", response_id=response_id) from exc
     if not isinstance(result, dict) or set(result) != set(GPT_SCHEMA["required"]):
-        raise ValueError("openai_invalid_verdict")
+        raise RecognitionFailure("openai_invalid_response", response_id=response_id)
     if (not isinstance(result["number"], str) or type(result["number_clear"]) is not bool
             or not isinstance(result["recognition_model"], str)
             or result["recognition_model"] not in (*MODELS, "unknown")):
-        raise ValueError("openai_invalid_verdict")
-    number = valid_number(result["number"], result["recognition_model"]) if result["number_clear"] else ""
-    if recognition_model is not None and result["recognition_model"] != recognition_model:
-        number = ""
-    return number, result["recognition_model"], str(payload.get("id", ""))[:100]
+        raise RecognitionFailure("openai_invalid_response", response_id=response_id)
+    if not result["number_clear"] or not result["number"].strip():
+        raise NumberRejected("number_unreadable", response_id=response_id)
+    if result["recognition_model"] == "unknown" or (
+        recognition_model is not None and result["recognition_model"] != recognition_model
+    ):
+        raise NumberRejected("transport_type_mismatch", response_id=response_id)
+    number = valid_number(result["number"], result["recognition_model"])
+    if not number:
+        eight_digits = re.fullmatch(r"[0-9]{8}", re.sub(r"[\s-]+", "", result["number"]))
+        code = "wagon_checksum_invalid" if result["recognition_model"] == "wagon_number" and eight_digits else "number_invalid_format"
+        raise NumberRejected(code, response_id=response_id)
+    return number, result["recognition_model"], response_id
 
 
 @transaction.atomic
@@ -348,9 +401,14 @@ def _finish_failure(segment_id, lease, error, *, retry=False, response_id=""):
         segment.identity_status = "unidentified"
         segment.identity_next_attempt_at = None
     segment.identity_error = error[:128]
-    segment.identity_response_id = response_id
+    segment.identity_response_id = _response_id(response_id)
     segment.identity_lease_until = None
     segment.save(update_fields=["identity_status", "identity_error", "identity_response_id", "identity_lease_until", "identity_next_attempt_at"])
+    logger.warning(
+        "Shipping identity rejected segment=%s code=%s response_id=%s retrying=%s",
+        segment.pk, segment.identity_error, segment.identity_response_id,
+        segment.identity_status == "pending",
+    )
 
 
 def process_once(segment_id=None):
@@ -401,8 +459,11 @@ def process_once(segment_id=None):
                 gpt_number(frame, recognition_model="wagon_number")
                 if expected_model == "wagon_number" else gpt_number(frame)
             )
-            if expected_model and model != expected_model:
-                number = ""
+            if number and expected_model and model != expected_model:
+                raise NumberRejected("transport_type_mismatch", response_id=response_id)
+        except RecognitionFailure as exc:
+            _finish_failure(segment.pk, lease, exc.code, retry=exc.retryable, response_id=exc.response_id)
+            return True
         except (http.client.HTTPException, OSError, ValueError, TypeError, KeyError):
             _finish_failure(segment.pk, lease, "fallback_unavailable", retry=True)
             return True

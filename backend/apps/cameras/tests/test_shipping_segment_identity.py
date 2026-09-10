@@ -400,6 +400,114 @@ def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_ima
     assert identity.GPT_SCHEMA["properties"]["recognition_model"]["enum"] == ["vehicle_number", "wagon_number", "unknown"]
 
 
+def openai_client(payload, *, status=200):
+    response = Mock(status=status)
+    response.read.return_value = json.dumps(payload).encode()
+    client = Mock()
+    client.getresponse.return_value = response
+    return client
+
+
+def completed_verdict(number="00123455", *, clear=True, model="wagon_number"):
+    return {"status": "completed", "id": "resp_reason_test", "output": [{
+        "type": "message", "role": "assistant", "content": [{
+            "type": "output_text", "text": json.dumps({
+                "number": number, "number_clear": clear, "recognition_model": model,
+            }),
+        }],
+    }]}
+
+
+@pytest.mark.parametrize("payload,code", [
+    (completed_verdict(clear=False), "number_unreadable"),
+    (completed_verdict("0012345"), "number_invalid_format"),
+    (completed_verdict("00123456"), "wagon_checksum_invalid"),
+    (completed_verdict("123ABC02", model="vehicle_number"), "transport_type_mismatch"),
+])
+def test_completed_refusal_reason_is_preserved_without_retries_or_bag_changes(payload, code, caplog):
+    row = photographed(model="wagon_number")
+    client = openai_client(payload)
+    with patch.object(identity.http.client, "HTTPSConnection", return_value=client), patch.object(ai, "_request") as primary, patch.object(identity, "capture_frame") as frame:
+        assert identity.process_once(row.pk)
+        assert not identity.process_once(row.pk)
+    row.refresh_from_db()
+    assert row.identity_error == code
+    assert row.identity_status == "unidentified"
+    assert row.identity_response_id == "resp_reason_test"
+    assert row.identity_attempts == 1
+    assert row.identity_next_attempt_at is None
+    assert row.number == "" and not row.primary_attempted
+    assert row.total_bags == row.session.total_bags == 1
+    assert ShippingLoadingEvent.objects.count() == 1
+    assert row.photo.read() == JPEG
+    client.request.assert_called_once()
+    primary.assert_not_called()
+    frame.assert_not_called()
+    assert code in caplog.text and "resp_reason_test" in caplog.text
+    assert "00123456" not in caplog.text
+    assert "unit-test-only" not in caplog.text
+
+
+@pytest.mark.parametrize("status,code,retryable", [
+    (401, "openai_authentication_failed", False),
+    (403, "openai_authentication_failed", False),
+    (400, "openai_request_rejected", False),
+    (429, "openai_rate_limited", True),
+    (503, "openai_unavailable", True),
+])
+def test_http_error_retains_safe_reason_and_only_transient_failures_retry(status, code, retryable, caplog):
+    row = photographed(model="wagon_number")
+    client = openai_client({"private_provider_error": "do-not-log-upstream-body"}, status=status)
+    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
+        assert identity.process_once(row.pk)
+    row.refresh_from_db()
+    assert row.identity_error == code
+    assert row.identity_status == ("pending" if retryable else "unidentified")
+    assert bool(row.identity_next_attempt_at) is retryable
+    assert row.total_bags == 1 and row.number == ""
+    assert "do-not-log-upstream-body" not in caplog.text
+    client.getresponse.return_value.read.assert_not_called()
+
+
+@pytest.mark.parametrize("payload,code,retryable", [
+    ({"status": "incomplete", "id": "resp_reason_test", "incomplete_details": {"reason": "max_output_tokens"}}, "openai_output_limit", False),
+    ({"status": "incomplete", "id": "resp_reason_test", "incomplete_details": {"reason": "content_filter"}}, "openai_refused", False),
+    ({"status": "incomplete", "id": "resp_reason_test"}, "openai_incomplete", True),
+    ({"status": "completed", "id": "resp_reason_test", "output": []}, "openai_invalid_response", False),
+    ({"status": "completed", "id": "resp_reason_test", "output": [{"type": "message", "role": "assistant", "content": [{"type": "refusal", "refusal": "private-response"}]}]}, "openai_refused", False),
+])
+def test_incomplete_or_malformed_openai_result_preserves_typed_reason(payload, code, retryable):
+    with patch.object(identity.http.client, "HTTPSConnection", return_value=openai_client(payload)):
+        with pytest.raises(identity.RecognitionFailure) as caught:
+            identity.gpt_number(JPEG, recognition_model="wagon_number")
+    assert caught.value.code == code
+    assert caught.value.retryable is retryable
+    assert caught.value.response_id == "resp_reason_test"
+    assert "private-response" not in str(caught.value)
+
+
+def test_typed_rate_limit_retry_stops_at_existing_limit_on_same_saved_frame():
+    row = photographed(model="wagon_number")
+    client = openai_client({}, status=429)
+    with patch.object(identity.http.client, "HTTPSConnection", return_value=client), patch.object(identity, "capture_frame") as frame, patch.object(ai, "_request") as primary:
+        for _ in range(3):
+            ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_next_attempt_at=timezone.now())
+            assert identity.process_once(row.pk)
+        assert not identity.process_once(row.pk)
+    row.refresh_from_db()
+    assert row.identity_error == "openai_rate_limited"
+    assert row.identity_status == "unidentified"
+    assert row.identity_next_attempt_at is None
+    assert row.identity_attempts == 3 and row.total_bags == 1
+    assert client.request.call_count == 3
+    for call in client.request.call_args_list:
+        body = json.loads(call.kwargs["body"])
+        data_url = body["input"][0]["content"][0]["image_url"]
+        assert base64.b64decode(data_url.split(",", 1)[1]) == JPEG
+    frame.assert_not_called()
+    primary.assert_not_called()
+
+
 def test_late_wagon_gpt_response_cannot_overwrite_manual_number():
     row = photographed(model="wagon_number")
 

@@ -215,6 +215,7 @@ class ShippingTransportRecognizeView(APIView):
                     "code": "transport_camera_not_configured",
                 }
             )
+        identity_error = ""
         try:
             frame = identity.capture_frame(binding.number_camera)
             if not frame:
@@ -235,6 +236,21 @@ class ShippingTransportRecognizeView(APIView):
                 if model != binding.recognition_model:
                     number = None
             number = identity.valid_number(number, binding.recognition_model) or None
+        except identity.NumberRejected as exc:
+            number = None
+            identity_error = exc.code
+        except identity.RecognitionFailure as exc:
+            return Response(
+                {
+                    "detail": "Сервис распознавания не смог завершить проверку",
+                    "code": exc.code,
+                },
+                status=(
+                    status.HTTP_503_SERVICE_UNAVAILABLE
+                    if exc.code == "openai_authentication_failed" or exc.retryable
+                    else status.HTTP_502_BAD_GATEWAY
+                ),
+            )
         except ai.AiUnavailable:
             return Response(
                 {
@@ -278,6 +294,7 @@ class ShippingTransportRecognizeView(APIView):
             {
                 **_payload(camera, binding),
                 "number": number,
+                "identity_error": identity_error,
                 "observed_at": timezone.now(),
             }
         )

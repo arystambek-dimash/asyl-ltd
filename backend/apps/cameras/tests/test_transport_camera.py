@@ -360,6 +360,53 @@ def test_openai_failure_is_sanitized_and_never_falls_back_to_wagon_native(setup,
     identity.primary_number.assert_not_called()
 
 
+@pytest.mark.parametrize("code", ["number_unreadable", "number_invalid_format", "wagon_checksum_invalid", "transport_type_mismatch"])
+def test_manual_check_exposes_semantic_refusal_without_accounting_changes(setup, binding, auth_client, code):
+    binding.recognition_model = "wagon_number"
+    binding.save()
+    identity.gpt_number.side_effect = identity.NumberRejected(code, response_id="resp_manual_test")
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 200
+    assert response.data["number"] is None
+    assert response.data["identity_error"] == code
+    identity.primary_number.assert_not_called()
+    assert not ShippingLoadingEvent.objects.exists()
+    assert not ShippingLoadingSegment.objects.exists()
+    assert not Order.objects.exists()
+    assert not EventLog.objects.exists()
+
+
+@pytest.mark.parametrize("code,retryable,status", [
+    ("openai_authentication_failed", False, 503),
+    ("openai_rate_limited", True, 503),
+    ("openai_output_limit", False, 502),
+    ("openai_invalid_response", False, 502),
+])
+def test_manual_check_preserves_typed_service_error_code(setup, binding, auth_client, code, retryable, status):
+    binding.recognition_model = "wagon_number"
+    binding.save()
+    identity.gpt_number.side_effect = identity.RecognitionFailure(code, retryable=retryable)
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == status
+    assert response.data["code"] == code
+    assert "number" not in response.data
+
+
+def test_semantic_refusal_rechecks_camera_binding_before_returning(setup, binding, auth_client):
+    binding.recognition_model = "wagon_number"
+    binding.save()
+
+    def rejected(*args, **kwargs):
+        binding.number_camera = "cam8"
+        binding.save()
+        raise identity.NumberRejected("number_unreadable")
+
+    identity.gpt_number.side_effect = rejected
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 409
+    assert response.data["code"] == "transport_camera_changed"
+
+
 @pytest.mark.parametrize("model", ["vehicle_number", "wagon_number"])
 def test_missing_openai_key_is_service_unavailable_when_needed(setup, binding, auth_client, settings, model):
     binding.recognition_model = model

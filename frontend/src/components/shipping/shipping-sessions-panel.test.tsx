@@ -82,6 +82,34 @@ beforeEach(() => {
 });
 
 describe("ShippingSessionsPanel", () => {
+  it.each([
+    ["wagon_checksum_invalid", "ИИ прочитал номер, но контрольная цифра не совпала."],
+    ["number_invalid_format", "ИИ прочитал символы, но они не соответствуют формату номера."],
+    ["transport_type_mismatch", "Тип транспорта на фото не совпадает с настройкой камеры номера."],
+    ["openai_authentication_failed", "Проверка через OpenAI не авторизована. Обратитесь к администратору."],
+    ["openai_rate_limited", "Достигнут лимит запросов OpenAI."],
+    ["openai_unavailable", "OpenAI временно недоступен."],
+    ["openai_request_rejected", "OpenAI отклонил запрос распознавания. Обратитесь к администратору."],
+    ["openai_invalid_response", "OpenAI вернул некорректный результат распознавания."],
+    ["openai_output_limit", "OpenAI не завершил ответ: достигнут лимит длины."],
+    ["openai_refused", "OpenAI не смог обработать этот кадр."],
+    ["openai_incomplete", "OpenAI не завершил распознавание номера."],
+  ])("explains %s while retaining the counted bags and manual fallback", (identity_error, message) => {
+    mocks.page = {
+      results: [
+        session({
+          number: "",
+          segments: [segment({ number: "", identity_status: "unidentified", identity_error, can_identify: true })],
+        }),
+      ],
+      next_cursor: null,
+    };
+    render(<ShippingSessionsPanel />);
+    expect(screen.getByText(`${message} Подсчёт мешков сохранён.`)).toBeInTheDocument();
+    expect(screen.getByText("120 меш.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Указать номер отрезка #101" })).toBeInTheDocument();
+  });
+
   it("shows a combined vehicle total but keeps each pause-separated segment and document distinct without an order", () => {
     render(<ShippingSessionsPanel />);
     expect(screen.getByText("Машина 111AAA01")).toBeInTheDocument();
