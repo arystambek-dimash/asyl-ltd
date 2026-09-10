@@ -649,7 +649,7 @@ docker compose -f "$COMPOSE_FILE" exec -T db-backup \
   sh -c 'sha256sum -c /backups/asyl-latest.dump.sha256 && sha256sum -c /backups/media-latest.tar.gz.sha256'
 
 echo "Validating compose config..."
-if [ -n "${OPENAI_API_KEY_B64:-}" ]; then
+if [ -n "${OPENAI_API_KEY_B64:-}" ] || [ -n "${SHIPPING_WAGON_AI_MODEL_B64:-}" ] || [ -n "${SHIPPING_WAGON_AI_DETAIL_B64:-}" ]; then
   python3 deploy/sync-openai-secret.py
 fi
 # `config` expands all environment values, including camera/alert credentials.

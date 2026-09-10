@@ -48,9 +48,14 @@ Validation on screenshots does not replace a live complete entry/exit trial.
 ## Deployment and limits
 
 GitHub Actions reads repository secret `OPENAI_API_KEY`, streams it through SSH
-stdin and atomically writes only that variable to the server `.env` with mode
-0600. It never prints the value or adds it to Git. Empty/absent Actions secrets
-preserve the existing server configuration. Migration `grain.0016` creates
+stdin and atomically writes that variable to the server `.env` with mode
+0600. The optional repository variables `SHIPPING_WAGON_AI_MODEL` and
+`SHIPPING_WAGON_AI_DETAIL` use the same path and change shipping wagon OCR
+independently of the weighbridge and truck OCR fallback. Truck fallback retains
+`WEIGHING_AI_MODEL` and `high` detail. None of the values are printed or added to Git.
+Empty/absent Actions values preserve
+the existing server configuration; to reset a shipping override, set its server
+`.env` value to empty (and remove the repository variable). Migration `grain.0016` creates
 the durable verification queue.
 
 | Variable | Default | Meaning |
@@ -58,6 +63,8 @@ the durable verification queue.
 | `OPENAI_API_KEY` | empty | Backend-only credential; no key disables verification. |
 | `WEIGHING_AI_ENABLED` | `1` | Enable saved-evidence verification when a key exists. |
 | `WEIGHING_AI_MODEL` | `gpt-5-mini` | Vision model, Responses API, strict structured output, low reasoning. |
+| `SHIPPING_WAGON_AI_MODEL` | inherits `WEIGHING_AI_MODEL` | Shipping wagon OCR only; an empty value preserves the existing shared model. |
+| `SHIPPING_WAGON_AI_DETAIL` | `high` | Wagon image detail: only `high` or `original`; select `original` only with a model supporting it. |
 | `WEIGHING_AI_MAX_DAILY_REQUESTS` | `200` | Conservative daily attempt cap; includes retries and checks waiting for evidence. |
 | `WEIGHING_AI_ENTRY_MAX_HOURS` | `12` | Maximum age of an actual open entry, configurable from 1–24 hours. |
 

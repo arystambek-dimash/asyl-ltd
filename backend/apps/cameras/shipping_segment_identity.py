@@ -287,11 +287,25 @@ Identify vehicle_number or wagon_number from the actual pictured transport.
 If several transports/numbers are plausible or ANY character is unclear,
 return number='' and number_clear=false. Never guess or infer a number from a
 vehicle's colour, cargo or context. Do not estimate weight, bags or quantities."""
+WAGON_STENCIL_PROMPT = """
+The wagon identifier is painted using a railway stencil font. Unpainted bridges
+split the strokes of digits such as 0, 6, 8 and 9; these intentional stencil gaps
+are part of a digit, not extra digits or necessarily an unreadable character.
+Read the complete outline of each glyph from left to right. Ignore small
+maintenance dates, the camera timestamp and load-limit labels. Do not change
+visually read digits to satisfy a checksum; if the outline remains ambiguous,
+abstain."""
 
 
 def gpt_number(frame, *, recognition_model=None):
     if recognition_model is not None and recognition_model not in MODELS:
         raise ValueError("invalid_recognition_model")
+    wagon = recognition_model == "wagon_number"
+    model = (
+        settings.SHIPPING_WAGON_AI_MODEL if wagon
+        else settings.WEIGHING_AI_MODEL or "gpt-5-mini"
+    )
+    detail = settings.SHIPPING_WAGON_AI_DETAIL if wagon else "high"
     schema = GPT_SCHEMA
     instructions = GPT_PROMPT
     if recognition_model is not None:
@@ -304,16 +318,20 @@ def gpt_number(frame, *, recognition_model=None):
             "Read only that transport type; ignore identifiers on other vehicles. "
             "If it is not clearly visible, return number='' and number_clear=false."
         )
+    if wagon:
+        instructions += WAGON_STENCIL_PROMPT
     body = {
-        "model": getattr(settings, "SHIPPING_IDENTITY_AI_MODEL", None) or settings.WEIGHING_AI_MODEL or "gpt-5-mini",
+        "model": model,
         "store": False, "instructions": instructions,
         "input": [{"role": "user", "content": [{
-            "type": "input_image", "detail": "high",
+            "type": "input_image", "detail": detail,
             "image_url": "data:image/jpeg;base64," + base64.b64encode(frame).decode("ascii"),
         }]}],
-        "max_output_tokens": 1200, "reasoning": {"effort": "low"},
+        "max_output_tokens": 3000 if wagon else 1200,
+        "reasoning": {"effort": "medium" if wagon else "low"},
         "text": {"format": {"type": "json_schema", "name": "loading_transport_number", "strict": True, "schema": schema}},
     }
+    logger.info("Shipping OCR request model=%s detail=%s transport=%s", model, detail, recognition_model or "vehicle_number")
     client = http.client.HTTPSConnection("api.openai.com", timeout=45)
     try:
         client.request("POST", "/v1/responses", body=json.dumps(body).encode(), headers={

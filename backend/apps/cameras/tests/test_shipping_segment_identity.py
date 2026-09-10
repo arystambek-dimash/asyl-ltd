@@ -418,6 +418,41 @@ def completed_verdict(number="00123455", *, clear=True, model="wagon_number"):
     }]}
 
 
+@pytest.mark.parametrize("detail", ["high", "original"])
+def test_shipping_model_and_detail_override_preserve_original_and_single_request(settings, detail):
+    settings.SHIPPING_WAGON_AI_MODEL = "gpt-6-astra"
+    settings.SHIPPING_WAGON_AI_DETAIL = detail
+    client = openai_client(completed_verdict())
+    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
+        assert identity.gpt_number(JPEG, recognition_model="wagon_number")[0] == "00123455"
+    assert client.request.call_count == 1
+    body = json.loads(client.request.call_args.kwargs["body"])
+    assert body["model"] == "gpt-6-astra"
+    assert body["reasoning"]["effort"] == "medium"
+    assert body["max_output_tokens"] == 3000
+    assert "stencil" in body["instructions"]
+    assert settings.WEIGHING_AI_MODEL == "gpt-5-mini"
+    content = body["input"][0]["content"]
+    assert len(content) == 1
+    assert content[0]["detail"] == detail
+    assert base64.b64decode(content[0]["image_url"].split(",", 1)[1]) == JPEG
+
+
+@pytest.mark.parametrize("configured_model", [None, "vehicle_number"])
+def test_wagon_model_upgrade_does_not_upgrade_truck_fallback(settings, configured_model):
+    settings.SHIPPING_WAGON_AI_MODEL = "gpt-6-astra"
+    settings.SHIPPING_WAGON_AI_DETAIL = "original"
+    client = openai_client(completed_verdict("123ABC02", model="vehicle_number"))
+    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
+        assert identity.gpt_number(JPEG, recognition_model=configured_model)[0] == "123ABC02"
+    body = json.loads(client.request.call_args.kwargs["body"])
+    assert body["model"] == "gpt-5-mini"
+    assert body["input"][0]["content"][0]["detail"] == "high"
+    assert body["reasoning"]["effort"] == "low"
+    assert body["max_output_tokens"] == 1200
+    assert "stencil" not in body["instructions"]
+
+
 @pytest.mark.parametrize("payload,code", [
     (completed_verdict(clear=False), "number_unreadable"),
     (completed_verdict("0012345"), "number_invalid_format"),

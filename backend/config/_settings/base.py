@@ -460,6 +460,18 @@ VEHICLE_PLATE_AUTO_EXPORT_ENABLED = env_flag(
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 WEIGHING_AI_ENABLED = env_flag(os.environ.get("WEIGHING_AI_ENABLED", "1"))
 WEIGHING_AI_MODEL = os.environ.get("WEIGHING_AI_MODEL", "gpt-5-mini").strip()
+# Wagon OCR can be tuned without changing the weighbridge or truck fallback.
+# Empty/unset keeps the existing shared-model behavior.
+SHIPPING_WAGON_AI_MODEL = (
+    os.environ.get("SHIPPING_WAGON_AI_MODEL", "").strip()
+    or WEIGHING_AI_MODEL
+    or "gpt-5-mini"
+)
+SHIPPING_WAGON_AI_DETAIL = (
+    os.environ.get("SHIPPING_WAGON_AI_DETAIL", "high").strip() or "high"
+)
+if SHIPPING_WAGON_AI_DETAIL not in {"high", "original"}:
+    raise ValueError("SHIPPING_WAGON_AI_DETAIL must be high or original")
 WEIGHING_AI_MAX_DAILY_REQUESTS = _bounded_int_env(
     "WEIGHING_AI_MAX_DAILY_REQUESTS", 200, 1, 2000
 )

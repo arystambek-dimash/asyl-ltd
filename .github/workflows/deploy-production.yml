@@ -142,6 +142,8 @@ jobs:
       WAGON_SCALE_API_URL: ${{ secrets.WAGON_SCALE_API_URL }}
       TRUCK_SCALE_API_URL: ${{ secrets.TRUCK_SCALE_API_URL }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SHIPPING_WAGON_AI_MODEL: ${{ vars.SHIPPING_WAGON_AI_MODEL }}
+      SHIPPING_WAGON_AI_DETAIL: ${{ vars.SHIPPING_WAGON_AI_DETAIL }}
       BACKEND_IMAGE_REF: ghcr.io/${{ github.repository }}-backend@${{ needs.build-backend.outputs.backend_digest }}
       FRONTEND_IMAGE_REF: ghcr.io/${{ github.repository }}-frontend@${{ needs.build.outputs.frontend_digest }}
 
@@ -198,6 +200,8 @@ jobs:
           WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
           TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
           OPENAI_API_KEY_B64=$(printf '%s' "$OPENAI_API_KEY" | base64 | tr -d '\n')
+          SHIPPING_WAGON_AI_MODEL_B64=$(printf '%s' "$SHIPPING_WAGON_AI_MODEL" | base64 | tr -d '\n')
+          SHIPPING_WAGON_AI_DETAIL_B64=$(printf '%s' "$SHIPPING_WAGON_AI_DETAIL" | base64 | tr -d '\n')
 
           install -m 700 -d ~/.ssh
           printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
@@ -241,14 +245,16 @@ jobs:
           # a host-only directory. The worktree is not changed until that
           # runner has acquired flock and persisted rollback state.
           deploy() {
-            printf '%s\n%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" "$OPENAI_API_KEY_B64" \
+            printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" "$OPENAI_API_KEY_B64" "$SHIPPING_WAGON_AI_MODEL_B64" "$SHIPPING_WAGON_AI_DETAIL_B64" \
               | run_ssh \
               "set -eu \
                && IFS= read -r GHCR_TOKEN \
                && IFS= read -r WAGON_SCALE_API_URL_B64 \
                && IFS= read -r TRUCK_SCALE_API_URL_B64 \
                && IFS= read -r OPENAI_API_KEY_B64 \
-               && export OPENAI_API_KEY_B64 \
+               && IFS= read -r SHIPPING_WAGON_AI_MODEL_B64 \
+               && IFS= read -r SHIPPING_WAGON_AI_DETAIL_B64 \
+               && export OPENAI_API_KEY_B64 SHIPPING_WAGON_AI_MODEL_B64 SHIPPING_WAGON_AI_DETAIL_B64 \
                && export GHCR_TOKEN WAGON_SCALE_API_URL_B64 TRUCK_SCALE_API_URL_B64 \
                && cd '$PROD_APP_DIR' \
                && state_dir=.deploy-state \
