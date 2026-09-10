@@ -94,7 +94,8 @@ def test_manual_entry_without_photo_is_audited_and_never_calls_hardware(auth_cli
     assert event.user == editor and event.payload["before"] is None
     assert event.payload["after"]["entry_weight_kg"] == 3980
     assert event.payload["reason"] == payload["reason"]
-    assert not VehicleTareMemory.objects.exists()  # Manual value is never a measured tare.
+    assert VehicleTareMemory.objects.get(number="904WLY13").record_id == record.pk
+    assert record.source == "manual"  # Saved tare retains the explicitly entered provenance.
     assert not GrainMovement.objects.exists()
 
 

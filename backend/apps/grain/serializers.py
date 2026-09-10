@@ -175,6 +175,7 @@ class SiloTypeSerializer(serializers.ModelSerializer):
 
 
 class WeighingRecordSerializer(serializers.ModelSerializer):
+    reference_record_source = serializers.CharField(source="reference_record.source", default=None, read_only=True)
     reference_record_at = serializers.DateTimeField(source="reference_record.created_at", default=None, read_only=True)
     operator_name = serializers.CharField(
         source="operator.username", default=None, read_only=True
@@ -195,6 +196,7 @@ class WeighingRecordSerializer(serializers.ModelSerializer):
             "source",
             "reference_record",
             "reference_record_at",
+            "reference_record_source",
             "manual_reason",
             "previous_weight_kg",
             "operator_name",

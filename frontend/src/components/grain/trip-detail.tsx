@@ -408,6 +408,9 @@ function TripPageInner({ params, direction }: TripPageProps) {
                     <span className="block text-[10px] font-normal text-[var(--muted-foreground)]">
                       {formatDateTime(row.created_at)}
                       {row.source === "manual" ? " · ручной ввод" : ""}
+                      {row.source === "historical" && row.reference_record_source === "manual"
+                        ? " · исходная тара введена вручную"
+                        : ""}
                       {row.reference_record_at
                         ? ` · исходное взвешивание ${formatDateTime(row.reference_record_at)}`
                         : ""}

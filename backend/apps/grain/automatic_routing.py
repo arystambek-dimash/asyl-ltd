@@ -106,7 +106,7 @@ def book(item, number, orientation):
             raise ValueError("exit_weight_not_greater")
         item = historical_tare.complete(
             item, None, reference_record=source.pk, number=number,
-            reason="Автоматический выезд: последняя измеренная тара по госномеру", automatic=True,
+            reason="Автоматический выезд: последняя подтверждённая тара по госномеру", automatic=True,
         )
     if item.capture_id:
         item.capture.__class__.objects.filter(pk=item.capture_id).update(wagon_id=item.wagon_id, action=item.action)

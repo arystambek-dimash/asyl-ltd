@@ -1045,6 +1045,7 @@ export interface GrainWeighing {
   source: "auto" | "manual" | "scale" | "historical";
   reference_record?: number | null;
   reference_record_at?: string | null;
+  reference_record_source?: "auto" | "manual" | "scale" | "historical" | null;
   manual_reason: string;
   previous_weight_kg: number | null;
   operator_name: string | null;

@@ -46,16 +46,18 @@ export function WagonPhotos({ wagon }: { wagon: GrainWagon }) {
         <PhotoTile
           label={
             reference
-              ? `Сохранённая тара · ${formatDateTime(reference.reference_record_at || reference.created_at)}`
+              ? `Сохранённая тара${reference.reference_record_source === "manual" ? " · ручной ввод" : ""} · ${formatDateTime(reference.reference_record_at || reference.created_at)}`
               : "Въезд"
           }
           url={wagon.entry_photo_url}
           hint={
             wagon.entry_weight_kg == null
               ? "появится после взвешивания пустой"
-              : wagon.weighings?.some((row) => row.kind === "gross" && row.source === "manual")
-                ? "Заезд внесён вручную без фото"
-                : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "gross")?.photo_status)
+              : reference?.reference_record_source === "manual"
+                ? "Сохранённая тара введена вручную без фото"
+                : wagon.weighings?.some((row) => row.kind === "gross" && row.source === "manual")
+                  ? "Заезд внесён вручную без фото"
+                  : photoStatusLabel(wagon.weighings?.find((row) => row.kind === "gross")?.photo_status)
           }
         />
         <PhotoTile

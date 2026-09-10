@@ -371,7 +371,7 @@ def _record_weighing(
         # still records when this database operation was performed.
         WeighingRecord.objects.filter(pk=record.pk).update(created_at=occurred_at)
         record.created_at = occurred_at
-    if wagon.is_passage and kind == "gross" and source == "scale" and orientation == "front":
+    if wagon.is_passage and kind == "gross":
         from .historical_tare import remember
         remember(record, wagon.number)
     scale_payload = {}
@@ -2679,6 +2679,12 @@ def discard_unassigned_weighing(
 def set_passage_number(wagon: Wagon, raw_number, user) -> Wagon:
     """Fill in or correct the plate of a passage the camera could not read."""
 
+    # Tare reuse validates the source plate under this same lane mutex.
+    # Renaming a source between that validation and booking would otherwise
+    # associate its tare with the previous vehicle number.
+    PassageScaleAutomationState.objects.select_for_update().get_or_create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+    )
     wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon.pk)
     if not wagon.is_passage:
         raise _error("Номер можно менять только у вывоза", "not_passage")
@@ -2702,12 +2708,12 @@ def set_passage_number(wagon: Wagon, raw_number, user) -> Wagon:
             f"Машина {number} уже находится на территории",
             "passage_already_on_site",
         ) from exc
-    from .historical_tare import remember
+    from .historical_tare import confirmed_sources, remember
     from .models import VehicleTareMemory
     VehicleTareMemory.objects.filter(record__wagon=wagon).exclude(number=number).delete()
-    measured_entry = wagon.weighings.filter(kind="gross", source="scale", orientation="front", reference_record__isnull=True).order_by("-created_at", "-pk").first()
-    if measured_entry is not None:
-        remember(measured_entry, number)
+    confirmed_entry = confirmed_sources(number).filter(wagon=wagon).first()
+    if confirmed_entry is not None:
+        remember(confirmed_entry, number)
     _log(
         wagon,
         "number",

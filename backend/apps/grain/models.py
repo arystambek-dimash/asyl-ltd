@@ -347,7 +347,7 @@ class WeighingRecord(models.Model):
 
 
 class VehicleTareMemory(models.Model):
-    """Latest real entry measurement for a normalized plate, never an AI weight."""
+    """Latest confirmed entry for a plate; its record retains scale/manual provenance."""
 
     number = models.CharField(max_length=30, unique=True)
     record = models.ForeignKey(

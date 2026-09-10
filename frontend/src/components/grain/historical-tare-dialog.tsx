@@ -67,7 +67,10 @@ export function HistoricalTareDialog({
         { params: { number } },
       );
       setRows(data);
-      if (!data.length) setError("Для этого номера не найдено прежней тары с фото спереди.");
+      if (!data.length)
+        setError(
+          "До этого выезда не найдено подходящей подтверждённой тары этого номера. Более поздние заезды здесь не показываются.",
+        );
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -101,7 +104,7 @@ export function HistoricalTareDialog({
       <ConfirmDialog
         open={open}
         title="Выезд с сохранённой тарой"
-        description="Используйте только после сверки номера и машины по фото. Это прежняя тара: сегодняшнее взвешивание пустой машины не подтверждено."
+        description="Сверьте номер и исходную запись тары. Это прежний вес: сегодняшнее взвешивание пустой машины не подтверждено. Источник и автор исходной записи сохранятся."
         confirmLabel="Сохранить и завершить вывоз"
         confirmVariant="default"
         busy={busy}
@@ -157,6 +160,12 @@ export function HistoricalTareDialog({
                 <span>
                   {formatKg(row.weight_kg)}
                   <span className="block text-xs">{formatDateTime(row.created_at)}</span>
+                  <span className="block text-xs text-[var(--muted-foreground)]">
+                    {row.source === "manual" ? "Тара введена вручную" : "Вес получен с весов"}
+                    {row.operator_name ? ` · ${row.operator_name}` : ""}
+                    {!row.photo_url ? " · без фото" : ""}
+                  </span>
+                  {row.manual_reason && <span className="block text-xs">{row.manual_reason}</span>}
                 </span>
               </label>
             ))}

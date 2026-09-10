@@ -1,18 +1,43 @@
-"""Measured tare memory and audited manual/automatic reuse of its source record."""
+"""Confirmed entry tare memory with preserved measured/manual provenance."""
+
+import re
 
 from django.db import transaction
+from django.db.models import F, Func, Q, Value
+from django.db.models.functions import Length
 from django.utils import timezone
 
 from . import services, statuses as st
 from .models import PassageScaleAutomationState, UnassignedWeighing, VehicleTareMemory, Wagon, WeighingRecord
 
 
-def measured_sources(number):
-    return WeighingRecord.objects.select_related("wagon").filter(
-        wagon__direction=Wagon.PASSAGE, wagon__number=number,
-        kind="gross", source="scale", reference_record__isnull=True,
-        orientation="front",
-    ).order_by("-created_at", "-id")
+def confirmed_sources(number=None):
+    """Only actual scale entries or explicitly staff-confirmed manual entries.
+
+    Empty camera orientation is not an entry verdict on its own. A staff
+    operator may confirm that scale record as an entry; an unattended unknown
+    frame, a rear frame, an AI value or a historical reuse never qualifies.
+    """
+    human = Q(operator__isnull=False, operator__is_client=False)
+    measured = Q(source="scale") & (Q(orientation="front") | (Q(orientation="") & human))
+    manual = Q(source="manual", _reason_length__gte=5, _reason_length__lte=300) & human
+    rows = WeighingRecord.objects.select_related("wagon", "operator", "reference_record").filter(
+        wagon__direction=Wagon.PASSAGE, kind="gross", reference_record__isnull=True,
+    ).exclude(orientation="rear").annotate(
+        _reason_length=Length(Func(
+            F("manual_reason"), Value(r"^\s+|\s+$"), Value(""), Value("g"),
+            function="REGEXP_REPLACE",
+        )),
+    ).filter(measured | manual).order_by("-created_at", "-pk")
+    if number is not None:
+        number = services.normalize_passage_number(number)
+        if not services.KZ_VEHICLE_PLATE_RE.fullmatch(number):
+            return rows.none()
+        # Older records may contain spaces/hyphens. Compare the same canonical
+        # plate without altering the historical trip or its original record.
+        plate_pattern = r"^[\s-]*" + r"[\s-]*".join(re.escape(char) for char in number) + r"[\s-]*$"
+        rows = rows.filter(wagon__number__iregex=plate_pattern)
+    return rows
 
 
 @transaction.atomic
@@ -20,51 +45,34 @@ def remember(record, number):
     number = services.normalize_passage_number(number)
     if not services.KZ_VEHICLE_PLATE_RE.fullmatch(number):
         return
-    if record.kind != "gross" or record.source != "scale" or record.orientation != "front" or record.reference_record_id:
+    if not confirmed_sources(number).filter(pk=record.pk).exists():
         return
     memory, created = VehicleTareMemory.objects.select_for_update().get_or_create(
         number=number, defaults={"record": record, "observed_at": record.created_at}
     )
-    if not created and (record.created_at, record.pk) > (memory.observed_at, memory.record_id):
+    if not created and (
+        (record.created_at, record.pk) > (memory.observed_at, memory.record_id)
+        or not confirmed_sources(number).filter(pk=memory.record_id).exists()
+    ):
         memory.record, memory.observed_at = record, record.created_at
         memory.save(update_fields=["record", "observed_at", "updated_at"])
     return memory
 
 
 def latest_before(item, number):
-    """Choose latest real measurement BEFORE this exit, even during replay.
-
-    Do not select an older, lighter weight when the latest tare exceeds the
-    departure weight. That contradiction must remain visible for review.
-    """
-    memory = VehicleTareMemory.objects.select_related("record__wagon").filter(
-        number=number, observed_at__lt=item.stable_weight_at,
-    ).first()
-    latest = measured_sources(number).filter(created_at__lt=item.stable_weight_at).first()
-    if memory is not None:
-        record = memory.record
-        if (
-            record.kind == "gross" and record.source == "scale" and record.orientation == "front"
-            and record.reference_record_id is None
-            and services.normalize_passage_number(record.wagon.number) == number
-            and (latest is None or (record.created_at, record.pk) > (latest.created_at, latest.pk))
-        ):
-            latest = record
+    """Latest confirmed entry BEFORE exit, never an older, lighter substitute."""
+    latest = confirmed_sources(number).filter(created_at__lt=item.stable_weight_at).first()
     if latest is not None:
         remember(latest, number)
     return latest
 
 
 def candidates(item, number):
-    number = services.normalize_passage_number(number)
-    if not number:
-        return WeighingRecord.objects.none()
-    return WeighingRecord.objects.select_related("wagon", "operator").filter(
-        wagon__direction=Wagon.PASSAGE, wagon__number=number,
-        kind="gross", source="scale", reference_record__isnull=True,
-        orientation="front", created_at__lt=item.stable_weight_at,
-        weight_kg__lt=item.weight_kg,
-    ).exclude(photo="").exclude(photo__isnull=True).order_by("-created_at", "-id")
+    rows = confirmed_sources(number).filter(created_at__lt=item.stable_weight_at)
+    latest_id = rows.values_list("pk", flat=True).first()
+    # The latest tare remains decisive even when it contradicts exit weight.
+    # Do not offer an older lighter entry that would hide the contradiction.
+    return rows.filter(pk=latest_id, weight_kg__lt=item.weight_kg)
 
 
 @transaction.atomic
@@ -74,7 +82,7 @@ def complete(item, user, *, reference_record, number, reason, automatic=False):
     if not number or not 5 <= len(reason) <= 300:
         raise services._error("Укажите номер и причину (5–300 символов)", "tare_reason_required")
     # Same lock order as automatic assignment: lane -> event -> wagon.
-    PassageScaleAutomationState.objects.select_for_update().filter(scale_number="truck").first()
+    PassageScaleAutomationState.objects.select_for_update().get_or_create(scale_number="truck")
     item = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
     if item.vehicle_number and services.normalize_passage_number(item.vehicle_number) != number:
         raise services._error("Номер не совпадает с сохранённым взвешиванием", "tare_plate_mismatch")
@@ -84,13 +92,11 @@ def complete(item, user, *, reference_record, number, reason, automatic=False):
         ).exists():
             return item
         raise services._error("Выезд уже обработан иначе", "tare_already_resolved")
-    eligible = (WeighingRecord.objects.select_related("wagon").filter(
-        wagon__direction=Wagon.PASSAGE, kind="gross", source="scale",
-        orientation="front", reference_record__isnull=True,
-    ) if automatic else candidates(item, number))
-    source = eligible.filter(created_at__lt=item.stable_weight_at, weight_kg__lt=item.weight_kg).select_for_update(of=("self",)).filter(pk=reference_record).first()
-    if source is None or services.normalize_passage_number(source.wagon.number) != number:
-        raise services._error("Нужна прежняя измеренная тара этой машины с фото спереди", "tare_source_invalid")
+    source = confirmed_sources(number).filter(
+        created_at__lt=item.stable_weight_at,
+    ).select_for_update(of=("self",)).first()
+    if source is None or source.pk != reference_record or source.weight_kg >= item.weight_kg:
+        raise services._error("Нужна последняя подтверждённая тара этой машины до выезда", "tare_source_invalid")
     if item.orientation == "front" or item.status == UnassignedWeighing.DISCARDED:
         raise services._error("Это взвешивание нельзя оформить как выезд", "tare_exit_invalid")
     previous_kind = None
@@ -130,7 +136,7 @@ def complete(item, user, *, reference_record, number, reason, automatic=False):
     reference = WeighingRecord.objects.create(
         wagon=wagon, kind="gross", weight_kg=source.weight_kg, source="historical",
         reference_record=source, operator=user, manual_reason=reason,
-        photo=source.photo.name, photo_camera=source.photo_camera, orientation="front",
+        photo=source.photo.name, photo_camera=source.photo_camera, orientation=source.orientation,
     )
     # The arrival was not observed. Do not invent yesterday/today's entry time.
     wagon.arrived_at = item.stable_weight_at
@@ -142,6 +148,7 @@ def complete(item, user, *, reference_record, number, reason, automatic=False):
         wagon, "tare_reference", f"Вывоз {number}: тара {source.weight_kg} кг из прежнего взвешивания; {reason}",
         user, unassigned_id=item.pk, reference_record_id=source.pk,
         reference_record_at=source.created_at.isoformat(), reference_trip_id=source.wagon_id,
+        reference_record_source=source.source,
         reference_weight_kg=source.weight_kg, new_record_id=reference.pk,
         exit_record_id=exit_record.pk, previous_kind=previous_kind,
         exit_weight_kg=item.weight_kg, exit_at=item.stable_weight_at.isoformat(), reason=reason,

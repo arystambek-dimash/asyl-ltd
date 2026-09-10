@@ -63,7 +63,7 @@ def test_reclassifies_only_the_wrong_entry_without_duplicate_exit(case):
     assert wagon.weighings.count() == 2
 
 
-@pytest.mark.parametrize("change", ["plate", "future", "manual", "rear", "photo", "too_heavy", "discarded"])
+@pytest.mark.parametrize("change", ["plate", "future", "manual", "rear", "too_heavy", "discarded"])
 def test_rejects_unsafe_tare_sources_atomically(case, change):
     _, trip, source, item = case
     if change == "plate": trip.number = "999ABC13"; trip.save()
