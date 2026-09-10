@@ -136,7 +136,7 @@ describe("StageAction automatic scale capture", () => {
     useApiMock.mockReset();
     useApiMock.mockImplementation((url: string | null) => {
       if (url === "/grain/unassigned-weighings/") {
-        return { data: unassignedWeighings, loading: false, error: "", reload: vi.fn() };
+        return { data: unassignedWeighings, loading: false, error: "", reload: vi.fn(), setData: vi.fn() };
       }
       if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
         return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() };
@@ -144,7 +144,7 @@ describe("StageAction automatic scale capture", () => {
       if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
         return { data: [], loading: false, error: "", reload: timelineReloadMock };
       }
-      return { data: null, loading: false, error: "", reload: vi.fn() };
+      return { data: null, loading: false, error: "", reload: vi.fn(), setData: vi.fn() };
     });
   });
 
@@ -451,7 +451,7 @@ describe("Grain wagon deletion", () => {
       if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
         return { data: [], loading: false, error: "", reload: timelineReloadMock };
       }
-      return { data: null, loading: false, error: "", reload: vi.fn() };
+      return { data: null, loading: false, error: "", reload: vi.fn(), setData: vi.fn() };
     });
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { HistoricalTareDialog } from "./historical-tare-dialog";
 import { ManualPassageEntryDialog } from "./manual-passage-entry-dialog";
 import { photoStatusLabel, weighingReasonLabel, identityReviewLabel } from "@/lib/weighing-evidence";
@@ -502,14 +502,30 @@ export function UnassignedWeighingsPanel({
   exitWagon?: GrainWagon;
   onBusyChange?: (busy: boolean) => void;
 }) {
-  const { data, reload, loading, error } = useApi<GrainUnassignedWeighing[]>("/grain/unassigned-weighings/");
+  const [mutationBusy, setMutationBusy] = useState(false);
+  const mutationBusyRef = useRef(false);
+  const { data, reload, loading, error, setData } = useApi<GrainUnassignedWeighing[]>("/grain/unassigned-weighings/");
   const {
     data: candidatesData,
     reload: reloadCandidates,
     error: candidatesError,
+    setData: setCandidatesData,
   } = useApi<GrainWagon[] | { results: GrainWagon[] }>(exitWagon ? null : CANDIDATES_URL);
-  const refresh = () => Promise.all([reload(), reloadCandidates()]);
-  useVisiblePolling(refresh, 10_000, active);
+  const refresh = () => (mutationBusyRef.current ? Promise.resolve([]) : Promise.all([reload(), reloadCandidates()]));
+  useVisiblePolling(refresh, 10_000, active && !mutationBusy);
+
+  function handleBusyChange(busy: boolean) {
+    mutationBusyRef.current = busy;
+    if (busy) {
+      // Cancel reads already in flight before opening a dialog or submitting
+      // an action. The selected weighing must not disappear under the form.
+      setData(data);
+      setCandidatesData(candidatesData);
+    }
+    setMutationBusy(busy);
+    onBusyChange?.(busy);
+    if (!busy) void refresh();
+  }
   const invalidQueue = data !== null && (!Array.isArray(data) || !data.every(isUnassignedWeighing));
   const loadError = error || (invalidQueue ? "Сервер вернул некорректный список взвешиваний." : "");
   const items = Array.isArray(data)
@@ -524,12 +540,9 @@ export function UnassignedWeighingsPanel({
     candidates,
     canWeigh: canWeigh && !loadError && !candidatesError,
     exitWagon,
-    onBusyChange,
+    onBusyChange: handleBusyChange,
     refresh,
-    onResolved: () => {
-      void refresh();
-      onChanged?.();
-    },
+    onResolved: () => onChanged?.(),
   };
 
   return (

@@ -1,5 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UnassignedWeighingsPanel } from "./unassigned-weighings";
 import type { GrainUnassignedWeighing, GrainWagon } from "@/lib/types";
@@ -7,13 +8,17 @@ import type { GrainUnassignedWeighing, GrainWagon } from "@/lib/types";
 const postMock = vi.hoisted(() => vi.fn());
 const useApiMock = vi.hoisted(() => vi.fn());
 const pollingMock = vi.hoisted(() => vi.fn());
+const authState = vi.hoisted(() => ({ permissions: [] as string[] }));
+vi.mock("@/store/auth", () => ({
+  useAuth: () => ({ me: { permissions: authState.permissions, is_superuser: false } }),
+}));
 
 vi.mock("@/lib/api", () => ({
   api: { post: postMock, defaults: { baseURL: "https://crm.test/api" } },
   apiError: () => "Рейс сейчас не ждёт взвешивания",
 }));
 vi.mock("@/lib/use-api", () => ({
-  useApi: (url: string | null) => useApiMock(url),
+  useApi: (url: string | null) => ({ setData: vi.fn(), ...useApiMock(url) }),
 }));
 vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number, active?: boolean) =>
@@ -73,6 +78,115 @@ describe("UnassignedWeighingsPanel", () => {
     postMock.mockReset();
     useApiMock.mockReset();
     pollingMock.mockReset();
+    authState.permissions = [];
+  });
+
+  function mockLiveQueue() {
+    const queue = [{ ...item, orientation: "rear", vehicle_number: "904WLY13" }];
+    const candidates = [loaded];
+    const queueCommit = vi.fn();
+    const candidateCommit = vi.fn();
+    const queueReload = vi.fn().mockResolvedValue(undefined);
+    const candidateReload = vi.fn().mockResolvedValue(undefined);
+    useApiMock.mockImplementation((url: string | null) => ({
+      data: url?.startsWith("/grain/unassigned-weighings/") ? queue : candidates,
+      loading: false,
+      error: "",
+      reload: url?.startsWith("/grain/unassigned-weighings/") ? queueReload : candidateReload,
+      setData: url?.startsWith("/grain/unassigned-weighings/") ? queueCommit : candidateCommit,
+    }));
+    return { queue, candidates, queueCommit, candidateCommit, queueReload, candidateReload };
+  }
+
+  it("fences both in-flight reads and pauses the queue while the manual-entry dialog is open without a parent callback", async () => {
+    authState.permissions = ["grain.correct_weighing"];
+    const state = mockLiveQueue();
+    render(<UnassignedWeighingsPanel canWeigh />);
+    const pendingPoll = pollingMock.mock.lastCall?.[0];
+    expect(pollingMock.mock.lastCall?.[2]).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Указать начальный вес" }));
+    expect(screen.getByRole("dialog", { name: "Заезд без фото" })).toBeInTheDocument();
+    expect(state.queueCommit).toHaveBeenCalledExactlyOnceWith(state.queue);
+    expect(state.candidateCommit).toHaveBeenCalledExactlyOnceWith(state.candidates);
+    expect(pollingMock.mock.lastCall?.[2]).toBe(false);
+    // A timer that was queued before the dialog opened must also stay fenced.
+    await pendingPoll();
+    expect(state.queueReload).not.toHaveBeenCalled();
+    expect(state.candidateReload).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.queueReload).toHaveBeenCalledOnce();
+    expect(state.candidateReload).toHaveBeenCalledOnce();
+    expect(pollingMock.mock.lastCall?.[2]).toBe(true);
+  });
+
+  it("keeps the dialog and source mounted when its parent pauses activity, then refreshes after resolution", async () => {
+    authState.permissions = ["grain.correct_weighing"];
+    const state = mockLiveQueue();
+    const changed = vi.fn();
+    const parentBusy = vi.fn();
+    let finish!: () => void;
+    postMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ data: {} });
+        }),
+    );
+    function Parent() {
+      const [busy, setBusy] = useState(false);
+      return (
+        <UnassignedWeighingsPanel
+          canWeigh
+          active={!busy}
+          onChanged={changed}
+          onBusyChange={(next) => {
+            parentBusy(next);
+            setBusy(next);
+          }}
+        />
+      );
+    }
+    render(<Parent />);
+    await userEvent.click(screen.getByRole("button", { name: "Указать начальный вес" }));
+    expect(parentBusy).toHaveBeenLastCalledWith(true);
+    expect(pollingMock.mock.lastCall?.[2]).toBe(false);
+    fireEvent.change(screen.getByLabelText("Начальный вес пустой машины, кг"), { target: { value: "4100" } });
+    fireEvent.change(screen.getByLabelText("Фактическое время заезда"), { target: { value: "2026-01-01T10:00" } });
+    fireEvent.change(screen.getByLabelText("Причина ручного ввода"), { target: { value: "Заезд из журнала весов" } });
+    await userEvent.click(screen.getByRole("button", { name: "Создать и завершить рейс" }));
+    expect(screen.getByRole("dialog", { name: "Заезд без фото" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Причина ручного ввода")).toHaveValue("Заезд из журнала весов");
+    expect(postMock).toHaveBeenCalledWith(
+      "/grain/passages/manual-entry/",
+      expect.objectContaining({ unassigned_weighing: 5 }),
+    );
+    expect(state.queueReload).not.toHaveBeenCalled();
+    await act(async () => finish());
+    expect(changed).toHaveBeenCalledOnce();
+    expect(parentBusy.mock.calls).toEqual([[true], [false]]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(state.queueReload).toHaveBeenCalledOnce();
+    expect(state.candidateReload).toHaveBeenCalledOnce();
+    expect(pollingMock.mock.lastCall?.[2]).toBe(true);
+  });
+
+  it("keeps failed manual input fenced until the operator closes the dialog", async () => {
+    authState.permissions = ["grain.correct_weighing"];
+    const state = mockLiveQueue();
+    postMock.mockRejectedValueOnce(new Error("conflict"));
+    render(<UnassignedWeighingsPanel canWeigh />);
+    await userEvent.click(screen.getByRole("button", { name: "Указать начальный вес" }));
+    fireEvent.change(screen.getByLabelText("Начальный вес пустой машины, кг"), { target: { value: "4100" } });
+    fireEvent.change(screen.getByLabelText("Фактическое время заезда"), { target: { value: "2026-01-01T10:00" } });
+    fireEvent.change(screen.getByLabelText("Причина ручного ввода"), { target: { value: "Заезд из журнала весов" } });
+    await userEvent.click(screen.getByRole("button", { name: "Создать и завершить рейс" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Рейс сейчас не ждёт взвешивания");
+    expect(screen.getByLabelText("Причина ручного ввода")).toHaveValue("Заезд из журнала весов");
+    expect(pollingMock.mock.lastCall?.[2]).toBe(false);
+    expect(state.queueReload).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(state.queueReload).toHaveBeenCalledOnce();
+    expect(state.candidateReload).toHaveBeenCalledOnce();
   });
 
   it("keeps manual assignment available when the AI cannot verify the vehicle", async () => {
@@ -384,6 +498,7 @@ describe("UnassignedWeighingsPanel camera orientation", () => {
     postMock.mockReset();
     useApiMock.mockReset();
     pollingMock.mockReset();
+    authState.permissions = [];
   });
 
   it("trusts the camera over the weight: a light rear-facing truck is an exit", () => {
