@@ -20,6 +20,7 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   hour: "2-digit",
   minute: "2-digit",
 });
+const TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -142,6 +143,11 @@ export function formatIsoDate(value: string): string {
 /** Дата и время по-русски: «13.07.2026, 14:32». */
 export function formatDateTime(value: string | Date): string {
   return DATE_TIME_FORMATTER.format(new Date(value));
+}
+
+/** Время по-русски: «14:32». */
+export function formatTime(value: string | Date): string {
+  return TIME_FORMATTER.format(new Date(value));
 }
 
 /** Русская форма слова по числу: pluralRu(3, ["вагон", "вагона", "вагонов"]) → «вагона». */

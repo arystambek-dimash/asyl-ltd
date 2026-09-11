@@ -54,6 +54,25 @@ def _unassigned(weight=30_000, with_photo=True):
     return item
 
 
+def test_a_page_of_photos_from_one_address_is_never_throttled(api_client, production_throttling):
+    # Every screen behind the plant's single public address shares one
+    # anonymous bucket, and signed <img> links cannot send the API token.
+    address = {"REMOTE_ADDR": "203.0.113.60"}
+    urls = [f"/api/grain/photos/unassigned/{item.pk}/?token={photo_token('unassigned', item.pk)}"
+            for item in (_unassigned(), _unassigned(), _unassigned())]
+    codes = []
+    with production_throttling():
+        for url in urls * 2:
+            response = api_client.get(url, **address)
+            codes.append(response.status_code)
+            if response.streaming:
+                b"".join(response.streaming_content)  # closes the file like a WSGI server
+        control = [api_client.post("/api/auth/refresh/", {"refresh": "x"}, format="json", **address).status_code
+                   for _ in range(3)]
+    assert codes == [200] * 6
+    assert control[-1] == 429
+
+
 def test_operator_fills_in_the_number_of_a_blank_passage(auth_client, user_with_perms):
     operator = user_with_perms("passage-number", codes=["grain.arrive", "grain.view"])
     wagon = _passage(status=st.AT_SILO, entry=12_000)

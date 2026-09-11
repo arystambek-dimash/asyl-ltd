@@ -11,8 +11,8 @@ from __future__ import annotations
 from django.core import signing
 from django.http import FileResponse
 from rest_framework.exceptions import NotFound
-from rest_framework.permissions import AllowAny
-from rest_framework.views import APIView
+
+from apps.common.signed_media import SignedMediaView
 
 from .models import UnassignedWeighing, WeighingRecord, WeighingPhotoDelivery
 
@@ -62,11 +62,8 @@ def _photo_from_token(kind: str, pk: int, token: str):
     return instance
 
 
-class WeighingPhotoView(APIView):
+class WeighingPhotoView(SignedMediaView):
     """Serve one private weighing photo through a signed link."""
-
-    authentication_classes = []
-    permission_classes = [AllowAny]
 
     def get(self, request, kind: str, pk: int):
         instance = _photo_from_token(kind, int(pk), request.query_params.get("token", ""))

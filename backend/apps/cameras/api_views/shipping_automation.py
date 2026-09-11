@@ -1,7 +1,5 @@
 """Read-only automation state and evidence in monoblock order details."""
 
-from typing import ClassVar
-
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.db.models import Q
@@ -9,11 +7,11 @@ from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm
+from apps.common.signed_media import SignedMediaView
 from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
@@ -211,11 +209,8 @@ class ShippingTransportEvidenceView(APIView):
         return Response(data)
 
 
-class ShippingTransportEvidenceImageView(APIView):
-    # Browser img tags cannot attach the API bearer token. Short-lived signed
-    # URLs still recheck the original user's activity, permissions and scope.
-    permission_classes: ClassVar[list] = [AllowAny]
-    authentication_classes: ClassVar[list] = []
+class ShippingTransportEvidenceImageView(SignedMediaView):
+    """The signed URL still rechecks the original user's activity, permissions and scope."""
 
     def get(self, request, pk: int):
         try:

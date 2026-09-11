@@ -6,12 +6,12 @@ from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.common.query_params import parse_iso_date
+from apps.common.signed_media import SignedMediaView
 
 from .attachments import (
     attachment_id_from_token,
@@ -204,11 +204,8 @@ class TaskAssigneeListView(APIView):
         ])
 
 
-class TaskAttachmentDownloadView(APIView):
+class TaskAttachmentDownloadView(SignedMediaView):
     """Serve a private task attachment through a short-lived signed URL."""
-
-    authentication_classes = []
-    permission_classes = [AllowAny]
 
     def get(self, request, pk):
         token = request.query_params.get("token", "")

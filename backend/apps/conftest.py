@@ -9,6 +9,35 @@ def api_client():
 
 
 @pytest.fixture
+def production_throttling():
+    """Re-enable the API-wide throttles that the test settings switch off.
+
+    DRF copies ``DEFAULT_THROTTLE_CLASSES`` onto ``APIView`` at import time, so
+    ``override_settings`` cannot bring them back for views that inherit them.
+    Patch the class attribute instead, with a tiny rate a short burst exceeds.
+    """
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    from django.core.cache import cache
+    from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+    from rest_framework.views import APIView
+
+    @contextmanager
+    def enabled(rate="2/min"):
+        cache.clear()
+        try:
+            with patch.object(APIView, "throttle_classes", (AnonRateThrottle, UserRateThrottle)), patch.object(
+                AnonRateThrottle, "rate", rate, create=True
+            ), patch.object(UserRateThrottle, "rate", rate, create=True):
+                yield
+        finally:
+            cache.clear()
+
+    return enabled
+
+
+@pytest.fixture
 def make_user(db, django_user_model):
     def _make(username="u", password="pass12345", client=False, groups=()):
         from django.contrib.auth.models import Group

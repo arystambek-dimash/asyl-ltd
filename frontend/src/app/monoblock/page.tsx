@@ -33,7 +33,8 @@ import {
 } from "@/components/monoblock/always-on-production-panel";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
 import { ShippingTransportCamera } from "@/components/monoblock/shipping-transport-camera";
-import { ShippingSessionsPanel } from "@/components/shipping/shipping-sessions-panel";
+import { CameraShippingSessions } from "@/components/shipping/camera-shipping-sessions";
+import { ShippingIdleSettings } from "@/components/shipping/shipping-idle-settings";
 import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
 import { ShippingTable } from "@/components/shipping/shipping-table";
@@ -1342,6 +1343,14 @@ function AlwaysOnCard({
                 />
               </Panel>
             )}
+
+            {isShipping && rangeValid && (
+              <CameraShippingSessions
+                camera={processor.cam}
+                day={rangeDays === 1 ? dateFrom : selectedDay}
+                today={today}
+              />
+            )}
           </div>
         ) : null}
       </Modal>
@@ -1773,7 +1782,7 @@ function MonoblockPageInner() {
           <>
             <Tabs
               tabs={[
-                { key: "conveyors", label: "Конвейеры и сессии", panelId: `${shippingPanelId}-conveyors` },
+                { key: "conveyors", label: "Конвейеры", panelId: `${shippingPanelId}-conveyors` },
                 { key: "orders", label: "Заказы", panelId: `${shippingPanelId}-orders` },
               ]}
               active={shippingTab}
@@ -1787,25 +1796,25 @@ function MonoblockPageInner() {
                 aria-labelledby={`${shippingPanelId}-conveyors-tab`}
                 className="space-y-6"
               >
-                <ShippingSessionsPanel
-                  cameras={stripSources.map((src) => ({ src, name: camerasBySrc.get(src)?.zone || src }))}
-                />
                 {canViewContinuous && (
                   <Card role="region" aria-label="Конвейеры и счёт" className="space-y-4 p-4 sm:p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <h2 className="text-lg font-semibold">Конвейеры и счёт</h2>
                         <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                          Прямой эфир, счётчики мешков и камеры номеров.
+                          Прямой эфир, счётчики мешков и камеры номеров. Сессии отгрузки по дням — в «Аналитике» камеры.
                         </p>
                       </div>
-                      {canManage && (
-                        <CameraSettingsButton
-                          cameras={playable}
-                          settings={cameraSettings}
-                          reload={reloadMonoblockPolicy}
-                        />
-                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <ShippingIdleSettings />
+                        {canManage && (
+                          <CameraSettingsButton
+                            cameras={playable}
+                            settings={cameraSettings}
+                            reload={reloadMonoblockPolicy}
+                          />
+                        )}
+                      </div>
                     </div>
                     {shippingContinuousSettings ? (
                       <>

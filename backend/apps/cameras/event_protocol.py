@@ -189,9 +189,15 @@ def parse_page(payload: object, *, camera: str, after_id: int) -> EventPage:
     )
 
 
+def event_color_key(color: str | None, class_name: str | None) -> str:
+    """Base colour of one counted bag, or "" when the camera did not classify it."""
+    key = (color or class_name or "").split("_", 1)[0].strip().lower()
+    return key if len(key) <= 32 else ""
+
+
 def _event_color(event: CountEvent) -> dict[str, int]:
-    color = (event.color or event.class_name).split("_", 1)[0].strip().lower()
-    return {color: 1} if color and len(color) <= 32 else {}
+    color = event_color_key(event.color, event.class_name)
+    return {color: 1} if color else {}
 
 
 def _event_brand(event: CountEvent) -> dict[str, int] | None:

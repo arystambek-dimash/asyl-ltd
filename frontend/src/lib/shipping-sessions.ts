@@ -1,3 +1,5 @@
+import type { AlwaysOnColorAnalytics } from "@/lib/types";
+
 export interface ShippingSegment {
   id: number;
   number: string;
@@ -25,12 +27,16 @@ export interface ShippingSession {
   last_counted_at: string;
   ended_at: string | null;
   order_id: number | null;
+  /** Цвета мешков этой сессии; `unclassified` — мешки, цвет которых камера не определила. */
+  colors: AlwaysOnColorAnalytics[];
   segments: ShippingSegment[];
 }
 
 export interface ShippingSessionsPage {
   results: ShippingSession[];
   next_cursor: string | number | null;
+  /** Список дня упёрся в лимит сервера — показаны не все сессии. */
+  truncated?: boolean;
 }
 
 export interface ShippingSessionSettings {

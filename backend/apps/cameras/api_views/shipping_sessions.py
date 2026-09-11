@@ -1,31 +1,37 @@
 """Durable count-ledger sessions and their private per-segment evidence."""
 
-from typing import ClassVar
+from collections import Counter, defaultdict
 
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.db import transaction
-from django.db.models import Prefetch, Q
+from django.db.models import Count, Prefetch, Q
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.permissions import HasPerm
+from apps.common.query_params import filter_date_range, parse_iso_date
+from apps.common.signed_media import SignedMediaView
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
 from .. import shipping_segments
-from ..models import ShippingLoadingSegment, ShippingLoadingSession, ShippingSessionSettings
+from ..analytics import _color_payload
+from ..event_protocol import event_color_key
+from ..models import ShippingLoadingEvent, ShippingLoadingSegment, ShippingLoadingSession, ShippingSessionSettings
 
 READ_PERMS = ("shipping.view", "shipping.load", "train.view", "train.load")
 WRITE_PERMS = ("shipping.load", "train.load")
 IMAGE_SALT = "shipping-segment-evidence-v1"
 PAGE_SIZE = 20
+# A conveyor needs tens of minutes per wagon, so a real day stays far below
+# this; the cap only keeps one day from turning into an unbounded response.
+DAY_LIMIT = 200
 
 
 def _allowed(user, codes):
@@ -71,6 +77,24 @@ def segment_payload(row, user, *, order_id=None):
     }
 
 
+def _session_colors(session_ids):
+    """Colour mix of each session, counted from its own crossings.
+
+    The daily analytics normaliser keeps a wagon consistent with its day. Bags
+    the camera could not classify stay visible, so the parts add up to the total.
+    """
+    counts = defaultdict(Counter)
+    rows = (
+        ShippingLoadingEvent.objects.filter(segment__session_id__in=session_ids)
+        .values_list("segment__session_id", "event__color", "event__class_name")
+        .annotate(total=Count("pk"))
+        .order_by()
+    )
+    for session_id, color, class_name, total in rows:
+        counts[session_id][event_color_key(color, class_name) or "unclassified"] += total
+    return {session_id: _color_payload(dict(colors)) for session_id, colors in counts.items()}
+
+
 class ShippingSessionListView(APIView):
     def get_permissions(self):
         return [HasPerm(*READ_PERMS)]
@@ -80,30 +104,41 @@ class ShippingSessionListView(APIView):
         camera = request.query_params.get("camera")
         if camera:
             rows = rows.filter(camera=camera)
-        cursor = request.query_params.get("cursor")
-        if cursor:
-            try:
-                value = int(cursor)
-                if value < 1:
-                    raise ValueError
-            except ValueError as exc:
-                raise ValidationError("Некорректная страница") from exc
-            rows = rows.filter(pk__lt=value)
         parts = Prefetch("segments", queryset=ShippingLoadingSegment.objects.order_by("started_at", "id"))
-        # A merged group keeps its original ID. Keep every current lane visible
-        # even when other cameras have produced many newer closed sessions.
-        active = list(rows.filter(status="active").order_by("-last_counted_at", "-id").prefetch_related(parts)) if not cursor else []
-        closed = list(rows.filter(status="closed").order_by("-id").prefetch_related(parts)[:PAGE_SIZE + 1])
+        day = parse_iso_date(request.query_params.get("day"))
+        next_cursor, truncated = None, False
+        if day:
+            # A plant day (by loading start) is one bounded list, newest first.
+            found = list(filter_date_range(rows, "started_at", day, day).order_by("-started_at", "-id").prefetch_related(parts)[:DAY_LIMIT + 1])
+            page, truncated = found[:DAY_LIMIT], len(found) > DAY_LIMIT
+        else:
+            cursor = request.query_params.get("cursor")
+            if cursor:
+                try:
+                    value = int(cursor)
+                    if value < 1:
+                        raise ValueError
+                except ValueError as exc:
+                    raise ValidationError("Некорректная страница") from exc
+                rows = rows.filter(pk__lt=value)
+            # A merged group keeps its original ID. Keep every current lane visible
+            # even when other cameras have produced many newer closed sessions.
+            active = list(rows.filter(status="active").order_by("-last_counted_at", "-id").prefetch_related(parts)) if not cursor else []
+            closed = list(rows.filter(status="closed").order_by("-id").prefetch_related(parts)[:PAGE_SIZE + 1])
+            page = [*active, *closed[:PAGE_SIZE]]
+            if len(closed) > PAGE_SIZE:
+                next_cursor = closed[PAGE_SIZE - 1].pk
+        colors = _session_colors([row.pk for row in page])
         result = []
-        for row in [*active, *closed[:PAGE_SIZE]]:
+        for row in page:
             result.append({
                 "id": row.pk, "camera": row.camera, "recognition_model": row.recognition_model,
                 "number": row.number, "status": row.status, "total_bags": row.total_bags,
                 "started_at": row.started_at, "last_counted_at": row.last_counted_at,
-                "ended_at": row.ended_at, "order_id": row.order_id,
+                "ended_at": row.ended_at, "order_id": row.order_id, "colors": colors.get(row.pk, []),
                 "segments": [segment_payload(part, request.user, order_id=row.order_id) for part in row.segments.all()],
             })
-        return Response({"results": result, "next_cursor": closed[PAGE_SIZE - 1].pk if len(closed) > PAGE_SIZE else None})
+        return Response({"results": result, "next_cursor": next_cursor, "truncated": truncated})
 
 
 class ShippingSegmentDetailView(APIView):
@@ -176,10 +211,7 @@ class ShippingSessionSettingsView(APIView):
         return Response({"idle_timeout_seconds": row.idle_timeout_seconds, "can_manage": True})
 
 
-class ShippingSegmentPhotoView(APIView):
-    permission_classes: ClassVar[list] = [AllowAny]
-    authentication_classes: ClassVar[list] = []
-
+class ShippingSegmentPhotoView(SignedMediaView):
     def get(self, request, pk):
         try:
             payload = signing.loads(request.query_params.get("token", ""), salt=IMAGE_SALT, max_age=600)

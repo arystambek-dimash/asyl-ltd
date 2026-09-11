@@ -47,7 +47,6 @@ vi.mock("@/lib/use-api", () => ({
     if (url?.startsWith("/orders/?post_board=1")) data = mocks.orders;
     if (url === "/cameras/ai/sessions/") data = [];
     if (url?.startsWith("/orders/?post_board=1") && mocks.orderError) data = null;
-    if (url === "/cameras/shipping-sessions/") data = { results: [], next_cursor: null };
     if (url === "/cameras/shipping-session-settings/") data = { idle_timeout_seconds: 300, can_manage: false };
     if (url === "/cameras/") data = mocks.cameras;
     if (url === "/cameras/monoblock-settings/") {
@@ -231,14 +230,14 @@ beforeEach(() => {
 });
 
 describe("доступ к AI 24/7 на странице моноблока", () => {
-  it("separates conveyors and sessions from orders with accessible navigation and preserves settings", () => {
+  it("separates conveyors from orders and keeps shipping sessions inside camera analytics", () => {
     mocks.me = { ...employee, permissions: ["shipping.load", "sys_permissions.manage"] };
     render(<MonoblockPage />);
-    const sessions = screen.getByRole("region", { name: "Сессии отгрузки" });
     const conveyors = screen.getByRole("region", { name: "Конвейеры и счёт" });
-    expect(sessions.compareDocumentPosition(conveyors) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Сессии отгрузки" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Заказы отгрузки" })).not.toBeInTheDocument();
     expect(within(conveyors).getByRole("button", { name: /Камеры моноблока/ })).toBeInTheDocument();
+    expect(within(conveyors).getByText("Закрытие по простою: 5 мин.")).toBeInTheDocument();
     openOrders();
     const orders = screen.getByRole("region", { name: "Заказы отгрузки" });
     expect(screen.queryByRole("region", { name: "Конвейеры и счёт" })).not.toBeInTheDocument();
@@ -249,16 +248,16 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     expect(within(orders).getByText("Готовы к выезду")).toBeInTheDocument();
     expect(within(orders).getByText("Выехали")).toBeInTheDocument();
     expect(within(conveyors).queryByText("Ожидают погрузки")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Конвейеры и сессии" }));
-    expect(screen.getByRole("region", { name: "Сессии отгрузки" })).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "Конвейеры" }));
+    expect(screen.getByRole("region", { name: "Конвейеры и счёт" })).toBeVisible();
   });
 
-  it("keeps count-driven shipping sessions accessible when the legacy order board cannot load", () => {
+  it("keeps conveyors reachable when the legacy order board cannot load and lists sessions only per camera", () => {
     mocks.orderError = "Заказы временно недоступны";
     render(<MonoblockPage />);
-    expect(screen.getByRole("region", { name: "Сессии отгрузки" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Конвейеры и счёт" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Заказы временно недоступны");
-    expect(mocks.urls).toContain("/cameras/shipping-sessions/");
+    expect(mocks.urls.some((url) => url?.startsWith("/cameras/shipping-sessions/"))).toBe(false);
     expect(mocks.urls).not.toContain("/cameras/shipping-transport/");
   });
   it("показывает мониторинг и загружает его данные обычному сотруднику", async () => {
@@ -405,7 +404,7 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
   it("navigates shipping panels with the keyboard and links tabs to their panels", async () => {
     const user = userEvent.setup();
     render(<MonoblockPage />);
-    const conveyors = screen.getByRole("tab", { name: "Конвейеры и сессии" });
+    const conveyors = screen.getByRole("tab", { name: "Конвейеры" });
     conveyors.focus();
     await user.keyboard("{ArrowRight}");
     const orders = screen.getByRole("tab", { name: "Заказы" });
@@ -416,10 +415,7 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     );
     await user.keyboard("{Home}");
     expect(conveyors).toHaveFocus();
-    expect(screen.getByRole("tabpanel", { name: "Конвейеры и сессии" })).toHaveAttribute(
-      "aria-labelledby",
-      conveyors.id,
-    );
+    expect(screen.getByRole("tabpanel", { name: "Конвейеры" })).toHaveAttribute("aria-labelledby", conveyors.id);
   });
 
   it("view-only не запрашивает monoblock-settings и открывает очередь без AI-вкладки", () => {
@@ -464,7 +460,7 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     render(<MonoblockPage />);
     openOrders();
     expect(screen.getByRole("button", { name: /Отгруженные: сегодня/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "Конвейеры и сессии" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Конвейеры" }));
     expect(screen.getByRole("button", { name: /Камеры моноблока/ })).toBeInTheDocument();
     expect(mocks.urls).toContain("/cameras/shipping-settings/");
   });
@@ -600,7 +596,7 @@ describe("день и поиск очереди отгрузки", () => {
     await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
     await user.type(screen.getByLabelText("Поиск"), "Test client");
     await waitFor(() => expect(boardUrls().at(-1)).toBe("/orders/?post_board=1&day=2025-12-31&search=Test%20client"));
-    await user.click(screen.getByRole("tab", { name: "Конвейеры и сессии" }));
+    await user.click(screen.getByRole("tab", { name: "Конвейеры" }));
     expect(screen.queryByRole("tabpanel", { name: "Заказы" })).not.toBeInTheDocument();
     openOrders();
     expect(screen.getByRole("tab", { name: /Вагоны/ })).toHaveAttribute("aria-selected", "true");

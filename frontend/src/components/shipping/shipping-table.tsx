@@ -31,7 +31,7 @@ import { orderedBagCount } from "@/lib/orders";
 import { indexFirstBy } from "@/lib/shipping-cameras";
 import type { ShippingCapabilities } from "@/lib/shipping-flow";
 import type { AiCountingHistory, AiCountingSession, Order } from "@/lib/types";
-import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
+import { cn, formatDateTime, formatIsoDate, formatTime } from "@/lib/utils";
 
 export interface ShippingTableCapabilities extends ShippingCapabilities {
   /** shipping.view — история подсчёта и подпись «камера: N». */
@@ -98,10 +98,6 @@ const SEARCH_SHIPPED_DAYS = 30;
 
 function isLoadingStatus(status: string) {
   return LOADING_STATUSES.includes(status);
-}
-
-function formatTime(value: string) {
-  return new Date(value).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
 function rowOf(order: Order, session: AiCountingSession | null, history: AiCountingHistory | null): OrderRow {

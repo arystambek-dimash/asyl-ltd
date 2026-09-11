@@ -446,6 +446,59 @@ describe("AI 24/7 live detections", () => {
     expect(mocks.apiPost).not.toHaveBeenCalled();
   });
 
+  it("показывает вагоны дня в аналитике камеры отгрузки, а для периода ждёт выбора дня", async () => {
+    const user = userEvent.setup();
+    setupShippingHistory();
+    mocks.responses.set("/cameras/shipping-sessions/?camera=cam2&day=2026-08-24", {
+      results: [
+        {
+          id: 8,
+          camera: "cam2",
+          recognition_model: "wagon_number",
+          number: "28055531",
+          status: "closed",
+          total_bags: 12,
+          started_at: "2026-08-24T04:00:00Z",
+          last_counted_at: "2026-08-24T04:05:00Z",
+          ended_at: "2026-08-24T04:05:00Z",
+          order_id: null,
+          colors: [
+            { color: "red", total: 9, percent: 75 },
+            { color: "blue", total: 3, percent: 25 },
+          ],
+          segments: [],
+        },
+      ],
+      next_cursor: null,
+      truncated: false,
+    });
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+
+    const wagon = within(screen.getByRole("region", { name: "Сессии отгрузки" })).getByRole("article", {
+      name: "Вагон 28055531",
+    });
+    expect(wagon).toHaveTextContent("12 меш.");
+    expect(
+      within(wagon)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Красный 9", "Синий 3"]);
+
+    await user.click(screen.getByRole("button", { name: "7 дней" }));
+    const period = screen.getByRole("region", { name: "Сессии отгрузки" });
+    expect(period).toHaveTextContent("Выберите день на графике «Учтено по дням»");
+    expect(within(period).queryByRole("article")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Аналитика за 24.08.2026: 12 мешков" }));
+    expect(
+      within(screen.getByRole("region", { name: "Сессии отгрузки" })).getByRole("article", {
+        name: "Вагон 28055531",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it.each(["incomplete", "pending"] as const)(
     "объясняет %s историю отгрузки и позволяет обновить её без ложного пустого журнала",
     async (historyStatus) => {

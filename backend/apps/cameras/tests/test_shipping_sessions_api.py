@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from io import BytesIO
 
 import pytest
@@ -9,7 +9,11 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from PIL import Image
 
-from apps.cameras.models import AlwaysOnCounterCursor, AlwaysOnImportedEvent, ShippingLoadingSession, ShippingLoadingSegment, ShippingSessionSettings
+from apps.cameras import shipping_segments
+from apps.cameras.models import (
+    AlwaysOnCounterCursor, AlwaysOnImportedEvent, ShippingLoadingEvent, ShippingLoadingSegment,
+    ShippingLoadingSession, ShippingSessionSettings,
+)
 from apps.eventlog.models import EventLog
 
 pytestmark = pytest.mark.django_db
@@ -17,12 +21,17 @@ BASE = "/api/cameras/shipping-sessions/"
 SETTINGS = "/api/cameras/shipping-session-settings/"
 
 
-def segment(*, kind="vehicle_number", camera="cam2", status="unidentified", order=None):
-    now = timezone.now()
+def local(*parts):
+    """Wall-clock time at the plant, where business days start at midnight."""
+    return timezone.make_aware(datetime(*parts), timezone.get_default_timezone())
+
+
+def segment(*, kind="vehicle_number", camera="cam2", status="unidentified", order=None, started_at=None):
+    started_at = started_at or timezone.now()-timedelta(minutes=8)
     group = ShippingLoadingSession.objects.create(
         camera=camera, recognition_model=kind, status="closed", total_bags=3,
-        started_at=now-timedelta(minutes=8), last_counted_at=now-timedelta(minutes=6),
-        ended_at=now-timedelta(minutes=6), order=order,
+        started_at=started_at, last_counted_at=started_at+timedelta(minutes=2),
+        ended_at=started_at+timedelta(minutes=2), order=order,
     )
     previous = AlwaysOnImportedEvent.objects.filter(camera=camera).aggregate(value=Max("upstream_event_id"))["value"] or 0
     events = AlwaysOnImportedEvent.objects.bulk_create([
@@ -32,13 +41,16 @@ def segment(*, kind="vehicle_number", camera="cam2", status="unidentified", orde
         for i in range(3)
     ])
     AlwaysOnCounterCursor.objects.update_or_create(camera=camera, defaults={"last_event_id": previous+3, "last_total": previous+3, "event_compat_total": previous+3})
-    return ShippingLoadingSegment.objects.create(
+    row = ShippingLoadingSegment.objects.create(
         session=group, camera=camera, number_camera="cam7", recognition_model=kind,
         identity_status=status, total_bags=3, started_at=group.started_at,
         last_counted_at=group.last_counted_at, ended_at=group.ended_at,
         idle_timeout_seconds=300, first_event=events[0], last_event=events[-1],
         first_upstream_event_id=previous+1, last_upstream_event_id=previous+3,
     )
+    # As in the projection, every counted crossing belongs to exactly one segment.
+    ShippingLoadingEvent.objects.bulk_create([ShippingLoadingEvent(event=event, segment=row) for event in events])
+    return row
 
 
 def test_settings_operator_can_change_timeout_and_change_is_audited(auth_client, operator):
@@ -69,14 +81,17 @@ def test_read_only_staff_cannot_change_timeout_or_bind_number(auth_client, user_
     assert client.post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json").status_code == 403
 
 
-def test_session_list_keeps_segments_and_has_bounded_queries(auth_client, operator):
-    for _ in range(10):
-        segment()
+@pytest.mark.parametrize("by_day", [False, True])
+def test_session_list_keeps_segments_and_has_bounded_queries(auth_client, operator, by_day):
+    for minute in range(10):
+        segment(started_at=local(2026, 9, 10, 12, minute))
+    params = {"day": "2026-09-10"} if by_day else {}
     with CaptureQueriesContext(connection) as queries:
-        response = auth_client(operator).get(BASE)
+        response = auth_client(operator).get(BASE, params)
     assert response.status_code == 200
     assert len(response.data["results"]) == 10
     assert all(x["total_bags"] == 3 and len(x["segments"]) == 1 for x in response.data["results"])
+    assert all(sum(color["total"] for color in x["colors"]) == 3 for x in response.data["results"])
     assert len(queries) <= 10
     assert not any(q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for q in queries)
 
@@ -166,3 +181,74 @@ def test_department_scope_is_checked_on_details_and_list(auth_client, operator):
     api = auth_client(operator)
     assert api.get(BASE).data["results"] == []
     assert api.get(f"/api/cameras/shipping-segments/{row.pk}/").status_code == 404
+
+
+def test_day_filter_uses_the_plant_calendar_day_newest_first(auth_client, operator):
+    segment(started_at=local(2026, 9, 9, 23, 50))
+    early = segment(started_at=local(2026, 9, 10, 0, 10))
+    late = segment(started_at=local(2026, 9, 10, 21, 4))
+    segment(started_at=local(2026, 9, 11, 0, 0))
+    segment(camera="cam3", started_at=local(2026, 9, 10, 12, 0))
+    response = auth_client(operator).get(BASE, {"camera": "cam2", "day": "2026-09-10"})
+    assert response.status_code == 200
+    assert [row["id"] for row in response.data["results"]] == [late.session_id, early.session_id]
+    assert response.data["truncated"] is False
+
+
+@pytest.mark.parametrize("day", ["2026-13-01", "yesterday"])
+def test_day_filter_rejects_malformed_dates(auth_client, operator, day):
+    assert auth_client(operator).get(BASE, {"day": day}).status_code == 400
+
+
+def test_day_listing_is_capped_and_says_so(auth_client, operator, monkeypatch):
+    monkeypatch.setattr("apps.cameras.api_views.shipping_sessions.DAY_LIMIT", 2)
+    rows = [segment(started_at=local(2026, 9, 10, hour)) for hour in (8, 9, 10)]
+    data = auth_client(operator).get(BASE, {"day": "2026-09-10"}).data
+    assert [row["id"] for row in data["results"]] == [rows[2].session_id, rows[1].session_id]
+    assert data["truncated"] is True
+
+
+def test_session_colors_count_every_projected_bag_once(auth_client, operator):
+    start = timezone.now()-timedelta(hours=2)
+    ShippingSessionSettings.objects.update_or_create(singleton=True, defaults={"activated_at": start})
+    bags = [("White", ""), (None, "white_50kg"), ("blue", ""), (None, "Red_50"), (None, "")]
+    AlwaysOnImportedEvent.objects.bulk_create([
+        AlwaysOnImportedEvent(camera="cam2", upstream_event_id=i+1, occurred_at=start+timedelta(seconds=i),
+                              source="sub", mode="always_on", analytics_scope="shipping",
+                              applied_to_analytics=True, color=color, class_name=class_name)
+        for i, (color, class_name) in enumerate(bags)
+    ])
+    AlwaysOnCounterCursor.objects.update_or_create(camera="cam2", defaults={"last_event_id": 5, "last_total": 5, "event_compat_total": 5})
+    shipping_segments.ingest_camera("cam2")
+    [row] = auth_client(operator).get(BASE).data["results"]
+    assert row["total_bags"] == 5
+    assert row["colors"] == [
+        {"color": "white", "total": 2, "percent": 40.0},
+        {"color": "blue", "total": 1, "percent": 20.0},
+        {"color": "red", "total": 1, "percent": 20.0},
+        {"color": "unclassified", "total": 1, "percent": 20.0},
+    ]
+
+
+def test_a_page_of_segment_frames_from_one_address_is_never_throttled(
+    auth_client, operator, api_client, settings, tmp_path, production_throttling,
+):
+    settings.MEDIA_ROOT = str(tmp_path)
+    frame = BytesIO()
+    Image.new("RGB", (8, 8), "gray").save(frame, format="JPEG")
+    urls = []
+    for row in (segment(), segment(), segment()):
+        row.photo.save("frame.jpg", ContentFile(frame.getvalue()))
+        urls.append(auth_client(operator).get(f"/api/cameras/shipping-segments/{row.pk}/").data["photo_url"])
+    address = {"REMOTE_ADDR": "203.0.113.61"}
+    codes = []
+    with production_throttling():
+        for url in urls * 2:
+            response = api_client.get(url, **address)
+            codes.append(response.status_code)
+            if response.streaming:
+                b"".join(response.streaming_content)  # closes the file like a WSGI server
+        control = [api_client.post("/api/auth/refresh/", {"refresh": "x"}, format="json", **address).status_code
+                   for _ in range(3)]
+    assert codes == [200] * 6
+    assert control[-1] == 429
