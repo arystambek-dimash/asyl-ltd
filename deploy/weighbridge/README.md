@@ -17,6 +17,15 @@ this script. The monitor switches to importing the outbox once its durable
 automatic poller; the collector retains events until a compatible importer is
 restored. Do not re-enable the old poller alongside an active collector.
 
+After a capture the lane waits for the next vehicle. Trucks queue through the
+scale, so it may never read empty between them: besides a confirmed clear, the
+lane re-arms when the load rises `VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG`
+(default 1000) above the captured weight, or first falls that much below it and
+then rises that much again. Each condition must hold on two consecutive fresh
+readings. A truck that stops half off the scale only falls and is not captured
+again. Every such re-arm is recorded as a `rearmed_by_weight_change:<path>`
+incident. The collector image changes only through the activation workflow.
+
 Each stable occupancy keeps its original weight/time and UUID in a FIFO writer
 queue. The writer commits the weight to SQLite (`WAL`, `synchronous=FULL`) before
 its photo bytes and OCR result. A short SQLite lock delays this write, never

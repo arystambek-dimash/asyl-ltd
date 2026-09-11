@@ -244,3 +244,82 @@ def test_repeated_short_failures_cannot_hide_a_long_observation_gap():
     for t in range(15, 18): lane.observe(observation(0, t), t)
     assert not lane.observe(observation(4200, 18), 18)
     assert lane.observe(observation(4200, 20), 20)
+
+
+def captured_truck(lane, weight):
+    for t in range(3): lane.observe(observation(0, t), t)
+    for t in (3, 4): assert not lane.observe(observation(weight, t), t)
+    assert lane.observe(observation(weight, 5), 5)
+    lane.captured()
+
+
+def test_next_truck_on_a_scale_that_never_emptied_is_captured_after_the_platform_changes():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 3760)
+    for t in range(6, 10): assert not lane.observe(observation(3760, t), t)
+    # The first truck drives off while the next one drives on: never empty.
+    for t, weight in ((10, 1880), (11, 1700), (12, 3100)):
+        assert not lane.observe(observation(weight, t, state="unstable"), t)
+    for t in (13, 14): assert not lane.observe(observation(3680, t), t)
+    assert lane.observe(observation(3680, 15), 15)
+
+
+def test_two_trucks_on_the_platform_at_once_rearm_on_the_rise():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 3760)
+    for t, weight in ((6, 5600), (7, 5560)):
+        assert not lane.observe(observation(weight, t, state="unstable"), t)
+    for t in (8, 9): assert not lane.observe(observation(3680, t), t)
+    assert lane.observe(observation(3680, 10), 10)
+
+
+def test_standing_truck_is_not_captured_again_by_changes_below_the_rearm_delta():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 4000)
+    # A driver stepping out or a wheel on the ramp edge is not a new vehicle.
+    for t, weight in enumerate((4600, 3300, 4600, 4600, 4600, 4600), start=6):
+        assert not lane.observe(observation(weight, t, state="unstable" if weight == 3300 else "ready"), t)
+
+
+def test_one_glitched_reading_cannot_rearm_a_standing_truck():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 4000)
+    assert not lane.observe(observation(0, 6), 6)
+    for t in range(7, 12): assert not lane.observe(observation(4000, t), t)
+
+
+def test_truck_stopping_half_off_the_scale_is_not_captured_again():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 3760)
+    # Waiting at a barrier with only the rear axle on the platform.
+    for t in range(6, 14): assert not lane.observe(observation(1880, t), t)
+
+
+def test_collector_captures_both_trucks_and_records_the_rearm(tmp_path):
+    import sqlite3
+    import time as real_time
+    from types import SimpleNamespace
+    box = Outbox(tmp_path)
+    box.state("config", {"stable_weight_seconds": 2})
+    (tmp_path / "enabled").write_text("1")
+    collector = Collector(box)
+    clock = {"now": 1000.0}
+    plan = [(0, "ready")] * 3 + [(3760, "ready")] * 4 + [(1880, "unstable"), (1700, "unstable"), (3100, "unstable")] \
+        + [(3680, "ready")] * 3
+    readings = iter(observation(weight, second, state=state) for second, (weight, state) in enumerate(plan))
+    fake_time = SimpleNamespace(monotonic=lambda: clock["now"], time=real_time.time, sleep=real_time.sleep)
+    strict = lambda *_: SimpleNamespace(weight_kg=Decimal(int(collector.lane.weight)), age_seconds=Decimal("0.1"),
+                                        updated_at="sample")
+    with patch("weighbridge.collector.time", fake_time), \
+            patch("apps.grain.scale.read_truck_scale_observation", side_effect=lambda *_: next(readings)), \
+            patch("apps.grain.scale.read_truck_scale", side_effect=strict), \
+            patch.object(collector, "start_evidence"):
+        for _ in plan:
+            collector.poll()
+            clock["now"] += 1
+    collector.close()
+    db = sqlite3.connect(box.path)
+    weights = [int(__import__("json").loads(body)["weight_kg"]) for (body,) in db.execute("SELECT body FROM events ORDER BY seq")]
+    assert weights == [3760, 3680]
+    codes = [code for (code,) in db.execute("SELECT code FROM incidents ORDER BY id")]
+    assert "rearmed_by_weight_change:3760->1700->3680" in codes

@@ -2,12 +2,12 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Camera, Check, Scale, TrainFront, Trash2, Truck, Warehouse } from "lucide-react";
+import { ArrowLeft, Camera, Check, Printer, Scale, TrainFront, Trash2, Truck, Warehouse } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { LiveScaleStatus } from "@/components/grain/live-scale-status";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
@@ -23,6 +23,7 @@ import {
   grainTripHref,
   grainWorkspaceHref,
   isGrainWagonDeleteSupported,
+  passageWaybillHref,
 } from "@/lib/grain";
 import { PassageStageAction } from "./passage-stage-action";
 import { IntakeStageAction } from "./intake-stage-action";
@@ -200,17 +201,30 @@ function TripPageInner({ params, direction }: TripPageProps) {
           onChanged={refresh}
           onBusyChange={handleBusyChange}
         />
-        {canDelete && (
-          <Button
-            className="ml-auto"
-            size="sm"
-            variant="destructive"
-            onClick={() => {
-              setDeleteOpen(true);
-            }}
-          >
-            <Trash2 /> Удалить рейс
-          </Button>
+        {((passage && wagon.status === "completed") || canDelete) && (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {passage && wagon.status === "completed" && (
+              <Link
+                href={passageWaybillHref(wagon.id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
+                <Printer /> Накладная
+              </Link>
+            )}
+            {canDelete && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  setDeleteOpen(true);
+                }}
+              >
+                <Trash2 /> Удалить рейс
+              </Button>
+            )}
+          </div>
         )}
       </div>
 

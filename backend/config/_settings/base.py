@@ -524,6 +524,11 @@ VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS = _bounded_int_env(
 VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG", 50, 0, 1_000
 )
+# Load change that proves the next truck is arriving on a scale that never
+# read empty (trucks queue through it); below one axle of any served vehicle.
+VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG = _bounded_int_env(
+    "VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG", 1000, 100, 20_000
+)
 VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS", 3, 1, 10
 )

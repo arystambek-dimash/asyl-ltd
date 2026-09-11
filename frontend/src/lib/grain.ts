@@ -11,6 +11,11 @@ export function grainTripHref(trip: Pick<GrainWagon, "id" | "direction">): strin
   return `/grain/${trip.direction === "passage" ? "passages" : "wagons"}/${trip.id}`;
 }
 
+/** Накладная на отпуск печатается только по вывозу. */
+export function passageWaybillHref(id: number): string {
+  return `/grain/passages/${id}/waybill`;
+}
+
 const FINISHED_WAGON_STATUSES = new Set(["completed", "cancelled", "return_to_supplier", "exited"]);
 
 /** Used only to explain the consequence in the UI; deletion eligibility is

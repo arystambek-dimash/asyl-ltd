@@ -124,21 +124,70 @@ class Outbox:
 
 
 class Lane:
-    """One stable episode between confirmed clear readings. Injected clock for tests."""
-    def __init__(self, *, stable_seconds=5, empty_max=500, tolerance=50, clear_polls=3):
+    """One stable episode between confirmed clear readings. Injected clock for tests.
+
+    A pass-through scale in a queue may never read empty between two trucks.
+    After a capture the lane therefore also re-arms when the next vehicle is
+    visibly arriving: the load rises ``rearm_delta`` above the captured weight
+    (a second truck rolled on), or it first fell ``rearm_delta`` below it and
+    then rose ``rearm_delta`` again (one truck left, the next came on). A truck
+    that merely stops half off the scale only falls, so it is never re-captured.
+    """
+    def __init__(self, *, stable_seconds=5, empty_max=500, tolerance=50, clear_polls=3,
+                 rearm_delta=1000, rearm_polls=2):
         self.stable_seconds, self.empty_max, self.tolerance = stable_seconds, empty_max, tolerance
         self.clear_polls = clear_polls
+        self.rearm_delta, self.rearm_polls = rearm_delta, rearm_polls
         self.armed = False
         self.clear_count = 0
         self.since = self.weight = self.last_token = None
         self.last_time = None
         self.last_valid_time = None
+        self.captured_weight = None
+        self.rearmed_by_change = None
+        self._reset_change()
+
+    def _reset_change(self):
+        self.above = self.below = self.rise = 0
+        self.dip = self.low = None
+
+    def _watch_platform(self, weight):
+        # Each condition must hold on consecutive fresh readings, so a single
+        # glitched value cannot re-arm a truck that is still standing.
+        if self.armed or self.captured_weight is None:
+            return
+        delta, polls = self.rearm_delta, self.rearm_polls
+        if self.low is None:
+            self.above = self.above + 1 if weight > self.captured_weight + delta else 0
+            if weight < self.captured_weight - delta:
+                self.below += 1
+                self.dip = weight if self.dip is None else min(self.dip, weight)
+            else:
+                self.below, self.dip = 0, None
+            if self.below >= polls:
+                self.low = self.dip
+                return
+            if self.above < polls:
+                return
+        else:
+            self.low = min(self.low, weight)
+            self.rise = self.rise + 1 if weight > self.low + delta else 0
+            if self.rise < polls:
+                return
+        path = [self.captured_weight, *([self.low] if self.low is not None else []), weight]
+        self.rearmed_by_change = "->".join(str(int(value)) for value in path)
+        self.armed = True
+        self.captured_weight = None
+        self._reset_change()
 
     def gap(self):
         self.armed = False
         self.clear_count = 0
         self.since = self.weight = self.last_token = None
         self.last_valid_time = None
+        # After an outage nobody knows what stands on the scale: only a clear re-arms.
+        self.captured_weight = None
+        self._reset_change()
 
     def unavailable(self, now):
         # A single network timeout does not prove that another vehicle arrived.
@@ -165,6 +214,7 @@ class Lane:
         self.last_token = token
         self.last_valid_time = now
         weight = float(observation.weight_kg)
+        self._watch_platform(weight)
         if not observation.stable:
             self.clear_count = 0
             self.since = self.weight = None
@@ -183,6 +233,9 @@ class Lane:
             return False
         return now - self.since >= self.stable_seconds
 
-    def captured(self):
+    def captured(self, weight=None):
+        # The collector passes the strict reading it actually persisted.
+        self.captured_weight = self.weight if weight is None else weight
         self.armed = False
         self.since = self.weight = None
+        self._reset_change()

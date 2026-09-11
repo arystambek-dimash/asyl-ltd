@@ -34,6 +34,7 @@ class Collector:
             empty_max=settings.VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG,
             tolerance=settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG,
             clear_polls=settings.VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS,
+            rearm_delta=settings.VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG,
         )
         self.current = None
         self.last_good = 0
@@ -190,6 +191,11 @@ class Collector:
         try:
             observation = scale.read_truck_scale_observation("truck")
             trigger = self.lane.observe(observation, now)
+            if self.lane.rearmed_by_change:
+                # Trucks can queue through without an empty reading; keep a
+                # trace of every re-arm that did not wait for a clear scale.
+                self.box.incident(f"rearmed_by_weight_change:{self.lane.rearmed_by_change}")
+                self.lane.rearmed_by_change = None
             if observation.state not in {"ready", "unstable"} or observation.weight_kg is None:
                 if now - self.last_good > 5:
                     self.current = None

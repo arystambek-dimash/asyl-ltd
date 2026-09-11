@@ -173,6 +173,26 @@ describe("StageAction automatic scale capture", () => {
     }
   });
 
+  it("offers no release note while the outbound truck is still loading", async () => {
+    await renderStage(wagon({ status: "at_silo", entry_weight_kg: 3_680, gross_weight_kg: 3_680 }));
+    expect(screen.queryByRole("link", { name: "Накладная" })).not.toBeInTheDocument();
+  });
+
+  it("opens the release note of a completed outbound truck in a new tab", async () => {
+    await renderStage(
+      wagon({
+        status: "completed",
+        status_label: "Завершён",
+        entry_weight_kg: 3_680,
+        exit_weight_kg: 8_640,
+        net_weight_kg: 4_960,
+      }),
+    );
+    const link = screen.getByRole("link", { name: "Накладная" });
+    expect(link).toHaveAttribute("href", "/grain/passages/7/waybill");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
   it("completes an unreadable exit from its saved weight inside the trip card", async () => {
     unassignedWeighings = [
       {
