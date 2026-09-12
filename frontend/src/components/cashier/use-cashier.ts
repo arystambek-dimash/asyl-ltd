@@ -24,6 +24,7 @@ import type { CashView, CashierPerms } from "./view";
  * «Общее» (десктоп) — сводка/долги/очередь по своим фильтрам; главная
  * (телефон) — те же три запроса без фильтров, сводка строго за сегодня;
  * отчёт и долги на телефоне — свои фильтры; очередь и журнал — одинаково везде.
+ * POS — список должников без фильтров для поиска клиента.
  */
 export function useCashier({ view, mobile, perms }: { view: CashView; mobile: boolean; perms: CashierPerms }) {
   const [filtersByScreen, setFiltersByScreen] = useState<CashFiltersByScreen>(initialFilters);
@@ -46,6 +47,7 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
   const homeActive = mobile && view === "home";
   const reportActive = mobile && view === "report";
   const debtsActive = mobile && view === "debts";
+  const posActive = mobile && view === "pos";
 
   const summaryFilters = overviewActive
     ? filtersByScreen.overview
@@ -58,7 +60,7 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
     ? filtersByScreen.overview
     : debtsActive
       ? filtersByScreen.debts
-      : homeActive
+      : homeActive || posActive
         ? EMPTY_CASH_FILTERS
         : null;
   const queueSummaryFilters = overviewActive ? filtersByScreen.overview : homeActive ? EMPTY_CASH_FILTERS : null;

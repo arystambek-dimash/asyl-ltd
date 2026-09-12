@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.http import FileResponse
 from io import BytesIO
 from collections import defaultdict
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import re
 from django.db.models import Count, Max, Q, Sum
 from django.utils import timezone
@@ -47,7 +47,7 @@ from .statuses import (
 )
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
-from .services import (confirm_order, reject_order,
+from .services import (add_payment, confirm_order, reject_order,
                        accountant_confirm_payment,
                        confirm_received_staff_payments,
                        correct_order_prices,
@@ -65,12 +65,15 @@ from apps.shipments.services import rollback_shipment
 #
 # QR сюда не входит намеренно. В CRM оператор выбирает «QR» уже ПОСЛЕ того,
 # как деньги прошли через POS-терминал, — это отметка о факте оплаты, а не
-# запрос на выставление счёта. Сгенерировать здесь Kaspi QR значило бы
-# попросить клиента заплатить второй раз.
+# запрос на выставление счёта. Сгенерировать здесь Kaspi QR без явного
+# channel="qr" значило бы попросить клиента заплатить второй раз.
 #
 # Клиентский портал платит сам и живёт по своим правилам: он вызывает
 # провайдера напрямую (apps/portal/views.py) и настоящий QR по-прежнему
 # создаёт и показывает.
+#
+# Kaspi QR касса выставляет только явным channel="qr" (POS на телефоне,
+# см. _issue_staff_qr_payment); без channel kaspi — отметка своего терминала.
 PROVIDER_METHOD_CHANNELS = {"invoice": "phone"}
 PROVIDER_CLOSED_STATUSES = {"cancelled", "expired", "error", "superseded"}
 
@@ -205,6 +208,42 @@ def _issue_mixed_provider_payments(payments, parts, user):
         )
         raise _provider_error(exc)
     return issued
+
+
+def _issue_staff_qr_payment(order, amount_raw, user) -> Payment:
+    """Касса выставляет Kaspi QR через ApiPay (POS на телефоне кассира).
+
+    Заказ остаётся «в долг»: оплата создаётся кассовым add_payment, а не
+    портальным create_client_payment — тот переводит заказ в моментальную
+    оплату, и долг пропал бы из списка. Деньги подтверждает вебхук или сверка.
+    """
+    if order.currency != "KZT":
+        raise ValidationError({
+            "detail": "QR доступен только в тенге.",
+            "code": "apipay_kzt_only",
+        })
+    try:
+        amount = Decimal(str(amount_raw))
+    except (InvalidOperation, TypeError, ValueError):
+        amount = None
+    if (
+        amount is None
+        or not amount.is_finite()
+        or amount <= 0
+        or amount != amount.to_integral_value()
+    ):
+        raise ValidationError({
+            "detail": "Kaspi QR принимает только целые тенге.",
+            "code": "qr_whole_tenge",
+        })
+    payment = add_payment(order, amount, user, method="kaspi", stage="requested")
+    try:
+        create_invoice(payment, channel="qr", user=user)
+    except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
+        _reject_created_payments([payment], user)
+        raise _provider_error(exc) from exc
+    payment.refresh_from_db()
+    return payment
 
 
 def _restore_payment_and_provider(payment: Payment, user):
@@ -652,6 +691,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "restore": "orders.edit",
         "purge": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
+        "payment_detail": ("payments.create", "payments.view"),
         "correct_price": "orders.correct_price",
         "set_status": "orders.view",
         "rollback_shipment": "shipping.rollback",
@@ -1287,6 +1327,19 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     _notify_document_invoice(order, payment)
             return Response(PaymentSerializer(payments, many=True).data, status=201)
         method = request.data.get("method") or "cash"
+        # POS кассы: Kaspi QR через ApiPay. Без channel кассовый kaspi — это
+        # отметка о собственном терминале и подтверждается сразу, как раньше.
+        channel = request.data.get("channel")
+        if method == "kaspi" and channel not in (None, "", "qr"):
+            raise ValidationError({
+                "detail": "Недопустимый канал оплаты.",
+                "code": "invalid_payment_channel",
+            })
+        if method == "kaspi" and channel == "qr":
+            payment = _issue_staff_qr_payment(
+                order, request.data.get("amount"), request.user
+            )
+            return Response(PaymentSerializer(payment).data, status=201)
         # Канал счёта един для обоих путей API: document — наш PDF без провайдера.
         document_invoice = (
             method == "invoice" and request.data.get("channel") == "document"
@@ -1359,6 +1412,18 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         )
         return FileResponse(BytesIO(pdf), content_type="application/pdf",
                             as_attachment=True, filename=filename)
+
+    @action(detail=True, methods=["get"], url_path=r"payments/(?P<pid>\d+)")
+    def payment_detail(self, request, pk=None, pid=None):
+        """Статус одной оплаты заказа: POS опрашивает его, пока клиент платит по QR."""
+        order = self.get_object()
+        payment = get_object_or_404(
+            with_payment_api_relations(Payment.objects.filter(order=order)),
+            pk=pid,
+        )
+        return Response(
+            PaymentSerializer(payment, context={"request": request}).data
+        )
 
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/receive")
     def receive_payment(self, request, pk=None, pid=None):

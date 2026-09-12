@@ -33,8 +33,16 @@ import {
   PAYMENT_METHOD_LABELS,
 } from "@/lib/constants";
 import { ArrowLeft, ChevronDown, Clock, ExternalLink, Info, Plus, ShieldCheck, Trash2, Wallet } from "lucide-react";
-import type { Client, Order, Payment } from "@/lib/types";
+import type { Order, Payment } from "@/lib/types";
 import { formatPaymentSchedule } from "@/app/stores/schedule-validation";
+import {
+  blockingStore,
+  moneyCents,
+  pendingSum,
+  remainingOf,
+  type ClientDebtDetail,
+  type DebtStore,
+} from "@/lib/debt-orders";
 
 const money = formatCurrency;
 const compactMoney = formatCompactCurrency;
@@ -51,47 +59,8 @@ function CurrencyRows({ totals, primary }: { totals: Record<string, string | num
   );
 }
 
-interface DebtStore {
-  id: number;
-  name: string;
-  payment_schedule_type: "none" | "monthly" | "weekly";
-  payment_days: number[];
-  window_open: boolean;
-}
-
-interface ClientDebtDetail {
-  client: Client;
-  /** Суммы в основной валюте клиента — её же показывают плитки сверху. */
-  debt_total: string;
-  debt_currency?: "KZT" | "USD";
-  debt_by_currency?: Record<string, string>;
-  lifetime_total?: string;
-  lifetime_paid?: string;
-  lifetime_by_currency?: Record<string, { total: string; paid: string }>;
-  overdue_total?: string;
-  overdue_by_currency?: Record<string, string>;
-  orders_count: number;
-  unpaid_count: number;
-  partial_count: number;
-  stores: DebtStore[];
-  orders: Order[];
-}
-
 interface ClientHistory {
   payments: HistoryPayment[];
-}
-
-function remainingOf(order: Order): number {
-  return Number(order.remaining_amount ?? Number(order.total_amount) - Number(order.paid_total));
-}
-
-function pendingSum(order: Order): number {
-  return (order.pending_payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
-}
-
-function moneyCents(value: number | string): number {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? Math.round(amount * 100) : 0;
 }
 
 /* ── Счёт по заказу: зафиксированные клиентские цены ───────────────────── */
@@ -548,7 +517,7 @@ function PaymentModal({
         invoiceOk
       );
     });
-  const blockingStore = blockedFor(order);
+  const blockedStore = blockedFor(order);
 
   function updatePart(id: number, patch: Partial<PaymentPart>) {
     setParts((current) => current.map((part) => (part.id === id ? { ...part, ...patch } : part)));
@@ -650,7 +619,7 @@ function PaymentModal({
             Отмена
           </Button>
           <Button
-            disabled={busy || !!blockingStore || !allPartsValid || allocatedCents > availableCents}
+            disabled={busy || !!blockedStore || !allPartsValid || allocatedCents > availableCents}
             onClick={() => void pay()}
           >
             {busy ? "Создание…" : `Внести оплату · ${money(allocated, order.currency)}`}
@@ -709,19 +678,19 @@ function PaymentModal({
                 </div>
               )}
             </div>
-            {!blockingStore && (
+            {!blockedStore && (
               <Button type="button" variant="outline" size="sm" onClick={() => setQuickTotal(available)}>
                 Весь долг
               </Button>
             )}
           </div>
 
-          {blockingStore ? (
+          {blockedStore ? (
             <div className="flex items-start gap-2 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2.5 text-sm text-[var(--warning)]">
               <Clock className="mt-0.5 size-4 shrink-0" />
               <span>
-                Оплата заблокирована: магазин «{blockingStore.name}» платит только по расписанию (
-                {formatPaymentSchedule(blockingStore, "payment")}).
+                Оплата заблокирована: магазин «{blockedStore.name}» платит только по расписанию (
+                {formatPaymentSchedule(blockedStore, "payment")}).
               </span>
             </div>
           ) : (
@@ -937,14 +906,8 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const overdueCurrency = primaryMoneyCurrency(overdueByCurrency, debtCurrency);
   const overdueTotal = amountForCurrency(overdueByCurrency, data.overdue_total ?? "0", overdueCurrency);
 
-  const storeById = new Map(data.stores.map((s) => [s.id, s]));
   // Магазин с расписанием блокирует оплату вне окна.
-  function blockedFor(order: Order): DebtStore | null {
-    if (order.store == null) return null;
-    const s = storeById.get(order.store);
-    if (!s || s.payment_schedule_type === "none" || s.window_open) return null;
-    return s;
-  }
+  const blockedFor = (order: Order): DebtStore | null => blockingStore(order, data.stores);
 
   async function onPaid(msg: string, refresh = true) {
     setNotice(msg);

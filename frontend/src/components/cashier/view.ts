@@ -1,9 +1,9 @@
 import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
-/** Экран кассы: десктоп знает overview/confirm/journal/transactions, телефон — home/report/debts/confirm/journal/transactions. */
-export type CashView = "home" | "overview" | "report" | "debts" | "confirm" | "journal" | "transactions";
-export type MobileMenuKey = Exclude<CashView, "home" | "overview">;
+/** Экран кассы: десктоп знает overview/confirm/journal/transactions, телефон — home/report/debts/confirm/journal/transactions/pos. */
+export type CashView = "home" | "overview" | "report" | "debts" | "confirm" | "journal" | "transactions" | "pos";
+export type MobileMenuKey = Exclude<CashView, "home" | "overview" | "pos">;
 
 /** Права раздела — RequirePerm пускает при любом из них. */
 export const CASHIER_ENTRY_PERMS = ["payments.confirm", "payments.create", "reports.view", "payments.view"];
@@ -50,6 +50,8 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
     case "confirm":
     case "journal":
       return perms.canPayments;
+    case "pos":
+      return perms.canCreatePayments;
     case "transactions":
       return perms.canTransactions;
   }
@@ -58,7 +60,16 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
 /** Порядок пунктов мобильного меню фиксированный — как в спеке. */
 const MOBILE_MENU: MobileMenuKey[] = ["confirm", "debts", "transactions", "journal", "report"];
 const DESKTOP_VIEWS: CashView[] = ["overview", "confirm", "journal", "transactions"];
-const ALL_VIEWS: readonly string[] = ["home", "overview", "report", "debts", "confirm", "journal", "transactions"];
+const ALL_VIEWS: readonly string[] = [
+  "home",
+  "overview",
+  "report",
+  "debts",
+  "confirm",
+  "journal",
+  "transactions",
+  "pos",
+];
 
 export function mobileMenu(perms: CashierPerms): MobileMenuKey[] {
   return MOBILE_MENU.filter((key) => viewAllowed(key, perms));
@@ -79,7 +90,7 @@ export function resolveView(raw: string | null, perms: CashierPerms, mobile: boo
   if (!raw || !ALL_VIEWS.includes(raw)) return fallback;
   let view = raw as CashView;
   if (mobile && view === "overview") view = "home";
-  if (!mobile && (view === "home" || view === "report" || view === "debts")) view = "overview";
+  if (!mobile && (view === "home" || view === "report" || view === "debts" || view === "pos")) view = "overview";
   if (view === "home") return fallback;
   return viewAllowed(view, perms) ? view : fallback;
 }

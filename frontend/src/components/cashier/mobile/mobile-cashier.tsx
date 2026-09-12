@@ -10,6 +10,8 @@ import { ConfirmScreen } from "./confirm-screen";
 import { DebtsScreen } from "./debts-screen";
 import { HomeScreen } from "./home-screen";
 import { JournalScreen } from "./journal-screen";
+import { PosFab } from "./pos/pos-fab";
+import { PosScreen } from "./pos/pos-screen";
 import { ReportScreen } from "./report-screen";
 import { TransactionsScreen } from "./transactions-screen";
 
@@ -21,6 +23,7 @@ export const SCREEN_TITLES: Record<CashView, string> = {
   confirm: "Заявки и оплаты",
   journal: "Журнал",
   transactions: "Транзакции",
+  pos: "POS",
 };
 
 /** Касса на телефоне: главная-меню и подэкраны с «‹ назад» вместо «☰». */
@@ -35,7 +38,7 @@ export function MobileCashier({ model }: { model: CashierModel }) {
     if (view === "home") cameFromHome.current = false;
   }, [view]);
   const open = useCallback(
-    (next: MobileMenuKey) => {
+    (next: MobileMenuKey | "pos") => {
       cameFromHome.current = true;
       router.push(`${pathname}?view=${next}`);
     },
@@ -54,6 +57,10 @@ export function MobileCashier({ model }: { model: CashierModel }) {
     ? activeFilterCount(model.filters, { dates: filterScreen !== "report", remaining: filterScreen === "debts" })
     : 0;
   const rangeError = filterScreen ? filtersError(model.filters) : null;
+
+  // POS рисует свой топбар и нижнюю панель; «‹» на первом шаге закрывает его, как подэкран.
+  if (view === "pos") return <PosScreen model={model} onClose={back} />;
+  const showPos = perms.canCreatePayments;
 
   return (
     <AppShell
@@ -81,6 +88,13 @@ export function MobileCashier({ model }: { model: CashierModel }) {
       {view === "debts" && <DebtsScreen model={model} />}
       {view === "report" && <ReportScreen model={model} />}
       {view === "transactions" && <TransactionsScreen model={model} />}
+      {showPos && (
+        <>
+          {/* Место под кнопку POS, чтобы она не закрывала последнюю строку списка. */}
+          <div aria-hidden className="h-20" />
+          <PosFab onClick={() => open("pos")} />
+        </>
+      )}
     </AppShell>
   );
 }

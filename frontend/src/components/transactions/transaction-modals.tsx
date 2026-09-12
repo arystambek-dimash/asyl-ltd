@@ -1,7 +1,5 @@
 "use client";
-import Image from "next/image";
-import { useState } from "react";
-import { ExternalLink, QrCode } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
@@ -9,12 +7,12 @@ import { Modal } from "@/components/ui/modal";
 import { paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 import { currencySymbol, formatMoney } from "@/lib/utils";
+import { QrCodeImage } from "./qr-code-image";
 import { TransactionActions, transactionActions, type TransactionActionHandlers } from "./transaction-actions";
 import { TransactionDetail } from "./transaction-detail";
 import type { Transactions } from "./use-transactions";
 
 function PaymentQrPreview({ payment, onClose }: { payment: Payment; onClose: () => void }) {
-  const [imageFailed, setImageFailed] = useState(false);
   const provider = payment.provider;
   if (!provider) return null;
   return (
@@ -27,24 +25,7 @@ function PaymentQrPreview({ payment, onClose }: { payment: Payment; onClose: () 
       footer={<Button onClick={onClose}>Готово</Button>}
     >
       <div className="space-y-4 text-center">
-        {provider.qr_image_url && !imageFailed ? (
-          <Image
-            src={provider.qr_image_url}
-            alt="Kaspi QR для оплаты"
-            width={288}
-            height={288}
-            unoptimized
-            onError={() => setImageFailed(true)}
-            className="mx-auto size-72 max-w-full rounded-2xl bg-white p-3 shadow-sm"
-          />
-        ) : (
-          <div className="mx-auto flex aspect-square w-72 max-w-full flex-col items-center justify-center rounded-2xl border border-dashed bg-[var(--muted)]/35 p-6">
-            <QrCode className="size-12 text-[var(--muted-foreground)]" />
-            <p className="mt-3 text-sm text-[var(--muted-foreground)]">
-              Изображение QR недоступно. Откройте оплату кнопкой ниже.
-            </p>
-          </div>
-        )}
+        <QrCodeImage provider={provider} />
         {provider.qr_token_url && (
           <Button className="w-full" onClick={() => window.open(provider.qr_token_url!, "_blank", "noopener")}>
             <ExternalLink className="size-4" /> Открыть Kaspi

@@ -37,6 +37,11 @@ describe("resolveView", () => {
     expect(defaultView(viewer, true)).toBe("transactions");
     expect(resolveView("home", viewer, true)).toBe("transactions");
   });
+  it("opens POS only on phones and only with payments.create", () => {
+    expect(resolveView("pos", all, true)).toBe("pos");
+    expect(resolveView("pos", all, false)).toBe("overview");
+    expect(resolveView("pos", viewer, true)).toBe("transactions");
+  });
 });
 
 describe("cashierPerms", () => {
