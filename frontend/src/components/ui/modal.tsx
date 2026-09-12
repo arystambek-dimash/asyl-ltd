@@ -87,6 +87,7 @@ export function Modal({
   children,
   className,
   mobileFullscreen = false,
+  variant = "dialog",
 }: {
   open: boolean;
   onClose: () => void;
@@ -97,6 +98,8 @@ export function Modal({
   children: React.ReactNode;
   className?: string;
   mobileFullscreen?: boolean;
+  /** "sheet": на телефоне шторка снизу, на десктопе обычный диалог. */
+  variant?: "dialog" | "sheet";
 }) {
   const [mounted, setMounted] = useState(false);
   const titleId = useId();
@@ -163,9 +166,15 @@ export function Modal({
 
   if (!open || !mounted) return null;
 
+  const sheet = variant === "sheet";
+
   return createPortal(
     <div
-      className={cn("fixed inset-0 z-[100] flex items-center justify-center p-4", mobileFullscreen && "max-sm:p-0")}
+      className={cn(
+        "fixed inset-0 z-[100] flex items-center justify-center p-4",
+        mobileFullscreen && "max-sm:p-0",
+        sheet && "max-md:items-end max-md:p-0",
+      )}
       onKeyDown={trapFocus}
     >
       <div
@@ -180,11 +189,17 @@ export function Modal({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={cn(
-          "relative z-10 flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border bg-[var(--card)] shadow-2xl animate-modal-content",
+          "relative z-10 flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-xl border bg-[var(--card)] shadow-2xl",
+          sheet ? "animate-sheet-content" : "animate-modal-content",
+          sheet &&
+            "max-md:max-h-[92dvh] max-md:max-w-none max-md:rounded-b-none max-md:rounded-t-2xl max-md:border-x-0 max-md:border-b-0 max-md:pb-[env(safe-area-inset-bottom)]",
           mobileFullscreen && "max-sm:h-[100dvh] max-sm:max-h-[100dvh] max-sm:rounded-none max-sm:border-0",
           className,
         )}
       >
+        {sheet && (
+          <div aria-hidden className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-[var(--border)] md:hidden" />
+        )}
         <div className="relative border-b px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
           {eyebrow && <div className="text-[12px] text-[var(--muted-foreground)]">{eyebrow}</div>}
           <h2 id={titleId} className="text-[22px] font-bold tracking-tight">

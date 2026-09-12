@@ -1,7 +1,7 @@
 "use client";
 import { use, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
@@ -22,6 +22,7 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
+import { safeBackPath } from "@/lib/navigation";
 import { cn } from "@/lib/utils";
 import { currencySymbol, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
 import {
@@ -84,6 +85,8 @@ const EVENT_LABELS: Record<string, string> = {
 function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const back = safeBackPath(searchParams.get("back"));
   const { me } = useAuth();
   const canViewClients = can(me, "clients.view");
   const canViewReports = can(me, "reports.view");
@@ -207,8 +210,8 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     <AppShell title="Заказы" section="Работа">
       <div className="mb-5 flex flex-wrap items-start gap-3 px-0.5 py-1">
         <Link
-          href="/orders"
-          aria-label="К списку заказов"
+          href={back ?? "/orders"}
+          aria-label={back ? "Назад" : "К списку заказов"}
           className="flex size-9 shrink-0 items-center justify-center rounded-lg border text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)]"
         >
           <ArrowLeft className="size-4" />

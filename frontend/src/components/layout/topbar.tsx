@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
-import { LogOut, Sun, Moon, Monitor, Menu, CircleHelp } from "lucide-react";
+import { LogOut, Sun, Moon, Monitor, Menu, CircleHelp, ChevronLeft } from "lucide-react";
 import { NotificationBell } from "@/components/notification-bell";
 import { TOUR_START_EVENT } from "@/components/onboarding-tour";
 import { useAuth } from "@/store/auth";
@@ -83,6 +83,12 @@ function ThemeToggle() {
   );
 }
 
+/** Кнопка «назад» вместо «☰» на подэкранах мобильных разделов. */
+export interface TopbarBack {
+  label: string;
+  onClick: () => void;
+}
+
 export function Topbar({
   me,
   title,
@@ -90,6 +96,8 @@ export function Topbar({
   tabs,
   actions,
   onMenu,
+  back,
+  trailing,
 }: {
   me: Me;
   title: string;
@@ -97,6 +105,9 @@ export function Topbar({
   tabs?: ReactNode;
   actions?: ReactNode;
   onMenu?: () => void;
+  back?: TopbarBack;
+  /** Иконки справа от заголовка (перед темой и профилем), например фильтры экрана. */
+  trailing?: ReactNode;
 }) {
   const { logout } = useAuth();
   const router = useRouter();
@@ -105,14 +116,25 @@ export function Topbar({
   return (
     <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:px-8 xl:h-16 xl:flex-nowrap xl:py-0">
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <button
-          type="button"
-          onClick={onMenu}
-          className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--secondary)] lg:hidden"
-          aria-label="Меню"
-        >
-          <Menu className="size-5" />
-        </button>
+        {back ? (
+          <button
+            type="button"
+            onClick={back.onClick}
+            className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--foreground)] hover:bg-[var(--secondary)] lg:hidden"
+            aria-label={back.label}
+          >
+            <ChevronLeft className="size-5" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onMenu}
+            className="-ml-1 flex size-9 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--secondary)] lg:hidden"
+            aria-label="Меню"
+          >
+            <Menu className="size-5" />
+          </button>
+        )}
         <div className="min-w-0 leading-tight">
           {section && (
             <div className="text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
@@ -138,6 +160,7 @@ export function Topbar({
         </div>
       )}
       <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        {trailing}
         {!me.is_client && (
           <button
             onClick={() => window.dispatchEvent(new Event(TOUR_START_EVENT))}

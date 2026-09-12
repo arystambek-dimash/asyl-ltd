@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
 import CashierPage from "./page";
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), paid: false, queueError: false, poll: async () => {} }));
@@ -16,7 +17,7 @@ vi.mock("@/components/layout/app-shell", () => ({
 vi.mock("@/components/require-perm", () => ({
   RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   api: { get: (...args: unknown[]) => mocks.get(...args), post: (...args: unknown[]) => mocks.post(...args) },
@@ -39,6 +40,7 @@ function card(title: string) {
   return within(node);
 }
 beforeEach(() => {
+  resetNavigation("/accounting");
   mocks.paid = false;
   mocks.queueError = false;
   mocks.get.mockReset();
@@ -99,6 +101,7 @@ beforeEach(() => {
           summary: { paid_by_currency: { KZT: "100", USD: "0" }, refunded_by_currency: { KZT: "0", USD: "0" } },
         },
       };
+    if (url.pathname === "/orders/cashier-log/") return { data: { results: [], count: 0, next: null } };
     return { data: [] };
   });
   mocks.post.mockImplementation(async () => {
@@ -197,4 +200,14 @@ it("keeps entered confirmation data when a background refresh removes the row fr
   await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
   await waitFor(() => expect(screen.queryByRole("combobox", { name: "Отдел продаж" })).not.toBeInTheDocument());
   expect(mocks.post).toHaveBeenCalledWith("/orders/621/confirm/", { department: "main", prices: { "7": "1234" } });
+});
+
+it("desktop tab click mirrors the view into the URL and deep links open the tab", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  expect(routerCalls.replace).toContain("/accounting?view=confirm");
+
+  resetNavigation("/accounting?view=journal");
+  expect(await screen.findByText("Журнал действий по оплатам")).toBeInTheDocument();
 });

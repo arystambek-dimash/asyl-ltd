@@ -62,7 +62,7 @@ def _payment_events_by_day(orders_qs, date_from, date_to):
     qs = _day_bounds(qs, date_from, date_to)
     return (
         qs.order_by()
-        .values("day", "order__currency", "order__department")
+        .values("day", "order__currency", "order__department", "method")
         .annotate(
             gross_cash=Coalesce(
                 Sum("amount", filter=Q(method__in=CASH_METHODS)),
@@ -93,7 +93,12 @@ def _refund_events_by_day(orders_qs, date_from, date_to):
     qs = _day_bounds(qs, date_from, date_to)
     return (
         qs.order_by()
-        .values("day", "payment__order__currency", "payment__order__department")
+        .values(
+            "day",
+            "payment__order__currency",
+            "payment__order__department",
+            "payment__method",
+        )
         .annotate(
             refund_cash=Coalesce(
                 Sum("amount", filter=Q(method__in=REFUND_CASH_METHODS)),
@@ -289,6 +294,7 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
             {
                 "code": code,
                 "orders": 0,
+                "payments": 0,
                 "sales_by_currency": defaultdict(lambda: _ZERO),
                 "received_by_currency": defaultdict(lambda: _ZERO),
                 "refunded_by_currency": defaultdict(lambda: _ZERO),
@@ -332,18 +338,25 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
             shipped_by_currency[currency][field] += value
 
     income_by_currency = defaultdict(_income_currency_row)
+    # {валюта: {способ: нетто}} — возврат вычитается из способа исходной
+    # оплаты, как paid_by_method в транзакциях; нал/безнал считаются как раньше.
+    income_by_method = defaultdict(lambda: defaultdict(lambda: _ZERO))
+    payments_by_method = defaultdict(int)
     payments_total = 0
     for event in _payment_events_by_day(orders_qs, date_from, date_to):
         row = day_row(event["day"])
         currency = event["order__currency"] or DEFAULT_CURRENCY
-        department_row(event["order__department"])["received_by_currency"][
-            currency
-        ] += (event["gross_cash"] + event["gross_cashless"])
+        gross = event["gross_cash"] + event["gross_cashless"]
+        department = department_row(event["order__department"])
+        department["received_by_currency"][currency] += gross
+        department["payments"] += event["payments"]
         row["gross_cash_by_currency"][currency] += event["gross_cash"]
         row["gross_cashless_by_currency"][currency] += event["gross_cashless"]
         row["payments"] += event["payments"]
         income_by_currency[currency]["gross_cash"] += event["gross_cash"]
         income_by_currency[currency]["gross_cashless"] += event["gross_cashless"]
+        income_by_method[currency][event["method"]] += gross
+        payments_by_method[event["method"]] += event["payments"]
         payments_total += event["payments"]
 
     refunds_total = 0
@@ -358,6 +371,9 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
         row["refunds"] += event["refunds"]
         income_by_currency[currency]["refund_cash"] += event["refund_cash"]
         income_by_currency[currency]["refund_cashless"] += event["refund_cashless"]
+        income_by_method[currency][event["payment__method"]] -= (
+            event["refund_cash"] + event["refund_cashless"]
+        )
         refunds_total += event["refunds"]
 
     revenue_by_currency = {
@@ -418,6 +434,11 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
             currency: values["gross_cashless"] - values["refund_cashless"]
             for currency, values in income_by_currency.items()
         }),
+        "by_method_by_currency": {
+            currency: as_money_strings(dict(methods))
+            for currency, methods in income_by_method.items()
+        },
+        "payments_by_method": dict(payments_by_method),
     }
     # Reuse the same shipment/payment/refund rows as the total report. Separate
     # grouping keys avoid multiplying items by payments and add no per-department queries.
@@ -433,6 +454,7 @@ def summary_report(orders_qs, date_from=None, date_to=None, *, income_only=False
                 "name": label.name if label else (code or "Нет отдела"),
                 "color": label.color if label else "#64748B",
                 "orders": values["orders"] if not income_only else None,
+                "payments": values["payments"],
                 "sales_by_currency": (
                     as_money_strings(values["sales_by_currency"])
                     if not income_only

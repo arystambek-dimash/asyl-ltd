@@ -151,6 +151,8 @@ export interface DepartmentReport {
   received_by_currency: Record<string, string>;
   refunded_by_currency: Record<string, string>;
   net_by_currency: Record<string, string>;
+  /** Число подтверждённых оплат отдела; нет у старого бэкенда во время раскатки. */
+  payments?: number;
 }
 
 export interface ReportSummary {
@@ -171,6 +173,9 @@ export interface ReportSummary {
     cashless_by_currency: Record<string, string>;
     gross_by_currency: Record<string, string>;
     refunded_by_currency: Record<string, string>;
+    /** {валюта: {способ: нетто}} — нет у старого бэкенда во время раскатки. */
+    by_method_by_currency?: Record<string, Record<string, string>>;
+    payments_by_method?: Record<string, number>;
   };
   shipped: {
     revenue: string;

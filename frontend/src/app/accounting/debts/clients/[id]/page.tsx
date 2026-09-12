@@ -15,6 +15,8 @@ import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { LoadMore } from "@/components/ui/load-more";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
 import { useApi } from "@/lib/use-api";
+import { useIsMobile } from "@/lib/use-media-query";
+import { withBack } from "@/lib/navigation";
 import { api, apiError, blobApiError } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
@@ -93,7 +95,7 @@ function moneyCents(value: number | string): number {
 }
 
 /* ── Счёт по заказу: зафиксированные клиентские цены ───────────────────── */
-function InvoiceTable({ order }: { order: Order }) {
+function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full" | "compact" }) {
   const lines = order.items.map((it) => {
     const price = Number(it.price ?? 0);
     return {
@@ -109,27 +111,48 @@ function InvoiceTable({ order }: { order: Order }) {
   const toPay = remainingOf(order);
   return (
     <div>
-      <Table>
-        <THead>
-          <TR>
-            <TH>Товар</TH>
-            <TH className="text-right">Количество</TH>
-            <TH className="text-right">Цена за единицу</TH>
-            <TH className="text-right">Итого</TH>
-          </TR>
-        </THead>
-        <TBody>
+      {layout === "compact" ? (
+        <ul className="divide-y">
           {lines.map((l) => (
-            <TR key={l.key}>
-              <TD className="font-medium">{l.label}</TD>
-              <TD className="text-right tabular-nums">{l.qty}</TD>
-              <TD className="text-right tabular-nums">{money(l.price, order.currency)}</TD>
-              <TD className="text-right tabular-nums font-medium">{money(l.total, order.currency)}</TD>
-            </TR>
+            <li key={l.key} className="flex items-start justify-between gap-3 py-2 text-sm">
+              <div>
+                <div className="font-medium">{l.label}</div>
+                <div className="text-xs tabular-nums text-[var(--muted-foreground)]">
+                  {l.qty} × {money(l.price, order.currency)}
+                </div>
+              </div>
+              <div className="font-medium tabular-nums">{money(l.total, order.currency)}</div>
+            </li>
           ))}
-        </TBody>
-      </Table>
-      <div className="ml-auto mt-3 flex max-w-xs flex-col gap-1.5 border-t pt-3 text-sm">
+        </ul>
+      ) : (
+        <Table>
+          <THead>
+            <TR>
+              <TH>Товар</TH>
+              <TH className="text-right">Количество</TH>
+              <TH className="text-right">Цена за единицу</TH>
+              <TH className="text-right">Итого</TH>
+            </TR>
+          </THead>
+          <TBody>
+            {lines.map((l) => (
+              <TR key={l.key}>
+                <TD className="font-medium">{l.label}</TD>
+                <TD className="text-right tabular-nums">{l.qty}</TD>
+                <TD className="text-right tabular-nums">{money(l.price, order.currency)}</TD>
+                <TD className="text-right tabular-nums font-medium">{money(l.total, order.currency)}</TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
+      )}
+      <div
+        className={cn(
+          "mt-3 flex flex-col gap-1.5 border-t pt-3 text-sm",
+          layout === "compact" ? "w-full" : "ml-auto max-w-xs",
+        )}
+      >
         <div className="flex justify-between text-[var(--muted-foreground)]">
           <span>Сумма заказа</span>
           <span className="tabular-nums">{money(total, order.currency)}</span>
@@ -187,7 +210,7 @@ function WriteOffList({ order }: { order: Order }) {
 
 /* ── Карточка заказа в долге ────────────────────────────────────────────── */
 /* Детали раскрытой строки: резерв, позиции счёта и списание. */
-function DebtOrderDetails({ order }: { order: Order }) {
+function DebtOrderDetails({ order, layout = "full" }: { order: Order; layout?: "full" | "compact" }) {
   const [tab, setTab] = useState("invoice");
   const pending = pendingSum(order);
   return (
@@ -217,22 +240,28 @@ function DebtOrderDetails({ order }: { order: Order }) {
         active={tab}
         onChange={setTab}
       />
-      <div>{tab === "invoice" ? <InvoiceTable order={order} /> : <WriteOffList order={order} />}</div>
+      <div>{tab === "invoice" ? <InvoiceTable order={order} layout={layout} /> : <WriteOffList order={order} />}</div>
     </div>
   );
 }
 
-/* Заказы в долге — простая таблица: строка раскрывается в детали. */
+/* Заказы в долге — простая таблица: строка раскрывается в детали.
+ * На телефоне (layout="cards") та же раскрываемая модель — карточки вместо
+ * строк: expanded/limit и LoadMore общие для обеих раскладок. */
 function DebtOrdersTable({
   orders,
   canPay,
   canViewOrder,
   onPay,
+  layout,
+  clientId,
 }: {
   orders: Order[];
   canPay: boolean;
   canViewOrder: boolean;
   onPay: (id: number) => void;
+  layout: "table" | "cards";
+  clientId: string;
 }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   // Единый стиль ленивых списков: длинный долг не разворачивается простынёй.
@@ -246,6 +275,102 @@ function DebtOrdersTable({
       else next.add(id);
       return next;
     });
+  }
+
+  const loadMore = (
+    <LoadMore
+      shown={visible.length}
+      total={orders.length}
+      hasMore={orders.length > visible.length}
+      onClick={() => setLimit((current) => current + 25)}
+    />
+  );
+
+  if (layout === "cards") {
+    return (
+      <div className="flex flex-col gap-3">
+        <ul className="flex flex-col gap-3">
+          {visible.map((order) => {
+            const open = expanded.has(order.id);
+            const status = order.payment_status ?? "unpaid";
+            const detailsId = `debt-order-${order.id}-details`;
+            return (
+              <li
+                key={order.id}
+                className="flex flex-col gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-card"
+              >
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  aria-controls={detailsId}
+                  onClick={() => toggle(order.id)}
+                  className="flex w-full flex-col gap-2.5 text-left"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[15px] font-semibold">#{order.id}</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">
+                        {order.department_name ?? order.department}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge tone={PAYMENT_STATUS_TONE[status] ?? "muted"} dot>
+                        {PAYMENT_STATUS_LABELS[status] ?? status}
+                      </Badge>
+                      <ChevronDown
+                        className={cn(
+                          "size-4 text-[var(--muted-foreground)] transition-transform",
+                          open ? "rotate-0" : "-rotate-90",
+                        )}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xs text-[var(--muted-foreground)]">
+                    Создан {formatDateTime(order.created_at)} · Отгружен{" "}
+                    {order.shipped_at ? formatDateTime(order.shipped_at) : "—"}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
+                      <div className="tabular-nums text-[var(--success)]">
+                        {money(order.paid_total, order.currency)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-[var(--muted-foreground)]">Остаток</div>
+                      <div className="font-semibold tabular-nums text-[var(--destructive)]">
+                        {money(remainingOf(order), order.currency)}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+                <div className="flex gap-2 border-t pt-3">
+                  {canPay && remainingOf(order) > 0 && (
+                    <Button className="flex-1" onClick={() => onPay(order.id)}>
+                      Оплатить
+                    </Button>
+                  )}
+                  {canViewOrder && (
+                    <Link
+                      href={withBack(`/orders/${order.id}`, `/accounting/debts/clients/${clientId}`)}
+                      className={buttonVariants({ variant: "outline", size: "sm" })}
+                    >
+                      Открыть <ExternalLink className="size-3.5" />
+                    </Link>
+                  )}
+                </div>
+                {open && (
+                  <div id={detailsId} className="mt-3 border-t pt-3">
+                    <DebtOrderDetails order={order} layout="compact" />
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {loadMore}
+      </div>
+    );
   }
 
   return (
@@ -307,7 +432,10 @@ function DebtOrdersTable({
                   <TD onClick={(event) => event.stopPropagation()}>
                     <div className="flex justify-end gap-2">
                       {canViewOrder && (
-                        <Link href={`/orders/${order.id}`} className={buttonVariants({ size: "sm", variant: "ghost" })}>
+                        <Link
+                          href={withBack(`/orders/${order.id}`, `/accounting/debts/clients/${clientId}`)}
+                          className={buttonVariants({ size: "sm", variant: "ghost" })}
+                        >
                           Открыть <ExternalLink className="size-3.5" />
                         </Link>
                       )}
@@ -331,12 +459,7 @@ function DebtOrdersTable({
           })}
         </TBody>
       </Table>
-      <LoadMore
-        shown={visible.length}
-        total={orders.length}
-        hasMore={orders.length > visible.length}
-        onClick={() => setLimit((current) => current + 25)}
-      />
+      {loadMore}
     </div>
   );
 }
@@ -362,6 +485,7 @@ function PaymentModal({
   blockedFor,
   onPaid,
   onError,
+  lockedOrder,
 }: {
   open: boolean;
   onClose: () => void;
@@ -371,14 +495,23 @@ function PaymentModal({
   blockedFor: (order: Order) => DebtStore | null;
   onPaid: (msg: string, refresh?: boolean) => Promise<void>;
   onError: (msg: string) => void;
+  /** Открыто с конкретного заказа («Оплатить» в карточке): выбор других заказов скрыт. */
+  lockedOrder: boolean;
 }) {
   const order = orders.find((o) => o.id === selectedId) ?? orders[0];
   const [parts, setParts] = useState<PaymentPart[]>([{ id: 1, method: "cash", amount: "" }]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [payError, setPayError] = useState("");
+  // Кассир мог по ошибке нажать «Оплатить» не на том заказе — «Другой заказ»
+  // временно возвращает полный селектор, не снимая блокировку насовсем.
+  const [pickingOrder, setPickingOrder] = useState(false);
   const ordersRef = useRef(orders);
   ordersRef.current = orders;
+
+  useEffect(() => {
+    setPickingOrder(false);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -527,7 +660,7 @@ function PaymentModal({
     >
       <div className="flex flex-col gap-5">
         <>
-          {orders.length > 1 && (
+          {orders.length > 1 && (!lockedOrder || pickingOrder) ? (
             <div className="flex flex-col gap-1.5">
               <span className="text-sm text-[var(--muted-foreground)]">Заказ</span>
               <Select value={String(order.id)} onValueChange={(v) => onSelect(Number(v))}>
@@ -543,6 +676,25 @@ function PaymentModal({
                 </SelectContent>
               </Select>
             </div>
+          ) : (
+            lockedOrder && (
+              <div className="flex items-center justify-between gap-3 rounded-lg border bg-[var(--muted)]/35 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">
+                    Заказ #{order.id}
+                    {order.department_name ? ` · ${order.department_name}` : ""}
+                  </div>
+                  <div className="text-xs text-[var(--muted-foreground)]">
+                    остаток {money(remainingOf(order), order.currency)}
+                  </div>
+                </div>
+                {orders.length > 1 && (
+                  <Button variant="ghost" size="sm" onClick={() => setPickingOrder(true)}>
+                    Другой заказ
+                  </Button>
+                )}
+              </div>
+            )
           )}
 
           <div className="flex flex-wrap items-end justify-between gap-3">
@@ -614,6 +766,7 @@ function PaymentModal({
                         min="0.01"
                         step="0.01"
                         inputMode="decimal"
+                        className="text-base"
                         aria-label={`Сумма части ${index + 1}`}
                         placeholder="0"
                         value={part.amount}
@@ -737,6 +890,7 @@ function PaymentModal({
 function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
+  const mobile = useIsMobile();
   const isAccountant = can(me, "payments.create");
   const canViewReports = can(me, "reports.view");
   const canViewOrders = can(me, "orders.view");
@@ -749,6 +903,9 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [tab, setTab] = useState("orders");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
+  // «Оплатить» у заказа открывает форму, запертую на этот заказ; шапочная
+  // кнопка «Внести оплату» — с полным выбором, как раньше.
+  const [paymentLocked, setPaymentLocked] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -811,11 +968,17 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       actions={
         <div className="flex items-center gap-2">
           {isAccountant && data.orders.length > 0 && (
-            <Button size="sm" onClick={() => setPaymentOpen(true)}>
+            <Button
+              size="sm"
+              onClick={() => {
+                setPaymentLocked(false);
+                setPaymentOpen(true);
+              }}
+            >
               <Wallet className="size-4" /> <span className="hidden sm:inline">Внести оплату</span>
             </Button>
           )}
-          <Link href="/accounting" className={buttonVariants({ size: "sm", variant: "outline" })}>
+          <Link href="/accounting?view=debts" className={buttonVariants({ size: "sm", variant: "outline" })}>
             <ArrowLeft className="size-4" />К долгам
           </Link>
         </div>
@@ -880,6 +1043,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       <div className="grid grid-cols-1 items-start gap-5">
         <div className="flex flex-col gap-4">
           <Tabs
+            className="overflow-x-auto whitespace-nowrap"
             active={tab}
             onChange={setTab}
             tabs={[
@@ -908,8 +1072,11 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                 orders={data.orders}
                 canPay={isAccountant}
                 canViewOrder={canViewOrders}
+                layout={mobile ? "cards" : "table"}
+                clientId={id}
                 onPay={(id) => {
                   setSelectedId(id);
+                  setPaymentLocked(true);
                   setPaymentOpen(true);
                 }}
               />
@@ -950,6 +1117,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           blockedFor={blockedFor}
           onPaid={onPaid}
           onError={setError}
+          lockedOrder={paymentLocked}
         />
       )}
     </AppShell>

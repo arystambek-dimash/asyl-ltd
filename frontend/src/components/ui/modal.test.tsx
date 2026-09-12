@@ -122,3 +122,14 @@ describe("Modal", () => {
     expect(within(outer).getByRole("button", { name: "Закрыть" })).toHaveFocus();
   });
 });
+
+describe("Modal sheet variant", () => {
+  it("marks the dialog as a bottom sheet", () => {
+    render(
+      <Modal open onClose={() => {}} title="Фильтры" variant="sheet">
+        тело
+      </Modal>,
+    );
+    expect(screen.getByRole("dialog", { name: "Фильтры" })).toHaveClass("animate-sheet-content");
+  });
+});

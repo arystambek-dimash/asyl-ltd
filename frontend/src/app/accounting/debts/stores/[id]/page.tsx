@@ -11,6 +11,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
+import { withBack } from "@/lib/navigation";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { formatCurrency } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -79,7 +80,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
       title={`Долг · ${store.name}`}
       section="Касса"
       actions={
-        <Link href="/accounting" className={buttonVariants({ size: "sm", variant: "outline" })}>
+        <Link href="/accounting?view=debts" className={buttonVariants({ size: "sm", variant: "outline" })}>
           <ArrowLeft className="size-4" /> К долгам
         </Link>
       }
@@ -141,7 +142,10 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                 <CardHeader className="flex-row items-center justify-between gap-2 pb-3">
                   <CardTitle className="flex items-center gap-2 text-base">
                     {canViewOrders ? (
-                      <Link href={`/orders/${o.id}`} className="hover:underline">
+                      <Link
+                        href={withBack(`/orders/${o.id}`, `/accounting/debts/stores/${id}`)}
+                        className="hover:underline"
+                      >
                         Заказ #{o.id}
                       </Link>
                     ) : (

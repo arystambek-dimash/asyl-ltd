@@ -235,6 +235,8 @@ def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
         "refunded_by_currency": {"KZT": "0.00"},
         "cash_by_currency": {"KZT": "0.00"},
         "cashless_by_currency": {"KZT": "100.00"},
+        "by_method_by_currency": {"KZT": {"invoice": "100.00"}},
+        "payments_by_method": {"invoice": 1},
     }
 
     refund_day = auth_client(boss).get(
@@ -261,6 +263,8 @@ def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
     assert all_time["total"] == "60.00"
     assert all_time["gross"] == "100.00"
     assert all_time["refunded"] == "40.00"
+    assert all_time["by_method_by_currency"] == {"KZT": {"invoice": "60.00"}}
+    assert all_time["payments_by_method"] == {"invoice": 1}
 
 
 def test_deleted_orders_excluded(auth_client, boss):
@@ -510,3 +514,29 @@ def test_report_query_count_is_constant_for_period_cohort():
     large = query_count()
 
     assert large == small, f"report summary: {small} -> {large} queries"
+
+
+def test_income_by_method_is_net_of_refunds(auth_client, boss):
+    """Возврат уменьшает способ исходной оплаты, а не способ выдачи денег."""
+    order = _shipped_order(_client(), _product(), qty=10, price="1000")
+    _confirmed_payment(order, 3000, method="cash")
+    kaspi = _confirmed_payment(order, 1000, method="kaspi")
+    PaymentRefund.objects.create(
+        payment=kaspi,
+        amount="200.00",
+        method="apipay",
+        status="completed",
+        reason="Возврат по счёту",
+        completed_at=timezone.now(),
+    )
+
+    data = auth_client(boss).get(URL, {"section": "income"}).json()
+
+    assert data["income"]["by_method_by_currency"] == {
+        "KZT": {"cash": "3000.00", "kaspi": "800.00"},
+    }
+    assert data["income"]["payments_by_method"] == {"cash": 1, "kaspi": 1}
+    assert data["income"]["cashless"] == "800.00"
+    assert data["income"]["total"] == "3800.00"
+    department = next(row for row in data["departments"] if row["code"] == "main")
+    assert department["payments"] == 2

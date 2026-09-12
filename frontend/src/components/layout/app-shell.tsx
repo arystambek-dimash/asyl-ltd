@@ -6,7 +6,7 @@ import { homeFor } from "@/lib/can";
 import { hasAuthTokens, isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
 import { OnboardingTour } from "@/components/onboarding-tour";
 import { Sidebar } from "./sidebar";
-import { Topbar } from "./topbar";
+import { Topbar, type TopbarBack } from "./topbar";
 
 const INITIAL_SESSION_RETRY_MS = 2_000;
 const MAX_SESSION_RETRY_MS = 30_000;
@@ -19,6 +19,8 @@ export function AppShell({
   portal = false,
   tabs,
   actions,
+  back,
+  trailing,
 }: {
   title: string;
   section?: string;
@@ -27,6 +29,8 @@ export function AppShell({
   portal?: boolean;
   tabs?: React.ReactNode;
   actions?: React.ReactNode;
+  back?: TopbarBack;
+  trailing?: React.ReactNode;
 }) {
   const { me, loading, loadMe, refreshMe, logout, syncExternalSession } = useAuth();
   const router = useRouter();
@@ -111,7 +115,16 @@ export function AppShell({
       {!me.is_client && <OnboardingTour me={me} />}
       <Sidebar me={me} mobileOpen={navOpen} onClose={closeNav} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar me={me} title={title} section={section} tabs={tabs} actions={actions} onMenu={openNav} />
+        <Topbar
+          me={me}
+          title={title}
+          section={section}
+          tabs={tabs}
+          actions={actions}
+          onMenu={openNav}
+          back={back}
+          trailing={trailing}
+        />
         {/* На телефоне вкладкам нет места в навбаре — отдельная строка под ним. */}
         {tabs && <div className="overflow-x-auto px-4 sm:hidden">{tabs}</div>}
         <main className="flex-1 overflow-y-auto bg-[var(--background)] px-4 py-5 sm:px-8 sm:py-7">
