@@ -32,11 +32,19 @@ export const STATUS_FILTERS = [
 ];
 
 /** Данные и действия ленты транзакций — общие для десктопной таблицы и мобильного списка. */
-export function useTransactions({ onChanged }: { onChanged?: () => Promise<unknown> } = {}) {
+export function useTransactions({
+  onChanged,
+  department: scopeDepartment,
+}: {
+  onChanged?: () => Promise<unknown>;
+  /** Касса на телефоне задаёт отдел переключателем в шапке — свой фильтр ленты тогда не нужен. */
+  department?: string;
+} = {}) {
   const [page, setPage] = useState(1);
   const [query, setQueryState] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [department, setDepartmentState] = useState("all");
+  const [ownDepartment, setDepartmentState] = useState("all");
+  const department = scopeDepartment ?? ownDepartment;
   const debouncedQuery = useDebounced(query.trim());
   useEffect(() => setPage(1), [debouncedQuery, department, statusFilter]);
   const transactionParams = new URLSearchParams({

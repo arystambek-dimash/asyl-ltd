@@ -120,11 +120,15 @@ export function filtersError(filters: CashFilters): string | null {
 /** Сколько групп фильтров задано — для подписи «Применено: N» и бейджа на иконке. */
 export function activeFilterCount(
   filters: CashFilters,
-  { dates = true, remaining = false }: { dates?: boolean; remaining?: boolean } = {},
+  {
+    dates = true,
+    remaining = false,
+    department = true,
+  }: { dates?: boolean; remaining?: boolean; department?: boolean } = {},
 ): number {
   return [
     dates && (filters.dateFrom !== "" || filters.dateTo !== ""),
-    filters.department !== "all",
+    department && filters.department !== "all",
     filters.store !== "all",
     remaining && (filters.remainingMin !== "" || filters.remainingMax !== ""),
   ].filter(Boolean).length;

@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { DataGate } from "@/components/ui/data-state";
-import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { Input } from "@/components/ui/input";
 import { LoadMore } from "@/components/ui/load-more";
 import { paymentStage } from "@/lib/constants";
@@ -19,8 +18,9 @@ import type { CashierModel } from "../use-cashier";
 
 /** Транзакции на телефоне: сводка, поиск и чипы, лента по дням; тап по строке — шторка деталей с действиями. */
 export function TransactionsScreen({ model }: { model: CashierModel }) {
-  const { perms, departments, queue } = model;
-  const t = useTransactions({ onChanged: queue.reload });
+  const { perms, queue, scope } = model;
+  // Отдел берём из шапки кассы: закреплённый или выбранный.
+  const t = useTransactions({ onChanged: queue.reload, department: scope.department });
   const { data, rows, meta, loading, loadError } = t;
   const currentDay = useLocalDay();
   const groups = groupByDay(rows, (row) => new Date(row.paid_at), currentDay);
@@ -64,22 +64,16 @@ export function TransactionsScreen({ model }: { model: CashierModel }) {
       )}
 
       <div className="flex flex-col gap-2">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input
-            className="pl-9"
-            placeholder="Клиент, заказ или операция"
-            value={t.query}
-            onChange={(e) => t.setQuery(e.target.value)}
-          />
-        </div>
         <div className="flex items-center gap-2">
-          <FilterDropdown
-            label="Отдел"
-            active={t.department}
-            onChange={t.setDepartment}
-            options={[{ key: "all", label: "Все" }, ...departments.map((row) => ({ key: row.code, label: row.name }))]}
-          />
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+            <Input
+              className="pl-9"
+              placeholder="Клиент, заказ или операция"
+              value={t.query}
+              onChange={(e) => t.setQuery(e.target.value)}
+            />
+          </div>
           <Button variant="outline" size="icon" aria-label="Обновить" onClick={() => void t.refreshFromStart()}>
             <RefreshCcw className="size-4" />
           </Button>

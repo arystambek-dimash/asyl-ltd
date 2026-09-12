@@ -18,7 +18,7 @@ function CashierInner() {
   const searchParams = useSearchParams();
   // Экран живёт в URL: диплинки открывают нужную вкладку.
   const view = resolveView(searchParams.get("view"), perms, mobile);
-  const model = useCashier({ view, mobile, perms });
+  const model = useCashier({ view, mobile, perms, me });
 
   function selectTab(next: CashView) {
     router.replace(`${pathname}?view=${next}`, { scroll: false });

@@ -37,6 +37,22 @@ from apps.common.query_params import (
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 
 
+MONEY = DecimalField(max_digits=30, decimal_places=2)
+ZERO_MONEY = Value(Decimal("0"), output_field=MONEY)
+
+
+def item_value_sum():
+    """Сумма позиций заказа: позиция без цены даёт ноль, как в модели."""
+    return Sum(F("quantity") * Coalesce("unit_price", ZERO_MONEY), output_field=MONEY)
+
+
+def payment_net_sum():
+    """Сумма подтверждённых оплат: каждая за вычетом завершённых возвратов и не ниже нуля."""
+    return Sum(
+        Greatest(F("amount") - F("refunded_amount"), ZERO_MONEY), output_field=MONEY
+    )
+
+
 def with_order_amounts(
     queryset: QuerySet[Order], *, select: bool = True
 ) -> QuerySet[Order]:
@@ -45,38 +61,63 @@ def with_order_amounts(
     Separate subqueries avoid multiplying items by payments. Match the model:
     unpriced items contribute zero, only confirmed payments count, and each
     payment's net amount is clamped separately after completed refunds.
+    Подзапросы коррелированные — по одному на строку; для расчёта по всей
+    выборке разом есть :func:`order_remaining_by_id`.
     """
-    money = DecimalField(max_digits=30, decimal_places=2)
-    zero = Value(Decimal("0"), output_field=money)
     items = (
         OrderItem.objects.filter(order_id=OuterRef("pk"))
         .order_by()
         .values("order_id")
-        .annotate(
-            value=Sum(F("quantity") * Coalesce("unit_price", zero), output_field=money)
-        )
+        .annotate(value=item_value_sum())
     )
     payments = (
         Payment.objects.filter(order_id=OuterRef("pk"), status="confirmed")
         .order_by()
         .values("order_id")
-        .annotate(
-            value=Sum(
-                Greatest(F("amount") - F("refunded_amount"), zero), output_field=money
-            )
-        )
+        .annotate(value=payment_net_sum())
     )
     annotate = queryset.annotate if select else queryset.alias
     queryset = annotate(
         amount_total=Coalesce(
-            Subquery(items.values("value"), output_field=money), zero
+            Subquery(items.values("value"), output_field=MONEY), ZERO_MONEY
         ),
         amount_paid=Coalesce(
-            Subquery(payments.values("value"), output_field=money), zero
+            Subquery(payments.values("value"), output_field=MONEY), ZERO_MONEY
         ),
     )
     annotate = queryset.annotate if select else queryset.alias
     return annotate(amount_remaining=F("amount_total") - F("amount_paid"))
+
+
+def order_remaining_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
+    """Остаток по каждому заказу выборки за два группирующих запроса.
+
+    :func:`with_order_amounts` считает остаток подзапросом на каждый заказ —
+    список должников берёт все отгруженные «в долг» за всю историю, и цена
+    росла с каждой оплатой (на 40 тыс. заказов — 50 тыс. повторов подзапроса).
+    Формулы те же, суммы по позициям и оплатам берутся разом по всей выборке.
+    Заказа нет в словаре — остаток ноль.
+    """
+    ids = queryset.order_by().values("pk")
+    totals = dict(
+        OrderItem.objects.filter(order_id__in=ids)
+        .order_by()
+        .values("order_id")
+        .annotate(value=item_value_sum())
+        .values_list("order_id", "value")
+    )
+    paid = dict(
+        Payment.objects.filter(order_id__in=ids, status="confirmed")
+        .order_by()
+        .values("order_id")
+        .annotate(value=payment_net_sum())
+        .values_list("order_id", "value")
+    )
+    zero = Decimal("0")
+    return {
+        pk: (totals.get(pk) or zero) - (paid.get(pk) or zero)
+        for pk in totals.keys() | paid.keys()
+    }
 
 
 def filter_order_search(queryset: QuerySet[Order], search: str) -> QuerySet[Order]:

@@ -1,9 +1,12 @@
 import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
-/** Экран кассы: десктоп знает overview/confirm/journal/transactions, телефон — home/report/debts/confirm/journal/transactions/pos. */
-export type CashView = "home" | "overview" | "report" | "debts" | "confirm" | "journal" | "transactions" | "pos";
-export type MobileMenuKey = Exclude<CashView, "home" | "overview" | "pos">;
+/** Экран кассы: десктоп знает overview/confirm/journal/transactions, телефон — home/report/debts/confirm/journal/transactions/pos/remote. */
+export type CashView =
+  "home" | "overview" | "report" | "debts" | "confirm" | "journal" | "transactions" | "pos" | "remote";
+export type MobileMenuKey = Exclude<CashView, "home" | "overview" | "pos" | "remote">;
+/** Пункты нижней панели на телефоне — как в Kaspi: главная, долги, QR, удалённо, история. */
+export type CashTabKey = "home" | "debts" | "pos" | "remote" | "transactions";
 
 /** Права раздела — RequirePerm пускает при любом из них. */
 export const CASHIER_ENTRY_PERMS = ["payments.confirm", "payments.create", "reports.view", "payments.view"];
@@ -51,6 +54,7 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
     case "journal":
       return perms.canPayments;
     case "pos":
+    case "remote":
       return perms.canCreatePayments;
     case "transactions":
       return perms.canTransactions;
@@ -59,6 +63,7 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
 
 /** Порядок пунктов мобильного меню фиксированный — как в спеке. */
 const MOBILE_MENU: MobileMenuKey[] = ["confirm", "debts", "transactions", "journal", "report"];
+const CASH_TABS: CashTabKey[] = ["home", "debts", "pos", "remote", "transactions"];
 const DESKTOP_VIEWS: CashView[] = ["overview", "confirm", "journal", "transactions"];
 const ALL_VIEWS: readonly string[] = [
   "home",
@@ -69,17 +74,29 @@ const ALL_VIEWS: readonly string[] = [
   "journal",
   "transactions",
   "pos",
+  "remote",
 ];
 
 export function mobileMenu(perms: CashierPerms): MobileMenuKey[] {
   return MOBILE_MENU.filter((key) => viewAllowed(key, perms));
 }
 
+/** Главная нужна, когда разделов больше одного; POS — тоже раздел, иначе роль «только оплаты» до него не доберётся. */
+export function hasHomeScreen(perms: CashierPerms): boolean {
+  return mobileMenu(perms).length + (perms.canCreatePayments ? 1 : 0) > 1;
+}
+
+/** Нижняя панель есть только там, где есть главная; пункты без прав скрыты. */
+export function cashierTabs(perms: CashierPerms): CashTabKey[] {
+  if (!hasHomeScreen(perms)) return [];
+  return CASH_TABS.filter((key) => key === "home" || viewAllowed(key, perms));
+}
+
 export function defaultView(perms: CashierPerms, mobile: boolean): CashView {
   if (mobile) {
     // Один доступный пункт — открываем его сразу, главная с одной строкой не нужна.
     const menu = mobileMenu(perms);
-    return menu.length === 1 ? menu[0] : "home";
+    return !hasHomeScreen(perms) && menu.length === 1 ? menu[0] : "home";
   }
   return DESKTOP_VIEWS.find((view) => viewAllowed(view, perms)) ?? "transactions";
 }
@@ -90,7 +107,9 @@ export function resolveView(raw: string | null, perms: CashierPerms, mobile: boo
   if (!raw || !ALL_VIEWS.includes(raw)) return fallback;
   let view = raw as CashView;
   if (mobile && view === "overview") view = "home";
-  if (!mobile && (view === "home" || view === "report" || view === "debts" || view === "pos")) view = "overview";
+  if (!mobile && (view === "home" || view === "report" || view === "debts" || view === "pos" || view === "remote")) {
+    view = "overview";
+  }
   if (view === "home") return fallback;
   return viewAllowed(view, perms) ? view : fallback;
 }

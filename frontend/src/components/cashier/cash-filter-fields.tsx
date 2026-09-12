@@ -19,6 +19,7 @@ export function CashFilterFields({
   departments,
   showRemaining,
   showDates = true,
+  showDepartment = true,
   layout = "row",
   onChange,
 }: {
@@ -29,6 +30,8 @@ export function CashFilterFields({
   showRemaining: boolean;
   /** Отчёт на телефоне выбирает период чипами — даты в шторке не нужны. */
   showDates?: boolean;
+  /** На телефоне отдел задаёт переключатель в шапке кассы — в шторке поля нет. */
+  showDepartment?: boolean;
   layout?: "row" | "stack";
   onChange: (patch: Partial<CashFilters>) => void;
 }) {
@@ -87,7 +90,8 @@ export function CashFilterFields({
           </label>
         </div>
       )}
-      {choice("Отдел", filters.department, departmentOptions, (department) => onChange({ department }))}
+      {showDepartment &&
+        choice("Отдел", filters.department, departmentOptions, (department) => onChange({ department }))}
       {choice("Магазин", filters.store, storeOptions, (store) => onChange({ store }))}
       {showRemaining && (
         <div className="flex flex-col gap-1.5">

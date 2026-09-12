@@ -22,7 +22,7 @@ export function AppShell({
   back,
   trailing,
 }: {
-  title: string;
+  title: React.ReactNode;
   section?: string;
   description?: string;
   children: React.ReactNode;

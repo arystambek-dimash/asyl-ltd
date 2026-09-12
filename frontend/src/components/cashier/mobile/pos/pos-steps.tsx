@@ -81,35 +81,37 @@ export function PosClientStep({
   );
 }
 
-/** Шаг 2: какой заказ гасим; недоступные — серые, с причиной. */
+/** Шаг 2: какой заказ гасим (только заказы отдела кассы); недоступные — серые, с причиной. */
 export function PosOrderStep({
   clientName,
-  detail,
+  orders,
+  stores,
   loading,
   error,
   onRetry,
   onPick,
 }: {
   clientName: string;
-  detail: ClientDebtDetail | null;
+  orders: Order[];
+  stores: ClientDebtDetail["stores"];
+  /** Детали клиента ещё не загружены. */
   loading: boolean;
   error: string;
   onRetry: () => void;
   onPick: (orderId: number) => void;
 }) {
-  const orders = detail?.orders ?? [];
   return (
     <section className="flex flex-col gap-3">
       <h2 className="px-1 text-[15px] font-semibold">{clientName}</h2>
       {error && <ErrorAlert message={error} onRetry={onRetry} />}
-      {loading && !detail ? (
+      {loading ? (
         <p className={NOTE}>Загрузка…</p>
       ) : orders.length === 0 ? (
         !error && <p className={NOTE}>Долгов нет.</p>
       ) : (
         <ul className={LIST}>
           {orders.map((order) => {
-            const block = posOrderBlock(order, detail?.stores ?? []);
+            const block = posOrderBlock(order, stores);
             const { max } = wholeTengeLimit(order);
             return (
               <li key={order.id}>

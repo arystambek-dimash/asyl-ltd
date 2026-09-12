@@ -5,10 +5,19 @@ import CashierPage from "@/app/accounting/page";
 import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
 import type { TopbarBack } from "@/components/layout/topbar";
 
+type SalesDepartment = { id: number; code: string; name: string; color: string } | null;
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
-  me: { is_superuser: true, permissions: [] as string[] },
+  me: {
+    is_superuser: true,
+    permissions: [] as string[],
+    id: 7,
+    username: "kassa",
+    first_name: "",
+    last_name: "",
+    sales_department: null as SalesDepartment,
+  },
   byMethod: true,
   pendingCount: 0,
 }));
@@ -18,16 +27,19 @@ vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false 
 vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({
     title,
+    section,
     back,
     trailing,
     children,
   }: {
-    title: string;
+    title: React.ReactNode;
+    section?: string;
     back?: TopbarBack;
     trailing?: React.ReactNode;
     children: React.ReactNode;
   }) => (
     <div>
+      {section && <p data-testid="section">{section}</p>}
       <h1>{title}</h1>
       {back && (
         <button type="button" onClick={back.onClick}>
@@ -97,7 +109,16 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetNavigation("/accounting");
-  mocks.me = { is_superuser: true, permissions: [] };
+  localStorage.clear();
+  mocks.me = {
+    is_superuser: true,
+    permissions: [],
+    id: 7,
+    username: "kassa",
+    first_name: "",
+    last_name: "",
+    sales_department: null,
+  };
   mocks.byMethod = true;
   mocks.pendingCount = 0;
   mocks.get.mockReset();
@@ -105,6 +126,29 @@ beforeEach(() => {
   mocks.post.mockResolvedValue({ data: {} });
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/departments/")
+      return {
+        data: [
+          {
+            id: 1,
+            code: "main",
+            name: "Мельница",
+            color: "#123456",
+            is_active: true,
+            is_default: true,
+            order_count: 0,
+          },
+          {
+            id: 2,
+            code: "field",
+            name: "Нью-Сити",
+            color: "#654321",
+            is_active: true,
+            is_default: false,
+            order_count: 0,
+          },
+        ],
+      };
     if (url.pathname === "/reports/summary/") {
       return {
         data: {
@@ -192,11 +236,14 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
   const user = userEvent.setup();
   mocks.pendingCount = 2;
   render(<CashierPage />);
-  expect(await screen.findByRole("heading", { name: "Касса" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
+  expect(screen.getByTestId("section")).toHaveTextContent("kassa");
   const menu = within(screen.getByRole("navigation", { name: "Разделы кассы" }));
   await waitFor(() => expect(menu.getByText("2 заявки · 1 оплата на 100 ₸")).toBeInTheDocument());
   expect(menu.getByText("1 клиент · 100 ₸")).toBeInTheDocument();
   expect(menu.getAllByRole("button").map((b) => b.textContent)).toEqual([
+    expect.stringContaining("POS"),
+    expect.stringContaining("Удаленная оплата"),
     expect.stringContaining("Заявки и оплаты"),
     expect.stringContaining("Долги клиентов"),
     expect.stringContaining("Транзакции"),
@@ -212,16 +259,151 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
   await user.click(menu.getByRole("button", { name: /Заявки и оплаты/ }));
   expect(routerCalls.push).toEqual(["/accounting?view=confirm"]);
   expect(await screen.findByRole("heading", { name: "Заявки и оплаты" })).toBeInTheDocument();
+  expect(screen.getByTestId("section")).toHaveTextContent("Все отделы");
   await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
   expect(routerCalls.back).toBe(1);
-  expect(await screen.findByRole("heading", { name: "Касса" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
 });
 
-it("opens the only available section directly, without a home screen", async () => {
-  mocks.me = { is_superuser: false, permissions: ["payments.view"] };
+it("switches sections from the Kaspi-like bottom bar without stacking history", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  const bar = within(await screen.findByRole("navigation", { name: "Панель кассы" }));
+  expect(bar.getAllByRole("button").map((b) => b.textContent)).toEqual([
+    "Главная",
+    "Долги",
+    "QR",
+    "Удаленно",
+    "История",
+  ]);
+  expect(bar.getByRole("button", { name: "Главная" })).toHaveAttribute("aria-current", "page");
+
+  await user.click(bar.getByRole("button", { name: "Долги" }));
+  expect(routerCalls.replace).toEqual(["/accounting?view=debts"]);
+  expect(await screen.findByRole("heading", { name: "Долги клиентов" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Долги" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("button", { name: "Главная" })).not.toHaveAttribute("aria-current");
+
+  await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
+  expect(routerCalls.back).toBe(0);
+  expect(routerCalls.replace).toEqual(["/accounting?view=debts", "/accounting"]);
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "История" }));
+  expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Открыть POS" })).not.toBeInTheDocument();
+});
+
+it("hides bar items and home rows the cashier has no rights for", async () => {
+  mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
+  render(<CashierPage />);
+  const bar = within(await screen.findByRole("navigation", { name: "Панель кассы" }));
+  expect(bar.getAllByRole("button").map((b) => b.textContent)).toEqual(["Главная", "История"]);
+  const menu = within(screen.getByRole("navigation", { name: "Разделы кассы" }));
+  expect(menu.queryByRole("button", { name: /POS/ })).not.toBeInTheDocument();
+  expect(menu.queryByRole("button", { name: /Удаленная оплата/ })).not.toBeInTheDocument();
+});
+
+it("lets staff with access to every department switch the cashier's department", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("button", { name: "Все отделы" }));
+  const sheet = await screen.findByRole("dialog", { name: "Отдел" });
+  expect(within(sheet).getByRole("button", { name: "Все отделы" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(within(sheet).getByRole("button", { name: "Мельница" }));
+
+  expect(await screen.findByRole("heading", { name: "Мельница" })).toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Отдел" })).not.toBeInTheDocument();
+  // Хранится отдельно для каждого пользователя.
+  expect(localStorage.getItem("asyl_cashier_department:7")).toBe("main");
+  expect(localStorage.getItem("asyl_cashier_department")).toBeNull();
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => url === "/clients/debts/?department=main")).toBe(true),
+  );
+  expect(
+    mocks.get.mock.calls.some(
+      ([url]) => url === `/reports/summary/?section=income&from=${todayIso}&to=${todayIso}&department=main`,
+    ),
+  ).toBe(true);
+  // Счётчик заявок на главной считается по тому же отделу, что и очередь.
+  await waitFor(() =>
+    expect(
+      mocks.get.mock.calls.some(([url]) => /^\/orders\/\?department=main&status_group=pending/.test(String(url))),
+    ).toBe(true),
+  );
+
+  // Подэкраны работают по тому же отделу: он виден над заголовком, а из шторки фильтров поле «Отдел» ушло.
+  await user.click(screen.getByRole("button", { name: "История" }));
+  await waitFor(() =>
+    expect(
+      mocks.get.mock.calls.some(([url]) => String(url).match(/^\/payment-transactions\/\?.*department=main/)),
+    ).toBe(true),
+  );
+  expect(screen.getByTestId("section")).toHaveTextContent("Мельница");
+  await user.click(screen.getByRole("button", { name: "Долги" }));
+  await user.click(await screen.findByRole("button", { name: /Фильтры/ }));
+  const filters = await screen.findByRole("dialog", { name: "Фильтры" });
+  expect(within(filters).queryByLabelText("Отдел")).not.toBeInTheDocument();
+  expect(within(filters).getByLabelText("Магазин")).toBeInTheDocument();
+});
+
+it("remembers the chosen department on the device and forgets a department that no longer exists", async () => {
+  localStorage.setItem("asyl_cashier_department:7", "field");
+  const { unmount } = render(<CashierPage />);
+  expect(await screen.findByRole("heading", { name: "Нью-Сити" })).toBeInTheDocument();
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => url === "/clients/debts/?department=field")).toBe(true),
+  );
+  unmount();
+
+  localStorage.setItem("asyl_cashier_department:7", "closed");
+  render(<CashierPage />);
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
+  await waitFor(() => expect(localStorage.getItem("asyl_cashier_department:7")).toBe("all"));
+});
+
+it("starts a superuser on the department from the employee card but lets them switch", async () => {
+  const user = userEvent.setup();
+  mocks.me = { ...mocks.me, sales_department: { id: 1, code: "main", name: "Мельница", color: "#123456" } };
+  render(<CashierPage />);
+  expect(await screen.findByRole("heading", { name: "Мельница" })).toBeInTheDocument();
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => url === "/clients/debts/?department=main")).toBe(true),
+  );
+  await user.click(screen.getByRole("button", { name: "Мельница" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Отдел" })).getByRole("button", { name: "Все отделы" }),
+  );
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
+});
+
+it("locks a cashier to the department from the employee card", async () => {
+  mocks.me = {
+    ...mocks.me,
+    is_superuser: false,
+    permissions: ["payments.create", "payments.confirm", "payments.view", "reports.view"],
+    first_name: "Асель",
+    last_name: "Нурланова",
+    sales_department: { id: 2, code: "field", name: "Нью-Сити", color: "#654321" },
+  };
+  localStorage.setItem("asyl_cashier_department:7", "main");
+  render(<CashierPage />);
+  expect(await screen.findByRole("heading", { name: "Нью-Сити" })).toBeInTheDocument();
+  expect(screen.getByTestId("section")).toHaveTextContent("Асель Нурланова");
+  expect(screen.queryByRole("button", { name: "Нью-Сити" })).not.toBeInTheDocument();
+  // Касса закреплённого кассира работает по его отделу — что бы ни лежало в хранилище.
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => url === "/clients/debts/?department=field")).toBe(true),
+  );
+  expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department=main"))).toBe(false);
+});
+
+it("opens the only available section directly, without a home screen or a bar", async () => {
+  mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.view"] };
   render(<CashierPage />);
   expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Назад в кассу" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
 });
 
 it("returns to the home screen by replace when a sub-screen was opened by link", async () => {
@@ -361,7 +543,7 @@ it("invalid custom period shows the range error and no loading label", async () 
 });
 
 it("home falls back to the queue headline without reports.view", async () => {
-  mocks.me = { is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
+  mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
   render(<CashierPage />);
   const headline = await screen.findByRole("button", { name: /Ожидает подтверждения/ });
   expect(headline).toHaveTextContent("100 ₸");

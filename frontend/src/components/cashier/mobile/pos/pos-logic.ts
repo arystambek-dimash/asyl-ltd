@@ -1,14 +1,11 @@
 import { availableCents, blockingStore, type DebtStore } from "@/lib/debt-orders";
 import type { Order, Payment } from "@/lib/types";
 
-export type PosTab = "qr" | "remote" | "history";
-export type PosFlow = Exclude<PosTab, "history">;
+export type PosFlow = "qr" | "remote";
 export type PosStep = "client" | "order" | "amount" | "phone" | "result";
 
 export interface PosState {
-  /** Видимый таб нижней панели. */
-  tab: PosTab;
-  /** Режим текущей оплаты: QR на экране кассира или счёт на телефон клиента. */
+  /** Режим текущей оплаты: QR на экране кассира или счёт на телефон клиента; задаётся адресом ?view=pos|remote. */
   flow: PosFlow;
   step: PosStep;
   clientId: number | null;
@@ -23,7 +20,6 @@ export interface PosState {
 }
 
 export const INITIAL_POS_STATE: PosState = {
-  tab: "qr",
   flow: "qr",
   step: "client",
   clientId: null,
@@ -36,7 +32,7 @@ export const INITIAL_POS_STATE: PosState = {
 };
 
 export type PosAction =
-  | { type: "tab"; tab: PosTab }
+  | { type: "flow"; flow: PosFlow }
   | { type: "client"; id: number; name: string }
   | { type: "order"; id: number; amount: string }
   | { type: "amount"; amount: string }
@@ -94,20 +90,18 @@ export function paymentOutcome(payment: Payment): PaymentOutcome {
 }
 
 function freshState(flow: PosFlow): PosState {
-  return { ...INITIAL_POS_STATE, tab: flow, flow };
+  return { ...INITIAL_POS_STATE, flow };
 }
 
 export function posReducer(state: PosState, action: PosAction): PosState {
   switch (action.type) {
-    case "tab": {
-      if (action.tab === "history") return { ...state, tab: "history" };
-      if (action.tab === state.flow) return { ...state, tab: action.tab };
+    case "flow": {
+      if (action.flow === state.flow) return state;
       // Выданный QR или счёт не переносится в другой режим — начинаем новую оплату.
-      if (state.step === "result") return freshState(action.tab);
+      if (state.step === "result") return freshState(action.flow);
       return {
         ...state,
-        tab: action.tab,
-        flow: action.tab,
+        flow: action.flow,
         step: state.step === "phone" ? "amount" : state.step,
         error: "",
       };

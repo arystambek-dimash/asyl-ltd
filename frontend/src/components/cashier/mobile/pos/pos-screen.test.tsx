@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import CashierPage from "@/app/accounting/page";
@@ -75,12 +75,13 @@ const debtors = [
   },
 ];
 
-const debtOrder = (id: number, currency: string, total: string) => ({
+const debtOrder = (id: number, currency: string, total: string, department = "main") => ({
   id,
   client: 1,
   currency,
   status: "shipped",
-  department_name: "Мельница",
+  department,
+  department_name: department === "main" ? "Мельница" : "Нью-Сити",
   total_amount: total,
   paid_total: "0",
   remaining_amount: total,
@@ -96,7 +97,7 @@ const detail = {
   unpaid_count: 2,
   partial_count: 0,
   stores: [],
-  orders: [debtOrder(130, "KZT", "195840"), debtOrder(131, "USD", "500")],
+  orders: [debtOrder(130, "KZT", "195840"), debtOrder(131, "USD", "500", "field")],
 };
 
 function qrPayment(status: string) {
@@ -134,6 +135,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetNavigation("/accounting?view=pos");
+  localStorage.clear();
   mocks.me = { is_superuser: true, permissions: [] };
   mocks.poll = null;
   mocks.paymentStatus = "requested";
@@ -142,6 +144,29 @@ beforeEach(() => {
   mocks.post.mockResolvedValue({ data: qrPayment("requested") });
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/departments/")
+      return {
+        data: [
+          {
+            id: 1,
+            code: "main",
+            name: "Мельница",
+            color: "#123456",
+            is_active: true,
+            is_default: true,
+            order_count: 0,
+          },
+          {
+            id: 2,
+            code: "field",
+            name: "Нью-Сити",
+            color: "#654321",
+            is_active: true,
+            is_default: false,
+            order_count: 0,
+          },
+        ],
+      };
     if (url.pathname === "/clients/debts/") return { data: debtors };
     if (url.pathname === "/clients/1/debt-detail/") return { data: detail };
     if (url.pathname === "/orders/130/payments/501/") return { data: qrPayment(mocks.paymentStatus) };
@@ -238,8 +263,9 @@ it("sends a Kaspi invoice to the client's phone", async () => {
   });
   render(<CashierPage />);
 
-  await user.click(await screen.findByRole("tab", { name: /Удаленно/ }));
-  expect(screen.getByRole("heading", { name: "Удаленная оплата" })).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Удаленно" }));
+  expect(routerCalls.replace).toEqual(["/accounting?view=remote"]);
+  expect(await screen.findByRole("heading", { name: "Удаленная оплата" })).toBeInTheDocument();
   await pickFirstOrder(user);
   await user.click(screen.getByRole("button", { name: "Далее" }));
   expect(screen.getByLabelText("Телефон покупателя")).toHaveValue("87011234567");
@@ -261,32 +287,25 @@ it("steps back inside POS and closes it from the first step", async () => {
 
   await user.click(screen.getByRole("button", { name: "Назад" }));
   expect(await screen.findByPlaceholderText("Поиск клиента: имя или телефон")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Закрыть POS" }));
+  await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
   expect(routerCalls.replace).toContain("/accounting");
 });
 
-it("shows the transactions history inside POS", async () => {
-  const user = userEvent.setup();
-  render(<CashierPage />);
-  await user.click(await screen.findByRole("tab", { name: /История/ }));
-  expect(screen.getByRole("heading", { name: "История" })).toBeInTheDocument();
-  expect(await screen.findByText("Транзакций пока нет.")).toBeInTheDocument();
-});
-
-it("returns from history to the payment in progress", async () => {
+it("keeps the payment in progress while the cashier looks at the history", async () => {
   const user = userEvent.setup();
   render(<CashierPage />);
   await pickFirstOrder(user);
   await user.click(screen.getByRole("button", { name: /Показать QR/ }));
   await screen.findByRole("img", { name: "Kaspi QR для оплаты" });
 
-  await user.click(screen.getByRole("tab", { name: /История/ }));
-  expect(screen.getByRole("heading", { name: "История" })).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Назад" }));
+  await user.click(screen.getByRole("button", { name: "История" }));
+  expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
+  expect(await screen.findByText("Транзакций пока нет.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "QR" }));
 
-  expect(screen.getByRole("heading", { name: "POS" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
   expect(screen.getByRole("img", { name: "Kaspi QR для оплаты" })).toBeInTheDocument();
-  expect(routerCalls.replace).toEqual([]);
+  expect(routerCalls.replace).toEqual(["/accounting?view=transactions", "/accounting?view=pos"]);
 });
 
 it("keeps the cashier on the step while the QR is being created", async () => {
@@ -298,11 +317,14 @@ it("keeps the cashier on the step while the QR is being created", async () => {
 
   await user.click(screen.getByRole("button", { name: /Показать QR/ }));
   await user.click(screen.getByRole("button", { name: "Назад" }));
-  await user.click(screen.getByRole("tab", { name: /Удаленно/ }));
+  // Панель внизу ждёт ответа сервера вместе с кассиром.
+  expect(screen.getByRole("button", { name: "Удаленно" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Удаленно" }));
   // Ключевая проверка: клавиатура суммы всё ещё на экране — заказ не сброшен на список.
   expect(screen.getByRole("button", { name: "Стереть" })).toBeInTheDocument();
   expect(screen.getByText("195 840 ₸")).toBeInTheDocument();
   expect(mocks.post).toHaveBeenCalledTimes(1);
+  expect(routerCalls.replace).toEqual([]);
 
   await act(async () => resolve({ data: qrPayment("requested") }));
   expect(await screen.findByRole("img", { name: "Kaspi QR для оплаты" })).toBeInTheDocument();
@@ -377,21 +399,36 @@ it("explains a reservation left by a failed QR attempt", async () => {
   expect(screen.queryByRole("button", { name: /Показать QR/ })).not.toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Статус создаваемого счёта ещё уточняется");
   await user.click(screen.getByRole("button", { name: "Открыть «Историю»" }));
-  expect(screen.getByRole("heading", { name: "История" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
 });
 
-it("offers the POS button only to staff who can take payments", async () => {
+it("opens POS from the bottom bar only for staff who can take payments", async () => {
   const user = userEvent.setup();
   resetNavigation("/accounting");
   const { unmount } = render(<CashierPage />);
-  await user.click(await screen.findByRole("button", { name: "Открыть POS" }));
-  expect(routerCalls.push).toEqual(["/accounting?view=pos"]);
+  await user.click(await screen.findByRole("button", { name: "QR" }));
+  expect(routerCalls.replace).toEqual(["/accounting?view=pos"]);
   expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "QR" })).toHaveAttribute("aria-current", "page");
   unmount();
 
   resetNavigation("/accounting");
-  mocks.me = { is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
+  mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
   render(<CashierPage />);
-  expect(await screen.findByRole("heading", { name: "Касса" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Открыть POS" })).not.toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Удаленно" })).not.toBeInTheDocument();
+});
+
+it("offers only the orders of the department chosen in the cashier header", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem("asyl_cashier_department", "field");
+  render(<CashierPage />);
+  await waitFor(() =>
+    expect(mocks.get.mock.calls.some(([url]) => url === "/clients/debts/?department=field")).toBe(true),
+  );
+  await user.click(await screen.findByRole("button", { name: /Асан Бекмуратов/ }));
+
+  expect(await screen.findByRole("button", { name: /Заказ #131/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Заказ #130/ })).not.toBeInTheDocument();
 });

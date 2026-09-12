@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api, apiError } from "@/lib/api";
 import type { ClientDebtDetail } from "@/lib/debt-orders";
 import type { Payment } from "@/lib/types";
@@ -14,20 +14,36 @@ import {
   posReducer,
   wholeTengeLimit,
   type PosAction,
-  type PosTab,
+  type PosFlow,
 } from "./pos-logic";
 
 /** Как часто спрашиваем статус выданного QR или счёта. */
 export const POS_POLL_MS = 3_000;
 
-/** Сценарий POS: клиент → заказ → сумма → QR или счёт, опрос статуса до «Оплачено». */
-export function usePosFlow({ onPaid }: { onPaid?: () => void } = {}) {
+/**
+ * Сценарий POS: клиент → заказ → сумма → QR или счёт, опрос статуса до «Оплачено».
+ * `flow` — режим из адреса (null вне POS); `department` — отдел из шапки кассы:
+ * список должников уже отфильтрован по нему, заказы клиента фильтруем здесь.
+ */
+export function usePosFlow({
+  flow,
+  onPaid,
+  department = null,
+}: {
+  flow: PosFlow | null;
+  onPaid?: () => void;
+  department?: string | null;
+}) {
   const [state, dispatch] = useReducer(posReducer, INITIAL_POS_STATE);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const detail = useApi<ClientDebtDetail>(state.clientId ? `/clients/${state.clientId}/debt-detail/` : null);
   const { reload: reloadDetail } = detail;
-  const order = detail.data?.orders.find((row) => row.id === state.orderId) ?? null;
+  const orders = useMemo(
+    () => (detail.data?.orders ?? []).filter((row) => !department || row.department === department),
+    [department, detail.data],
+  );
+  const order = orders.find((row) => row.id === state.orderId) ?? null;
   const block = order ? posOrderBlock(order, detail.data?.stores ?? []) : null;
   const limit = order ? wholeTengeLimit(order).max : 0;
   const payment = state.payment;
@@ -72,6 +88,12 @@ export function usePosFlow({ onPaid }: { onPaid?: () => void } = {}) {
     if (!inFlight.current) dispatch(action);
   };
 
+  // Режим задаёт адрес (?view=pos|remote). Пока создаётся QR или счёт, смена режима ждёт ответа
+  // (он должен лечь на тот экран, откуда его отправили) и применяется, когда запрос завершён.
+  useEffect(() => {
+    if (flow && !inFlight.current) dispatch({ type: "flow", flow });
+  }, [flow, busy]);
+
   const poll = useCallback(async () => {
     if (!payment) return;
     try {
@@ -81,7 +103,8 @@ export function usePosFlow({ onPaid }: { onPaid?: () => void } = {}) {
       dispatch({ type: "poll-error", paymentId: payment.id, error: apiError(e) });
     }
   }, [payment]);
-  useVisiblePolling(poll, POS_POLL_MS, state.step === "result" && outcome === "waiting");
+  // Опрашиваем только пока POS на экране: брошенный QR не должен дёргать сервер с главной.
+  useVisiblePolling(poll, POS_POLL_MS, flow !== null && state.step === "result" && outcome === "waiting");
 
   // Деньги пришли — один раз на оплату обновляем долги клиента и общий список.
   const paidFor = useRef<number | null>(null);
@@ -96,14 +119,14 @@ export function usePosFlow({ onPaid }: { onPaid?: () => void } = {}) {
     state,
     busy,
     detail,
+    orders,
     order,
     block,
     outcome,
-    canGoBack: state.tab === "history" || state.step !== "client",
-    setTab: (tab: PosTab) => whenIdle({ type: "tab", tab }),
+    canGoBack: state.step !== "client",
     pickClient: (id: number, name: string) => whenIdle({ type: "client", id, name }),
     pickOrder: (id: number) => {
-      const target = detail.data?.orders.find((row) => row.id === id);
+      const target = orders.find((row) => row.id === id);
       const max = target ? wholeTengeLimit(target).max : 0;
       whenIdle({ type: "order", id, amount: max > 0 ? String(max) : "" });
     },
@@ -114,7 +137,7 @@ export function usePosFlow({ onPaid }: { onPaid?: () => void } = {}) {
     setPhone: (phone: string) => dispatch({ type: "phone", phone }),
     issueQr: () => void issue({ method: "kaspi", channel: "qr", amount: state.amount }, "qr"),
     sendInvoice: () => void issue({ method: "invoice", amount: state.amount, phone_number: state.phone }, "phone"),
-    back: () => whenIdle(state.tab === "history" ? { type: "tab", tab: state.flow } : { type: "back" }),
+    back: () => whenIdle({ type: "back" }),
     retry: () => whenIdle({ type: "retry" }),
     reset: () => whenIdle({ type: "reset" }),
   };

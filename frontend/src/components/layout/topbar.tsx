@@ -100,7 +100,8 @@ export function Topbar({
   trailing,
 }: {
   me: Me;
-  title: string;
+  /** Обычно строка; касса на телефоне ставит сюда кнопку выбора отдела. */
+  title: ReactNode;
   section?: string;
   tabs?: ReactNode;
   actions?: ReactNode;

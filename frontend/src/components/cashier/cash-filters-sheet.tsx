@@ -45,12 +45,12 @@ export function CashFiltersSheet({
   showDates?: boolean;
   onChange: (patch: Partial<CashFilters>) => void;
 }) {
-  const count = activeFilterCount(filters, { dates: showDates, remaining: showRemaining });
+  // Отдел на телефоне выбирается в шапке кассы, а не здесь.
+  const count = activeFilterCount(filters, { dates: showDates, remaining: showRemaining, department: false });
   // Сброс трогает только группы, которые видны в этой шторке — скрытый период
   // отчёта не должен меняться от «Сбросить» на экране без дат.
   const reset = () =>
     onChange({
-      department: "all",
       store: "all",
       ...(showDates ? { dateFrom: "", dateTo: "" } : {}),
       ...(showRemaining ? { remainingMin: "", remainingMax: "", remainingCurrency: "all" } : {}),
@@ -79,6 +79,7 @@ export function CashFiltersSheet({
         departments={departments}
         showRemaining={showRemaining}
         showDates={showDates}
+        showDepartment={false}
         onChange={onChange}
       />
     </Modal>

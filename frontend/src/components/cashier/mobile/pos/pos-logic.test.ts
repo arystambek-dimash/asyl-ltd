@@ -100,21 +100,19 @@ describe("posReducer", () => {
   });
 
   it("keeps the selection when switching payment modes before issuing", () => {
-    const remote = posReducer(picked, { type: "tab", tab: "remote" });
-    expect(remote).toMatchObject({ tab: "remote", flow: "remote", step: "amount", orderId: 130 });
+    const remote = posReducer(picked, { type: "flow", flow: "remote" });
+    expect(remote).toMatchObject({ flow: "remote", step: "amount", orderId: 130 });
     const phone = posReducer(remote, { type: "phone-step", phone: "87011234567" });
     expect(phone).toMatchObject({ step: "phone", phone: "87011234567" });
-    expect(posReducer(phone, { type: "tab", tab: "qr" })).toMatchObject({ flow: "qr", step: "amount" });
+    expect(posReducer(phone, { type: "flow", flow: "qr" })).toMatchObject({ flow: "qr", step: "amount" });
+    expect(posReducer(phone, { type: "flow", flow: "remote" })).toBe(phone);
   });
 
-  it("starts over when the mode changes after a QR was issued, but survives a look at history", () => {
+  it("starts over when the mode changes after a QR was issued", () => {
     const issued = posReducer(picked, { type: "issued", payment: payment() });
     expect(issued.step).toBe("result");
-    const history = posReducer(issued, { type: "tab", tab: "history" });
-    expect(history).toMatchObject({ tab: "history", flow: "qr", step: "result" });
-    expect(posReducer(history, { type: "tab", tab: "qr" })).toMatchObject({ tab: "qr", step: "result" });
-    expect(posReducer(issued, { type: "tab", tab: "remote" })).toMatchObject({
-      tab: "remote",
+    expect(posReducer(issued, { type: "flow", flow: "qr" })).toBe(issued);
+    expect(posReducer(issued, { type: "flow", flow: "remote" })).toMatchObject({
       flow: "remote",
       step: "client",
       payment: null,

@@ -1,6 +1,6 @@
 "use client";
-import { useCallback, useState } from "react";
-import type { CashierLogItem, ClientDebt, Department, Order, Store } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { CashierLogItem, ClientDebt, Department, Me, Order, Store } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -15,6 +15,14 @@ import {
   type CashFilters,
   type CashFiltersByScreen,
 } from "./filters";
+import {
+  ALL_DEPARTMENTS,
+  cashierName,
+  departmentScope,
+  readStoredDepartment,
+  scopeLabel,
+  storeDepartment,
+} from "./scope";
 import { debtTotals, incomeTotals, queueTotals, type IncomeSummary, type QueueTotal } from "./totals";
 import { useCashierQueue } from "./use-cashier-queue";
 import type { CashView, CashierPerms } from "./view";
@@ -25,8 +33,19 @@ import type { CashView, CashierPerms } from "./view";
  * (телефон) — те же три запроса без фильтров, сводка строго за сегодня;
  * отчёт и долги на телефоне — свои фильтры; очередь и журнал — одинаково везде.
  * POS — список должников без фильтров для поиска клиента.
+ * На телефоне отдел для всех экранов задаёт переключатель в шапке.
  */
-export function useCashier({ view, mobile, perms }: { view: CashView; mobile: boolean; perms: CashierPerms }) {
+export function useCashier({
+  view,
+  mobile,
+  perms,
+  me,
+}: {
+  view: CashView;
+  mobile: boolean;
+  perms: CashierPerms;
+  me: Me | null;
+}) {
   const [filtersByScreen, setFiltersByScreen] = useState<CashFiltersByScreen>(initialFilters);
   const filterScreen = filterScreenFor(view, mobile);
   const filters = filterScreen ? filtersByScreen[filterScreen] : EMPTY_CASH_FILTERS;
@@ -43,27 +62,68 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
     setFiltersByScreen((current) => ({ ...current, [filterScreen]: EMPTY_CASH_FILTERS }));
   }, [filterScreen]);
 
+  // Отдел кассы: закреплённый в карточке сотрудника или выбранный в шапке (запоминается на устройстве
+  // отдельно для каждого пользователя — телефон у кассиров может быть общий).
+  const { assigned, switchable } = departmentScope(me);
+  const userId = me?.id;
+  const [chosen, setChosen] = useState(
+    () => readStoredDepartment(userId) ?? me?.sales_department?.code ?? ALL_DEPARTMENTS,
+  );
+  const setDepartment = useCallback(
+    (code: string) => {
+      setChosen(code);
+      storeDepartment(code, userId);
+    },
+    [userId],
+  );
+  const { data: departments } = useApi<Department[]>("/departments/");
+  // Отключённый отдел не должен оставить пустую кассу — и не должен возвращаться при следующем входе.
+  useEffect(() => {
+    if (departments && chosen !== ALL_DEPARTMENTS && !departments.some((row) => row.code === chosen)) {
+      setDepartment(ALL_DEPARTMENTS);
+    }
+  }, [chosen, departments, setDepartment]);
+  // Касса на телефоне работает по одному отделу: закреплённому или выбранному в шапке.
+  const department = assigned ? assigned.code : chosen;
+  const scopeDepartment = mobile ? department : null;
+  // Экранные фильтры с отделом из шапки; на десктопе отдел остаётся в панели фильтров.
+  const scoped = useMemo<CashFiltersByScreen>(() => {
+    if (scopeDepartment === null) return filtersByScreen;
+    const withDepartment = (screen: CashFilters): CashFilters => ({ ...screen, department: scopeDepartment });
+    return {
+      overview: filtersByScreen.overview,
+      report: withDepartment(filtersByScreen.report),
+      debts: withDepartment(filtersByScreen.debts),
+      confirm: withDepartment(filtersByScreen.confirm),
+      journal: withDepartment(filtersByScreen.journal),
+    };
+  }, [filtersByScreen, scopeDepartment]);
+  const scopedEmpty = useMemo<CashFilters>(
+    () => (scopeDepartment === null ? EMPTY_CASH_FILTERS : { ...EMPTY_CASH_FILTERS, department: scopeDepartment }),
+    [scopeDepartment],
+  );
+
   const overviewActive = !mobile && view === "overview";
   const homeActive = mobile && view === "home";
   const reportActive = mobile && view === "report";
   const debtsActive = mobile && view === "debts";
-  const posActive = mobile && view === "pos";
+  const posActive = mobile && (view === "pos" || view === "remote");
 
   const summaryFilters = overviewActive
-    ? filtersByScreen.overview
+    ? scoped.overview
     : reportActive
-      ? filtersByScreen.report
+      ? scoped.report
       : homeActive
-        ? { ...EMPTY_CASH_FILTERS, ...periodRange("today") }
+        ? { ...scopedEmpty, ...periodRange("today") }
         : null;
   const debtsFilters = overviewActive
-    ? filtersByScreen.overview
+    ? scoped.overview
     : debtsActive
-      ? filtersByScreen.debts
+      ? scoped.debts
       : homeActive || posActive
-        ? EMPTY_CASH_FILTERS
+        ? scopedEmpty
         : null;
-  const queueSummaryFilters = overviewActive ? filtersByScreen.overview : homeActive ? EMPTY_CASH_FILTERS : null;
+  const queueSummaryFilters = overviewActive ? scoped.overview : homeActive ? scopedEmpty : null;
 
   const summaryUrl =
     perms.canReports && summaryFilters && filtersAreValid(summaryFilters)
@@ -93,12 +153,14 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
   const summary = useApi<IncomeSummary>(summaryUrl);
   const debts = useApi<ClientDebt[]>(debtsUrl);
   const queueSummary = useApi<QueueTotal[]>(queueSummaryUrl);
-  // Главной нужно только число заявок; сами заявки грузит экран очереди.
+  // Главной нужно только число заявок (по отделу кассы, как и очередь); сами заявки грузит экран очереди.
   const pendingCount = usePagedApi<Order>(
-    homeActive && perms.canReviewOrders ? "/orders/?status_group=pending" : null,
+    homeActive && perms.canReviewOrders
+      ? apiUrl("/orders/", { ...scopeParams(scopedEmpty), status_group: "pending" })
+      : null,
     1,
   );
-  const journalFilters = filtersByScreen.journal;
+  const journalFilters = scoped.journal;
   const journalLog = usePagedApi<CashierLogItem>(
     perms.canPayments && view === "journal" && filtersAreValid(journalFilters)
       ? apiUrl("/orders/cashier-log/", scopeParams(journalFilters))
@@ -106,7 +168,6 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
     50,
   );
   const { data: stores } = useApi<Store[]>(perms.canReports && perms.canViewClients ? "/stores/" : null);
-  const { data: departments } = useApi<Department[]>("/departments/");
 
   const { reload: reloadSummary } = summary;
   const { reload: reloadDebts } = debts;
@@ -126,7 +187,7 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
   const queue = useCashierQueue(
     perms.canPayments && view === "confirm",
     perms.canReviewOrders,
-    filtersByScreen.confirm,
+    scoped.confirm,
     paymentChanged,
   );
 
@@ -164,6 +225,15 @@ export function useCashier({ view, mobile, perms }: { view: CashView; mobile: bo
     queue,
     stores: stores ?? [],
     departments: departments ?? [],
+    /** Отдел кассы для шапки на телефоне: закреплённый или выбранный, с именем кассира. */
+    scope: {
+      assigned,
+      switchable,
+      department,
+      setDepartment,
+      cashier: cashierName(me),
+      ...scopeLabel(department, departments ?? [], assigned),
+    },
     income: incomeTotals(summary.data),
     incomeReady: summary.data !== null && !summary.error,
     queueTotals: queueTotals(queueSummary.data ?? []),

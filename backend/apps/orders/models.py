@@ -301,6 +301,11 @@ class Payment(models.Model):
             # (reports._income_by_day, фильтр журнала транзакций) — метод
             # без статуса нигде не запрашивается, поэтому индекс составной.
             models.Index(fields=["status", "method"], name="payment_status_method_idx"),
+            # Остаток по заказу (querysets.with_order_amounts) суммирует
+            # подтверждённые оплаты заказа — коррелированный подзапрос на
+            # каждый заказ списка должников; без составного индекса это
+            # Seq Scan по всем оплатам на каждый заказ.
+            models.Index(fields=["order", "status"], name="payment_order_status_idx"),
         ]
 
     @property

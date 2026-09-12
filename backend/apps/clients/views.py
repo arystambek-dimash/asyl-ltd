@@ -30,7 +30,7 @@ from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
 from apps.orders.debt import debt_orders, order_remaining
 from apps.orders.models import Order
-from apps.orders.querysets import with_order_api_relations, with_order_amounts
+from apps.orders.querysets import order_remaining_by_id, with_order_api_relations
 from apps.sales.access import scope_by_client_department
 
 from .models import Client, Store
@@ -526,7 +526,13 @@ class ClientViewSet(
         store_id = parse_store_id(params.get("store"))
 
         department = params.get("department")
-        orders_qs = Order.objects.filter(status="shipped", settlement_intent="debt")
+        # Погашенные заказы не считаем: payment_status ведёт сервис оплат при
+        # каждом изменении оплат и позиций (services.sync_payment_status;
+        # бэкфилл — manage.py sync_payment_status), а остаток по остальным
+        # считается точно ниже. Иначе список растёт со всей историей продаж.
+        orders_qs = Order.objects.filter(
+            status="shipped", settlement_intent="debt",
+        ).exclude(payment_status="settled")
         if department:
             orders_qs = orders_qs.filter(department=department)
         if date_from:
@@ -536,12 +542,20 @@ class ClientViewSet(
         if store_id:
             orders_qs = orders_qs.filter(store_id=store_id)
         visible_clients = self.get_queryset().prefetch_related(None)
-        balances = with_order_amounts(orders_qs).filter(
-            client_id__in=visible_clients.values("pk"), amount_remaining__gt=0,
-        ).values("client_id", "store_id", "currency", "payment_status", "amount_remaining")
+        orders_qs = orders_qs.filter(client_id__in=visible_clients.values("pk"))
+        # Остаток считаем по всей выборке разом: подзапрос на каждый заказ
+        # рос вместе с историей оплат, и список на телефоне грузился секундами.
+        remaining = order_remaining_by_id(orders_qs)
         by_client = defaultdict(list)
         store_ids = set()
-        for balance in balances.iterator(chunk_size=2000):
+        order_rows = orders_qs.order_by().values(
+            "id", "client_id", "store_id", "currency", "payment_status",
+        )
+        for balance in order_rows:
+            amount = remaining.get(balance["id"], Decimal("0"))
+            if amount <= 0:
+                continue
+            balance["amount_remaining"] = amount
             by_client[balance["client_id"]].append(balance)
             if balance["store_id"] is not None:
                 store_ids.add(balance["store_id"])
