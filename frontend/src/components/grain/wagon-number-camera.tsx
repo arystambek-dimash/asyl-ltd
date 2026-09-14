@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Check, RefreshCw, ScanLine, Settings2, TrainFront, Video, VideoOff } from "lucide-react";
+import { Check, RefreshCw, ScanLine, Settings2, VideoOff } from "lucide-react";
 import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { CameraStream } from "@/components/camera-stream";
 import { Button } from "@/components/ui/button";
@@ -183,111 +183,6 @@ function AssignmentModal({
   );
 }
 
-function CameraPanel({
-  camera,
-  settings,
-}: {
-  camera?: CameraFeed & { src: string };
-  settings: WagonNumberCameraSettings | null;
-}) {
-  const [streamOnline, setStreamOnline] = useState(false);
-
-  if (!settings?.camera_source) {
-    return (
-      <div className="relative flex min-h-72 flex-col items-center justify-center overflow-hidden rounded-[28px] border border-dashed border-amber-200 bg-[#111318] p-8 text-center text-white">
-        <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(255,255,255,.04)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.04)_1px,transparent_1px)] [background-size:32px_32px]" />
-        <span className="relative flex size-16 items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-400/10 text-amber-300">
-          <ScanLine className="size-8" />
-        </span>
-        <p className="relative mt-4 text-lg font-bold">Камера проходной не назначена</p>
-        <p className="relative mt-1 max-w-md text-sm text-white/45">
-          Выберите камеру, которая видит номер вагона при приходе и выходе с территории.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <section className="overflow-hidden rounded-[28px] border border-slate-800 bg-[#111318] text-white shadow-[0_24px_60px_rgba(15,23,42,0.18)]">
-      <div className="grid lg:grid-cols-[1.55fr_0.85fr]">
-        <div className="relative aspect-video min-h-72 overflow-hidden bg-black">
-          <CameraStream
-            src={settings.camera_source}
-            onStateChange={setStreamOnline}
-            className="absolute inset-0 size-full object-cover"
-          />
-          {!streamOnline && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black text-white/40">
-              <VideoOff className="size-7" />
-              <span className="text-xs">Ожидаем видеопоток</span>
-            </div>
-          )}
-          <div className="pointer-events-none absolute inset-x-[8%] top-1/2 h-px animate-pulse bg-amber-300 shadow-[0_0_18px_4px_rgba(251,191,36,0.55)]" />
-          <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent p-4 pb-12">
-            <span className="flex items-center gap-2 rounded-full border border-amber-300/25 bg-black/45 px-3 py-1.5 text-[10px] font-bold tracking-[0.14em] text-amber-200 backdrop-blur-md">
-              <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
-              ПРОХОДНАЯ · 24/7
-            </span>
-            <span className="rounded-full bg-black/45 px-3 py-1.5 text-[10px] font-semibold text-white/65 backdrop-blur-md">
-              MAIN STREAM
-            </span>
-          </div>
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-4 pt-14">
-            <p className="text-lg font-bold">{camera?.zone || settings.camera_source}</p>
-            <p className="mt-0.5 text-xs text-white/50">{camera?.name || settings.camera_source}</p>
-          </div>
-        </div>
-
-        <div className="flex flex-col p-6">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">Камера процесса</p>
-              <h2 className="mt-2 text-2xl font-bold tracking-tight">Приход и вывоз</h2>
-            </div>
-            <span
-              className={cn(
-                "rounded-full border px-3 py-1 text-[10px] font-bold",
-                settings.sync_status === "synced"
-                  ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-300"
-                  : "border-amber-400/25 bg-amber-400/10 text-amber-200",
-              )}
-            >
-              {settings.sync_status === "synced" ? "СИНХРОНИЗИРОВАНО" : "ОЖИДАЕТ СВЯЗЬ"}
-            </span>
-          </div>
-
-          <div className="mt-7 grid gap-3">
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <span className="flex size-10 items-center justify-center rounded-xl bg-amber-400/10 text-amber-300">
-                <TrainFront className="size-5" />
-              </span>
-              <div>
-                <p className="text-[11px] text-white/40">Ответственный участок</p>
-                <p className="mt-0.5 text-sm font-bold">Проходная вагонов</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-              <span className="flex size-10 items-center justify-center rounded-xl bg-sky-400/10 text-sky-300">
-                <Video className="size-5" />
-              </span>
-              <div>
-                <p className="text-[11px] text-white/40">Закреплённый источник</p>
-                <p className="mt-0.5 text-sm font-bold">{settings.live?.stream || settings.camera_source}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-auto pt-6">
-            <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] p-4 text-xs leading-5 text-amber-50/65">
-              Эта камера отвечает только за номера вагонов на проходной. Камеры погрузки остаются в моноблоке.
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: boolean }) {
   const { data: cameraRows, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const {
@@ -301,8 +196,6 @@ export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: 
     () => playableCameras(cameraRows).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
     [cameraRows],
   );
-  const selectedCamera = cameras.find((camera) => camera.src === settings?.camera_source);
-
   return (
     <div className="flex flex-col gap-4">
       {(camerasError || settingsError) && (
@@ -311,28 +204,24 @@ export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: 
           onRetry={() => void Promise.all([reloadCameras(), reloadSettings()])}
         />
       )}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-amber-700">Ответственная камера</p>
-          <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            Номер вагона фиксируется на входе и при выходе с территории.
-          </p>
-        </div>
-        {canManage && (
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl border-amber-200 bg-amber-50/80 text-amber-800 hover:bg-amber-100"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <Settings2 className="size-4" /> Назначить камеру
-            <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-amber-700 shadow-sm">
-              {settings?.camera_source ? "1" : "0"}
-            </span>
-          </Button>
-        )}
-      </div>
-      <CameraPanel camera={selectedCamera} settings={settings} />
-      <WagonArchCameraPanel />
+      <WagonArchCameraPanel
+        assignedCamera={settings?.camera_source ?? null}
+        syncStatus={settings?.sync_status ?? null}
+        assignAction={
+          canManage ? (
+            <Button
+              variant="outline"
+              className="h-10 rounded-xl border-amber-200 bg-amber-50/80 text-amber-800 hover:bg-amber-100"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Settings2 className="size-4" /> Назначить камеру
+              <span className="rounded-full bg-white px-2 py-0.5 text-[11px] text-amber-700 shadow-sm">
+                {settings?.camera_source ? "1" : "0"}
+              </span>
+            </Button>
+          ) : null
+        }
+      />
       {canManage && settingsOpen && (
         <AssignmentModal
           cameras={cameras}

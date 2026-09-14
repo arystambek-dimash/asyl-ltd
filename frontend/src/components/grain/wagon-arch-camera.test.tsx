@@ -192,3 +192,37 @@ describe("WagonArchCameraPanel", () => {
     expect(mocks.polling).toHaveBeenLastCalledWith(mocks.reload, 5000, true);
   });
 });
+
+describe("WagonArchCameraPanel — камера проходной", () => {
+  it("показывает закреплённую камеру, кнопку назначения и примечание", () => {
+    render(
+      <WagonArchCameraPanel
+        assignedCamera="cam8"
+        syncStatus="synced"
+        assignAction={<button type="button">Назначить камеру</button>}
+      />,
+    );
+    expect(screen.getByText("cam8 · синхронизирована")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Назначить камеру" })).toBeInTheDocument();
+    expect(screen.getByText(/Эта камера отвечает только за номера вагонов/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("предупреждает, когда камера номеров и камера арки разные", () => {
+    render(<WagonArchCameraPanel assignedCamera="cam3" syncStatus="pending" />);
+    expect(screen.getByText("cam3 · ожидает связь")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Камера номеров (cam3) и камера арки (cam8) должны совпадать.");
+  });
+
+  it("без назначенной камеры пишет «не назначена» и стримит камеру арки", () => {
+    render(<WagonArchCameraPanel />);
+    expect(screen.getByText("не назначена")).toBeInTheDocument();
+    expect(screen.getByTestId("camera-stream")).toHaveAttribute("data-src", "cam8");
+  });
+
+  it("пока прокси не ответил, стримит закреплённую камеру", () => {
+    mocks.runtime = null;
+    render(<WagonArchCameraPanel assignedCamera="cam8" />);
+    expect(screen.getByTestId("camera-stream")).toHaveAttribute("data-src", "cam8");
+  });
+});

@@ -58,6 +58,9 @@ def _diagnostic_detail(exc: Exception) -> str:
     """
     logger.warning("Диагностика арки вагонных весов: %r", exc)
     if isinstance(exc, ai.AiError):
+        if exc.status == 404:
+            # Старый сервис на ПК камер ещё не знает про зону арки.
+            return "на ПК камер ещё нет функции зоны арки — обновите сервис"
         return exc.detail
     if isinstance(exc, VehicleRuntimeContractError):
         return "ПК камер вернул некорректный ответ"

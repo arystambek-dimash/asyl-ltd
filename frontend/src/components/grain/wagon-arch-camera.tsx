@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { AxiosError } from "axios";
 import { Check, PencilLine, X } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
@@ -88,7 +88,19 @@ function collectorLabel(runtime: WagonArchCameraRuntime | null) {
   return `Сборщик: ${status[collector.status] ?? collector.status}${collector.pending ? ` · в очереди ${collector.pending}` : ""}`;
 }
 
-export function WagonArchCameraPanel() {
+type WagonArchCameraPanelProps = {
+  /** Камера, закреплённая за проходной вагонов (настройка «Назначить камеру»). */
+  assignedCamera?: string | null;
+  syncStatus?: string | null;
+  /** Кнопка «Назначить камеру» — рендерится рядом с действиями зоны. */
+  assignAction?: ReactNode;
+};
+
+export function WagonArchCameraPanel({
+  assignedCamera = null,
+  syncStatus = null,
+  assignAction = null,
+}: WagonArchCameraPanelProps = {}) {
   const canManage = useAuth((state) => Boolean(state.me?.is_superuser));
   const { data: runtime, error, reload, setData } = useApi<WagonArchCameraRuntime>(RUNTIME_URL);
   const [editing, setEditing] = useState(false);
@@ -104,6 +116,9 @@ export function WagonArchCameraPanel() {
   const zoneConfigured = Boolean(zone && isDrawableVehicleRoi(zone, "main"));
   const canSave = validDraft(draft) && !saving;
   const lastStop = runtime?.runtime.last_stop ?? null;
+  // Пока прокси не ответил, показываем поток закреплённой камеры — оператор видит видео сразу.
+  const streamSrc = runtime?.stream ?? assignedCamera;
+  const cameraMismatch = Boolean(assignedCamera && runtime && assignedCamera !== runtime.camera);
 
   function startEditing() {
     if (!canManage || !runtime) return;
@@ -159,31 +174,35 @@ export function WagonArchCameraPanel() {
         <div>
           <h2 className="text-lg font-semibold">Зона арки</h2>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            Вагон встал в зоне и вес устоялся — записывается заезд; поехал — выезд.
+            Номер вагона читается с этой камеры на проходной. Вагон встал в зоне и вес устоялся — записывается заезд;
+            поехал — выезд.
           </p>
         </div>
-        {canManage && editing ? (
-          <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора зоны">
-            <Button
-              variant="outline"
-              disabled={saving}
-              onClick={() => {
-                setEditing(false);
-                setDraft([]);
-                setSaveError("");
-              }}
-            >
-              <X className="size-4" /> Отмена
+        <div className="flex flex-wrap items-center gap-2">
+          {assignAction}
+          {canManage && editing ? (
+            <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора зоны">
+              <Button
+                variant="outline"
+                disabled={saving}
+                onClick={() => {
+                  setEditing(false);
+                  setDraft([]);
+                  setSaveError("");
+                }}
+              >
+                <X className="size-4" /> Отмена
+              </Button>
+              <Button disabled={!canSave} onClick={() => void save()}>
+                <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить зону"}
+              </Button>
+            </div>
+          ) : canManage ? (
+            <Button variant="outline" disabled={!runtime || Boolean(error)} onClick={startEditing}>
+              <PencilLine className="size-4" /> Изменить зону
             </Button>
-            <Button disabled={!canSave} onClick={() => void save()}>
-              <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить зону"}
-            </Button>
-          </div>
-        ) : canManage ? (
-          <Button variant="outline" disabled={!runtime || Boolean(error)} onClick={startEditing}>
-            <PencilLine className="size-4" /> Изменить зону
-          </Button>
-        ) : null}
+          ) : null}
+        </div>
       </div>
       {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
       {runtime?.diagnostic ? (
@@ -214,10 +233,10 @@ export function WagonArchCameraPanel() {
       )}
       <div className="grid gap-4 lg:grid-cols-[1.55fr_0.85fr]">
         <div className="relative aspect-video overflow-hidden rounded-lg bg-[#141416]">
-          {runtime?.stream ? (
+          {streamSrc ? (
             <CameraStream
-              key={runtime.stream}
-              src={runtime.stream}
+              key={streamSrc}
+              src={streamSrc}
               onStateChange={setStreamOnline}
               className="absolute inset-0 size-full object-contain"
             />
@@ -236,6 +255,14 @@ export function WagonArchCameraPanel() {
           )}
         </div>
         <dl className="grid content-start gap-3 text-sm">
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
+            <dt className="text-[var(--muted-foreground)]">Камера</dt>
+            <dd className="font-medium">
+              {assignedCamera
+                ? `${assignedCamera} · ${syncStatus === "synced" ? "синхронизирована" : "ожидает связь"}`
+                : "не назначена"}
+            </dd>
+          </div>
           <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
             <dt className="text-[var(--muted-foreground)]">Зона</dt>
             <dd className="font-medium">{!runtime ? "—" : zoneConfigured ? "Задана" : "Зона арки не задана"}</dd>
@@ -269,6 +296,14 @@ export function WagonArchCameraPanel() {
               </dd>
             </div>
           )}
+          {cameraMismatch && runtime && (
+            <p role="alert" className="text-[var(--warning)]">
+              Камера номеров ({assignedCamera}) и камера арки ({runtime.camera}) должны совпадать.
+            </p>
+          )}
+          <p className="text-xs leading-5 text-[var(--muted-foreground)]">
+            Эта камера отвечает только за номера вагонов на проходной. Камеры погрузки остаются в моноблоке.
+          </p>
         </dl>
       </div>
     </Card>

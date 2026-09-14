@@ -88,10 +88,10 @@ def test_runtime_diagnostic_reports_a_malformed_motion_payload_in_russian(auth_c
 def test_runtime_diagnostic_uses_the_sanitised_ai_error_detail(auth_client, viewer):
     """ai.AiError.detail is already a safe, pre-sanitised string — use it as-is."""
     with patch.object(ai, "enabled", return_value=True), patch.object(ai, "arch_zone", return_value=ZONE), \
-            patch.object(ai, "arch_motion", side_effect=ai.AiError(404, "AI-сервис: ошибка 404")):
+            patch.object(ai, "arch_motion", side_effect=ai.AiError(409, "AI-сервис: ошибка 409")):
         response = auth_client(viewer).get("/api/cameras/wagon-arch-runtime/")
     assert response.status_code == 200
-    assert response.data["diagnostic"] == "Движение недоступно: AI-сервис: ошибка 404"
+    assert response.data["diagnostic"] == "Движение недоступно: AI-сервис: ошибка 409"
 
 
 def test_runtime_diagnostic_logs_the_raw_exception_server_side(auth_client, viewer, caplog):
@@ -139,3 +139,15 @@ def test_put_maps_an_upstream_500_to_a_502_ai_error(auth_client, superuser):
         response = auth_client(superuser).put("/api/cameras/cam8/wagon-arch-runtime/", body, format="json")
     assert response.status_code == 502
     assert response.data["code"] == "ai_error"
+
+
+def test_runtime_explains_an_outdated_camera_pc(auth_client, viewer):
+    with patch.object(ai, "enabled", return_value=True), \
+            patch.object(ai, "arch_zone", side_effect=ai.AiError(404, "not found")), \
+            patch.object(ai, "arch_motion", side_effect=ai.AiError(404, "not found")):
+        response = auth_client(viewer).get("/api/cameras/wagon-arch-runtime/")
+    assert response.status_code == 200
+    assert response.data["diagnostic"] == (
+        "Зона арки недоступна: на ПК камер ещё нет функции зоны арки — обновите сервис; "
+        "Движение недоступно: на ПК камер ещё нет функции зоны арки — обновите сервис"
+    )
