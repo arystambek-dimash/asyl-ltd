@@ -529,6 +529,34 @@ VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG = _bounded_int_env(
 VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG", 1000, 100, 20_000
 )
+# Wagon intake under the unloading arch: an independent collector pairs the
+# wagon scale with the camera-PC arch-motion state (see weighbridge/wagon_collector).
+WAGON_ARCH_AUTOMATION_ENABLED = env_flag(
+    os.environ.get("WAGON_ARCH_AUTOMATION_ENABLED", "0")
+)
+WAGON_ARCH_CAMERA = os.environ.get("WAGON_ARCH_CAMERA", "cam8").strip().lower()
+if re.fullmatch(r"cam(?:[1-9]|[12][0-9]|3[0-2])", WAGON_ARCH_CAMERA) is None:
+    raise ValueError("WAGON_ARCH_CAMERA must be cam1..cam32")
+WAGON_ARCH_STILL_SECONDS = _bounded_int_env("WAGON_ARCH_STILL_SECONDS", 10, 3, 120)
+WAGON_ARCH_STABLE_SECONDS = _bounded_int_env("WAGON_ARCH_STABLE_SECONDS", 2, 1, 30)
+WAGON_ARCH_STABLE_TOLERANCE_KG = _bounded_int_env(
+    "WAGON_ARCH_STABLE_TOLERANCE_KG", 100, 0, 2_000
+)
+WAGON_ARCH_EMPTY_MAX_KG = _bounded_int_env("WAGON_ARCH_EMPTY_MAX_KG", 1000, 0, 20_000)
+WAGON_ARCH_NEXT_WAGON_RISE_KG = _bounded_int_env(
+    "WAGON_ARCH_NEXT_WAGON_RISE_KG", 5000, 500, 50_000
+)
+WAGON_ARCH_MOTION_MAX_AGE_SECONDS = _bounded_int_env(
+    "WAGON_ARCH_MOTION_MAX_AGE_SECONDS", 5, 1, 60
+)
+WAGON_ARCH_OCR_RETRY_SECONDS = _bounded_int_env(
+    "WAGON_ARCH_OCR_RETRY_SECONDS", 15, 5, 300
+)
+WAGON_ARCH_OCR_MAX_ATTEMPTS = _bounded_int_env("WAGON_ARCH_OCR_MAX_ATTEMPTS", 4, 1, 10)
+# Отъезд применяется не сразу: вагон могли просто переставить под аркой.
+WAGON_ARCH_EXIT_GRACE_SECONDS = _bounded_int_env(
+    "WAGON_ARCH_EXIT_GRACE_SECONDS", 600, 60, 3600
+)
 VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS", 3, 1, 10
 )

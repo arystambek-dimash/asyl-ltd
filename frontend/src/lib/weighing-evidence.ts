@@ -29,6 +29,24 @@ export function weighingReasonLabel(reason: string, detail?: string) {
   return REASONS[reason] || detail || (reason ? "Требуется проверка взвешивания" : "");
 }
 
+const ARCH_STOP_REASONS: Record<string, string> = {
+  silo_required: "Назначьте силос в рейсе — заезд запишется автоматически",
+  wagon_on_site: "Вагон с этим номером уже на территории",
+  exit_not_lower: "Вес на выезде не меньше веса на въезде — проверьте взвешивания",
+  no_exit_weight: "Перед отъездом не было устойчивого веса — укажите выезд вручную",
+  invalid_wagon_transition: "Рейс в состоянии, где вес применить нельзя",
+  exit_unseen: "Отъезд не был виден — укажите выезд вручную",
+  wagon_deleted: "Рейс удалён — стоянку можно закрыть",
+  import_error: "Ошибка импорта — проверьте рейс",
+  not_simple_flow: "Рейс не в коротком потоке — оформите вручную",
+  wrong_scale_action: "Весы ждут другое действие — проверьте этап рейса",
+};
+
+export function archStopReasonLabel(reason: string, detail?: string) {
+  if (!reason) return "";
+  return ARCH_STOP_REASONS[reason] || detail || "Требуется проверка";
+}
+
 export function identityReviewLabel(reason?: string, orientation?: string) {
   const labels: Record<string, string> = {
     entry_missing:

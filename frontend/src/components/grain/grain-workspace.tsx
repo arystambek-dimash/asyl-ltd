@@ -4,6 +4,7 @@ import { GrainToolbar } from "@/components/grain/grain-toolbar";
 import { UnassignedWeighingsPanel } from "@/components/grain/unassigned-weighings";
 import { VehiclePlateCameraWorkspace } from "@/components/grain/vehicle-plate-camera";
 import { PassageHistory } from "@/components/grain/passage-history";
+import { WagonArchStops } from "@/components/grain/wagon-arch-stops";
 import { WagonNumberCameraWorkspace } from "@/components/grain/wagon-number-camera";
 import { FlowEmptyState, WagonTable } from "@/components/grain/wagon-table";
 import { AppShell } from "@/components/layout/app-shell";
@@ -32,7 +33,7 @@ import { PassageForm } from "./passage-form";
 import { ManualPassageEntryDialog } from "./manual-passage-entry-dialog";
 import { SupplyForm } from "./supply-form";
 
-type GrainTab = "expected" | "on_site" | "finished" | "history" | "camera";
+type GrainTab = "expected" | "on_site" | "finished" | "history" | "camera" | "arch";
 type GrainDirection = GrainWagon["direction"];
 
 const DIRECTION_TABS = [
@@ -44,6 +45,7 @@ const INTAKE_TABS = [
   { key: "expected", label: "Ожидаются" },
   { key: "on_site", label: "На территории" },
   { key: "finished", label: "Завершённые" },
+  { key: "arch", label: "Стоянки под аркой", icon: Scale, panelId: "wagon-arch-stops" },
   { key: "camera", label: "Камера проходной", icon: ScanLine },
 ];
 
@@ -327,6 +329,8 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
 
         {tab === "history" ? (
           <PassageHistory />
+        ) : tab === "arch" ? (
+          <WagonArchStops />
         ) : tab === "camera" ? (
           direction === "intake" ? (
             <WagonNumberCameraWorkspace canManage={Boolean(me?.is_superuser)} />

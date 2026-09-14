@@ -88,6 +88,16 @@ vi.mock("@/components/grain/wagon-number-camera", () => ({
 vi.mock("@/components/grain/vehicle-plate-camera", () => ({
   VehiclePlateCameraWorkspace: () => <section aria-label="Камера машин на вывоз" />,
 }));
+vi.mock("@/components/grain/wagon-arch-stops", () => ({
+  WagonArchStops: () => (
+    <section
+      id="wagon-arch-stops"
+      role="tabpanel"
+      aria-labelledby="wagon-arch-stops-tab"
+      aria-label="Стоянки под аркой"
+    />
+  ),
+}));
 vi.mock("@/components/grain/wagon-table", () => ({
   FlowEmptyState: () => null,
   WagonTable: ({ emptyText }: { emptyText: string }) => <p data-testid="wagon-table">{emptyText}</p>,
@@ -208,6 +218,24 @@ describe("Grain passage creation", () => {
     expect(screen.queryByRole("tabpanel", { name: "Журнал взвешиваний" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
     expect(useApiMock).not.toHaveBeenCalledWith(historyUrl);
+  });
+
+  it("opens the stops journal as an intake tab, before the camera tab", async () => {
+    const user = userEvent.setup();
+    render(<GrainPage />);
+
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
+    expect(tabs.indexOf("Стоянки под аркой")).toBeGreaterThan(-1);
+    expect(tabs.indexOf("Стоянки под аркой")).toBeLessThan(tabs.indexOf("Камера проходной"));
+
+    await user.click(screen.getByRole("tab", { name: "Стоянки под аркой" }));
+    expect(screen.getByRole("tab", { name: "Стоянки под аркой" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Стоянки под аркой" })).toBeInTheDocument();
+    expect(screen.queryByTestId("wagon-table")).not.toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Поиск" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    expect(screen.queryByRole("tab", { name: "Стоянки под аркой" })).not.toBeInTheDocument();
   });
 
   it("offers manual entry only for exports and pauses list polling while it is open", async () => {

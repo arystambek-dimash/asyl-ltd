@@ -1,9 +1,11 @@
 # Independent weighbridge collector
 
 The `asyl-weighbridge` Compose project owns physical polling and a dedicated
-cam1 video relay. Its pinned image and config live in `.deploy-state/weighbridge`,
-outside the application checkout. Normal deployments must not stop, recreate,
-remove or prune this project or its `asyl-weighbridge-outbox` volume.
+video relay (cam1 for the truck lane, cam8 for the wagon arch — see «Wagon
+collector» below). Its pinned image and config live in
+`.deploy-state/weighbridge`, outside the application checkout. Normal
+deployments must not stop, recreate, remove or prune this project or its
+`asyl-weighbridge-outbox`/`asyl-weighbridge-wagon-outbox` volumes.
 
 The deployment prepares the collector in shadow mode, then activates it after
 the old poller stops and before migrations/container startup. If the scale is
@@ -60,8 +62,78 @@ and test replay before changing its pinned image. Application CI/CD should only
 verify its health, never upgrade it implicitly.
 After the new application image passes production health checks, explicitly run
 `sh deploy/weighbridge/install.sh upgrade` (or select `upgrade` in its manual
-workflow). It refuses a stale/occupied scale or undelivered events. The queue
+workflow). It refuses a stale/occupied scale or undelivered events, and — once
+the wagon collector is installed — also refuses while a wagon stands under the
+arch or its storage writes are pending (undelivered wagon *events* do not
+defer it: they stay unacknowledged until the CRM importer is switched on). The queue
 volume survives both container replacements. The video relay preloads only the
 weighbridge video track so a capture does not need to start a cold RTSP session.
 Short scale API errors restart stability confirmation; only a gap exceeding
 five seconds discards the previously confirmed occupancy state.
+
+## Wagon collector
+
+`wagon-collector` is a second service in the same `asyl-weighbridge` project.
+It watches the wagon scale under the unloading arch instead of the truck lane,
+using its own outbox volume (`asyl-weighbridge-wagon-outbox`, mounted at
+`/var/lib/weighbridge-wagon`) so a truck-collector upgrade or rollback never
+touches it. Unlike the truck collector it has no activation marker: there is
+no legacy poller to hand off from, so `sh deploy/weighbridge/install.sh
+upgrade` simply brings both services up together and the wagon collector
+starts recording immediately. The CRM only imports its events once
+`WAGON_ARCH_AUTOMATION_ENABLED=1` is set on the server (default `0`); with the
+flag off the collector still records every stop to its own SQLite outbox, the
+importer just leaves it alone.
+
+`WAGON_SCALE_API_URL` must be set in the server's `.env`. The wagon indicator
+is a CAS Weight API; its current address (2026-09-14) is
+`http://vesyv.taild494e4.ts.net:8000/api/v1/weight` over Tailscale. The
+`http://vesyv:8000/api/v1/weight` baked into `compose.yml` as a fallback is
+only a placeholder — it resolves nowhere outside a network with a `vesyv`
+host and exists so the container still starts (and reports
+`hardware_unavailable`) when the real address is not yet configured on that
+server.
+
+It also needs two things from the camera-PC package (Part 1): a `cam8main`
+stream in this relay (already in `go2rtc.yaml`, deliberately not in
+`preload` — a wagon frame is only ever fetched around a stop, not streamed
+continuously) and `GET /cameras/cam8/arch-motion` answering `{state:
+"moving"|"still"|"unknown", still_seconds, sample_age_seconds}`. Until Part 1
+is deployed and its motion zone is drawn, the collector's status is
+`camera_unavailable` (logged once per status transition, not once per poll)
+and no stop is recorded — an `unknown` motion state never closes a stop, so a
+missing or misconfigured Part 1 is inert, not unsafe.
+
+Each wagon produces two outbox rows. Arrival (`"kind": "wagon_stop"`) carries
+the full weight, a cam8 frame and the OCR'd wagon number, filled in by the
+same evidence workers as the truck collector. Departure (`"kind":
+"wagon_departure"`) carries the empty weight, `"stop_id"` pointing back at the
+arrival's `"id"`, and `"motion_gap": true` when the wagon left while motion
+was unreadable. Both rows share the truck collector's `Outbox`/`OutboxWriter`
+machinery and the FIFO/durability guarantees described above; the CRM
+importer (Part 3) is the consumer of these shapes.
+
+The wagon standing under the arch is persisted (`state` key `standing`), so a
+crash, a host reboot or a container replacement mid-unloading re-adopts that
+stop instead of recording a second arrival with its mid-unloading weight. The
+restart interval was unwatched, so the eventual departure carries
+`"motion_gap": true` and an incident `standing_restored:<stop id>` is logged.
+
+Every `WAGON_ARCH_*` setting is passed through `compose.yml` from the server's
+`.env` (see `.env.example` for the full list and defaults): the arrival
+thresholds (`STILL_SECONDS`, `STABLE_SECONDS`, `STABLE_TOLERANCE_KG`,
+`EMPTY_MAX_KG`, `NEXT_WAGON_RISE_KG`), the motion sample lifetime
+(`MOTION_MAX_AGE_SECONDS`), the OCR retry budget (`OCR_RETRY_SECONDS`,
+`OCR_MAX_ATTEMPTS`), the camera (`CAMERA`) and the CRM import flag
+(`AUTOMATION_ENABLED`).
+
+To inspect the queue directly:
+
+```
+docker exec asyl-weighbridge-wagon-collector-1 python -c "
+import sqlite3
+conn = sqlite3.connect('/var/lib/weighbridge-wagon/events.sqlite3')
+for row in conn.execute('select id, ready, acknowledged, body from events order by seq desc limit 20'):
+    print(row)
+"
+```

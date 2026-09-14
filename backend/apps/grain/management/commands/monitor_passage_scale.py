@@ -20,6 +20,7 @@ from django.db import InterfaceError, OperationalError, close_old_connections
 from apps.grain import passage_scale_automation, passage_monitor, weighing_photos
 from apps.grain import weighing_identity
 from apps.grain import outbox_importer
+from apps.grain import wagon_arch
 
 log = logging.getLogger(__name__)
 
@@ -107,8 +108,10 @@ class Command(BaseCommand):
         # worker that gets stuck after this point.
         _write_heartbeat(heartbeat, initial_status)
         last_status = initial_status
-        pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="passage")
-        recognition_future = photo_future = identity_future = None
+        # Четыре фоновые дорожки: распознавание, фото, идентичность и импортёр
+        # вагонной арки. С тремя воркерами арка отнимала слот у остальных.
+        pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="passage")
+        recognition_future = photo_future = identity_future = wagon_future = None
         next_identity_at = 0.0
         try:
             while not stopped.is_set():
@@ -122,6 +125,8 @@ class Command(BaseCommand):
                             if outbox_importer.enabled()
                             else passage_scale_automation.monitor_once()
                         )
+                        if wagon_arch.enabled():
+                            wagon_arch.poll_once()
                     else:
                         # Bounded workers: no unbounded in-memory job queue.
                         # Any unfinished work remains discoverable in the DB.
@@ -135,6 +140,9 @@ class Command(BaseCommand):
                         if identity_future is not None and identity_future.done():
                             finished.append(identity_future)
                             identity_future = None
+                        if wagon_future is not None and wagon_future.done():
+                            finished.append(wagon_future)
+                            wagon_future = None
                         for future in finished:
                             try:
                                 future.result()
@@ -156,6 +164,8 @@ class Command(BaseCommand):
                             identity_future = pool.submit(
                                 _background_call, weighing_identity.process_once
                             )
+                        if wagon_future is None and wagon_arch.enabled():
+                            wagon_future = pool.submit(_background_call, wagon_arch.poll_once)
                     if result.state == "disabled":
                         status = "disabled"
                     elif result.state == "unavailable":

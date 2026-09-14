@@ -7,3 +7,5 @@ preload:
 streams:
   cam1main:
     - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam1
+  cam8main:
+    - rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8

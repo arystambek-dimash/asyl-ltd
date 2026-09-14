@@ -1,4 +1,5 @@
 import type { LineDirection, NormalizedLine } from "@/lib/camera-counting-line";
+import type { VehicleRoiConfig } from "@/components/grain/vehicle-roi-overlay";
 
 export interface Me {
   id: number;
@@ -750,6 +751,77 @@ export interface WagonNumberCameraSettings {
   sync_status: "synced" | "pending";
   detail: string;
   updated_at: string | null;
+}
+export interface WagonArchMotion {
+  state: "moving" | "still" | "unknown";
+  still_seconds: number;
+  direction: string;
+  status: string;
+  sample_age_seconds: number | null;
+}
+export interface WagonArchCollector {
+  total: number;
+  pending: number;
+  status: string;
+  standing: string | null;
+  motion: string | null;
+  heartbeat_at: number | null;
+}
+export type WagonArchStopStatus = "open" | "closed" | "attention" | "superseded";
+export interface WagonArchLastStop {
+  id: number;
+  stop_id: string;
+  number: string;
+  status: WagonArchStopStatus;
+  full_weight_kg: number;
+  exit_weight_kg: number | null;
+  arrived_at: string;
+  wagon_id: number | null;
+  blocked_reason: string;
+  blocked_detail: string;
+}
+export interface WagonArchRuntime {
+  enabled: boolean;
+  camera: string;
+  collector: WagonArchCollector | null;
+  pending_stops: number;
+  attention_stops: number;
+  last_stop: WagonArchLastStop | null;
+  updated_at: string | null;
+}
+export interface WagonArchCameraRuntime {
+  camera: string;
+  source: "main";
+  stream: string;
+  automation_enabled: boolean;
+  zone: VehicleRoiConfig;
+  motion: WagonArchMotion | null;
+  runtime: WagonArchRuntime;
+  diagnostic: string;
+}
+export interface WagonArchStop {
+  id: number;
+  stop_id: string;
+  camera: string;
+  arrived_at: string;
+  full_weight_kg: number;
+  exit_weight_kg: number | null;
+  net_kg: number | null;
+  number: string;
+  number_source: string;
+  recognition_error: string;
+  ocr_attempts: number;
+  status: WagonArchStopStatus;
+  blocked_reason: string;
+  blocked_detail: string;
+  motion_gap: boolean;
+  departed_at: string | null;
+  entry_applied_at: string | null;
+  exit_applied_at: string | null;
+  wagon_id: number | null;
+  wagon_status: string;
+  continues: number | null;
+  photo_url: string | null;
 }
 export interface AlwaysOnColorAnalytics {
   color: string;

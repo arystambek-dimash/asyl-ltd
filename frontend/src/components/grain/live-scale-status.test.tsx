@@ -126,4 +126,13 @@ describe("LiveScaleStatus", () => {
     expect(mocks.useApi).toHaveBeenCalledWith(null);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("reads the wagon scale for the intake contour", () => {
+    mockApi(preview({ weight_kg: "62340" }));
+
+    render(<LiveScaleStatus active scaleKey="wagon" label="Приход" />);
+
+    expect(mocks.useApi).toHaveBeenCalledWith("/truck-scales/wagon/reading/");
+    expect(screen.getByRole("group", { name: "Весы «Приход»: 62,34 т, Снимок стабилен" })).toBeInTheDocument();
+  });
 });

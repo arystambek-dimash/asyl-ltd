@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class CollectorLifecycleTests(unittest.TestCase):
-    def run_install(self, action, busy=False, arrival_during_prep=False, video_failure=False, pending_writes=False):
+    def run_install(self, action, busy=False, arrival_during_prep=False,
+                    video_failure=False, pending_writes=False, wagon_standing=False):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             shutil.copytree(ROOT / 'deploy/weighbridge', root / 'deploy/weighbridge')
@@ -31,16 +32,22 @@ if args[:2]==['exec','-i']:
    print('Weighbridge video unavailable: collector upgrade is degraded', file=sys.stderr)
    sys.exit(1)
  else:
-  with open(os.environ['COMMAND_LOG'],'a') as f:f.write('clear-guard\\n')
+  wagon='weighbridge-wagon' in script
+  label='wagon-guard' if wagon else 'clear-guard'
+  with open(os.environ['COMMAND_LOG'],'a') as f:f.write(label+'\\n')
   arriving=os.environ['ARRIVAL_DURING_PREP']=='1' and Path(os.environ['PREP_MARKER']).exists()
   heartbeat={'updated_at':time.time(), 'clear':not (os.environ['BUSY']=='1' or arriving),
              'armed':True, 'pending_writes':int(os.environ['PENDING_WRITES'])}
+  if wagon:
+   # The wagon heartbeat has its own keys; a stop under the arch defers too.
+   heartbeat={'updated_at':time.time(), 'pending_writes':0,
+              'standing':'stop-1' if os.environ['WAGON_STANDING']=='1' else None}
   outbox=types.ModuleType('weighbridge.outbox')
   outbox.Outbox=lambda _:types.SimpleNamespace(state=lambda _:heartbeat, counts=lambda:{'pending':0})
   sys.modules['weighbridge']=types.ModuleType('weighbridge')
   sys.modules['weighbridge.outbox']=outbox
   exec(compile(script, '<collector-upgrade-guard>', 'exec'), {})
-if args[-1:] == ['chown app:app /var/lib/weighbridge']:
+if args[-1:] == ['chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon']:
  if os.environ.get('BACKEND_IMAGE_REF') != 'ghcr.io/example/backend@sha256:'+'a'*64:
   sys.exit('Permission helper did not use the running backend image')
  Path(os.environ['PREP_MARKER']).touch()
@@ -53,7 +60,8 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
                    'APP_DIR':str(root), 'COMMAND_LOG':str(log), 'BUSY':str(int(busy)),
                    'ARRIVAL_DURING_PREP':str(int(arrival_during_prep)),
                    'PREP_MARKER':str(root / 'prepared'), 'VIDEO_FAILURE':str(int(video_failure)),
-                   'PENDING_WRITES':str(int(pending_writes))}
+                   'PENDING_WRITES':str(int(pending_writes)),
+                   'WAGON_STANDING':str(int(wagon_standing))}
             env.pop('WEIGHBRIDGE_IMAGE_REF', None)
             env.pop('BACKEND_IMAGE_REF', None)
             result = subprocess.run(['sh', str(root / 'deploy/weighbridge/install.sh'), action],
@@ -80,6 +88,7 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
         self.assertIn('inspect --format {{.Config.Image}} backend-current', commands)
         self.assertIn('--force-recreate', commands)
         self.assertEqual(commands.count('clear-guard\n'), 2)
+        self.assertEqual(commands.count('wagon-guard\n'), 2)
         self.assertLess(commands.rindex('clear-guard'), commands.index(' up '))
         self.assertGreater(commands.index('video-probe'), commands.index(' up '))
         self.assertNotIn('down', commands)
@@ -88,8 +97,9 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
     def test_new_arrival_during_preparation_prevents_replacement(self):
         result, commands = self.run_install('upgrade', arrival_during_prep=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('chown app:app /var/lib/weighbridge', commands)
+        self.assertIn('chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon', commands)
         self.assertEqual(commands.count('clear-guard\n'), 2)
+        self.assertEqual(commands.count('wagon-guard\n'), 1)
         self.assertNotIn(' up ', commands)
         self.assertNotIn('video-probe', commands)
         self.assertNotIn('activate_weighbridge_collector', commands)
@@ -99,7 +109,16 @@ if args[:1]==['inspect']:print('ghcr.io/example/backend@sha256:'+'a'*64)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Collector storage writes are pending', result.stderr)
         self.assertNotIn(' up ', commands)
-        self.assertNotIn('chown app:app /var/lib/weighbridge', commands)
+        self.assertNotIn('chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon', commands)
+
+    def test_a_wagon_under_the_arch_defers_the_upgrade(self):
+        result, commands = self.run_install('upgrade', wagon_standing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Wagon stands under the arch', result.stderr)
+        self.assertIn('clear-guard\n', commands)
+        self.assertNotIn(' up ', commands)
+        self.assertNotIn('video-probe', commands)
+        self.assertNotIn('activate_weighbridge_collector', commands)
 
     def test_video_not_ready_fails_upgrade_even_when_containers_are_healthy(self):
         result, commands = self.run_install('upgrade', video_failure=True)

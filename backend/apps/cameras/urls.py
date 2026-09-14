@@ -10,6 +10,7 @@ from .api_views.shipping_automation import (
     ShippingTransportEvidenceView,
     ShippingTransportStatusView,
 )
+from .api_views.wagon_arch_runtime import WagonArchCameraRuntimeView
 from .vehicle_plate_events import VehiclePlateEventListView, VehiclePlateWebhookView
 from .views import (
     AlwaysOnAnalyticsArchiveView,
@@ -128,6 +129,16 @@ urlpatterns = [
         "cameras/<str:cam>/vehicle-plate-runtime/",
         VehiclePlateRuntimeView.as_view(),
         name="vehicle-plate-runtime",
+    ),
+    path(
+        "cameras/wagon-arch-runtime/",
+        WagonArchCameraRuntimeView.as_view(),
+        name="wagon-arch-runtime-bootstrap",
+    ),
+    path(
+        "cameras/<str:cam>/wagon-arch-runtime/",
+        WagonArchCameraRuntimeView.as_view(),
+        name="wagon-arch-runtime",
     ),
     path("cameras/<str:cam>/ai/", CameraAiView.as_view()),
     path("cameras/<str:cam>/transport-camera/", ShippingTransportCameraView.as_view()),

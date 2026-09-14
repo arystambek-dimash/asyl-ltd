@@ -677,7 +677,7 @@ docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   backend -c 'chown -R app:app /app/media /app/staticfiles'
 docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   --user root --entrypoint /bin/sh passage-scale-monitor \
-  -c 'chown app:app /var/lib/weighbridge'
+  -c 'chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon'
 
 # The separate collector must remain alive while all application writers stop.
 weighbridge_collector="$(docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=collector)"

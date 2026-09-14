@@ -15,6 +15,9 @@ REMOTE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "remote-deploy.sh"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
 GO2RTC_CONFIG = REPO_ROOT / "deploy" / "go2rtc" / "go2rtc.yaml"
 CAMERA_HEALTH_GATE = REPO_ROOT / "deploy" / "health" / "wait-for-camera-health.sh"
+WEIGHBRIDGE_COMPOSE = REPO_ROOT / "deploy" / "weighbridge" / "compose.yml"
+WEIGHBRIDGE_INSTALL = REPO_ROOT / "deploy" / "weighbridge" / "install.sh"
+WEIGHBRIDGE_GO2RTC = REPO_ROOT / "deploy" / "weighbridge" / "go2rtc.yaml"
 
 CANDIDATE_BACKEND = (
     "ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:" + "a" * 64
@@ -1113,6 +1116,152 @@ class VehicleRoiStreamAliasTests(unittest.TestCase):
                 f"@${{CAMERA_HOST}}:8554/{camera}\n",
                 config,
             )
+
+
+class WagonCollectorDeploymentTests(unittest.TestCase):
+    def test_wagon_outbox_is_shared_by_collector_monitor_and_backend(self) -> None:
+        prod = PROD_COMPOSE.read_text(encoding="utf-8")
+        backend = prod.split("\n  backend:\n", 1)[1].split("\n  frontend:\n", 1)[0]
+        monitor = prod.split("\n  passage-scale-monitor:\n", 1)[1].split(
+            "\n  celery-payments:\n",
+            1,
+        )[0]
+        top_level_volumes = prod.split("\nvolumes:\n", 1)[1].split("\nnetworks:\n", 1)[0]
+
+        self.assertIn(
+            "      - weighbridge-wagon-outbox:/var/lib/weighbridge-wagon:ro\n",
+            backend,
+        )
+        self.assertIn(
+            "      - weighbridge-wagon-outbox:/var/lib/weighbridge-wagon\n",
+            monitor,
+        )
+        self.assertIn(
+            "  weighbridge-wagon-outbox:\n    name: asyl-weighbridge-wagon-outbox\n",
+            top_level_volumes,
+        )
+
+        weighbridge = WEIGHBRIDGE_COMPOSE.read_text(encoding="utf-8")
+        wagon_collector = weighbridge.split("\n  wagon-collector:\n", 1)[1].split(
+            "\nvolumes:\n",
+            1,
+        )[0]
+
+        self.assertIn(
+            "command: [python, -m, weighbridge.wagon_collector]", wagon_collector
+        )
+        self.assertIn(
+            "DJANGO_SETTINGS_MODULE: config.weighbridge_settings", wagon_collector
+        )
+        self.assertIn(
+            "WEIGHBRIDGE_OUTBOX_DIR: /var/lib/weighbridge-wagon", wagon_collector
+        )
+        self.assertIn(
+            "WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-http://vesyv:8000/api/v1/weight}",
+            wagon_collector,
+        )
+        for name, default in (
+            ("WAGON_ARCH_CAMERA", "cam8"),
+            ("WAGON_ARCH_AUTOMATION_ENABLED", "0"),
+            ("WAGON_ARCH_STILL_SECONDS", "10"),
+            ("WAGON_ARCH_STABLE_SECONDS", "2"),
+            ("WAGON_ARCH_STABLE_TOLERANCE_KG", "100"),
+            ("WAGON_ARCH_EMPTY_MAX_KG", "1000"),
+            ("WAGON_ARCH_NEXT_WAGON_RISE_KG", "5000"),
+            ("WAGON_ARCH_MOTION_MAX_AGE_SECONDS", "5"),
+            ("WAGON_ARCH_OCR_RETRY_SECONDS", "15"),
+            ("WAGON_ARCH_OCR_MAX_ATTEMPTS", "4"),
+        ):
+            # Every tunable the collector reads must be reachable from the
+            # server's .env; one left out silently keeps its code default.
+            self.assertIn(
+                f"{name}: ${{{name}:-{default}}}",
+                wagon_collector,
+                f"{name} is not passed through to the wagon collector",
+            )
+        prod_compose = PROD_COMPOSE.read_text(encoding="utf-8")
+        for name, default in (
+            ("WAGON_ARCH_CAMERA", "cam8"),
+            ("WAGON_ARCH_AUTOMATION_ENABLED", "0"),
+            # CRM-side tunables: the grace window before an exit weight is
+            # applied and the rise that means the next wagon, not the same one.
+            ("WAGON_ARCH_EXIT_GRACE_SECONDS", "600"),
+            ("WAGON_ARCH_NEXT_WAGON_RISE_KG", "5000"),
+        ):
+            self.assertIn(
+                f"{name}: ${{{name}:-{default}}}",
+                prod_compose,
+                f"{name} is not reachable from the server's .env for the backend",
+            )
+        self.assertIn("GO2RTC_API_URL: http://video:1984", wagon_collector)
+        self.assertIn(
+            "      - wagon-outbox:/var/lib/weighbridge-wagon\n", wagon_collector
+        )
+        self.assertIn("init: true", wagon_collector)
+        self.assertIn("restart: unless-stopped", wagon_collector)
+        self.assertIn("stop_grace_period: 30s", wagon_collector)
+        self.assertIn("logging: *logging", wagon_collector)
+        self.assertIn(
+            "test: [CMD, python, -m, weighbridge.healthcheck]", wagon_collector
+        )
+        self.assertIn(
+            "  wagon-outbox:\n    external: true\n    name: asyl-weighbridge-wagon-outbox\n",
+            weighbridge,
+        )
+
+        go2rtc = WEIGHBRIDGE_GO2RTC.read_text(encoding="utf-8")
+        preload_section = go2rtc.split("preload:\n", 1)[1].split("streams:\n", 1)[0]
+        streams_section = go2rtc.split("streams:\n", 1)[1]
+        self.assertNotIn("cam8main", preload_section)
+        self.assertIn("  cam8main:\n", streams_section)
+        self.assertIn(
+            "rtsp://${CAMERA_USER}:${CAMERA_PASS}@${CAMERA_HOST}:8554/cam8",
+            streams_section,
+        )
+
+    def test_upgrade_is_deferred_while_a_wagon_stands_under_the_arch(self) -> None:
+        install = WEIGHBRIDGE_INSTALL.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "--filter label=com.docker.compose.service=wagon-collector",
+            install,
+        )
+        self.assertIn("Outbox('/var/lib/weighbridge-wagon')", install)
+        self.assertIn(
+            "'Wagon stands under the arch: upgrade deferred'",
+            install,
+        )
+        self.assertIn(
+            "assert not heartbeat.get('pending_writes', 0), "
+            "'Wagon collector storage writes are pending: upgrade deferred'",
+            install,
+        )
+        # The wagon outbox stays unacknowledged until the CRM importer is
+        # enabled, so a pending count must NOT block the upgrade.
+        wagon_guard = install.split("assert_wagon_clear_for_upgrade()", 1)[1].split(
+            "\nPY\n",
+            1,
+        )[0]
+        self.assertNotIn("counts()['pending']", wagon_guard)
+        # The guard only runs when the service is actually installed.
+        self.assertIn('if [ -n "$wagon_collector_id" ]; then', install)
+
+    def test_remote_deploy_chowns_the_wagon_outbox_alongside_the_truck_outbox(
+        self,
+    ) -> None:
+        deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "-c 'chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon'",
+            deploy_script,
+        )
+        # The chown runs through passage-scale-monitor (same as install.sh),
+        # which is why that service's compose entry mounts the wagon volume
+        # read-write rather than read-only.
+        self.assertIn(
+            "--user root --entrypoint /bin/sh passage-scale-monitor",
+            deploy_script,
+        )
 
 
 if __name__ == "__main__":

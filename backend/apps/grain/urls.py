@@ -14,6 +14,9 @@ from .views import (
     TruckScaleReadingView,
     UnassignedWeighingViewSet,
     VehicleOrientationSampleViewSet,
+    WagonArchRuntimeView,
+    WagonArchStopDismissView,
+    WagonArchStopListView,
     WagonViewSet,
 )
 
@@ -57,5 +60,11 @@ urlpatterns = [
         TruckScaleReadingView.as_view(),
     ),
     path("grain/photos/<str:kind>/<int:pk>/", WeighingPhotoView.as_view()),
+    path("grain/wagon-arch/runtime/", WagonArchRuntimeView.as_view()),
+    path("grain/wagon-arch/stops/", WagonArchStopListView.as_view()),
+    path(
+        "grain/wagon-arch/stops/<int:pk>/dismiss/",
+        WagonArchStopDismissView.as_view(),
+    ),
     *router.urls,
 ]

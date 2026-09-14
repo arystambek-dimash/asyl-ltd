@@ -75,9 +75,17 @@ x-backend-environment: &backend-environment
   VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME: ${VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME:-Отруби}
   VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS: ${VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS:-15}
   VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS: ${VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS:-60}
-  # Весов вагонов пока нет. Явно пустое значение не позволяет случайно взять
-  # вес машины для операции прихода.
+  # Вагонные весы под аркой (vesyv, CAS Weight API). Явно пустое значение не
+  # позволяет случайно взять вес машины для операции прихода.
   WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-}
+  # Independent wagon-collector automation (deploy/weighbridge/). The CRM
+  # importer stays a no-op until this flag is on; 0 is the kill-switch.
+  WAGON_ARCH_AUTOMATION_ENABLED: ${WAGON_ARCH_AUTOMATION_ENABLED:-0}
+  WAGON_ARCH_CAMERA: ${WAGON_ARCH_CAMERA:-cam8}
+  # Сторона CRM: сколько отъезд ждёт пересдачи и какой скачок веса означает
+  # следующий вагон. Правятся в .env без пересборки образа.
+  WAGON_ARCH_EXIT_GRACE_SECONDS: ${WAGON_ARCH_EXIT_GRACE_SECONDS:-600}
+  WAGON_ARCH_NEXT_WAGON_RISE_KG: ${WAGON_ARCH_NEXT_WAGON_RISE_KG:-5000}
   # Автовесы относятся только к «Оформить вывоз» и доступны backend через
   # Tailscale. Single `-` сохраняет явно пустую аварийную kill-switch.
   TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}
@@ -168,6 +176,7 @@ services:
       - mediadata:/app/media
       - staticdata:/app/staticfiles
       - weighbridge-outbox:/var/lib/weighbridge:ro
+      - weighbridge-wagon-outbox:/var/lib/weighbridge-wagon:ro
     expose:
       - "8000"
     # nginx стартует только после того, как бэкенд реально принимает запросы.
@@ -376,6 +385,7 @@ services:
     volumes:
       - mediadata:/app/media
       - weighbridge-outbox:/var/lib/weighbridge
+      - weighbridge-wagon-outbox:/var/lib/weighbridge-wagon
     tmpfs:
       - /tmp/passage-scale-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
     # This is deliberately a liveness check. Hardware readiness is reported by
@@ -567,6 +577,8 @@ services:
 volumes:
   weighbridge-outbox:
     name: asyl-weighbridge-outbox
+  weighbridge-wagon-outbox:
+    name: asyl-weighbridge-wagon-outbox
   pgdata:
   redisdata:
   mediadata:

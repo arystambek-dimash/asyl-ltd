@@ -10,6 +10,9 @@ vi.mock("@/lib/use-api", () => ({
     setData: vi.fn(),
   }),
 }));
+vi.mock("./wagon-arch-camera", () => ({
+  WagonArchCameraPanel: () => <div data-testid="wagon-arch-panel" />,
+}));
 
 describe("WagonNumberCameraWorkspace", () => {
   it("показывает рабочее место без кнопки назначения обычному сотруднику", () => {
@@ -23,5 +26,11 @@ describe("WagonNumberCameraWorkspace", () => {
     render(<WagonNumberCameraWorkspace canManage />);
 
     expect(screen.getByRole("button", { name: /Назначить камеру/ })).toBeInTheDocument();
+  });
+
+  it("рендерит панель зоны арки", () => {
+    render(<WagonNumberCameraWorkspace />);
+
+    expect(screen.getByTestId("wagon-arch-panel")).toBeInTheDocument();
   });
 });

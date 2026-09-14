@@ -18,6 +18,7 @@ from .models import (
     UnassignedWeighing,
     VehicleOrientationSample,
     Wagon,
+    WagonArchStop,
     WeighingRecord,
 )
 from .orientation_dataset import load_records
@@ -725,3 +726,23 @@ class GrainMovementSerializer(serializers.ModelSerializer):
             "created_by_name",
             "created_at",
         ]
+
+
+class WagonArchStopSerializer(serializers.ModelSerializer):
+    net_kg = serializers.SerializerMethodField()
+    wagon_status = serializers.CharField(source="wagon.status", default="", read_only=True)
+    photo_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WagonArchStop
+        fields = ["id", "stop_id", "camera", "arrived_at", "full_weight_kg", "exit_weight_kg", "net_kg", "number",
+                  "number_source", "recognition_error", "ocr_attempts", "status", "blocked_reason", "blocked_detail",
+                  "motion_gap", "departed_at", "entry_applied_at", "exit_applied_at", "wagon_id", "wagon_status",
+                  "continues", "photo_url"]
+
+    def get_net_kg(self, stop):
+        return stop.full_weight_kg - stop.exit_weight_kg if stop.exit_weight_kg is not None else None
+
+    def get_photo_url(self, stop):
+        delivery = self.context.get("deliveries", {}).get(stop.photo_request_id)
+        return photo_url("evidence", delivery)

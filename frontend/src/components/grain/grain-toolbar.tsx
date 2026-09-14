@@ -30,11 +30,16 @@ export function GrainToolbar({
     items.push({ key: "supply", label: "Новый приход", icon: Plus, onSelect: onSupply });
   }
 
-  if (direction === "intake" && items.length === 0) return null;
+  if (direction === "intake" && items.length === 0 && !canWeigh) return null;
   if (direction === "passage" && !canWeigh && !canArrive) return null;
 
   return (
     <div className="flex min-w-0 items-center gap-2">
+      {direction === "intake" && canWeigh && (
+        <div className="flex shrink-0 items-center" role="group" aria-label="Текущий вес прихода">
+          <LiveScaleStatus active scaleKey="wagon" label="Приход" />
+        </div>
+      )}
       {direction === "passage" && canWeigh && (
         <div className="flex shrink-0 items-center" role="group" aria-label="Текущий вес вывоза">
           <LiveScaleStatus active scaleKey="truck" label="Вывоз" />

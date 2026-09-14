@@ -12,7 +12,6 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +24,7 @@ from rest_framework.exceptions import APIException
 from apps.grain import scale
 from apps.cameras import ai
 from .outbox import Lane, Outbox, is_busy
+from .writer import OutboxWriter
 
 
 class Collector:
@@ -42,57 +42,29 @@ class Collector:
         self.pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evidence")
         self.futures = {}
         self.last_queue_error = 0
-        self.writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="outbox")
-        self.pending_writes = deque()
-        self.write_lock = threading.Lock()
-        self.writer_future = None
+        self.writer = OutboxWriter(box)
+
+    @property
+    def pending_writes(self):
+        return self.writer.pending_writes
 
     def enqueue_write(self, method, *args, **kwargs):
         # The event and evidence are immutable values owned by this capture.
         # Contention may delay persistence, never cause a replacement reading
         # or a delayed live camera request.
-        with self.write_lock:
-            self.pending_writes.append((method, args, kwargs))
-        self.start_writer()
+        self.writer.enqueue(method, *args, **kwargs)
 
     def start_writer(self):
-        with self.write_lock:
-            if self.writer_future is not None:
-                if not self.writer_future.done():
-                    return
-                self.writer_future.result()
-            if self.pending_writes:
-                self.writer_future = self.writer.submit(self.flush_writes)
-
-    def flush_writes(self):
-        while True:
-            with self.write_lock:
-                if not self.pending_writes:
-                    return
-                method, args, kwargs = self.pending_writes[0]
-            try:
-                getattr(self.box, method)(*args, **kwargs)
-            except sqlite3.OperationalError as exc:
-                if not is_busy(exc):
-                    raise
-                return  # retained FIFO; the next poll retries off-thread
-            with self.write_lock:
-                self.pending_writes.popleft()
+        self.writer.start()
 
     def close(self):
         self.pool.shutdown(wait=True)
         # Each flush is bounded by SQLite's busy timeout; there is no infinite
         # worker retry loop holding process shutdown. Normal shutdown drains all
         # captured evidence before the writer exits.
-        deadline = time.monotonic() + 10
-        while self.pending_writes and time.monotonic() < deadline:
-            self.start_writer()
-            if self.writer_future is not None:
-                self.writer_future.result()
-            if self.pending_writes:
-                time.sleep(.05)
-        self.writer.shutdown(wait=True)
-        if self.pending_writes:
+        drained = self.writer.drain(timeout=10)
+        self.writer.shutdown()
+        if not drained:
             print("outbox_storage_unavailable_unflushed_evidence", flush=True)
 
     def same_episode(self, key):

@@ -12,6 +12,7 @@ import { showSuccess } from "@/lib/toast";
 import type { WagonNumberCameraSettings } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { WagonArchCameraPanel } from "./wagon-arch-camera";
 
 function CameraChoice({
   camera,
@@ -331,6 +332,7 @@ export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: 
         )}
       </div>
       <CameraPanel camera={selectedCamera} settings={settings} />
+      <WagonArchCameraPanel />
       {canManage && settingsOpen && (
         <AssignmentModal
           cameras={cameras}

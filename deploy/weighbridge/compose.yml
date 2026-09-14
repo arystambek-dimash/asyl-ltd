@@ -42,7 +42,46 @@ services:
       timeout: 3s
       retries: 3
       start_period: 15s
+  wagon-collector:
+    image: ${WEIGHBRIDGE_IMAGE_REF:?Pin collector image during installation}
+    entrypoint: []
+    command: [python, -m, weighbridge.wagon_collector]
+    environment:
+      DJANGO_SETTINGS_MODULE: config.weighbridge_settings
+      WEIGHBRIDGE_OUTBOX_DIR: /var/lib/weighbridge-wagon
+      WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-http://vesyv:8000/api/v1/weight}
+      TRUCK_SCALE_TIMEOUT_SECONDS: "2"
+      TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: "2"
+      TRUCK_SCALE_MAX_AGE_SECONDS: "5"
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
+      WAGON_ARCH_CAMERA: ${WAGON_ARCH_CAMERA:-cam8}
+      WAGON_ARCH_AUTOMATION_ENABLED: ${WAGON_ARCH_AUTOMATION_ENABLED:-0}
+      WAGON_ARCH_STILL_SECONDS: ${WAGON_ARCH_STILL_SECONDS:-10}
+      WAGON_ARCH_STABLE_SECONDS: ${WAGON_ARCH_STABLE_SECONDS:-2}
+      WAGON_ARCH_STABLE_TOLERANCE_KG: ${WAGON_ARCH_STABLE_TOLERANCE_KG:-100}
+      WAGON_ARCH_EMPTY_MAX_KG: ${WAGON_ARCH_EMPTY_MAX_KG:-1000}
+      WAGON_ARCH_NEXT_WAGON_RISE_KG: ${WAGON_ARCH_NEXT_WAGON_RISE_KG:-5000}
+      WAGON_ARCH_MOTION_MAX_AGE_SECONDS: ${WAGON_ARCH_MOTION_MAX_AGE_SECONDS:-5}
+      WAGON_ARCH_OCR_RETRY_SECONDS: ${WAGON_ARCH_OCR_RETRY_SECONDS:-15}
+      WAGON_ARCH_OCR_MAX_ATTEMPTS: ${WAGON_ARCH_OCR_MAX_ATTEMPTS:-4}
+      GO2RTC_API_URL: http://video:1984
+    volumes:
+      - wagon-outbox:/var/lib/weighbridge-wagon
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *logging
+    healthcheck:
+      test: [CMD, python, -m, weighbridge.healthcheck]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
 volumes:
   outbox:
     external: true
     name: asyl-weighbridge-outbox
+  wagon-outbox:
+    external: true
+    name: asyl-weighbridge-wagon-outbox

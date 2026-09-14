@@ -2321,3 +2321,23 @@ def test_local_playback_requests_browser_playable_fmp4():
 def test_history_requires_shipping_view(api_client, make_user):
     api_client.force_authenticate(make_user("history-denied"))
     assert api_client.get("/api/cameras/ai/history/").status_code == 403
+
+
+def test_arch_motion_and_zone_helpers_address_the_camera_pc_arch_endpoints():
+    with patch.object(
+        ai, "_call", return_value={"state": "still", "still_seconds": 12.0}
+    ) as call:
+        assert ai.arch_motion("cam8") == {"state": "still", "still_seconds": 12.0}
+        assert ai.arch_zone("cam8") == {"state": "still", "still_seconds": 12.0}
+    assert call.call_args_list[0].args == ("GET", "/cameras/cam8/arch-motion")
+    assert call.call_args_list[0].kwargs == {
+        "timeout_seconds": ai.VEHICLE_RUNTIME_PROBE_TIMEOUT
+    }
+    assert call.call_args_list[1].args == ("GET", "/cameras/cam8/arch-zone")
+    assert call.call_args_list[1].kwargs == {
+        "timeout_seconds": ai.VEHICLE_RUNTIME_PROBE_TIMEOUT
+    }
+    with patch.object(ai, "_request", return_value=(200, {"ok": True})) as request:
+        assert ai.save_arch_zone("cam8", {"points": []}) == (200, {"ok": True})
+    assert request.call_args.args == ("PUT", "/cameras/cam8/arch-zone", {"points": []})
+    assert request.call_args.kwargs == {"timeout_seconds": ai.VEHICLE_RUNTIME_PROBE_TIMEOUT}

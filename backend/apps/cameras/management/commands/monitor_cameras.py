@@ -2,6 +2,7 @@ import logging
 import os
 import time
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from apps.cameras import ai, continuous, health
@@ -20,6 +21,11 @@ class Command(BaseCommand):
             default=int(os.environ.get("CAMERA_MONITOR_INTERVAL_SECONDS") or 30),
             help="Seconds between probe starts",
         )
+
+    @staticmethod
+    def wagon_plate_poll_enabled() -> bool:
+        # The arch stops are the arrival sensor once the wagon collector runs.
+        return not bool(settings.WAGON_ARCH_AUTOMATION_ENABLED)
 
     def handle(self, *args, **options):
         interval = max(5, options["interval"])
@@ -51,17 +57,18 @@ class Command(BaseCommand):
                         )
                     except Exception:
                         log.exception("Wagon-number camera reconciliation failed")
-                    try:
-                        # Камера вместо датчика прибытия: увидела табличку —
-                        # приход открывается сам. Свой период опроса внутри и
-                        # не зависит от optional role-assignment API.
-                        plate = continuous.poll_wagon_plate()
-                        if plate.get("created"):
-                            self.stdout.write(
-                                f"camera-ai wagon-arrival=#{plate['created']}"
-                            )
-                    except Exception:
-                        log.exception("Wagon plate polling failed")
+                    if self.wagon_plate_poll_enabled():
+                        try:
+                            # Камера вместо датчика прибытия: увидела табличку —
+                            # приход открывается сам. Свой период опроса внутри и
+                            # не зависит от optional role-assignment API.
+                            plate = continuous.poll_wagon_plate()
+                            if plate.get("created"):
+                                self.stdout.write(
+                                    f"camera-ai wagon-arrival=#{plate['created']}"
+                                )
+                        except Exception:
+                            log.exception("Wagon plate polling failed")
             except Exception:
                 # Let Docker restart a broken one-shot startup, while a long
                 # running monitor survives transient DB failures and retries.

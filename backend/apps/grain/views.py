@@ -8,6 +8,7 @@ from django.db import transaction
 from django.core.cache import cache
 from django.db.models import Count, F, Q, Prefetch
 from django.db.models.functions import Coalesce
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -33,6 +34,7 @@ from . import (
     scale,
     services,
     vehicle_weight_capture,
+    wagon_arch,
 )
 from . import statuses as st
 from .models import (
@@ -44,6 +46,8 @@ from .models import (
     UnassignedWeighing,
     VehicleOrientationSample,
     Wagon,
+    WagonArchStop,
+    WeighingPhotoDelivery,
     WeighingRecord,
 )
 from .scale_preview import get_scale_preview
@@ -57,6 +61,7 @@ from .serializers import (
     SiloTypeSerializer,
     UnassignedAssignSerializer,
     HistoricalTareSerializer,
+    WagonArchStopSerializer,
     WeighingRecordSerializer,
     UnassignedCreatePassageSerializer,
     UnassignedDiscardSerializer,
@@ -1086,3 +1091,48 @@ class SiloTypeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 }
             )
         instance.delete()
+
+
+class WagonArchRuntimeView(PermAPIViewMixin, APIView):
+    required_perms = {"get": "grain.view"}
+
+    def get(self, request):
+        response = Response(wagon_arch.runtime())
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class WagonArchStopListView(PermAPIViewMixin, APIView):
+    required_perms = {"get": "grain.view"}
+
+    def get(self, request):
+        rows = WagonArchStop.objects.select_related("wagon").order_by("-id")
+        before = request.query_params.get("before")
+        if before:
+            if not before.isdigit() or int(before) <= 0:
+                raise ValidationError("Некорректный номер страницы")
+            rows = rows.filter(pk__lt=int(before))
+        page = list(rows[:51])
+        deliveries = {d.request_id: d for d in WeighingPhotoDelivery.objects.filter(
+            request_id__in=[stop.photo_request_id for stop in page[:50]])}
+        data = WagonArchStopSerializer(page[:50], many=True, context={"deliveries": deliveries}).data
+        response = Response({"results": data, "next_cursor": page[49].pk if len(page) > 50 else None})
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class WagonArchStopDismissView(PermAPIViewMixin, APIView):
+    """Оператор разобрался со стопом сам — закрыть его вручную."""
+
+    required_perms = {"post": "grain.edit"}
+
+    def post(self, request, pk):
+        stop = get_object_or_404(WagonArchStop, pk=pk)
+        wagon_arch.dismiss(stop, request.user)
+        delivery = WeighingPhotoDelivery.objects.filter(request_id=stop.photo_request_id).first()
+        data = WagonArchStopSerializer(
+            stop, context={"deliveries": {stop.photo_request_id: delivery}}
+        ).data
+        response = Response(data)
+        response["Cache-Control"] = "no-store"
+        return response

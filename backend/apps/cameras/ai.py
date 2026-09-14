@@ -328,6 +328,40 @@ def save_vehicle_roi(cam: str, payload: dict) -> tuple[int, dict]:
     )
 
 
+def arch_motion(cam: str) -> dict:
+    """Состояние зоны арки вагонных весов: едет / стоит и сколько секунд стоит."""
+    return (
+        _call(
+            "GET",
+            f"/cameras/{camera_id(cam)}/arch-motion",
+            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+        )
+        or {}
+    )
+
+
+def arch_zone(cam: str) -> dict:
+    """Return one camera's canonical wagon-arch motion-detection zone."""
+    return (
+        _call(
+            "GET",
+            f"/cameras/{camera_id(cam)}/arch-zone",
+            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+        )
+        or {}
+    )
+
+
+def save_arch_zone(cam: str, payload: dict) -> tuple[int, dict]:
+    """Forward one arch-zone update with a bounded camera-PC timeout."""
+    return _request(
+        "PUT",
+        f"/cameras/{camera_id(cam)}/arch-zone",
+        payload,
+        timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
+    )
+
+
 def _same_camera_timestamp(actual, expected: str) -> bool:
     """Compare instants without rejecting equivalent ISO timezone spellings."""
     if not isinstance(actual, str):

@@ -626,6 +626,20 @@ def _validate_silo_compatibility(wagon: Wagon, silo: Silo) -> None:
         raise _error("Класс зерна не соответствует силосу", "silo_class_mismatch")
 
 
+def _default_route_silo_ids(wagon: Wagon) -> set[int]:
+    culture = wagon.supply.culture if wagon.supply else ""
+    grain_class = wagon.supply.grain_class if wagon.supply else ""
+    if not culture and not grain_class:
+        return set()
+    return set(
+        SiloType.objects.filter(
+            grain_culture=culture,
+            grain_class=grain_class,
+            default_silo__isnull=False,
+        ).values_list("default_silo_id", flat=True)
+    )
+
+
 def suggest_silos(wagon: Wagon):
     """Подходящие силосы; настроенный маршрут прихода идёт первым."""
     culture = wagon.supply.culture if wagon.supply else ""
@@ -650,13 +664,7 @@ def suggest_silos(wagon: Wagon):
         if silo.free_capacity_kg < need:
             continue
         suitable.append(silo)
-    default_ids = set(
-        SiloType.objects.filter(
-            grain_culture=culture,
-            grain_class=grain_class,
-            default_silo__isnull=False,
-        ).values_list("default_silo_id", flat=True)
-    )
+    default_ids = _default_route_silo_ids(wagon)
     return sorted(
         suitable,
         key=lambda silo: (
@@ -665,6 +673,43 @@ def suggest_silos(wagon: Wagon):
             silo.name,
         ),
     )
+
+
+def default_route_silo(wagon: Wagon) -> Silo | None:
+    """Силос основного маршрута ★ для типа зерна поставки, если он подходит."""
+    default_ids = _default_route_silo_ids(wagon)
+    for silo in suggest_silos(wagon):
+        if silo.pk in default_ids:
+            return silo
+    return None
+
+
+@transaction.atomic
+def assign_default_silo(wagon: Wagon, user=None) -> Silo | None:
+    """Назначить короткому приходу силос ★, если оператор ещё не выбрал свой."""
+    _lock_wagon(wagon)
+    if wagon.assigned_silo_id:
+        return wagon.assigned_silo
+    silo = default_route_silo(wagon)
+    if silo is None:
+        return None
+    wagon.assigned_silo = silo
+    wagon.unloading_point = silo.unloading_line
+    wagon.save(update_fields=["assigned_silo", "unloading_point"])
+    expected = int(wagon.expected_weight_kg or 0)
+    if expected > 0:
+        SiloReservation.objects.get_or_create(
+            wagon=wagon, defaults={"silo": silo, "amount_kg": expected}
+        )
+    _log(
+        wagon,
+        "silo",
+        f"Вагон {wagon.number or '#' + str(wagon.pk)}: силос «{silo.name}» назначен по основному маршруту",
+        user,
+        silo_id=silo.pk,
+        auto=True,
+    )
+    return silo
 
 
 def assign_silo(

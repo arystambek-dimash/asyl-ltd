@@ -1042,3 +1042,58 @@ class VehicleOrientationDatasetState(models.Model):
     def load(cls) -> "VehicleOrientationDatasetState":
         row, _ = cls.objects.get_or_create(pk=1)
         return row
+
+
+class WagonArchStop(models.Model):
+    """One wagon stop under the unloading arch, imported from the wagon collector.
+
+    The collector's arrival UUID is the idempotency key. The frame is stored as
+    a ``WeighingPhotoDelivery`` with the same ``request_id`` and linked to the
+    entry weighing through ``photo_request_id``.
+    """
+
+    OPEN, CLOSED, ATTENTION, SUPERSEDED = "open", "closed", "attention", "superseded"
+    STATUSES = [OPEN, CLOSED, ATTENTION, SUPERSEDED]
+
+    stop_id = models.UUIDField(unique=True)
+    camera = models.CharField(max_length=32)
+    arrived_at = models.DateTimeField(db_index=True)
+    full_weight_kg = models.PositiveBigIntegerField()
+    scale_age_seconds = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    scale_updated_at = models.CharField(max_length=64, blank=True, default="")
+    still_seconds = models.DecimalField(max_digits=8, decimal_places=1, null=True, blank=True)
+    number = models.CharField(max_length=30, blank=True, default="")
+    number_source = models.CharField(max_length=12, blank=True, default="")
+    recognition_error = models.CharField(max_length=64, blank=True, default="")
+    ocr_attempts = models.PositiveSmallIntegerField(default=0)
+    photo_request_id = models.UUIDField(db_index=True)
+    wagon = models.ForeignKey(Wagon, null=True, blank=True, on_delete=models.SET_NULL, related_name="arch_stops")
+    # ``wagon`` стоит SET_NULL, поэтому удаление рейса стирает связь. Этот
+    # снимок переживает удаление и отличает «рейс ещё не открыт» от «рейс был
+    # и его удалили» — иначе импортёр открывал бы удалённый рейс заново.
+    opened_wagon_id = models.BigIntegerField(null=True, blank=True)
+    # Стоп-корень этой цепочки пересдач: входной вес и кадр берутся оттуда.
+    continues = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="continued_by"
+    )
+    entry_applied_at = models.DateTimeField(null=True, blank=True)
+    departure_id = models.UUIDField(null=True, blank=True, unique=True)
+    exit_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
+    exit_stable_at = models.DateTimeField(null=True, blank=True)
+    departed_at = models.DateTimeField(null=True, blank=True)
+    motion_gap = models.BooleanField(default=False)
+    exit_applied_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=12, default=OPEN)
+    blocked_reason = models.CharField(max_length=64, blank=True, default="")
+    blocked_detail = models.CharField(max_length=300, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-arrived_at", "-id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(status__in=["open", "closed", "attention", "superseded"]),
+                name="wagon_arch_stop_status_valid",
+            ),
+        ]

@@ -1,3 +1,4 @@
+import sqlite3
 from decimal import Decimal
 from uuid import uuid4
 from unittest.mock import patch
@@ -354,3 +355,25 @@ def test_collector_captures_both_trucks_and_records_the_rearm(tmp_path):
     assert weights == [3760, 3680]
     codes = [code for (code,) in db.execute("SELECT code FROM incidents ORDER BY id")]
     assert "rearmed_by_weight_change:3760->1700->3680" in codes
+
+
+def test_outbox_writer_retains_fifo_order_across_a_busy_database(tmp_path):
+    from weighbridge.writer import OutboxWriter
+    box = Outbox(tmp_path)
+    calls = []
+    original_put = box.put
+    def flaky_put(value):
+        calls.append(value["id"])
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original_put(value)
+    box.put = flaky_put
+    writer = OutboxWriter(box)
+    first, second = event(), event()
+    writer.enqueue("put", first)
+    writer.enqueue("put", second)
+    writer.start()
+    assert writer.drain(timeout=5.0) is True
+    assert calls == [first["id"], first["id"], second["id"]]
+    assert box.counts()["total"] == 2
+    writer.shutdown()

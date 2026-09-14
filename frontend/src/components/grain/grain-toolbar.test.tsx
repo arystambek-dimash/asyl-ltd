@@ -28,7 +28,7 @@ describe("GrainToolbar", () => {
     const user = userEvent.setup();
     renderToolbar();
 
-    expect(screen.queryByLabelText(/^Весы /)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Весы Вывоз")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Оформить вывоз" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Операции прихода" }));
@@ -70,8 +70,16 @@ describe("GrainToolbar", () => {
     expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
   });
 
+  it("shows the wagon scale for intake weighers even without other actions", () => {
+    renderToolbar({ canArrive: false, canSupply: false, canWeigh: true });
+
+    expect(screen.getByRole("group", { name: "Текущий вес прихода" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Весы Приход")).toHaveAttribute("data-scale-key", "wagon");
+    expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
+  });
+
   it("renders nothing when no relevant permission is present", () => {
-    const intake = renderToolbar({ canArrive: false, canSupply: false, canWeigh: true });
+    const intake = renderToolbar({ canArrive: false, canSupply: false, canWeigh: false });
     expect(intake.container).toBeEmptyDOMElement();
     intake.unmount();
 

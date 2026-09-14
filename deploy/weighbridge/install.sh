@@ -5,6 +5,7 @@ set -eu
 cd "${APP_DIR:-/home/ubuntu/asyl-ltd}"
 install_dir="$PWD/.deploy-state/weighbridge"
 collector_id="$(docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=collector)"
+wagon_collector_id="$(docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=wagon-collector)"
 
 assert_clear_for_upgrade() {
   docker exec -i "$collector_id" python - <<'PY'
@@ -19,6 +20,27 @@ assert box.counts()['pending'] == 0, 'Evidence delivery is pending: upgrade defe
 PY
 }
 
+assert_wagon_clear_for_upgrade() {
+  # Only meaningful once the second service exists; a first install has no
+  # wagon collector to defer to.
+  if [ -n "$wagon_collector_id" ]; then
+    docker exec -i "$wagon_collector_id" python - <<'PY'
+import time
+from weighbridge.outbox import Outbox
+box = Outbox('/var/lib/weighbridge-wagon')
+heartbeat = box.state('heartbeat') or {}
+assert time.time() - heartbeat.get('updated_at', 0) <= 2, 'Wagon collector heartbeat is stale'
+# Replacing the container mid-unloading is safe (the restarted collector
+# re-adopts the stop) but the blind interval is recorded as a motion gap,
+# so an upgrade waits for the arch to be empty instead.
+assert heartbeat.get('standing') is None, 'Wagon stands under the arch: upgrade deferred'
+assert not heartbeat.get('pending_writes', 0), 'Wagon collector storage writes are pending: upgrade deferred'
+# Pending EVENTS are deliberately not checked: wagon rows stay unacknowledged
+# until the CRM importer is switched on (WAGON_ARCH_AUTOMATION_ENABLED).
+PY
+  fi
+}
+
 if [ -n "$collector_id" ] && [ "${1:-}" != "upgrade" ]; then
   docker exec "$collector_id" python -m weighbridge.healthcheck
 else
@@ -27,6 +49,7 @@ else
     # An explicit collector upgrade is separate from application deployments.
     # Retain every event and defer while a truck/evidence delivery is active.
     assert_clear_for_upgrade
+    assert_wagon_clear_for_upgrade
     recreate_args="--force-recreate"
   fi
   mkdir -p "$install_dir"
@@ -43,11 +66,12 @@ else
   export BACKEND_IMAGE_REF="$WEIGHBRIDGE_IMAGE_REF"
   # Persist the pinned reference; subsequent application image updates do not change it.
   printf '%s\n' "$WEIGHBRIDGE_IMAGE_REF" > "$install_dir/image-ref"
-  docker compose -f docker-compose.prod.yml run --rm --no-deps --user root --entrypoint sh passage-scale-monitor -c 'chown app:app /var/lib/weighbridge'
+  docker compose -f docker-compose.prod.yml run --rm --no-deps --user root --entrypoint sh passage-scale-monitor -c 'chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon'
   # Preparing the pinned image/volume can take time. A truck may have arrived
   # since the first guard, so check again immediately before replacement.
   if [ -n "$recreate_args" ]; then
     assert_clear_for_upgrade
+    assert_wagon_clear_for_upgrade
   fi
   docker compose --env-file "$PWD/.env" -f "$install_dir/compose.yml" up -d --wait --wait-timeout 60 $recreate_args
 fi

@@ -173,3 +173,17 @@ def test_daemon_polls_during_slow_camera_work(settings, tmp_path):
     finally:
         release.set()
     assert len(calls) == 3
+
+
+def test_once_tick_imports_wagon_stops_when_enabled(settings, monkeypatch, tmp_path):
+    from unittest.mock import patch
+    from apps.grain import wagon_arch
+    settings.WAGON_ARCH_AUTOMATION_ENABLED = True
+    settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(tmp_path / "heartbeat.json")
+    (tmp_path / "wagon").mkdir()
+    monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(tmp_path / "wagon"))
+    with patch.object(wagon_arch, "poll_once", return_value={"imported": 0}) as poll, \
+            patch("apps.grain.outbox_importer.enabled", return_value=False), \
+            patch("apps.grain.passage_scale_automation.monitor_once", return_value=type("R", (), {"state": "idle"})()):
+        call_command("monitor_passage_scale", "--once", stdout=StringIO())
+    poll.assert_called_once()
