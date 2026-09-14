@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Me } from "@/lib/types";
-import { cashierPerms, cashierTabs, defaultView, hasHomeScreen, mobileMenu, resolveView } from "./view";
+import { cashierPerms, defaultView, hasHomeScreen, mobileMenu, resolveView } from "./view";
 
 function me(permissions: string[], is_superuser = false): Me {
   return {
@@ -47,21 +47,13 @@ describe("resolveView", () => {
   });
 });
 
-describe("cashierTabs", () => {
-  it("builds the Kaspi-like bottom bar from the permissions", () => {
-    expect(cashierTabs(all)).toEqual(["home", "debts", "pos", "remote", "transactions"]);
-    expect(cashierTabs(cashierPerms(me(["payments.confirm", "payments.view"])))).toEqual(["home", "transactions"]);
-  });
-  it("has no bar without a home screen", () => {
+describe("hasHomeScreen", () => {
+  it("counts POS as a section so a role that can only take payments keeps a home screen", () => {
     expect(hasHomeScreen(viewer)).toBe(false);
-    expect(cashierTabs(viewer)).toEqual([]);
-  });
-  it("keeps a home screen and the bar for a role that can only take payments", () => {
     const cashier = cashierPerms(me(["payments.create"]));
     expect(mobileMenu(cashier)).toEqual(["debts"]);
     expect(hasHomeScreen(cashier)).toBe(true);
     expect(defaultView(cashier, true)).toBe("home");
-    expect(cashierTabs(cashier)).toEqual(["home", "debts", "pos", "remote"]);
   });
 });
 

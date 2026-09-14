@@ -1,11 +1,14 @@
 import { availableCents, blockingStore, type DebtStore } from "@/lib/debt-orders";
 import type { Order, Payment } from "@/lib/types";
 
-export type PosFlow = "qr" | "remote";
+export type PosTab = "qr" | "remote" | "history";
+export type PosFlow = Exclude<PosTab, "history">;
 export type PosStep = "client" | "order" | "amount" | "phone" | "result";
 
 export interface PosState {
-  /** Режим текущей оплаты: QR на экране кассира или счёт на телефон клиента; задаётся адресом ?view=pos|remote. */
+  /** Видимая вкладка нижней панели POS. */
+  tab: PosTab;
+  /** Режим текущей оплаты: QR на экране кассира или счёт на телефон клиента. */
   flow: PosFlow;
   step: PosStep;
   clientId: number | null;
@@ -20,6 +23,7 @@ export interface PosState {
 }
 
 export const INITIAL_POS_STATE: PosState = {
+  tab: "qr",
   flow: "qr",
   step: "client",
   clientId: null,
@@ -32,7 +36,8 @@ export const INITIAL_POS_STATE: PosState = {
 };
 
 export type PosAction =
-  | { type: "flow"; flow: PosFlow }
+  | { type: "tab"; tab: PosTab }
+  | { type: "enter"; tab: PosFlow }
   | { type: "client"; id: number; name: string }
   | { type: "order"; id: number; amount: string }
   | { type: "amount"; amount: string }
@@ -89,19 +94,28 @@ export function paymentOutcome(payment: Payment): PaymentOutcome {
   return "waiting";
 }
 
-function freshState(flow: PosFlow): PosState {
-  return { ...INITIAL_POS_STATE, flow };
+/** Чистое состояние POS на нужной вкладке — для входа по адресу и для «Новой оплаты». */
+export function freshState(flow: PosFlow): PosState {
+  return { ...INITIAL_POS_STATE, tab: flow, flow };
 }
 
 export function posReducer(state: PosState, action: PosAction): PosState {
   switch (action.type) {
-    case "flow": {
-      if (action.flow === state.flow) return state;
+    case "enter":
+      // Вход по адресу (?view=pos|remote) открывает вкладку, только если оплата не начата:
+      // начатая (клиент выбран, QR на экране) остаётся на своей вкладке.
+      return state.step === "client" ? posReducer(state, { type: "tab", tab: action.tab }) : state;
+    case "tab": {
+      if (action.tab === state.tab) return state;
+      // «История» — просто другая вкладка: начатая оплата ждёт возвращения.
+      if (action.tab === "history") return { ...state, tab: "history" };
+      if (action.tab === state.flow) return { ...state, tab: action.tab };
       // Выданный QR или счёт не переносится в другой режим — начинаем новую оплату.
-      if (state.step === "result") return freshState(action.flow);
+      if (state.step === "result") return freshState(action.tab);
       return {
         ...state,
-        flow: action.flow,
+        tab: action.tab,
+        flow: action.tab,
         step: state.step === "phone" ? "amount" : state.step,
         error: "",
       };

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import CashierPage from "@/app/accounting/page";
@@ -20,7 +20,17 @@ vi.mock("@/lib/use-visible-polling", () => ({
 }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
 vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ title, back, children }: { title: string; back?: TopbarBack; children: React.ReactNode }) => (
+  AppShell: ({
+    title,
+    back,
+    children,
+    footer,
+  }: {
+    title: string;
+    back?: TopbarBack;
+    children: React.ReactNode;
+    footer?: React.ReactNode;
+  }) => (
     <div>
       <h1>{title}</h1>
       {back && (
@@ -29,6 +39,7 @@ vi.mock("@/components/layout/app-shell", () => ({
         </button>
       )}
       {children}
+      <div data-testid="footer">{footer}</div>
     </div>
   ),
 }));
@@ -263,9 +274,11 @@ it("sends a Kaspi invoice to the client's phone", async () => {
   });
   render(<CashierPage />);
 
+  // Вкладки внутри POS живут в состоянии — адрес не меняется.
   await user.click(await screen.findByRole("button", { name: "Удаленно" }));
-  expect(routerCalls.replace).toEqual(["/accounting?view=remote"]);
+  expect(routerCalls.replace).toEqual([]);
   expect(await screen.findByRole("heading", { name: "Удаленная оплата" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Удаленно" })).toHaveAttribute("aria-current", "page");
   await pickFirstOrder(user);
   await user.click(screen.getByRole("button", { name: "Далее" }));
   expect(screen.getByLabelText("Телефон покупателя")).toHaveValue("87011234567");
@@ -288,10 +301,10 @@ it("steps back inside POS and closes it from the first step", async () => {
   await user.click(screen.getByRole("button", { name: "Назад" }));
   expect(await screen.findByPlaceholderText("Поиск клиента: имя или телефон")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
-  expect(routerCalls.replace).toContain("/accounting");
+  expect(routerCalls.replace).toEqual(["/accounting"]);
 });
 
-it("keeps the payment in progress while the cashier looks at the history", async () => {
+it("keeps the payment in progress while the cashier looks at the history inside POS", async () => {
   const user = userEvent.setup();
   render(<CashierPage />);
   await pickFirstOrder(user);
@@ -299,13 +312,66 @@ it("keeps the payment in progress while the cashier looks at the history", async
   await screen.findByRole("img", { name: "Kaspi QR для оплаты" });
 
   await user.click(screen.getByRole("button", { name: "История" }));
-  expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "История" })).toBeInTheDocument();
   expect(await screen.findByText("Транзакций пока нет.")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "QR" }));
+  // «‹» из истории возвращает к начатой оплате.
+  await user.click(screen.getByRole("button", { name: "Назад" }));
 
   expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
   expect(screen.getByRole("img", { name: "Kaspi QR для оплаты" })).toBeInTheDocument();
-  expect(routerCalls.replace).toEqual(["/accounting?view=transactions", "/accounting?view=pos"]);
+  expect(routerCalls.replace).toEqual([]);
+});
+
+it("opens the remote tab by deep link and keeps the client when the cashier leaves and comes back", async () => {
+  const user = userEvent.setup();
+  resetNavigation("/accounting?view=remote");
+  render(<CashierPage />);
+  expect(await screen.findByRole("heading", { name: "Удаленная оплата" })).toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: /Асан Бекмуратов/ }));
+  await screen.findByRole("button", { name: /Заказ #130/ });
+
+  // Домой и обратно через панель — начатая оплата на месте, на своей вкладке.
+  resetNavigation("/accounting");
+  await user.click(await screen.findByRole("button", { name: "POS" }));
+  expect(routerCalls.push).toEqual(["/accounting?view=pos"]);
+  expect(await screen.findByRole("heading", { name: "Удаленная оплата" })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: /Заказ #130/ })).toBeInTheDocument();
+});
+
+it("keeps the tab the cashier chose inside POS when a payment is started over", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("button", { name: "Удаленно" }));
+  await pickFirstOrder(user);
+  // Назад к списку клиентов: адрес по-прежнему ?view=pos, но вкладка остаётся «Удаленно».
+  await user.click(screen.getByRole("button", { name: "Назад" }));
+  await user.click(await screen.findByRole("button", { name: "Назад" }));
+  expect(await screen.findByPlaceholderText("Поиск клиента: имя или телефон")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Удаленная оплата" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Удаленно" })).toHaveAttribute("aria-current", "page");
+});
+
+it("returns from history to the payment tab even before a client is picked", async () => {
+  const user = userEvent.setup();
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("button", { name: "История" }));
+  expect(await screen.findByRole("heading", { name: "История" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Назад в кассу" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Назад" }));
+  expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Оплата" })).toHaveAttribute("aria-current", "page");
+});
+
+it("hides the history tab inside POS from a cashier who cannot view payments", async () => {
+  mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.create"] };
+  render(<CashierPage />);
+  expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
+  // Вкладки POS — тоже слот footer, не children.
+  expect(
+    within(within(screen.getByTestId("footer")).getByRole("navigation", { name: "Режим POS" }))
+      .getAllByRole("button")
+      .map((b) => b.textContent),
+  ).toEqual(["Оплата", "Удаленно"]);
 });
 
 it("keeps the cashier on the step while the QR is being created", async () => {
@@ -399,25 +465,26 @@ it("explains a reservation left by a failed QR attempt", async () => {
   expect(screen.queryByRole("button", { name: /Показать QR/ })).not.toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Статус создаваемого счёта ещё уточняется");
   await user.click(screen.getByRole("button", { name: "Открыть «Историю»" }));
-  expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "История" })).toBeInTheDocument();
 });
 
 it("opens POS from the bottom bar only for staff who can take payments", async () => {
   const user = userEvent.setup();
   resetNavigation("/accounting");
   const { unmount } = render(<CashierPage />);
-  await user.click(await screen.findByRole("button", { name: "QR" }));
-  expect(routerCalls.replace).toEqual(["/accounting?view=pos"]);
+  await user.click(await screen.findByRole("button", { name: "POS" }));
+  // С главной — с историей: аппаратный «назад» вернёт домой.
+  expect(routerCalls.push).toEqual(["/accounting?view=pos"]);
   expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "QR" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("button", { name: "Оплата" })).toHaveAttribute("aria-current", "page");
   unmount();
 
   resetNavigation("/accounting");
   mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
   render(<CashierPage />);
   expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Удаленно" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "POS" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
 });
 
 it("offers only the orders of the department chosen in the cashier header", async () => {

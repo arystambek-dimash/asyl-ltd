@@ -31,12 +31,14 @@ vi.mock("@/components/layout/app-shell", () => ({
     back,
     trailing,
     children,
+    footer,
   }: {
     title: React.ReactNode;
     section?: string;
     back?: TopbarBack;
     trailing?: React.ReactNode;
     children: React.ReactNode;
+    footer?: React.ReactNode;
   }) => (
     <div>
       {section && <p data-testid="section">{section}</p>}
@@ -48,6 +50,7 @@ vi.mock("@/components/layout/app-shell", () => ({
       )}
       {trailing}
       {children}
+      <div data-testid="footer">{footer}</div>
     </div>
   ),
 }));
@@ -242,7 +245,6 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
   await waitFor(() => expect(menu.getByText("2 заявки · 1 оплата на 100 ₸")).toBeInTheDocument());
   expect(menu.getByText("1 клиент · 100 ₸")).toBeInTheDocument();
   expect(menu.getAllByRole("button").map((b) => b.textContent)).toEqual([
-    expect.stringContaining("POS"),
     expect.stringContaining("Удаленная оплата"),
     expect.stringContaining("Заявки и оплаты"),
     expect.stringContaining("Долги клиентов"),
@@ -265,40 +267,59 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
   expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
 });
 
-it("switches sections from the Kaspi-like bottom bar without stacking history", async () => {
+it("opens POS from the single-button bottom bar: with history from home, by replace from a sub-screen", async () => {
   const user = userEvent.setup();
   render(<CashierPage />);
   const bar = within(await screen.findByRole("navigation", { name: "Панель кассы" }));
-  expect(bar.getAllByRole("button").map((b) => b.textContent)).toEqual([
-    "Главная",
-    "Долги",
-    "QR",
-    "Удаленно",
-    "История",
-  ]);
-  expect(bar.getByRole("button", { name: "Главная" })).toHaveAttribute("aria-current", "page");
+  expect(bar.getAllByRole("button").map((b) => b.textContent)).toEqual(["POS"]);
+  expect(bar.getByRole("button", { name: "POS" })).not.toHaveAttribute("aria-current");
+  // Панель — слот footer у AppShell (вне прокрутки и анимации контента), а не часть children.
+  expect(within(screen.getByTestId("footer")).getByRole("navigation", { name: "Панель кассы" })).toBeInTheDocument();
 
-  await user.click(bar.getByRole("button", { name: "Долги" }));
-  expect(routerCalls.replace).toEqual(["/accounting?view=debts"]);
-  expect(await screen.findByRole("heading", { name: "Долги клиентов" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Долги" })).toHaveAttribute("aria-current", "page");
-  expect(screen.getByRole("button", { name: "Главная" })).not.toHaveAttribute("aria-current");
-
+  await user.click(bar.getByRole("button", { name: "POS" }));
+  expect(routerCalls.push).toEqual(["/accounting?view=pos"]);
+  expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
+  // Внутри POS — свои вкладки, панели кассы нет.
+  expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
+  expect(
+    within(screen.getByRole("navigation", { name: "Режим POS" }))
+      .getAllByRole("button")
+      .map((b) => b.textContent),
+  ).toEqual(["Оплата", "Удаленно", "История"]);
   await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
-  expect(routerCalls.back).toBe(0);
-  expect(routerCalls.replace).toEqual(["/accounting?view=debts", "/accounting"]);
+  expect(routerCalls.back).toBe(1);
   expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "История" }));
-  expect(await screen.findByRole("heading", { name: "Транзакции" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Открыть POS" })).not.toBeInTheDocument();
+  // С подэкрана — заменой адреса: «‹» из POS ведёт на главную (историей, раз подэкран открыли с неё),
+  // а не обратно на подэкран.
+  await user.click(screen.getByRole("button", { name: /Долги клиентов/ }));
+  expect(await screen.findByRole("heading", { name: "Долги клиентов" })).toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "Панель кассы" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "POS" }));
+  expect(routerCalls.replace).toEqual(["/accounting?view=pos"]);
+  expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
+  expect(routerCalls.back).toBe(2);
+  expect(routerCalls.replace).toEqual(["/accounting?view=pos"]);
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
 });
 
-it("hides bar items and home rows the cashier has no rights for", async () => {
+it("replaces to the home screen from a deep-linked POS", async () => {
+  const user = userEvent.setup();
+  resetNavigation("/accounting?view=debts");
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("button", { name: "POS" }));
+  expect(routerCalls.replace).toEqual(["/accounting?view=pos"]);
+  await user.click(await screen.findByRole("button", { name: "Назад в кассу" }));
+  expect(routerCalls.back).toBe(0);
+  expect(routerCalls.replace).toEqual(["/accounting?view=pos", "/accounting"]);
+});
+
+it("shows no POS bar or remote-payment row without the right to take payments", async () => {
   mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
   render(<CashierPage />);
-  const bar = within(await screen.findByRole("navigation", { name: "Панель кассы" }));
-  expect(bar.getAllByRole("button").map((b) => b.textContent)).toEqual(["Главная", "История"]);
+  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
+  expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
   const menu = within(screen.getByRole("navigation", { name: "Разделы кассы" }));
   expect(menu.queryByRole("button", { name: /POS/ })).not.toBeInTheDocument();
   expect(menu.queryByRole("button", { name: /Удаленная оплата/ })).not.toBeInTheDocument();
@@ -333,14 +354,15 @@ it("lets staff with access to every department switch the cashier's department",
   );
 
   // Подэкраны работают по тому же отделу: он виден над заголовком, а из шторки фильтров поле «Отдел» ушло.
-  await user.click(screen.getByRole("button", { name: "История" }));
+  await user.click(screen.getByRole("button", { name: /Транзакции/ }));
   await waitFor(() =>
     expect(
       mocks.get.mock.calls.some(([url]) => String(url).match(/^\/payment-transactions\/\?.*department=main/)),
     ).toBe(true),
   );
   expect(screen.getByTestId("section")).toHaveTextContent("Мельница");
-  await user.click(screen.getByRole("button", { name: "Долги" }));
+  await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
+  await user.click(await screen.findByRole("button", { name: /Долги клиентов/ }));
   await user.click(await screen.findByRole("button", { name: /Фильтры/ }));
   const filters = await screen.findByRole("dialog", { name: "Фильтры" });
   expect(within(filters).queryByLabelText("Отдел")).not.toBeInTheDocument();

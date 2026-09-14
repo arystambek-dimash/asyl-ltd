@@ -1,14 +1,15 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, QrCode } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { cn } from "@/lib/utils";
 import { CashFiltersSheet, FilterButton } from "../cash-filters-sheet";
 import { activeFilterCount, filtersError } from "../filters";
 import { ALL_DEPARTMENTS } from "../scope";
 import type { CashierModel } from "../use-cashier";
-import { cashierTabs, hasHomeScreen, mobileMenu, type CashTabKey, type CashView } from "../view";
+import { hasHomeScreen, mobileMenu, type CashView } from "../view";
+import { BottomBar, type BottomBarItem } from "./bottom-bar";
 import { ConfirmScreen } from "./confirm-screen";
 import { DebtsScreen } from "./debts-screen";
 import { DepartmentSheet } from "./department-sheet";
@@ -17,10 +18,13 @@ import { JournalScreen } from "./journal-screen";
 import { PosScreen } from "./pos/pos-screen";
 import { usePosFlow } from "./pos/use-pos-flow";
 import { ReportScreen } from "./report-screen";
-import { CashierTabBar } from "./tab-bar";
 import { TransactionsScreen } from "./transactions-screen";
 
-export const SCREEN_TITLES: Record<CashView, string> = {
+/** Панель внизу кассы — как навигация телефона: один пункт, POS. */
+const POS_BAR: BottomBarItem<"pos">[] = [{ key: "pos", label: "POS", icon: QrCode, accent: true }];
+
+/** Заголовки экранов кассы; POS называет себя сам по вкладке. */
+export const SCREEN_TITLES: Record<Exclude<CashView, "pos" | "remote">, string> = {
   home: "Касса",
   overview: "Касса",
   report: "Отчёт по поступлениям",
@@ -28,8 +32,6 @@ export const SCREEN_TITLES: Record<CashView, string> = {
   confirm: "Заявки и оплаты",
   journal: "Журнал",
   transactions: "Транзакции",
-  pos: "POS",
-  remote: "Удаленная оплата",
 };
 
 /** Шапка главной: отдел — «касса», как название точки в Kaspi; с правом на все отделы — кнопка выбора. */
@@ -70,7 +72,6 @@ export function MobileCashier({ model }: { model: CashierModel }) {
   const pathname = usePathname();
   const { view, perms, filterScreen, scope, departments, debts } = model;
   const menu = mobileMenu(perms);
-  const tabs = cashierTabs(perms);
   // «‹» возвращает историей, только если экран открыт отсюда; по диплинку — заменяем адрес на главную.
   const cameFromHome = useRef(false);
   useEffect(() => {
@@ -87,22 +88,24 @@ export function MobileCashier({ model }: { model: CashierModel }) {
     if (cameFromHome.current) router.back();
     else router.replace(pathname);
   }, [pathname, router]);
-  // Нижняя панель переключает разделы без накопления истории: «‹» с любого из них ведёт на главную.
-  const go = useCallback(
-    (tab: CashTabKey) => {
-      cameFromHome.current = false;
-      router.replace(tab === "home" ? pathname : `${pathname}?view=${tab}`);
-    },
-    [pathname, router],
-  );
+  // Кнопка POS в панели: с главной — с историей (аппаратный «назад» вернёт домой, начатая
+  // оплата останется), с подэкрана — заменой адреса, чтобы «‹» вёл на главную, а не на подэкран.
+  // Флаг cameFromHome при замене не трогаем: под заменённой записью по-прежнему главная (или нет).
+  const openPos = useCallback(() => {
+    if (view === "home") {
+      cameFromHome.current = true;
+      router.push(`${pathname}?view=pos`);
+    } else {
+      router.replace(`${pathname}?view=pos`);
+    }
+  }, [pathname, router, view]);
 
-  // Состояние POS живёт здесь, а не в его экране: панель внизу видна и во время оплаты,
-  // а начатая оплата переживает переход в «Историю» и обратно.
+  // Состояние POS живёт здесь, а не в его экране: начатая оплата переживает выход на главную и обратно.
   const posView = view === "pos" || view === "remote" ? view : null;
   const { reload: reloadDebts } = debts;
   const onPaid = useCallback(() => void reloadDebts(), [reloadDebts]);
   const pos = usePosFlow({
-    flow: posView ? (posView === "remote" ? "remote" : "qr") : null,
+    entry: posView ? (posView === "remote" ? "remote" : "qr") : null,
     onPaid,
     department: scope.department !== ALL_DEPARTMENTS ? scope.department : null,
   });
@@ -124,37 +127,27 @@ export function MobileCashier({ model }: { model: CashierModel }) {
     : 0;
   const rangeError = filterScreen ? filtersError(model.filters) : null;
 
-  const activeTab: CashTabKey | null =
-    view === "home" ? "home" : tabs.includes(view as CashTabKey) ? (view as CashTabKey) : null;
-  const bar =
-    tabs.length > 0 ? <CashierTabBar tabs={tabs} active={activeTab} disabled={pos.busy} onSelect={go} /> : null;
-
-  if (posView) {
-    return (
-      <PosScreen
-        model={model}
-        flow={pos}
-        title={SCREEN_TITLES[posView]}
-        section={scope.name}
-        footer={bar}
-        onClose={back}
-        onOpenHistory={perms.canTransactions ? () => go("transactions") : undefined}
-      />
-    );
-  }
+  if (posView) return <PosScreen model={model} flow={pos} section={scope.name} onClose={back} />;
+  // После раннего возврата view — не POS; TypeScript этого не выводит.
+  const screen = view as Exclude<CashView, "pos" | "remote">;
 
   return (
     <AppShell
       title={
-        view === "home" ? (
+        screen === "home" ? (
           <DepartmentHeading scope={scope} onOpen={() => setDepartmentOpen(true)} />
         ) : (
-          SCREEN_TITLES[view]
+          SCREEN_TITLES[screen]
         )
       }
       section={view === "home" ? scope.cashier || "Касса" : scope.name}
       back={showBack ? { label: "Назад в кассу", onClick: back } : undefined}
       trailing={filterScreen ? <FilterButton count={activeFilters} onClick={() => setFiltersOpen(true)} /> : undefined}
+      footer={
+        perms.canCreatePayments ? (
+          <BottomBar label="Панель кассы" items={POS_BAR} active={null} disabled={pos.busy} onSelect={openPos} />
+        ) : undefined
+      }
     >
       {rangeError && <p className="mb-3 text-xs font-medium text-[var(--destructive)]">{rangeError}</p>}
       {filterScreen && (
@@ -184,13 +177,6 @@ export function MobileCashier({ model }: { model: CashierModel }) {
       {view === "debts" && <DebtsScreen model={model} />}
       {view === "report" && <ReportScreen model={model} />}
       {view === "transactions" && <TransactionsScreen model={model} />}
-      {bar && (
-        <>
-          {/* Место под панель, чтобы она не закрывала последнюю строку списка. */}
-          <div aria-hidden className="h-20" />
-          {bar}
-        </>
-      )}
     </AppShell>
   );
 }

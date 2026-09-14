@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authTokenStorageKey } from "@/lib/api";
 import { AppShell } from "./app-shell";
@@ -118,5 +118,29 @@ describe("AppShell cross-tab authentication", () => {
     render(<AppShell title="Dashboard">content</AppShell>);
 
     expect(mocks.replace).toHaveBeenCalledWith("/login");
+  });
+});
+
+describe("AppShell footer slot", () => {
+  beforeEach(() => {
+    mocks.auth.me = { is_client: false };
+    mocks.auth.loading = false;
+  });
+
+  it("renders the footer after <main>, outside the animated content wrapper, at the visible screen edge", () => {
+    const { container } = render(
+      <AppShell title="Касса" footer={<nav aria-label="Панель кассы" />}>
+        content
+      </AppShell>,
+    );
+    const footer = screen.getByRole("navigation", { name: "Панель кассы" });
+    const main = screen.getByRole("main");
+    expect(main).not.toContainElement(footer);
+    // .animate-fade-up оставляет transform (fill-mode both) — fixed внутри него цепляется за контент.
+    expect(footer.closest(".animate-fade-up")).toBeNull();
+    // Следующий элемент после main в той же flex-колонке.
+    expect(main.nextElementSibling).toBe(footer);
+    // dvh, не vh: иначе на телефоне с раскрытой панелью браузера низ колонки уезжает за край экрана.
+    expect(container.firstChild).toHaveClass("h-dvh");
   });
 });

@@ -9,12 +9,14 @@ import {
   INITIAL_POS_STATE,
   appendDigit,
   eraseDigit,
+  freshState,
   paymentOutcome,
   posOrderBlock,
   posReducer,
   wholeTengeLimit,
   type PosAction,
   type PosFlow,
+  type PosTab,
 } from "./pos-logic";
 
 /** Как часто спрашиваем статус выданного QR или счёта. */
@@ -22,19 +24,23 @@ export const POS_POLL_MS = 3_000;
 
 /**
  * Сценарий POS: клиент → заказ → сумма → QR или счёт, опрос статуса до «Оплачено».
- * `flow` — режим из адреса (null вне POS); `department` — отдел из шапки кассы:
- * список должников уже отфильтрован по нему, заказы клиента фильтруем здесь.
+ * `entry` — вкладка, которую открывает адрес (?view=pos — «Оплата», ?view=remote — «Удаленно»;
+ * null вне POS); дальше вкладки переключает панель внизу POS. `department` — отдел из шапки
+ * кассы: список должников уже отфильтрован по нему, заказы клиента фильтруем здесь.
  */
 export function usePosFlow({
-  flow,
+  entry,
   onPaid,
   department = null,
 }: {
-  flow: PosFlow | null;
+  entry: PosFlow | null;
   onPaid?: () => void;
   department?: string | null;
 }) {
-  const [state, dispatch] = useReducer(posReducer, INITIAL_POS_STATE);
+  // Первый кадр уже на вкладке из адреса — без мигания «POS» при входе по ?view=remote.
+  const [state, dispatch] = useReducer(posReducer, entry, (initial) =>
+    initial ? freshState(initial) : INITIAL_POS_STATE,
+  );
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const detail = useApi<ClientDebtDetail>(state.clientId ? `/clients/${state.clientId}/debt-detail/` : null);
@@ -88,11 +94,11 @@ export function usePosFlow({
     if (!inFlight.current) dispatch(action);
   };
 
-  // Режим задаёт адрес (?view=pos|remote). Пока создаётся QR или счёт, смена режима ждёт ответа
-  // (он должен лечь на тот экран, откуда его отправили) и применяется, когда запрос завершён.
+  // Вход в POS: адрес задаёт вкладку (редьюсер сам не трогает начатую оплату). Пока запрос
+  // в полёте, вкладку не меняем — ответ должен лечь туда, откуда его отправили.
   useEffect(() => {
-    if (flow && !inFlight.current) dispatch({ type: "flow", flow });
-  }, [flow, busy]);
+    if (entry && !inFlight.current) dispatch({ type: "enter", tab: entry });
+  }, [entry]);
 
   const poll = useCallback(async () => {
     if (!payment) return;
@@ -104,7 +110,7 @@ export function usePosFlow({
     }
   }, [payment]);
   // Опрашиваем только пока POS на экране: брошенный QR не должен дёргать сервер с главной.
-  useVisiblePolling(poll, POS_POLL_MS, flow !== null && state.step === "result" && outcome === "waiting");
+  useVisiblePolling(poll, POS_POLL_MS, entry !== null && state.step === "result" && outcome === "waiting");
 
   // Деньги пришли — один раз на оплату обновляем долги клиента и общий список.
   const paidFor = useRef<number | null>(null);
@@ -123,7 +129,8 @@ export function usePosFlow({
     order,
     block,
     outcome,
-    canGoBack: state.step !== "client",
+    canGoBack: state.tab === "history" || state.step !== "client",
+    setTab: (tab: PosTab) => whenIdle({ type: "tab", tab }),
     pickClient: (id: number, name: string) => whenIdle({ type: "client", id, name }),
     pickOrder: (id: number) => {
       const target = orders.find((row) => row.id === id);
@@ -137,7 +144,8 @@ export function usePosFlow({
     setPhone: (phone: string) => dispatch({ type: "phone", phone }),
     issueQr: () => void issue({ method: "kaspi", channel: "qr", amount: state.amount }, "qr"),
     sendInvoice: () => void issue({ method: "invoice", amount: state.amount, phone_number: state.phone }, "phone"),
-    back: () => whenIdle({ type: "back" }),
+    // «‹» из «Истории» возвращает к начатой оплате, со ступени — на ступень назад.
+    back: () => whenIdle(state.tab === "history" ? { type: "tab", tab: state.flow } : { type: "back" }),
     retry: () => whenIdle({ type: "retry" }),
     reset: () => whenIdle({ type: "reset" }),
   };

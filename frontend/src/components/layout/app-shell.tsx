@@ -21,6 +21,7 @@ export function AppShell({
   actions,
   back,
   trailing,
+  footer,
 }: {
   title: React.ReactNode;
   section?: string;
@@ -31,6 +32,8 @@ export function AppShell({
   actions?: React.ReactNode;
   back?: TopbarBack;
   trailing?: React.ReactNode;
+  /** Панель под контентом (навигация кассы на телефоне): вне прокрутки и вне анимации контента. */
+  footer?: React.ReactNode;
 }) {
   const { me, loading, loadMe, refreshMe, logout, syncExternalSession } = useAuth();
   const router = useRouter();
@@ -106,11 +109,12 @@ export function AppShell({
 
   if (loading || !me)
     return (
-      <div className="flex h-screen items-center justify-center text-sm text-[var(--muted-foreground)]">Загрузка…</div>
+      <div className="flex h-dvh items-center justify-center text-sm text-[var(--muted-foreground)]">Загрузка…</div>
     );
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    // dvh, не vh: на телефоне 100vh — высота со свёрнутой панелью браузера, и нижняя панель уезжала бы за край.
+    <div className="flex h-dvh overflow-hidden">
       {/* Обучение по системе: первый вход + повторно по кнопке «?» */}
       {!me.is_client && <OnboardingTour me={me} />}
       <Sidebar me={me} mobileOpen={navOpen} onClose={closeNav} />
@@ -135,6 +139,8 @@ export function AppShell({
             {children}
           </div>
         </main>
+        {/* `position: fixed` внутри .animate-fade-up цеплялся бы за его transform — панель живёт вне main. */}
+        {footer}
       </div>
     </div>
   );
