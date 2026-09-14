@@ -77,22 +77,43 @@ def segment_payload(row, user, *, order_id=None):
     }
 
 
-def _session_colors(session_ids):
+def _scaled_to_total(colors: dict[str, int], total: int) -> dict[str, int]:
+    """Доли — от событий, числа — в масштабе итога вагона (метод наибольших остатков).
+
+    Обычно событий ровно столько, сколько мешков, и ничего не меняется. После ручной
+    поправки итога части должны сходиться с ним, а не с числом событий.
+    """
+    counted = sum(colors.values())
+    if not counted or not total or counted == total:
+        return colors
+    exact = {key: value * total / counted for key, value in colors.items()}
+    scaled = {key: int(value) for key, value in exact.items()}
+    by_remainder = sorted(colors, key=lambda key: (exact[key] - scaled[key], colors[key]), reverse=True)
+    for key in by_remainder[: total - sum(scaled.values())]:
+        scaled[key] += 1
+    return {key: value for key, value in scaled.items() if value}
+
+
+def _session_colors(sessions):
     """Colour mix of each session, counted from its own crossings.
 
     The daily analytics normaliser keeps a wagon consistent with its day. Bags
     the camera could not classify stay visible, so the parts add up to the total.
     """
+    totals = {row.pk: row.total_bags for row in sessions}
     counts = defaultdict(Counter)
     rows = (
-        ShippingLoadingEvent.objects.filter(segment__session_id__in=session_ids)
+        ShippingLoadingEvent.objects.filter(segment__session_id__in=list(totals))
         .values_list("segment__session_id", "event__color", "event__class_name")
         .annotate(total=Count("pk"))
         .order_by()
     )
     for session_id, color, class_name, total in rows:
         counts[session_id][event_color_key(color, class_name) or "unclassified"] += total
-    return {session_id: _color_payload(dict(colors)) for session_id, colors in counts.items()}
+    return {
+        session_id: _color_payload(_scaled_to_total(dict(colors), totals[session_id]))
+        for session_id, colors in counts.items()
+    }
 
 
 class ShippingSessionListView(APIView):
@@ -128,7 +149,7 @@ class ShippingSessionListView(APIView):
             page = [*active, *closed[:PAGE_SIZE]]
             if len(closed) > PAGE_SIZE:
                 next_cursor = closed[PAGE_SIZE - 1].pk
-        colors = _session_colors([row.pk for row in page])
+        colors = _session_colors(page)
         result = []
         for row in page:
             result.append({

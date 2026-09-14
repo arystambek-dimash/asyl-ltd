@@ -228,6 +228,13 @@ def test_session_colors_count_every_projected_bag_once(auth_client, operator):
         {"color": "red", "total": 1, "percent": 20.0},
         {"color": "unclassified", "total": 1, "percent": 20.0},
     ]
+    # Ручная поправка итога: доли остаются от событий, числа — в масштабе итога.
+    ShippingLoadingSession.objects.filter(pk=row["id"]).update(total_bags=1360)
+    [row] = auth_client(operator).get(BASE).data["results"]
+    assert row["total_bags"] == 1360
+    assert [(c["color"], c["total"]) for c in row["colors"]] == [
+        ("white", 544), ("blue", 272), ("red", 272), ("unclassified", 272),
+    ]
 
 
 def test_a_page_of_segment_frames_from_one_address_is_never_throttled(
