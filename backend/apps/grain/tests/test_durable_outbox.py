@@ -295,6 +295,37 @@ def test_truck_stopping_half_off_the_scale_is_not_captured_again():
     for t in range(6, 14): assert not lane.observe(observation(1880, t), t)
 
 
+def test_short_scale_outage_after_a_capture_keeps_watching_for_the_next_queued_truck():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 3760)
+    for t in (6, 7): assert not lane.observe(observation(3760, t), t)
+    # The scale link drops for seven seconds; the queue keeps moving meanwhile.
+    lane.unavailable(14)
+    assert not lane.armed
+    for t, weight in ((15, 1880), (16, 1700), (17, 3100)):
+        assert not lane.observe(observation(weight, t, state="unstable"), t)
+    for t in (18, 19): assert not lane.observe(observation(3680, t), t)
+    assert lane.observe(observation(3680, 20), 20)
+
+
+def test_same_truck_standing_through_an_outage_is_not_captured_again():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 4000)
+    lane.unavailable(14)
+    for t in range(15, 25): assert not lane.observe(observation(4000, t), t)
+    assert not lane.armed
+
+
+def test_outage_does_not_stitch_two_separate_glitches_into_a_rearm():
+    lane = Lane(stable_seconds=2)
+    captured_truck(lane, 4000)
+    assert not lane.observe(observation(5200, 6, state="unstable"), 6)
+    lane.unavailable(14)
+    assert not lane.observe(observation(5200, 15, state="unstable"), 15)
+    for t in range(16, 22): assert not lane.observe(observation(4000, t), t)
+    assert not lane.armed
+
+
 def test_collector_captures_both_trucks_and_records_the_rearm(tmp_path):
     import sqlite3
     import time as real_time

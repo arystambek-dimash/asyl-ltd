@@ -132,6 +132,8 @@ class Lane:
     (a second truck rolled on), or it first fell ``rearm_delta`` below it and
     then rose ``rearm_delta`` again (one truck left, the next came on). A truck
     that merely stops half off the scale only falls, so it is never re-captured.
+    A scale-link outage disarms the lane but keeps that watch: the next truck
+    of a queue that passed during the outage is still revealed by the change.
     """
     def __init__(self, *, stable_seconds=5, empty_max=500, tolerance=50, clear_polls=3,
                  rearm_delta=1000, rearm_polls=2):
@@ -150,6 +152,11 @@ class Lane:
     def _reset_change(self):
         self.above = self.below = self.rise = 0
         self.dip = self.low = None
+
+    def _reset_streaks(self):
+        # Consecutive-reading evidence is gathered afresh; a confirmed dip stays.
+        self.above = self.below = self.rise = 0
+        self.dip = None
 
     def _watch_platform(self, weight):
         # Each condition must hold on consecutive fresh readings, so a single
@@ -185,9 +192,10 @@ class Lane:
         self.clear_count = 0
         self.since = self.weight = self.last_token = None
         self.last_valid_time = None
-        # After an outage nobody knows what stands on the scale: only a clear re-arms.
-        self.captured_weight = None
-        self._reset_change()
+        # A queue keeps moving during a short outage. The last capture stays
+        # known, so the platform change that reveals the next truck still
+        # re-arms the lane; without a capture only a clear reading arms it.
+        self._reset_streaks()
 
     def unavailable(self, now):
         # A single network timeout does not prove that another vehicle arrived.

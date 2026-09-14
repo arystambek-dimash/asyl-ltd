@@ -24,7 +24,10 @@ lane re-arms when the load rises `VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG`
 then rises that much again. Each condition must hold on two consecutive fresh
 readings. A truck that stops half off the scale only falls and is not captured
 again. Every such re-arm is recorded as a `rearmed_by_weight_change:<path>`
-incident. The collector image changes only through the activation workflow.
+incident. A scale-link outage (`observation_gap`) disarms the lane but keeps
+this watch, so a queue that kept moving during the outage still re-arms it; a
+collector start still requires a clear scale. The collector image changes only
+through the activation workflow.
 
 Each stable occupancy keeps its original weight/time and UUID in a FIFO writer
 queue. The writer commits the weight to SQLite (`WAL`, `synchronous=FULL`) before
