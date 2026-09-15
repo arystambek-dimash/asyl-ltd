@@ -60,6 +60,12 @@ export interface Department {
   is_default: boolean;
   order_count: number;
   created_at: string;
+  /** Ключ ApiPay задан у отдела; сам ключ API не отдаёт. */
+  apipay_configured: boolean;
+  apipay_webhook_configured: boolean;
+  /** «••••ab12» — последние символы ключа, только суперюзеру. */
+  apipay_key_hint?: string;
+  apipay_updated_at: string | null;
 }
 export interface DepartmentSummary {
   id: number;
