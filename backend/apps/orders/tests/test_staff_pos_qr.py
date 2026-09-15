@@ -67,8 +67,7 @@ def _debt_order(*, total="1000.00", currency="KZT"):
 
 
 @pytest.fixture
-def apipay(settings):
-    settings.APIPAY_API_KEY = "server-only-key"
+def apipay(settings, apipay_department):
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     with patch("apps.orders.apipay.urllib.request.urlopen") as urlopen:
         urlopen.return_value = ProviderResponse(QR_RESPONSE)

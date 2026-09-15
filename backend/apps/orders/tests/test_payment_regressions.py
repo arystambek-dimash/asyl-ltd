@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from decimal import Decimal
 from threading import Event, Lock
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from django.db import close_old_connections, connection
@@ -28,6 +28,12 @@ from apps.orders.models import (
 from apps.orders.services import create_client_payment
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
 
 
 class ProviderResponse:
@@ -80,7 +86,6 @@ def test_staff_mixed_payment_issues_only_the_phone_invoice(
     QR в CRM отмечается уже после POS-терминала: деньги получены, и запрос
     к платёжному сервису попросил бы клиента заплатить второй раз.
     """
-    settings.APIPAY_API_KEY = "test-key"
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     urlopen.side_effect = [ProviderResponse({"id": 701, "status": "processing"})]
     order = _order()
@@ -240,7 +245,6 @@ def test_rejected_payment_restore_cannot_overbook_remaining_balance(
 def test_restore_legacy_rejected_invoice_issues_provider_invoice(
     urlopen, auth_client, accountant, settings,
 ):
-    settings.APIPAY_API_KEY = "test-key"
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     urlopen.return_value = ProviderResponse({"id": 705, "status": "processing"})
     order = _order()
@@ -425,6 +429,7 @@ def test_explicit_apipay_refund_supports_paid_qr_without_cash_fallback(
         "POST",
         "/invoices/707/refund",
         {"amount": 10.0, "reason": "Проверка явного режима"},
+        credentials=ANY,
     )
 
 
@@ -739,7 +744,7 @@ def test_create_response_cannot_overwrite_paid_and_keeps_qr_fields(
         received_at=timezone.now(),
     )
 
-    def paid_before_create_response(*_args):
+    def paid_before_create_response(*_args, **_kwargs):
         invoice = ApiPayInvoice.objects.get(payment=payment)
         ApiPayInvoice.objects.filter(pk=invoice.pk).update(invoice_id=713)
         invoice.refresh_from_db()
@@ -1037,7 +1042,7 @@ def test_cancel_response_cannot_downgrade_paid_webhook(
         status="processing",
     )
 
-    def paid_before_cancel_response(*_args):
+    def paid_before_cancel_response(*_args, **_kwargs):
         assert apply_invoice_status(
             invoice,
             {"id": 715, "status": "paid", "amount": "100.00"},
@@ -1087,7 +1092,7 @@ def test_concurrent_create_invoice_calls_provider_once_and_preserves_qr(
         with real_mutex(payment_id):
             yield
 
-    def provider_response(*_args):
+    def provider_response(*_args, **_kwargs):
         assert second_attempted.wait(timeout=5)
         return {
             "id": 716,

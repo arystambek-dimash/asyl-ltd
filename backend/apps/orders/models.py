@@ -418,6 +418,11 @@ class ApiPayWebhookEvent(models.Model):
         ApiPayInvoice, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="webhook_events",
     )
+    # Отдел, чьим секретом подписано событие: применяется только к его счетам.
+    department = models.ForeignKey(
+        "sales.Department", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="apipay_webhook_events",
+    )
     payload = models.JSONField(default=dict)
     processed_at = models.DateTimeField(null=True, blank=True)
     processing_error = models.TextField(blank=True, default="")

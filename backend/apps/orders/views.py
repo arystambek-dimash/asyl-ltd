@@ -80,8 +80,10 @@ PROVIDER_CLOSED_STATUSES = {"cancelled", "expired", "error", "superseded"}
 
 def _provider_error(exc):
     if isinstance(exc, ApiPayConfigurationError):
+        # Сообщение уже называет отдел: кассиру нужно знать, где именно
+        # не подключён Kaspi.
         return ValidationError({
-            "detail": "Счёт на оплату временно недоступен.",
+            "detail": str(exc) or "Счёт на оплату временно недоступен.",
             "code": "payment_provider_not_configured",
         })
     if isinstance(exc, ApiPayAPIError):

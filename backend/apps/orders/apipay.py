@@ -20,6 +20,7 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.eventlog.services import log_event
+from apps.sales.models import Department
 
 from .models import (
     ApiPayInvoice,
@@ -40,7 +41,21 @@ log = logging.getLogger(__name__)
 
 
 class ApiPayConfigurationError(RuntimeError):
-    pass
+    """У отдела нет ключа ApiPay или у заказа нет отдела."""
+
+    def __init__(self, message: str, *, department_name: str = ""):
+        super().__init__(message)
+        self.department_name = department_name
+
+
+@dataclass(frozen=True)
+class ApiPayCredentials:
+    """Ключ отдела для запросов к ApiPay: адрес провайдера один на всех."""
+
+    api_key: str
+    base_url: str
+    department_id: int
+    department_name: str
 
 
 @dataclass
@@ -183,28 +198,61 @@ def normalize_phone(value: str) -> str:
     })
 
 
-def _credentials() -> tuple[str, str]:
-    api_key = settings.APIPAY_API_KEY
+def credentials_for_department(department: Department) -> ApiPayCredentials:
+    api_key = department.apipay_api_key
     if not api_key:
-        raise ApiPayConfigurationError("APIPAY_API_KEY is not configured")
-    return api_key, settings.APIPAY_BASE_URL
+        raise ApiPayConfigurationError(
+            f"В отделе «{department.name}» не подключён Kaspi (ApiPay)",
+            department_name=department.name,
+        )
+    return ApiPayCredentials(
+        api_key=api_key,
+        base_url=settings.APIPAY_BASE_URL,
+        department_id=department.pk,
+        department_name=department.name,
+    )
+
+
+def credentials_for_department_code(code: str) -> ApiPayCredentials:
+    """Ключ отдела по коду заказа; активность не проверяется: старые счета
+    отключённого отдела сверяются его же ключом."""
+    department = Department.objects.filter(code=code).first() if code else None
+    if department is None:
+        raise ApiPayConfigurationError("У заказа не указан отдел продаж")
+    return credentials_for_department(department)
+
+
+def credentials_for_order(order: Order) -> ApiPayCredentials:
+    return credentials_for_department_code(order.department)
+
+
+def credentials_for_invoice(record: ApiPayInvoice) -> ApiPayCredentials:
+    code = (
+        Order.all_objects.filter(payments__pk=record.payment_id)
+        .values_list("department", flat=True)
+        .first()
+    )
+    return credentials_for_department_code(code or "")
 
 
 def api_request(
-    method: str, path: str, payload: dict[str, Any] | None = None
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    credentials: ApiPayCredentials,
 ) -> dict[str, Any]:
-    """Call ApiPay with the server-side X-API-Key header."""
-    api_key, base_url = _credentials()
+    """Call ApiPay with the department's server-side X-API-Key header."""
     body = None
     headers = {
         "Accept": "application/json",
-        "X-API-Key": api_key,
+        "X-API-Key": credentials.api_key,
     }
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(
-        f"{base_url}/{path.lstrip('/')}",
+        f"{credentials.base_url}/{path.lstrip('/')}",
         data=body,
         headers=headers,
         method=method,
@@ -329,6 +377,9 @@ def create_invoice(
                     "detail": "Счёт на оплату доступен только в тенге.",
                     "code": "apipay_kzt_only",
                 })
+            # Ключ отдела заказа проверяется до резервирования: без ключа
+            # не должно оставаться записи «creating», которую нечем сверять.
+            credentials = credentials_for_order(order)
             if record is None:
                 phone = (
                     normalize_phone(phone_number or order.client.phone)
@@ -413,7 +464,9 @@ def create_invoice(
         path = "/invoices/qr" if channel == "qr" else "/invoices"
         try:
             with _provider_scope_fence(order_id, user):
-                response = api_request("POST", path, request_payload)
+                response = api_request(
+                    "POST", path, request_payload, credentials=credentials
+                )
         except PermissionDenied:
             _save_invoice_issue_error(
                 record_id,
@@ -721,7 +774,7 @@ def _hydrate_money_response(
         or _money_payload_has_matching_amount(record, payload)
     ):
         return payload
-    authoritative = get_invoice(int(record.invoice_id))
+    authoritative = get_invoice(record)
     try:
         provider_invoice_id = int(authoritative["id"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -796,8 +849,12 @@ def start_order_payment(
         raise
 
 
-def get_invoice(invoice_id: int) -> dict[str, Any]:
-    return api_request("GET", f"/invoices/{invoice_id}")
+def get_invoice(record: ApiPayInvoice) -> dict[str, Any]:
+    return api_request(
+        "GET",
+        f"/invoices/{record.invoice_id}",
+        credentials=credentials_for_invoice(record),
+    )
 
 
 def _quarantine_invoice_issue_mapping(
@@ -862,6 +919,7 @@ def recover_invoice_issue_mapping(
 
     checked_at = checked_at or timezone.now()
     not_found_grace = max(not_found_grace, timedelta(0))
+    credentials = credentials_for_invoice(record)
     per_page = 100
     page = 1
     seen = 0
@@ -881,7 +939,9 @@ def recover_invoice_issue_mapping(
             "per_page": per_page,
             "page": page,
         })
-        response = api_request("GET", f"/invoices?{query}")
+        response = api_request(
+            "GET", f"/invoices?{query}", credentials=credentials
+        )
         if not isinstance(response, dict):
             raise ApiPayAPIError(
                 502,
@@ -1060,9 +1120,15 @@ def recover_qr_invoice_mapping(
     return recover_invoice_issue_mapping(record, **kwargs)
 
 
-def check_invoice_statuses(invoice_ids: list[int]) -> dict[str, Any]:
+def check_invoice_statuses(
+    invoice_ids: list[int], *, credentials: ApiPayCredentials
+) -> dict[str, Any]:
+    """Статусы счетов одного отдела: ключи не смешиваются между батчами."""
     return api_request(
-        "POST", "/invoices/status/check", {"invoice_ids": invoice_ids}
+        "POST",
+        "/invoices/status/check",
+        {"invoice_ids": invoice_ids},
+        credentials=credentials,
     )
 
 
@@ -1079,7 +1145,11 @@ def get_invoice_refunds(record: ApiPayInvoice) -> dict[str, Any]:
             "detail": "Счёт на оплату ещё не создан.",
             "code": "invoice_not_created",
         })
-    return api_request("GET", f"/invoices/{record.invoice_id}/refunds")
+    return api_request(
+        "GET",
+        f"/invoices/{record.invoice_id}/refunds",
+        credentials=credentials_for_invoice(record),
+    )
 
 
 def cancel_invoice(record: ApiPayInvoice, *, user) -> ApiPayInvoice:
@@ -1116,7 +1186,10 @@ def _cancel_invoice_locked(record: ApiPayInvoice) -> ApiPayInvoice:
         })
     try:
         response = api_request(
-            "POST", f"/invoices/{record.invoice_id}/cancel", {}
+            "POST",
+            f"/invoices/{record.invoice_id}/cancel",
+            {},
+            credentials=credentials_for_invoice(record),
         )
     except ApiPayAPIError as exc:
         if exc.error_code not in {
@@ -1307,6 +1380,8 @@ def create_refund(
                 "code": "refund_submission_in_progress",
             })
         value = _validated_refund_amount(payment, amount)
+        # Без ключа отдела возврат не резервируется вовсе.
+        credentials = credentials_for_order(order)
         generic_refund = PaymentRefund.objects.create(
             payment=payment,
             amount=value,
@@ -1322,7 +1397,10 @@ def create_refund(
     try:
         with _provider_scope_fence(order_id, user, require_live=True):
             response = api_request(
-                "POST", f"/invoices/{record.invoice_id}/refund", payload
+                "POST",
+                f"/invoices/{record.invoice_id}/refund",
+                payload,
+                credentials=credentials,
             )
     except (PermissionDenied, ValidationError):
         _fail_reserved_refund(

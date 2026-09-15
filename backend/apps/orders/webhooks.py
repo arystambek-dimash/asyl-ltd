@@ -9,7 +9,6 @@ import logging
 from datetime import timedelta
 from decimal import InvalidOperation
 
-from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.db.models.signals import post_save
@@ -25,7 +24,8 @@ from .apipay import (
     apply_refund_status,
     recover_invoice_mapping_from_payload,
 )
-from .models import ApiPayInvoice, ApiPayWebhookEvent
+from .models import ApiPayInvoice, ApiPayWebhookEvent, Order
+from apps.sales.models import Department
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,35 @@ class WebhookPayloadError(ValueError):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+def _departments_with_secret():
+    return Department.objects.exclude(
+        apipay_webhook_secret_encrypted=""
+    ).order_by("created_at", "id")
+
+
+def _department_for_signature(
+    raw_body: bytes, signature: str
+) -> Department | None:
+    """Отдел, чьим секретом подписано событие; None — не подошёл ни один.
+
+    Адрес вебхука один на всех, а секрет у каждого ключа ApiPay свой:
+    совпавший секрет и есть маппинг события на отдел.
+    """
+    for department in _departments_with_secret():
+        if verify_signature(raw_body, signature, department.apipay_webhook_secret):
+            return department
+    return None
+
+
+def _invoice_department_code(invoice_record: ApiPayInvoice) -> str:
+    return (
+        Order.all_objects.filter(payments__pk=invoice_record.payment_id)
+        .values_list("department", flat=True)
+        .first()
+        or ""
+    )
 
 
 def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
@@ -227,6 +256,16 @@ def _replay_one_webhook(event_id: int) -> str:
             # This is the expected create-response/webhook race, not an error.
             _defer_locked_event(event, "waiting_for_invoice")
             return "waiting_for_invoice"
+        if (
+            event.department_id is not None
+            and _invoice_department_code(invoice_record) != event.department.code
+        ):
+            # Счёт нашёлся позже, но принадлежит другому отделу: событие
+            # подписано чужим секретом и деньги по нему не применяются.
+            event.invoice = invoice_record
+            _defer_locked_event(event, "invoice_department_mismatch")
+            event.save(update_fields=["invoice"])
+            return "failed"
 
         try:
             _apply_event(
@@ -361,11 +400,11 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
     if len(raw_body) > MAX_WEBHOOK_BODY_BYTES:
         return JsonResponse({"error": "payload_too_large"}, status=413)
 
-    secret = settings.APIPAY_WEBHOOK_SECRET
-    if not secret:
+    if not _departments_with_secret().exists():
         return JsonResponse({"error": "webhook_not_configured"}, status=503)
     signature = request.headers.get("X-Webhook-Signature", "")
-    if not verify_signature(raw_body, signature, secret):
+    department = _department_for_signature(raw_body, signature)
+    if department is None:
         return JsonResponse({"error": "invalid_signature"}, status=401)
 
     try:
@@ -411,6 +450,20 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
             invoice_record = ApiPayInvoice.objects.filter(
                 invoice_id=provider_invoice_id
             ).first()
+        if (
+            invoice_record is not None
+            and _invoice_department_code(invoice_record) != department.code
+        ):
+            # Подпись отдела A по счёту отдела B: чужой ключ не может двигать
+            # деньги этого счёта. Сверка ключом отдела B приведёт его в порядок.
+            logger.warning(
+                "ApiPay webhook signed by department=%s for invoice=%s of another department",
+                department.code,
+                provider_invoice_id,
+            )
+            return JsonResponse(
+                {"error": "invoice_department_mismatch"}, status=403
+            )
         try:
             with transaction.atomic():
                 webhook_event = ApiPayWebhookEvent.objects.create(
@@ -419,6 +472,7 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
                     event=event_name,
                     provider_invoice_id=provider_invoice_id,
                     invoice=invoice_record,
+                    department=department,
                     payload=payload,
                 )
         except IntegrityError:

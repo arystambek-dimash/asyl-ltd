@@ -9,7 +9,7 @@ from django.db import IntegrityError
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.apipay import create_invoice
+from apps.orders.apipay import ApiPayConfigurationError, create_invoice
 from apps.orders.models import (
     ApiPayInvoice,
     ApiPayRefund,
@@ -18,8 +18,15 @@ from apps.orders.models import (
     OrderItem,
     Payment,
 )
+from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
 
 
 class UpstreamResponse:
@@ -55,8 +62,8 @@ def _payment():
     )
 
 
-def _signed_post(api_client, settings, payload, secret="webhook-secret"):
-    settings.APIPAY_WEBHOOK_SECRET = secret
+def _signed_post(api_client, payload, secret="webhook-secret"):
+    """Подписать как ApiPay: секрет по умолчанию — у отдела ``main`` из фикстуры."""
     body = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
@@ -73,7 +80,6 @@ def _signed_post(api_client, settings, payload, secret="webhook-secret"):
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_create_invoice_uses_api_key_and_required_payload(urlopen, settings):
-    settings.APIPAY_API_KEY = "server-only-key"
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     urlopen.return_value = UpstreamResponse({"id": 42, "status": "processing"})
     payment = _payment()
@@ -97,7 +103,6 @@ def test_create_invoice_uses_api_key_and_required_payload(urlopen, settings):
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_create_qr_invoice_persists_payment_links(urlopen, settings):
-    settings.APIPAY_API_KEY = "server-only-key"
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     urlopen.return_value = UpstreamResponse({
         "id": 43,
@@ -120,8 +125,7 @@ def test_create_qr_invoice_persists_payment_links(urlopen, settings):
     assert invoice.qr_expires_at.isoformat() == "2026-07-23T09:05:00+00:00"
 
 
-def test_webhook_rejects_invalid_signature(api_client, settings):
-    settings.APIPAY_WEBHOOK_SECRET = "secret"
+def test_webhook_rejects_invalid_signature(api_client):
     response = api_client.post(
         "/api/webhooks/apipay/",
         data=b'{"event":"webhook.test"}',
@@ -135,8 +139,8 @@ def test_webhook_rejects_invalid_signature(api_client, settings):
 def test_webhook_test_is_accepted_and_idempotent(api_client, settings):
     payload = {"event": "webhook.test", "timestamp": "2026-07-23T00:00:00Z"}
 
-    first = _signed_post(api_client, settings, payload)
-    second = _signed_post(api_client, settings, payload)
+    first = _signed_post(api_client, payload)
+    second = _signed_post(api_client, payload)
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -165,7 +169,7 @@ def test_unmapped_invoice_webhook_is_queued_and_replayed_after_mapping(
         "timestamp": "2026-07-23T08:35:01Z",
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "queued": True}
@@ -213,12 +217,12 @@ def test_invoice_webhook_versions_changed_timestamp_and_dedupes_exact_replay(
         "timestamp": "2026-07-23T08:30:10Z",
     }
 
-    first = _signed_post(api_client, settings, first_payload)
+    first = _signed_post(api_client, first_payload)
     next_transition = _signed_post(
-        api_client, settings, next_transition_payload
+        api_client, next_transition_payload
     )
     exact_replay = _signed_post(
-        api_client, settings, next_transition_payload
+        api_client, next_transition_payload
     )
 
     assert first.status_code == 200
@@ -262,15 +266,9 @@ def test_status_changed_and_qr_scanned_pending_events_do_not_collide(
         "timestamp": "2026-07-23T08:30:00Z",
     }
 
-    status_changed = _signed_post(
-        api_client,
-        settings,
-        {"event": "invoice.status_changed", **base_payload},
+    status_changed = _signed_post(api_client, {"event": "invoice.status_changed", **base_payload},
     )
-    qr_scanned = _signed_post(
-        api_client,
-        settings,
-        {"event": "invoice.qr_scanned", **base_payload},
+    qr_scanned = _signed_post(api_client, {"event": "invoice.qr_scanned", **base_payload},
     )
 
     assert status_changed.json() == {"ok": True}
@@ -310,7 +308,7 @@ def test_paid_webhook_confirms_payment_and_order(api_client, settings):
         "timestamp": "2026-07-23T08:35:01Z",
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     payment.refresh_from_db()
@@ -344,7 +342,7 @@ def test_partially_refunded_webhook_confirms_gross_payment(
         "timestamp": "2026-07-23T08:36:00Z",
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
@@ -378,10 +376,10 @@ def test_cancelled_then_paid_is_supported(api_client, settings):
         "timestamp": "2026-07-23T08:35:01Z",
     }
 
-    assert _signed_post(api_client, settings, cancelled).status_code == 200
+    assert _signed_post(api_client, cancelled).status_code == 200
     payment.refresh_from_db()
     assert payment.status == "rejected"
-    assert _signed_post(api_client, settings, paid).status_code == 200
+    assert _signed_post(api_client, paid).status_code == 200
     payment.refresh_from_db()
     assert payment.status == "confirmed"
     assert invoice.webhook_events.count() == 2
@@ -421,9 +419,9 @@ def test_error_can_recover_to_pending_and_delayed_older_status_is_ignored(
         "timestamp": "2026-07-23T08:29:00Z",
     }
 
-    assert _signed_post(api_client, settings, errored).json() == {"ok": True}
-    assert _signed_post(api_client, settings, recovered).json() == {"ok": True}
-    assert _signed_post(api_client, settings, delayed).json() == {"ok": True}
+    assert _signed_post(api_client, errored).json() == {"ok": True}
+    assert _signed_post(api_client, recovered).json() == {"ok": True}
+    assert _signed_post(api_client, delayed).json() == {"ok": True}
 
     invoice.refresh_from_db()
     payment.refresh_from_db()
@@ -461,7 +459,7 @@ def test_late_superseded_qr_payment_releases_conflicting_replacement(
         },
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     payment.refresh_from_db()
@@ -483,7 +481,7 @@ def test_webhook_retains_mismatched_amount_for_durable_retry(
         "invoice": {"id": 42, "amount": "1.00", "status": "paid"},
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "queued": True}
@@ -539,7 +537,7 @@ def test_invalid_money_webhooks_are_retained_without_mutation(
         "timestamp": "2026-07-23T08:35:01Z",
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "queued": True}
@@ -582,7 +580,7 @@ def test_webhook_apply_integrity_error_is_queued_and_exact_retry_applies(
         "apps.orders.webhooks.apply_invoice_status",
         side_effect=IntegrityError("simulated apply failure"),
     ):
-        failed = _signed_post(api_client, settings, payload)
+        failed = _signed_post(api_client, payload)
 
     assert failed.status_code == 200
     assert failed.json() == {"ok": True, "queued": True}
@@ -593,7 +591,7 @@ def test_webhook_apply_integrity_error_is_queued_and_exact_retry_applies(
     payment.refresh_from_db()
     assert payment.status == "received"
 
-    retried = _signed_post(api_client, settings, payload)
+    retried = _signed_post(api_client, payload)
 
     assert retried.status_code == 200
     assert retried.json()["duplicate"] is True
@@ -614,7 +612,7 @@ def test_webhook_non_duplicate_insert_integrity_error_is_not_acknowledged(
         "apps.orders.webhooks.ApiPayWebhookEvent.objects.create",
         side_effect=IntegrityError("simulated non-unique insert failure"),
     ):
-        response = _signed_post(api_client, settings, payload)
+        response = _signed_post(api_client, payload)
 
     assert response.status_code == 500
     assert response.json()["error"] == "webhook_processing_failed"
@@ -649,7 +647,7 @@ def test_refund_webhook_confirms_missed_gross_payment(api_client, settings):
         "timestamp": "2026-07-23T09:00:00Z",
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
@@ -686,7 +684,7 @@ def test_refund_webhook_updates_transaction_totals(api_client, settings):
         },
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     refund = ApiPayRefund.objects.get(refund_id=77)
@@ -729,8 +727,8 @@ def test_refund_webhook_dedupes_by_refund_id_and_status(
         "timestamp": "2026-07-23T09:00:10Z",
     }
 
-    first = _signed_post(api_client, settings, first_payload)
-    retry = _signed_post(api_client, settings, retry_payload)
+    first = _signed_post(api_client, first_payload)
+    retry = _signed_post(api_client, retry_payload)
 
     assert first.status_code == 200
     assert retry.status_code == 200
@@ -764,7 +762,7 @@ def test_refund_above_gross_is_retained_without_changing_totals(
         },
     }
 
-    response = _signed_post(api_client, settings, payload)
+    response = _signed_post(api_client, payload)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "queued": True}
@@ -814,8 +812,8 @@ def test_cumulative_refund_above_gross_is_retained_and_preserves_totals(
         },
     }
 
-    first = _signed_post(api_client, settings, first_payload)
-    excessive = _signed_post(api_client, settings, excessive_payload)
+    first = _signed_post(api_client, first_payload)
+    excessive = _signed_post(api_client, excessive_payload)
 
     assert first.json() == {"ok": True}
     assert excessive.json() == {"ok": True, "queued": True}
@@ -834,3 +832,138 @@ def test_cumulative_refund_above_gross_is_retained_and_preserves_totals(
     assert ApiPayRefund.objects.filter(refund_id=80).exists()
     assert not ApiPayRefund.objects.filter(refund_id=81).exists()
     assert payment.payment_refunds.count() == 1
+
+
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_each_department_uses_its_own_key(urlopen, settings):
+    settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
+    city = Department.objects.create(code="city", name="Нью-Сити")
+    city.set_apipay_api_key("city-key")
+    city.save()
+
+    urlopen.return_value = UpstreamResponse({"id": 42, "status": "processing"})
+    create_invoice(_payment(), user=None)
+    assert urlopen.call_args.args[0].headers["X-api-key"] == "server-only-key"
+
+    urlopen.return_value = UpstreamResponse({"id": 43, "status": "processing"})
+    first_order = Order.objects.get(pk=ApiPayInvoice.objects.get().payment.order_id)
+    city_order = Order.objects.create(
+        client=first_order.client, status="shipped", currency="KZT", department="city"
+    )
+    OrderItem.objects.create(
+        order=city_order, product=first_order.items.first().product,
+        quantity=1, unit_price=Decimal("5000.00"),
+    )
+    city_payment = Payment.objects.create(
+        order=city_order, amount="5000.00", method="kaspi", status="received"
+    )
+    create_invoice(city_payment, user=None)
+    assert urlopen.call_args.args[0].headers["X-api-key"] == "city-key"
+
+
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_department_without_key_rejects_before_reserving(urlopen):
+    Department.objects.create(code="nokey", name="Без ключа")
+    payment = _payment()
+    Order.all_objects.filter(pk=payment.order_id).update(department="nokey")
+
+    with pytest.raises(ApiPayConfigurationError) as exc:
+        create_invoice(payment, user=None)
+
+    assert "Без ключа" in str(exc.value)
+    assert exc.value.department_name == "Без ключа"
+    assert not ApiPayInvoice.objects.exists()
+    urlopen.assert_not_called()
+
+
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_order_without_department_row_is_not_configured(urlopen):
+    payment = _payment()
+    Order.all_objects.filter(pk=payment.order_id).update(department="ghost")
+    with pytest.raises(ApiPayConfigurationError):
+        create_invoice(payment, user=None)
+    urlopen.assert_not_called()
+
+
+def _pending_invoice(invoice_id: int = 42) -> ApiPayInvoice:
+    payment = _payment()
+    return ApiPayInvoice.objects.create(
+        payment=payment,
+        invoice_id=invoice_id,
+        idempotency_key=f"asyl-payment-{payment.pk}-v1",
+        status="pending",
+        channel="qr",
+    )
+
+
+def _paid_payload(invoice_id: int = 42) -> dict:
+    return {
+        "event": "invoice.status_changed",
+        "timestamp": "2026-09-15T10:00:00+00:00",
+        "invoice": {"id": invoice_id, "status": "paid", "amount": 5000},
+    }
+
+
+def test_webhook_maps_signature_to_department(api_client, apipay_department):
+    invoice = _pending_invoice()
+
+    response = _signed_post(api_client, _paid_payload())
+
+    assert response.status_code == 200, response.content
+    event = ApiPayWebhookEvent.objects.get()
+    assert event.department_id == apipay_department.pk
+    assert event.invoice_id == invoice.pk
+    invoice.refresh_from_db()
+    assert invoice.status == "paid"
+
+
+def test_webhook_signed_by_other_department_is_rejected(api_client):
+    city = Department.objects.create(code="city", name="Нью-Сити")
+    city.set_apipay_api_key("city-key")
+    city.set_apipay_webhook_secret("city-hook")
+    city.save()
+    invoice = _pending_invoice()  # заказ в отделе main
+
+    response = _signed_post(api_client, _paid_payload(), secret="city-hook")
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "invoice_department_mismatch"}
+    assert not ApiPayWebhookEvent.objects.exists()
+    invoice.refresh_from_db()
+    assert invoice.status == "pending"
+
+
+def test_webhook_for_unknown_invoice_keeps_department_and_refuses_foreign_mapping(
+    api_client, apipay_department
+):
+    city = Department.objects.create(code="city", name="Нью-Сити")
+    city.set_apipay_api_key("city-key")
+    city.set_apipay_webhook_secret("city-hook")
+    city.save()
+
+    # Событие пришло раньше, чем счёт сохранился локально.
+    response = _signed_post(api_client, _paid_payload(77), secret="city-hook")
+    assert response.status_code == 200
+    event = ApiPayWebhookEvent.objects.get()
+    assert event.department_id == city.pk
+    assert event.processed_at is None
+
+    # Счёт 77 оказался у отдела main: событие отдела city к нему не применяется.
+    invoice = _pending_invoice(77)
+    event.refresh_from_db()
+    invoice.refresh_from_db()
+    assert event.processed_at is None
+    assert event.processing_error == "invoice_department_mismatch"
+    assert invoice.status == "pending"
+
+
+def test_webhook_without_any_secret_is_not_configured(api_client):
+    Department.objects.update(apipay_webhook_secret_encrypted="")
+    response = api_client.post(
+        "/api/webhooks/apipay/",
+        data=b'{"event":"webhook.test"}',
+        content_type="application/json",
+        HTTP_X_WEBHOOK_SIGNATURE="sha256=deadbeef",
+    )
+    assert response.status_code == 503
+    assert response.json() == {"error": "webhook_not_configured"}

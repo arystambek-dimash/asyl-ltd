@@ -25,8 +25,15 @@ from apps.orders.reconciliation import (
 )
 from apps.orders.reconciliation_runner import _request_budget_per_iteration
 from apps.orders.refund_reconciliation import RefundReconciliationStats
+from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
 
 
 def _invoice(invoice_id: int, status: str = "pending") -> ApiPayInvoice:
@@ -335,7 +342,9 @@ def test_reconcile_honors_hard_provider_request_budget(check_statuses):
         now=now,
     )
 
-    check_statuses.assert_called_once_with([221, 222])
+    check_statuses.assert_called_once()
+    assert check_statuses.call_args.args[0] == [221, 222]
+    assert check_statuses.call_args.kwargs["credentials"].api_key == "server-only-key"
     assert stats.selected == 2
     assert stats.batches == 1
 
@@ -717,3 +726,46 @@ def test_monitor_budget_and_backoff_helpers_enforce_hard_caps():
         )
         == 300
     )
+
+
+@patch("apps.orders.reconciliation.check_invoice_statuses")
+def test_reconciliation_batches_per_department(check_statuses):
+    city = Department.objects.create(code="city", name="Нью-Сити")
+    city.set_apipay_api_key("city-key")
+    city.save()
+    first = _invoice(901)
+    second = _invoice(902)
+    Order.all_objects.filter(pk=second.payment.order_id).update(department="city")
+    check_statuses.return_value = {"invoices": []}
+
+    stats = reconcile_apipay_invoices(
+        stale_after=timedelta(seconds=30),
+        now=timezone.now() + timedelta(minutes=5),
+    )
+
+    calls = sorted(
+        (call.kwargs["credentials"].api_key, call.args[0])
+        for call in check_statuses.call_args_list
+    )
+    assert calls == [("city-key", [902]), ("server-only-key", [901])]
+    assert stats.batches == 2
+    assert first.pk != second.pk
+
+
+@patch("apps.orders.reconciliation.check_invoice_statuses")
+def test_reconciliation_skips_department_without_key(check_statuses):
+    Department.objects.create(code="nokey", name="Без ключа")
+    record = _invoice(903)
+    Order.all_objects.filter(pk=record.payment.order_id).update(department="nokey")
+    before = ApiPayInvoice.objects.get(pk=record.pk).updated_at
+
+    stats = reconcile_apipay_invoices(
+        stale_after=timedelta(seconds=30),
+        now=timezone.now() + timedelta(minutes=5),
+    )
+
+    check_statuses.assert_not_called()
+    assert stats.selected == 1
+    assert stats.failed == 1
+    assert stats.batches == 0
+    assert ApiPayInvoice.objects.get(pk=record.pk).updated_at == before

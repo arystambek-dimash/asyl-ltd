@@ -1,6 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 from django.utils import timezone
@@ -26,6 +26,12 @@ from apps.orders.models import (
 from apps.orders.refund_reconciliation import reconcile_apipay_refunds
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
 
 
 def _invoice(*, channel="phone", amount="100.00", invoice_id=800):
@@ -92,8 +98,9 @@ def test_refund_status_read_uses_documented_invoice_refunds_endpoint(
     assert get_invoice_refunds(invoice) == {"refunds": [], "total": 0}
 
     api_request.assert_called_once_with(
-        "GET", f"/invoices/{invoice.invoice_id}/refunds"
+        "GET", f"/invoices/{invoice.invoice_id}/refunds", credentials=ANY
     )
+    assert api_request.call_args.kwargs["credentials"].api_key == "server-only-key"
 
 
 @patch("apps.orders.apipay.api_request")
@@ -120,6 +127,7 @@ def test_qr_invoice_refund_is_sent_to_apipay(api_request, accountant):
         "POST",
         f"/invoices/{invoice.invoice_id}/refund",
         {"amount": 25.0, "reason": "QR возврат"},
+        credentials=ANY,
     )
     invoice.payment.refresh_from_db()
     assert invoice.payment.pending_refund_amount == Decimal("25.00")
@@ -161,7 +169,7 @@ def test_completed_webhook_racing_refund_response_is_not_duplicated_or_regressed
 ):
     invoice = _invoice()
 
-    def webhook_wins(*_args):
+    def webhook_wins(*_args, **_kwargs):
         apply_refund_status(
             invoice,
             {
@@ -274,6 +282,7 @@ def test_ambiguous_post_is_never_retried_and_is_released_after_observation(
         "POST",
         f"/invoices/{invoice.invoice_id}/refund",
         {"amount": 10.0, "reason": "Сетевой timeout"},
+        credentials=ANY,
     )
 
     now = timezone.now().replace(microsecond=0)

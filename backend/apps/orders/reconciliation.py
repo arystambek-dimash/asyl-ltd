@@ -12,12 +12,15 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .apipay import (
+    ApiPayConfigurationError,
+    ApiPayCredentials,
     apply_invoice_status,
     check_invoice_statuses,
+    credentials_for_department_code,
     recover_invoice_issue_mapping,
 )
 from .models import ApiPayInvoice
@@ -100,6 +103,36 @@ def _payloads_by_id(
             continue
         result[invoice_id] = payload
     return result, malformed
+
+
+def _department_batches(
+    candidates: list[ApiPayInvoice],
+    batch_size: int,
+    stats: ReconciliationStats,
+):
+    """Батчи внутри одного отдела: у каждого отдела свой ключ ApiPay.
+
+    Группа без ключа считается упавшей и не трогает ``updated_at``: как только
+    суперюзер подключит Kaspi отделу, счета сверятся в следующем цикле.
+    """
+    grouped: dict[str, list[ApiPayInvoice]] = {}
+    for record in candidates:
+        grouped.setdefault(record.department_code or "", []).append(record)
+    for department_code, records in grouped.items():
+        try:
+            credentials: ApiPayCredentials = credentials_for_department_code(
+                department_code
+            )
+        except ApiPayConfigurationError as exc:
+            stats.failed += len(records)
+            log.warning(
+                "ApiPay reconciliation skipped department=%r: %s",
+                department_code,
+                exc,
+            )
+            continue
+        for offset in range(0, len(records), batch_size):
+            yield credentials, records[offset : offset + batch_size]
 
 
 def reconcile_apipay_invoices(
@@ -221,6 +254,7 @@ def reconcile_apipay_invoices(
             )
         )
         .only("id", "invoice_id", "status", "updated_at")
+        .annotate(department_code=F("payment__order__department"))
         .order_by("updated_at", "pk")
     )
     if mapped_limit is not None:
@@ -228,14 +262,15 @@ def reconcile_apipay_invoices(
     candidates = list(candidate_query)
     stats.selected = len(candidates)
 
-    for offset in range(0, len(candidates), batch_size):
-        batch = candidates[offset : offset + batch_size]
+    for credentials, batch in _department_batches(candidates, batch_size, stats):
         requested_ids = [int(record.invoice_id) for record in batch]
         expected = {int(record.invoice_id): record for record in batch}
         stats.batches += 1
 
         try:
-            response = check_invoice_statuses(requested_ids)
+            response = check_invoice_statuses(
+                requested_ids, credentials=credentials
+            )
             payloads = _response_invoices(response)
             by_id, malformed = _payloads_by_id(payloads)
         except Exception:

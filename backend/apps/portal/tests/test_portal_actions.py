@@ -8,6 +8,12 @@ from apps.warehouse.models import StockItem
 from apps.orders.models import Order, OrderItem
 
 
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
+
+
 @pytest.fixture
 def client_and_order(db, make_user):
     user = make_user(username="cli", client=True)
@@ -47,7 +53,6 @@ def test_create_order_is_pending(db, make_user, auth_client):
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_pay_creates_pending_payment(urlopen, client_and_order, auth_client, settings):
     # Оплата доступна после отгрузки; заявка клиента встаёт в цепочку («принята»).
-    settings.APIPAY_API_KEY = "test-key"
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
         "id": 42, "status": "processing",
@@ -88,7 +93,6 @@ def test_invoice_and_cash_create_requested_payment(
 def test_invoice_is_sent_through_apipay_phone_channel(
     urlopen, client_and_order, auth_client, settings
 ):
-    settings.APIPAY_API_KEY = "test-key"
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
         "id": 44, "status": "processing",
@@ -145,7 +149,6 @@ def test_client_payment_method_must_be_supported(client_and_order, auth_client):
 def test_changing_client_payment_method_reuses_open_request(
     urlopen, client_and_order, auth_client, settings
 ):
-    settings.APIPAY_API_KEY = "test-key"
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
         "id": 43, "status": "processing",
@@ -175,7 +178,6 @@ def test_changing_client_payment_method_reuses_open_request(
 def test_client_can_release_qr_and_split_remaining_payment(
     urlopen, client_and_order, auth_client, settings
 ):
-    settings.APIPAY_API_KEY = "test-key"
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
         "id": 45, "status": "pending",
@@ -215,7 +217,6 @@ def test_client_can_release_qr_and_split_remaining_payment(
 def test_phone_invoice_stays_reserved_until_cancellation_is_confirmed(
     urlopen, client_and_order, auth_client, settings
 ):
-    settings.APIPAY_API_KEY = "test-key"
     response = urlopen.return_value.__enter__.return_value
     response.read.side_effect = [
         json.dumps({"id": 46, "status": "pending"}).encode(),

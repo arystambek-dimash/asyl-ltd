@@ -308,8 +308,7 @@ CELERY_BEAT_SCHEDULE = {
 # is both crash-safe and useful to operators during health diagnosis.
 CELERY_BEAT_SYNC_EVERY = 1
 
-APIPAY_API_KEY = os.environ.get("APIPAY_API_KEY", "").strip()
-APIPAY_WEBHOOK_SECRET = os.environ.get("APIPAY_WEBHOOK_SECRET", "").strip()
+# Ключи ApiPay хранятся у отделов (sales.Department), общего ключа нет.
 APIPAY_BASE_URL = os.environ.get(
     "APIPAY_BASE_URL", "https://api.apipay.kz/api/v1"
 ).rstrip("/")
