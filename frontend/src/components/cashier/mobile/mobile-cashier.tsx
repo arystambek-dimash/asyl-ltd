@@ -8,12 +8,12 @@ import { CashFiltersSheet, FilterButton } from "../cash-filters-sheet";
 import { activeFilterCount, filtersError } from "../filters";
 import { ALL_DEPARTMENTS } from "../scope";
 import type { CashierModel } from "../use-cashier";
-import { hasHomeScreen, mobileMenu, type CashView } from "../view";
+import { hasHomeScreen, mobileMenu, type CashView, type MobileMenuKey } from "../view";
 import { BottomBar, type BottomBarItem } from "./bottom-bar";
 import { ConfirmScreen } from "./confirm-screen";
 import { DebtsScreen } from "./debts-screen";
 import { DepartmentSheet } from "./department-sheet";
-import { HomeScreen, type HomeItemKey } from "./home-screen";
+import { HomeScreen } from "./home-screen";
 import { JournalScreen } from "./journal-screen";
 import { PosScreen } from "./pos/pos-screen";
 import { usePosFlow } from "./pos/use-pos-flow";
@@ -78,7 +78,7 @@ export function MobileCashier({ model }: { model: CashierModel }) {
     if (view === "home") cameFromHome.current = false;
   }, [view]);
   const open = useCallback(
-    (next: HomeItemKey) => {
+    (next: MobileMenuKey) => {
       cameFromHome.current = true;
       router.push(`${pathname}?view=${next}`);
     },

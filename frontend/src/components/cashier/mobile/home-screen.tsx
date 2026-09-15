@@ -1,16 +1,15 @@
 "use client";
-import { ChartPie, ChevronRight, HandCoins, History, Receipt, Send, Users } from "lucide-react";
+import { ChartPie, ChevronRight, HandCoins, History, Receipt, Users } from "lucide-react";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { NavList } from "@/components/ui/nav-list";
 import { cn, formatCompactCurrency, formatCurrency, pluralRu } from "@/lib/utils";
 import type { CashierModel } from "../use-cashier";
 import type { MobileMenuKey } from "../view";
 
-/** Строки главной: разделы меню плюс удалённая оплата — как в Kaspi Pay; сам POS живёт в панели внизу. */
-export type HomeItemKey = MobileMenuKey | "remote";
+/** Строки главной: разделы меню; POS и удалённая оплата живут в панели внизу. */
+export type HomeItemKey = MobileMenuKey;
 
 const ITEMS: Record<HomeItemKey, { title: string; icon: React.ElementType; hint: string }> = {
-  remote: { title: "Удаленная оплата", icon: Send, hint: "Клиент оплатит счёт в Kaspi" },
   confirm: { title: "Заявки и оплаты", icon: HandCoins, hint: "Очередь подтверждения" },
   debts: { title: "Долги клиентов", icon: Users, hint: "Остатки по клиентам" },
   transactions: { title: "Транзакции", icon: Receipt, hint: "Все платежи, возвраты и чеки" },
@@ -82,9 +81,7 @@ export function HomeScreen({
           target: "confirm" as const,
         }
       : null;
-  const quick: HomeItemKey[] = perms.canCreatePayments ? ["remote"] : [];
   const subtitles: Record<HomeItemKey, string> = {
-    remote: ITEMS.remote.hint,
     confirm: confirmSubtitle(model),
     debts: debtsSubtitle(model),
     transactions: ITEMS.transactions.hint,
@@ -116,7 +113,7 @@ export function HomeScreen({
       {loadError && <ErrorAlert message={loadError} onRetry={model.reloadOverview} />}
       <NavList
         label="Разделы кассы"
-        items={[...quick, ...menu].map((key) => ({
+        items={menu.map((key) => ({
           key,
           icon: ITEMS[key].icon,
           title: ITEMS[key].title,

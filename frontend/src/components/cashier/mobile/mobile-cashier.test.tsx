@@ -245,13 +245,14 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
   await waitFor(() => expect(menu.getByText("2 заявки · 1 оплата на 100 ₸")).toBeInTheDocument());
   expect(menu.getByText("1 клиент · 100 ₸")).toBeInTheDocument();
   expect(menu.getAllByRole("button").map((b) => b.textContent)).toEqual([
-    expect.stringContaining("Удаленная оплата"),
     expect.stringContaining("Заявки и оплаты"),
     expect.stringContaining("Долги клиентов"),
     expect.stringContaining("Транзакции"),
     expect.stringContaining("Журнал"),
     expect.stringContaining("Отчёт по поступлениям"),
   ]);
+  // Удалённая оплата живёт только во вкладке POS: строки на главной нет даже с полными правами.
+  expect(screen.queryByRole("button", { name: /Удаленная оплата/ })).not.toBeInTheDocument();
   const headline = await screen.findByRole("button", { name: /Поступления за сегодня/ });
   expect(headline).toHaveTextContent("100 ₸");
   expect(
@@ -315,14 +316,13 @@ it("replaces to the home screen from a deep-linked POS", async () => {
   expect(routerCalls.replace).toEqual(["/accounting?view=pos", "/accounting"]);
 });
 
-it("shows no POS bar or remote-payment row without the right to take payments", async () => {
+it("shows no POS bar without the right to take payments", async () => {
   mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
   render(<CashierPage />);
   expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
   expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
   const menu = within(screen.getByRole("navigation", { name: "Разделы кассы" }));
   expect(menu.queryByRole("button", { name: /POS/ })).not.toBeInTheDocument();
-  expect(menu.queryByRole("button", { name: /Удаленная оплата/ })).not.toBeInTheDocument();
 });
 
 it("lets staff with access to every department switch the cashier's department", async () => {
