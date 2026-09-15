@@ -1,5 +1,5 @@
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -177,6 +177,7 @@ def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
         "POST",
         "/invoices/990/refund",
         {"amount": 1.0, "reason": "Тестовый платёж"},
+        credentials=ANY,
     )
 
 
@@ -340,7 +341,9 @@ def test_phone_kaspi_rejection_waits_for_provider_confirmation(
     invoice.refresh_from_db()
     assert payment.status == "received"
     assert invoice.status == "cancelling"
-    api_request.assert_called_once_with("POST", "/invoices/991/cancel", {})
+    api_request.assert_called_once_with(
+        "POST", "/invoices/991/cancel", {}, credentials=ANY
+    )
 
 
 def test_active_qr_transaction_cannot_be_rejected(auth_client, accountant):

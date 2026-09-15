@@ -15,8 +15,14 @@ class Department(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     # У каждого отдела свой аккаунт Kaspi: ключ ApiPay и секрет вебхука
     # хранятся только зашифрованными, общего ключа в окружении больше нет.
-    apipay_api_key_encrypted = models.TextField(blank=True, default="")
-    apipay_webhook_secret_encrypted = models.TextField(blank=True, default="")
+    # db_default: таблица общая с историческими миграциями clients, и старые
+    # состояния модели вставляют строки без этих колонок.
+    apipay_api_key_encrypted = models.TextField(
+        blank=True, default="", db_default=""
+    )
+    apipay_webhook_secret_encrypted = models.TextField(
+        blank=True, default="", db_default=""
+    )
     apipay_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
