@@ -16,6 +16,12 @@ from apps.orders.models import (
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
+
+
 def test_transaction_capabilities_include_employee_permissions(
     auth_client,
     user_with_perms,

@@ -23,6 +23,12 @@ from apps.orders.tests.test_apipay_refund_reconciliation import _invoice
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
+
+
 @pytest.mark.parametrize('mode', ['cash', 'apipay'])
 @pytest.mark.parametrize('archived_field', ['deleted_at', 'purged_at'])
 def test_archived_order_rejects_new_refund(auth_client, accountant, mode, archived_field):

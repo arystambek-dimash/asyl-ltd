@@ -29,12 +29,21 @@ from apps.warehouse.models import StockItem
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _department_key(apipay_department):
+    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
+    return apipay_department
+
+
 @pytest.fixture
 def ownership_scope(user_with_perms):
     first_department = Department.objects.create(
         code="ownership-a",
         name="Владельцы A",
     )
+    # Провайдерские пути берут ключ ApiPay из отдела заказа.
+    first_department.set_apipay_api_key("ownership-a-key")
+    first_department.save()
     second_department = Department.objects.create(
         code="ownership-b",
         name="Владельцы B",
