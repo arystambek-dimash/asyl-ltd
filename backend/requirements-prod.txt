@@ -12,3 +12,5 @@ Pillow>=12.3,<13.0
 openpyxl>=3.1,<4.0
 gunicorn>=23.0,<24.0
 sentry-sdk[django]>=2.68,<3.0
+# Fernet-шифрование ключей ApiPay, хранимых у отделов.
+cryptography>=43,<47
