@@ -109,6 +109,7 @@ services:
       SHIPPING_TRANSPORT_POLL_SECONDS: "${SHIPPING_TRANSPORT_POLL_SECONDS:-2}"
       SHIPPING_TRANSPORT_HEARTBEAT_FILE: "${SHIPPING_TRANSPORT_HEARTBEAT_FILE:-/tmp/shipping-transport-monitor/heartbeat.json}"
       SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS: "${SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS:-180}"
+      # Только для разовой миграции sales.0004: ключи ApiPay хранятся у отделов.
       APIPAY_API_KEY: "${APIPAY_API_KEY:-}"
       APIPAY_WEBHOOK_SECRET: "${APIPAY_WEBHOOK_SECRET:-}"
       APIPAY_BASE_URL: "${APIPAY_BASE_URL:-https://api.apipay.kz/api/v1}"

@@ -777,18 +777,17 @@ class ProductionManifestTests(unittest.TestCase):
             workflow,
         )
 
-    def test_compose_requires_apipay_secrets_and_serial_celery_topology(
+    def test_compose_keeps_apipay_env_optional_and_serial_celery_topology(
         self,
     ) -> None:
+        # Ключи ApiPay хранятся у отделов; переменные окружения нужны только
+        # разовой миграции и не должны блокировать запуск.
         compose = PROD_COMPOSE.read_text(encoding="utf-8")
+        self.assertNotIn("APIPAY_API_KEY:?", compose)
+        self.assertNotIn("APIPAY_WEBHOOK_SECRET:?", compose)
+        self.assertIn("APIPAY_API_KEY: ${APIPAY_API_KEY:-}", compose)
         self.assertIn(
-            "APIPAY_API_KEY: ${APIPAY_API_KEY:?set APIPAY_API_KEY}",
-            compose,
-        )
-        self.assertIn(
-            "APIPAY_WEBHOOK_SECRET: "
-            "${APIPAY_WEBHOOK_SECRET:?set APIPAY_WEBHOOK_SECRET}",
-            compose,
+            "APIPAY_WEBHOOK_SECRET: ${APIPAY_WEBHOOK_SECRET:-}", compose
         )
         self.assertIn(
             'test: ["CMD", "python", "/app/apipay_monitor_healthcheck.py"]',

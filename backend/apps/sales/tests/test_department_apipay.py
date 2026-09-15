@@ -1,4 +1,6 @@
 """Ключ ApiPay и секрет вебхука у отдела: хранение и API."""
+import importlib
+
 import pytest
 from rest_framework.test import APIClient
 
@@ -166,3 +168,28 @@ def test_create_applies_keys_only_for_superuser(superuser, user_with_perms):
     )
     assert created.status_code == 201
     assert created.data["apipay_configured"] is True
+
+
+def test_seed_from_env_fills_default_department_once(monkeypatch):
+    seed = importlib.import_module("apps.sales.migrations.0004_seed_apipay_from_env")
+    Department.objects.all().delete()
+    main = Department.objects.create(code="mill", name="Мельница", is_default=True)
+    other = Department.objects.create(code="city", name="Нью-Сити")
+
+    monkeypatch.delenv("APIPAY_API_KEY", raising=False)
+    assert seed.seed_from_environment(Department) is False
+
+    monkeypatch.setenv("APIPAY_API_KEY", "env-key-1234")
+    monkeypatch.setenv("APIPAY_WEBHOOK_SECRET", "env-hook")
+    assert seed.seed_from_environment(Department) is True
+    main.refresh_from_db()
+    other.refresh_from_db()
+    assert main.apipay_api_key == "env-key-1234"
+    assert main.apipay_webhook_secret == "env-hook"
+    assert not other.apipay_configured
+
+    # Повторный запуск (или другой ключ в env) ничего не перезаписывает.
+    monkeypatch.setenv("APIPAY_API_KEY", "other-key-5678")
+    assert seed.seed_from_environment(Department) is False
+    main.refresh_from_db()
+    assert main.apipay_api_key == "env-key-1234"
