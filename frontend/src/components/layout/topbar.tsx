@@ -1,88 +1,11 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
-import { LogOut, Sun, Moon, Monitor, Menu, CircleHelp, ChevronLeft } from "lucide-react";
+import type { ReactNode } from "react";
+import { Menu, CircleHelp, ChevronLeft } from "lucide-react";
 import { NotificationBell } from "@/components/notification-bell";
 import { CartButton } from "@/components/portal/cart-button";
 import { TOUR_START_EVENT } from "@/components/onboarding-tour";
-import { useAuth } from "@/store/auth";
-import { useRouter } from "next/navigation";
-import { cn } from "@/lib/utils";
+import { ProfileMenu } from "./profile-menu";
 import type { Me } from "@/lib/types";
-
-type Theme = "light" | "dark" | "system";
-
-function applyTheme(theme: Theme) {
-  const root = document.documentElement;
-  const dark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  root.classList.toggle("dark", dark);
-}
-
-function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("light");
-  useEffect(() => {
-    const stored = localStorage.getItem("asyl_theme");
-    const saved: Theme = stored === "dark" || stored === "system" ? stored : "light";
-    setTheme(saved);
-    applyTheme(saved);
-  }, []);
-  useEffect(() => {
-    if (theme !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const syncSystemTheme = () => applyTheme("system");
-    media.addEventListener("change", syncSystemTheme);
-    return () => media.removeEventListener("change", syncSystemTheme);
-  }, [theme]);
-  function pick(t: Theme) {
-    setTheme(t);
-    localStorage.setItem("asyl_theme", t);
-    applyTheme(t);
-  }
-  const opts: { key: Theme; icon: React.ElementType; label: string }[] = [
-    { key: "light", icon: Sun, label: "Светлая тема" },
-    { key: "dark", icon: Moon, label: "Тёмная тема" },
-    { key: "system", icon: Monitor, label: "Системная тема" },
-  ];
-  const currentIndex = opts.findIndex(({ key }) => key === theme);
-  const current = opts[currentIndex] ?? opts[0];
-  const CurrentIcon = current.icon;
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => pick(opts[(currentIndex + 1) % opts.length].key)}
-        aria-label={`${current.label}. Переключить тему`}
-        title={current.label}
-        className="flex size-8 items-center justify-center rounded-lg border text-[var(--foreground)] sm:hidden"
-      >
-        <CurrentIcon className="size-4" />
-      </button>
-      <div
-        className="hidden items-center gap-0.5 rounded-lg border p-0.5 sm:flex"
-        role="group"
-        aria-label="Тема оформления"
-      >
-        {opts.map(({ key, icon: Icon, label }) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => pick(key)}
-            aria-label={label}
-            aria-pressed={theme === key}
-            title={label}
-            className={cn(
-              "flex size-7 items-center justify-center rounded-md transition-colors",
-              theme === key
-                ? "bg-[var(--secondary)] text-[var(--foreground)]"
-                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-            )}
-          >
-            <Icon className="size-4" />
-          </button>
-        ))}
-      </div>
-    </>
-  );
-}
 
 /** Кнопка «назад» вместо «☰» на подэкранах мобильных разделов. */
 export interface TopbarBack {
@@ -111,8 +34,6 @@ export function Topbar({
   /** Иконки справа от заголовка (перед темой и профилем), например фильтры экрана. */
   trailing?: ReactNode;
 }) {
-  const { logout } = useAuth();
-  const router = useRouter();
   const accountLabel = me.is_client ? "Клиент" : me.is_superuser ? "Администратор" : me.position || "Сотрудник";
 
   return (
@@ -173,28 +94,9 @@ export function Topbar({
             <CircleHelp className="size-4" />
           </button>
         )}
-        <ThemeToggle />
         {me.is_client && <CartButton />}
         {me.is_client && <NotificationBell />}
-        <div data-tour="profile" className="flex items-center gap-2.5 border-l pl-3">
-          <div className="flex size-8 items-center justify-center rounded-full bg-[var(--secondary)] text-xs font-semibold">
-            {me.username.slice(0, 2).toUpperCase()}
-          </div>
-          <div className="hidden leading-tight sm:block">
-            <div className="max-w-[180px] truncate text-sm font-medium">{me.username}</div>
-            <div className="text-[10px] text-[var(--muted-foreground)]">{accountLabel}</div>
-          </div>
-          <button
-            onClick={() => {
-              logout();
-              router.push("/login");
-            }}
-            className="ml-1 text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-            title="Выйти"
-          >
-            <LogOut className="size-4" />
-          </button>
-        </div>
+        <ProfileMenu me={me} accountLabel={accountLabel} />
       </div>
     </header>
   );

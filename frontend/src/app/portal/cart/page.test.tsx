@@ -99,6 +99,20 @@ describe("PortalCartPage", () => {
     expect(useCartStore.getState().carts["7"].lines).toHaveLength(3);
   });
 
+  it("без закреплённых цен не показывает сумму «0 ₸»", () => {
+    mocks.useApi.mockImplementation((url: string) => ({
+      data: url === "/portal/stores/" ? [] : products.map((product) => ({ ...product, price: null })),
+      loading: false,
+      error: "",
+      reload: mocks.reload,
+    }));
+    render(<PortalCartPage />);
+
+    expect(screen.getAllByText("Уточнит менеджер").length).toBeGreaterThan(0);
+    expect(screen.queryByText("0 ₸")).not.toBeInTheDocument();
+    expect(screen.getByText(/менеджер подтвердит её после заявки/)).toBeInTheDocument();
+  });
+
   it("пустая корзина ведёт в каталог", () => {
     fillCart([]);
     render(<PortalCartPage />);

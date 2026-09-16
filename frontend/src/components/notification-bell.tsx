@@ -72,7 +72,7 @@ export function NotificationBell() {
           id={panelId}
           role="dialog"
           aria-label="Уведомления"
-          className="absolute right-0 top-9 z-50 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-lg"
+          className="fixed inset-x-4 top-16 z-50 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-9 sm:w-80"
         >
           <div className="border-b px-4 py-3 text-sm font-semibold">Уведомления</div>
           <div className="max-h-96 overflow-y-auto">

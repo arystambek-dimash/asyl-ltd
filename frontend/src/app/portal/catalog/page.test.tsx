@@ -60,6 +60,8 @@ describe("PortalCatalogPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Добавить в корзину: Мука красная · 50 кг" }));
     const stepper = screen.getByRole("group", { name: "Количество: Мука красная · 50 кг" });
+    // Сразу после добавления курсор в поле: количество набирают, а не нажимают «+» сотни раз.
+    expect(within(stepper).getByRole("textbox")).toHaveFocus();
     await user.click(within(stepper).getByRole("button", { name: /Больше/ }));
     expect(within(stepper).getByRole("textbox")).toHaveValue("2");
 

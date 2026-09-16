@@ -79,7 +79,7 @@ export default function PortalCartPage() {
           <div className="flex items-center gap-3 border-t bg-[var(--card)] px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:hidden">
             <div className="min-w-0 flex-1">
               <div className="text-xs text-[var(--muted-foreground)]">{bagsLabel(priced.quantity)}</div>
-              <div className="truncate font-semibold tabular-nums">{formatCurrency(priced.total, currency)}</div>
+              <div className="truncate font-semibold tabular-nums">{totalLabel(priced, currency)}</div>
             </div>
             <Button className="h-11 px-5" disabled={!canCheckout} onClick={checkout}>
               {busy ? "Оформляем…" : "Оформить заказ"}
@@ -165,7 +165,8 @@ export default function PortalCartPage() {
                 </p>
               )}
               {catalog.error && <ErrorAlert message={catalog.error} onRetry={catalog.reload} />}
-              <Button className="h-11" disabled={!canCheckout} onClick={checkout}>
+              {/* На телефоне кнопка — в нижней панели, вторая в карточке только дублировала бы её. */}
+              <Button className="hidden h-11 md:inline-flex" disabled={!canCheckout} onClick={checkout}>
                 {busy ? "Оформляем…" : "Оформить заказ"}
               </Button>
               <p className="flex gap-2 text-xs text-[var(--muted-foreground)]">
@@ -213,57 +214,84 @@ function CartRow({
       </li>
     );
   }
+  const removeButton = (className: string) => (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn("shrink-0 text-[var(--muted-foreground)] hover:text-[var(--destructive)]", className)}
+      aria-label={`Удалить из корзины: ${product.label}`}
+      disabled={disabled}
+      onClick={() => cart.remove(product.id)}
+    >
+      <Trash2 className="size-4" />
+    </Button>
+  );
   return (
-    <li className="grid grid-cols-[64px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 px-4 py-3 sm:grid-cols-[72px_minmax(0,1fr)_140px_120px_auto] sm:items-center sm:px-5">
+    <li className="flex gap-3 px-4 py-4 sm:items-center sm:px-5">
       <ProductPhoto
         url={product.photo_url}
         alt={product.label}
-        className="size-16 rounded-lg sm:size-[72px]"
+        className="size-14 shrink-0 rounded-lg sm:size-16"
         iconClassName="size-5"
       />
-      <div className="min-w-0">
-        <div className="text-sm font-medium leading-snug">{product.label}</div>
-        <div className="mt-0.5 text-xs text-[var(--muted-foreground)] tabular-nums">
-          {product.price ? `${formatCurrency(product.price, currency)} × ${line.quantity}` : "Цена уточняется"}
+      <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="text-sm font-medium leading-snug">{product.label}</div>
+            {removeButton("-mr-2 -mt-1.5 size-8 sm:hidden")}
+          </div>
+          <div className="mt-0.5 text-xs text-[var(--muted-foreground)] tabular-nums">
+            {product.price ? `${formatCurrency(product.price, currency)} × ${line.quantity}` : "Цена уточняется"}
+          </div>
         </div>
-      </div>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="text-[var(--muted-foreground)] hover:text-[var(--destructive)] sm:order-last"
-        aria-label={`Удалить из корзины: ${product.label}`}
-        disabled={disabled}
-        onClick={() => cart.remove(product.id)}
-      >
-        <Trash2 className="size-4" />
-      </Button>
-      <QuantityStepper
-        value={line.quantity}
-        onChange={(quantity) => cart.setQuantity(product.id, quantity)}
-        label={product.label}
-        className="col-span-2 col-start-2 sm:col-span-1 sm:col-start-auto"
-      />
-      <div className="col-start-2 text-sm font-semibold tabular-nums sm:col-start-auto sm:text-right">
-        {row.total != null ? formatCurrency(row.total, currency) : "—"}
+        {/* На телефоне количество и сумма — одной строкой под названием, на десктопе — колонками. */}
+        <div className="flex items-center justify-between gap-3 sm:contents">
+          <QuantityStepper
+            value={line.quantity}
+            onChange={(quantity) => cart.setQuantity(product.id, quantity)}
+            label={product.label}
+            className="w-36 sm:w-40"
+          />
+          <div className="text-right sm:w-32">
+            {row.total != null ? (
+              <span className="text-sm font-semibold tabular-nums">{formatCurrency(row.total, currency)}</span>
+            ) : (
+              <span className="whitespace-nowrap text-xs text-[var(--muted-foreground)]">уточнит менеджер</span>
+            )}
+          </div>
+        </div>
+        {removeButton("hidden sm:inline-flex")}
       </div>
     </li>
   );
 }
 
+/** Сумма корзины: если ни у одного товара нет цены, «0 ₸» вводил бы в заблуждение. */
+function totalLabel(priced: PricedCart, currency: string) {
+  return priced.total === 0 && priced.hasUnpriced ? "Уточнит менеджер" : formatCurrency(priced.total, currency);
+}
+
 function CartTotals({ priced, currency }: { priced: PricedCart; currency: string }) {
+  const pricedPart = priced.total > 0;
   return (
     <div className="flex flex-col gap-1.5 border-t pt-4 text-sm">
       <div className="flex justify-between">
         <span className="text-[var(--muted-foreground)]">Всего</span>
         <span className="font-medium tabular-nums">{bagsLabel(priced.quantity)}</span>
       </div>
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-3">
         <span className="text-[var(--muted-foreground)]">Сумма</span>
-        <span className="text-xl font-semibold tabular-nums">{formatCurrency(priced.total, currency)}</span>
+        <span
+          className={cn("tabular-nums", pricedPart || !priced.hasUnpriced ? "text-xl font-semibold" : "font-medium")}
+        >
+          {totalLabel(priced, currency)}
+        </span>
       </div>
       {priced.hasUnpriced && (
         <p className="text-xs text-[var(--muted-foreground)]">
-          У части товаров цена не закреплена — её подтвердит менеджер, сумма может вырасти.
+          {pricedPart
+            ? "Без товаров, цену которых подтвердит менеджер: итог может вырасти."
+            : "Цена на эти товары ещё не закреплена — менеджер подтвердит её после заявки."}
         </p>
       )}
       {priced.hasUnavailable && (
