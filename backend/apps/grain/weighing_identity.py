@@ -771,6 +771,12 @@ def _finish_single(check, item, reading, response_id="", *, final=True, source="
     reason = ""
     plate = normalized_plate(reading.get("plate")) if isinstance(reading, dict) else ""
     orientation = reading.get("orientation") if isinstance(reading, dict) else ""
+    original = normalized_plate(locked.evidence.get("original_number", item.vehicle_number))
+    model_number = ""
+    if source == "gpt" and orientation == "rear" and plate and original and plate != original and _on_site(original) and not _on_site(plate):
+        # The camera read a truck that is on site and is now leaving; the
+        # model's variant names nobody. The model does not overrule that.
+        model_number, plate = plate, original
     if current.status != "open" or _snapshot("event", current, current.vehicle_number, current.stable_weight_at) != _snapshot("event", item, item.vehicle_number, item.stable_weight_at):
         reason = "weighing_changed"
     elif not plate or reading.get("plate_clear") is not True:
@@ -792,7 +798,7 @@ def _finish_single(check, item, reading, response_id="", *, final=True, source="
     locked.evidence = {
         "automatic_flow_version": 1, "original_number": locked.evidence.get("original_number", item.vehicle_number),
         "original_orientation": item.orientation, "verdict": {"exit": reading, "entries": []},
-        "identity_source": source,
+        "identity_source": source, **({"model_number": model_number} if model_number else {}),
     }
     locked.response_id, locked.lease_until = response_id, None
     locked.status, locked.reason = ("review", reason) if reason else ("matched", "automatic_" + booked.action)
@@ -805,11 +811,15 @@ def _finish_single(check, item, reading, response_id="", *, final=True, source="
     if not reason:
         log_event("grain_identity_verified", f"Вывоз {plate}: автоматическая обработка по госномеру", payload={
             "check_id": locked.pk, "wagon_id": booked.wagon_id, "source": source,
-            "original_number": item.vehicle_number, "verified_number": plate,
+            "original_number": item.vehicle_number, "verified_number": plate, "model_number": model_number,
             "orientation": orientation, "model": locked.model if source == "gpt" else "",
             "response_id": response_id, "weight_kg": item.weight_kg,
         })
     return True
+
+
+def _on_site(number):
+    return Wagon.objects.filter(direction=Wagon.PASSAGE, number=number, status__in=st.ON_SITE_STATUSES).exists()
 
 
 def _near_plate_collision(number):
@@ -836,10 +846,16 @@ def process_once():
         if normalized_plate(verified.get("plate")) and verified.get("plate_clear") is True and verified.get("orientation") in {"front", "rear"}:
             _finish_single(check, item, verified, check.response_id, source="gpt")
             return
+    from .automatic_routing import trusted_exit
     reading = {"plate": item.vehicle_number, "plate_clear": bool(normalized_plate(item.vehicle_number)), "orientation": item.orientation}
-    # A primary rear verdict can misclassify a front-facing cab. Independently
-    # verify direction before any departure or historical tare substitution.
-    needs_vision = enabled() and (item.orientation == "rear" or _near_plate_collision(item.vehicle_number))
+    # The model is a fallback, not the judge. A rear OCR plate whose truck is
+    # on site and leaves plausibly heavier books on its own; the frame is read
+    # only when OCR gives nothing to book, or one changed character would name
+    # another known truck (a rear verdict can also misclassify a front cab).
+    needs_vision = enabled() and (
+        _near_plate_collision(item.vehicle_number)
+        or (item.orientation == "rear" and not trusted_exit(item))
+    )
     if not needs_vision and _finish_single(check, item, reading, final=False, source="ocr"):
         return
     if not item.photo:

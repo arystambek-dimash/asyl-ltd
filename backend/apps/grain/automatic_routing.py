@@ -60,6 +60,37 @@ def _plate_distance(left, right, *, limit=NEAR_PLATE_EDITS):
     return previous[-1]
 
 
+# A truck leaves loaded. An exit lighter than this above the entry weight is
+# no evidence that a plate read at the rear belongs to that visit.
+MIN_LOADED_GAIN_KG = 1000
+
+
+def _plausible_exit(visit, item):
+    entry_at = services._passage_entry_at(visit)
+    return (
+        visit.status == st.AT_SILO and visit.gross_weight_kg is not None and visit.tare_weight_kg is None
+        and entry_at is not None and entry_at < item.stable_weight_at
+        and item.weight_kg >= visit.gross_weight_kg + MIN_LOADED_GAIN_KG
+    )
+
+
+def trusted_exit(item):
+    """A rear OCR plate whose truck is on site and leaves plausibly heavier needs no model check."""
+    number = services.normalize_passage_number(item.vehicle_number)
+    if not number or not services.KZ_VEHICLE_PLATE_RE.fullmatch(number):
+        return False
+    visits = list(Wagon.objects.filter(direction=Wagon.PASSAGE, number=number, status__in=st.ON_SITE_STATUSES)[:2])
+    return len(visits) == 1 and _plausible_exit(visits[0], item)
+
+
+def _similar_open_visits(number):
+    """On-site visits whose plate is within NEAR_PLATE_EDITS of the read one, locked for booking."""
+    visits = Wagon.objects.select_for_update().filter(
+        direction=Wagon.PASSAGE, status__in=st.ON_SITE_STATUSES,
+    ).exclude(number="").exclude(number=number)
+    return [visit for visit in visits if _plate_distance(number, visit.number) <= NEAR_PLATE_EDITS]
+
+
 def _open_visit(number):
     """The newest open visit of this plate.
 
@@ -186,19 +217,39 @@ def book(item, number, orientation):
             raise ValueError("exit_weight_not_greater")
         item = services.assign_unassigned_weighing(item, wagon, None)
     else:
-        source = historical_tare.latest_before(item, number)
-        if source is None:
-            raise ValueError("saved_tare_missing")
-        if item.weight_kg <= source.weight_kg:
-            raise ValueError("exit_weight_not_greater")
-        item = historical_tare.complete(
-            item, None, reference_record=source.pk, number=number,
-            reason="Автоматический выезд: последняя подтверждённая тара по госномеру", automatic=True,
-        )
+        similar = _similar_open_visits(number)
+        nearest = [visit for visit in similar if _plate_distance(number, visit.number) <= 1 and _plausible_exit(visit, item)]
+        if len(nearest) == 1:
+            # Rear plates come back with a doubled letter or one digit off. The
+            # one truck on site whose plate is a single edit away, entered
+            # earlier and leaves loaded, is the truck in front of the camera.
+            wagon = nearest[0]
+            item = services.assign_unassigned_weighing(item, wagon, None)
+            services._log(
+                wagon, "automatic_binding",
+                f"Вывоз {wagon.number}: выезд привязан по похожему номеру, камера прочитала {number}",
+                None, auto=True, unassigned_id=item.pk, orientation="rear", read_number=number,
+                weight_kg=item.weight_kg, occurred_at=item.stable_weight_at.isoformat(),
+            )
+        elif similar:
+            # A trip completed from history under a misread spelling would hide
+            # the real visit still open under the right one.
+            raise ValueError("similar_visit_open")
+        else:
+            source = historical_tare.latest_before(item, number)
+            if source is None:
+                raise ValueError("saved_tare_missing")
+            if item.weight_kg <= source.weight_kg:
+                raise ValueError("exit_weight_not_greater")
+            item = historical_tare.complete(
+                item, None, reference_record=source.pk, number=number,
+                reason="Автоматический выезд: последняя подтверждённая тара по госномеру", automatic=True,
+            )
     if item.capture_id:
         item.capture.__class__.objects.filter(pk=item.capture_id).update(wagon_id=item.wagon_id, action=item.action)
     services._log(
-        item.wagon, "automatic_binding", f"Вывоз {number}: автоматический {'заезд' if item.action == 'entry' else 'выезд'}",
+        item.wagon, "automatic_binding",
+        f"Вывоз {item.wagon.number or number}: автоматический {'заезд' if item.action == 'entry' else 'выезд'}",
         None, auto=True, unassigned_id=item.pk, orientation=orientation,
         weight_kg=item.weight_kg, occurred_at=item.stable_weight_at.isoformat(),
     )

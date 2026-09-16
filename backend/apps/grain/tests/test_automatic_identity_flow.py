@@ -57,14 +57,14 @@ def test_gpt_entry_without_any_open_visit_creates_trip_and_memory():
     assert VehicleTareMemory.objects.get(number="123ABC13").record_id == record.pk
 
 
-def test_real_cycles_finish_without_operator_and_one_frame_check_per_exit():
+def test_real_cycles_finish_without_operator_or_a_frame_check_when_ocr_matches_the_open_visit():
     for number in ["123ABC13", "234BCD13", "345CDE13"]:
         entry = event(number=number, orientation="front")
         departure = event(number=number, orientation="rear", weight=8500, minutes=1)
         with patch.object(identity, "request_verification", return_value=(answer(number, "rear"), "response-test")) as request:
             identity.process_once()
             identity.process_once()
-        assert request.call_count == 1
+        assert request.call_count == 0  # the model is a fallback: OCR named the truck that is on site
         departure.refresh_from_db()
         assert departure.wagon.status == st.COMPLETED
         assert departure.wagon.net_weight_kg == 4500
@@ -89,7 +89,7 @@ def test_exit_without_open_visit_uses_latest_real_tare_and_keeps_history():
     entry = event(number="123ABC13", orientation="front", minutes=90)
     identity.process_once()
     old_exit = event(number="123ABC13", orientation="rear", weight=8000, minutes=60)
-    process_gpt("123ABC13", "rear")
+    identity.process_once()
     old_exit.refresh_from_db()
     old_trip = old_exit.wagon
     source = old_trip.weighings.get(kind="gross")
@@ -122,7 +122,7 @@ def test_new_front_weighing_refreshes_single_tare_reference():
     memory = VehicleTareMemory.objects.get(number="123ABC13")
     assert memory.record.weight_kg == 4200 and VehicleTareMemory.objects.count() == 1
     departure = event(number="123ABC13", orientation="rear", weight=8500, minutes=1)
-    process_gpt("123ABC13", "rear")
+    identity.process_once()
     departure.refresh_from_db()
     assert departure.wagon.net_weight_kg == 4300
 
@@ -195,7 +195,7 @@ def test_delayed_entry_prevents_premature_historical_tare_reuse():
     old_entry = event(number="123ABC13", orientation="front", weight=3900, minutes=180)
     identity.process_once()
     old_exit = event(number="123ABC13", orientation="rear", weight=8000, minutes=150)
-    process_gpt("123ABC13", "rear")
+    identity.process_once()
     entry = event(orientation="front", weight=4200, minutes=30, photo=False)
     departure = event(number="123ABC13", orientation="rear", weight=8500, minutes=1)
     with patch("apps.grain.weighing_photos.photo_delivery_status", return_value="retrying"):
@@ -253,7 +253,7 @@ def test_rear_classifier_error_is_rechecked_even_with_known_tare():
     old = event(number="123ABC13", orientation="front", weight=3900, minutes=180)
     identity.process_once()
     event(number="123ABC13", orientation="rear", weight=8000, minutes=150)
-    process_gpt("123ABC13", "rear")
+    identity.process_once()
     # Primary detector labels this genuine new front entry as rear.
     entry = event(number="123ABC13", orientation="rear", weight=4300, minutes=1)
     process_gpt("123ABC13", "front")
@@ -277,7 +277,9 @@ def test_one_character_collision_rechecks_front_ocr_with_both_plates_known():
 
 def _open_visit(number, weight, minutes):
     item = event(number=number, orientation="front", weight=weight, minutes=minutes)
-    identity.process_once()
+    # A similar plate already on site makes the entry re-read its frame; answer with the OCR plate.
+    with patch.object(identity, "request_verification", return_value=(answer(number, "front"), "response-test")):
+        identity.process_once()
     item.refresh_from_db()
     assert item.action == "entry"
     return item.wagon
@@ -288,7 +290,7 @@ def test_reentry_after_misread_exit_closes_first_visit_and_opens_second():
     misread = event(number="", orientation="rear", weight=10860, minutes=80)
     process_gpt("165CUA17", "rear")
     misread.refresh_from_db()
-    assert misread.status == "open" and misread.identity_check.reason == "saved_tare_missing"
+    assert misread.status == "open" and misread.identity_check.reason == "similar_visit_open"
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
     identity.process_once()
     again.refresh_from_db()
@@ -301,7 +303,7 @@ def test_reentry_after_misread_exit_closes_first_visit_and_opens_second():
     second = again.wagon
     assert second.pk != first.pk and second.status == st.AT_SILO and second.gross_weight_kg == 5320
     departure = event(number="065CUA13", orientation="rear", weight=10380, minutes=1)
-    process_gpt("065CUA13", "rear")
+    identity.process_once()
     departure.refresh_from_db()
     assert departure.wagon_id == second.pk and departure.wagon.net_weight_kg == 5060
 
@@ -318,7 +320,7 @@ def test_reentry_long_after_entry_without_recognized_exit_waits_for_the_operator
     assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
     assert first.status == st.AT_SILO and first.gross_weight_kg == 5340 and first.tare_weight_kg is None
     departure = event(number="065CUA13", orientation="rear", weight=10380, minutes=1)
-    process_gpt("065CUA13", "rear")
+    identity.process_once()
     departure.refresh_from_db()
     first.refresh_from_db()
     assert departure.status == "open" and departure.identity_check.reason == "earlier_entry_pending"
@@ -355,7 +357,8 @@ def test_short_reentry_with_unrelated_unread_exit_still_refreshes_the_same_visit
 
 def test_reentry_with_two_near_plate_exits_does_not_guess():
     first = _open_visit("065CUA13", 5340, 130)
-    for plate, minutes in (("165CUA17", 90), ("365CUA13", 60)):
+    # Two edits away each: neither binds on its own, and together they name nobody.
+    for plate, minutes in (("165CUA17", 90), ("265CUA18", 60)):
         event(number="", orientation="rear", weight=10800, minutes=minutes)
         process_gpt(plate, "rear")
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
@@ -366,3 +369,79 @@ def test_reentry_with_two_near_plate_exits_does_not_guess():
     assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.gross_weight_kg == 5340
     assert UnassignedWeighing.objects.filter(orientation="rear", status="open").count() == 2
     assert Wagon.objects.filter(number="065CUA13").count() == 1
+
+
+def _remember_history(number, weight=3940):
+    trip = Wagon.objects.create(number=number, direction=Wagon.PASSAGE, workflow="simple", cargo_name="Test", status=st.COMPLETED)
+    record = WeighingRecord.objects.create(wagon=trip, kind="gross", source="scale", orientation="front", weight_kg=weight)
+    historical_tare.remember(record, number)
+    return trip
+
+
+def test_exit_with_ocr_plate_of_a_truck_on_site_books_without_gpt():
+    _open_visit("123ABC13", 4000, 60)
+    departure = event(number="123ABC13", orientation="rear", weight=8500, minutes=1)
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    departure.refresh_from_db()
+    assert departure.status == "assigned" and departure.action == "exit"
+    assert departure.wagon.status == st.COMPLETED and departure.wagon.net_weight_kg == 4500
+    assert departure.identity_check.status == "matched" and departure.identity_check.evidence["identity_source"] == "ocr"
+
+
+def test_exit_ocr_plate_still_asks_gpt_when_a_similar_truck_is_on_site():
+    _open_visit("123ABC13", 4000, 60)
+    _open_visit("423ABC13", 4100, 50)
+    departure = event(number="123ABC13", orientation="rear", weight=8500, minutes=1)
+    process_gpt("423ABC13", "rear")
+    departure.refresh_from_db()
+    assert departure.wagon.number == "423ABC13" and departure.wagon.status == st.COMPLETED
+    assert Wagon.objects.get(number="123ABC13").status == st.AT_SILO
+
+
+def test_exit_barely_heavier_than_entry_asks_gpt_but_keeps_the_plate_of_the_truck_on_site():
+    first = _open_visit("724LCA13", 3740, 60)
+    departure = event(number="724LCA13", orientation="rear", weight=4500, minutes=1)
+    process_gpt("724LCA43", "rear")
+    departure.refresh_from_db()
+    first.refresh_from_db()
+    assert departure.wagon_id == first.pk and first.status == st.COMPLETED and first.net_weight_kg == 760
+    assert departure.vehicle_number == "724LCA13"
+    assert departure.identity_check.evidence["model_number"] == "724LCA43"
+    assert not Wagon.objects.filter(number="724LCA43").exists()
+
+
+def test_misread_exit_binds_to_the_single_on_site_truck_one_edit_away_instead_of_a_phantom_trip():
+    _remember_history("934PPB13")
+    visit = _open_visit("934PB13", 3920, 90)
+    departure = event(number="", orientation="rear", weight=8360, minutes=1)
+    process_gpt("934PPB13", "rear")
+    departure.refresh_from_db()
+    visit.refresh_from_db()
+    assert departure.wagon_id == visit.pk and visit.status == st.COMPLETED and visit.net_weight_kg == 4440
+    assert Wagon.objects.filter(number="934PPB13").count() == 1  # only the historical trip, no phantom
+    assert departure.identity_check.status == "matched"
+
+
+def test_misread_exit_with_two_similar_trucks_on_site_waits_for_the_operator():
+    _remember_history("261BBF13")
+    _open_visit("261BB13", 3920, 90)
+    _open_visit("261BBF18", 3960, 80)
+    departure = event(number="", orientation="rear", weight=8860, minutes=1)
+    process_gpt("261BBF13", "rear")
+    departure.refresh_from_db()
+    assert departure.status == "open" and departure.identity_check.reason == "similar_visit_open"
+    assert Wagon.objects.filter(number="261BBF13").count() == 1
+    assert Wagon.objects.filter(status=st.AT_SILO).count() == 2
+
+
+def test_exit_two_edits_from_an_on_site_truck_is_not_completed_from_history():
+    _remember_history("165CUA17", 5300)
+    visit = _open_visit("065CUA13", 5340, 90)
+    departure = event(number="", orientation="rear", weight=10860, minutes=1)
+    process_gpt("165CUA17", "rear")
+    departure.refresh_from_db()
+    visit.refresh_from_db()
+    assert departure.status == "open" and departure.identity_check.reason == "similar_visit_open"
+    assert visit.status == st.AT_SILO and Wagon.objects.filter(number="165CUA17").count() == 1
