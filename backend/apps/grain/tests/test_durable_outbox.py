@@ -357,6 +357,102 @@ def test_collector_captures_both_trucks_and_records_the_rearm(tmp_path):
     assert "rearmed_by_weight_change:3760->1700->3680" in codes
 
 
+def _running_outbox(tmp_path, monkeypatch, settings):
+    import time
+    from apps.grain.models import PassageScaleAutomationState
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    monkeypatch.setenv("WEIGHBRIDGE_OUTBOX_DIR", str(tmp_path))
+    PassageScaleAutomationState.objects.get_or_create(scale_number="truck")
+    box = Outbox(tmp_path)
+    box.state("heartbeat", {"clear": True, "armed": True, "status": "running", "updated_at": time.time()})
+    return box
+
+
+@pytest.mark.django_db
+def test_importer_writes_collector_config_only_when_it_changes(tmp_path, settings, monkeypatch):
+    from apps.grain import passage_scale_automation
+    box = _running_outbox(tmp_path, monkeypatch, settings)
+    values = {"stable_weight_seconds": 3}
+    monkeypatch.setattr(passage_scale_automation, "scale_automation_settings", lambda: dict(values))
+    writes = []
+
+    class Spy(Outbox):
+        def state(self, key, value=None):
+            if value is not None:
+                writes.append(key)
+            return super().state(key, value)
+
+    monkeypatch.setattr(outbox_importer, "Outbox", Spy)
+    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once().state == "idle"
+    assert writes == ["config"]
+    values["stable_weight_seconds"] = 4
+    assert outbox_importer.poll_once().state == "idle"
+    assert writes == ["config", "config"]
+    assert box.state("config") == {"stable_weight_seconds": 4}
+
+
+@pytest.mark.django_db
+def test_importer_survives_a_locked_outbox_and_keeps_the_last_known_state(tmp_path, settings, monkeypatch, caplog):
+    import logging
+    _running_outbox(tmp_path, monkeypatch, settings)
+    assert outbox_importer.poll_once().state == "idle"
+    with patch.object(Outbox, "next", side_effect=sqlite3.OperationalError("database is locked")):
+        with caplog.at_level(logging.WARNING):
+            assert outbox_importer.poll_once().state == "idle"
+    assert "locked" in caplog.text
+    assert outbox_importer.poll_once().state == "idle"
+
+
+@pytest.mark.django_db
+def test_importer_reports_unavailable_when_locked_before_any_heartbeat_was_read(tmp_path, settings, monkeypatch):
+    _running_outbox(tmp_path, monkeypatch, settings)
+    with patch.object(Outbox, "state", side_effect=sqlite3.OperationalError("database is locked")):
+        assert outbox_importer.poll_once().state == "unavailable"
+
+
+@pytest.mark.django_db
+def test_importer_reports_a_collector_outage_only_after_it_persists(tmp_path, settings, monkeypatch):
+    import time
+    box = _running_outbox(tmp_path, monkeypatch, settings)
+    assert outbox_importer.poll_once().state == "idle"
+    box.state("heartbeat", {"clear": True, "armed": True, "status": "hardware_unavailable", "updated_at": time.time()})
+    assert outbox_importer.poll_once().state == "idle"
+    box.state("heartbeat", {"clear": True, "armed": True, "status": "running", "updated_at": time.time()})
+    assert outbox_importer.poll_once().state == "idle"
+    box.state("heartbeat", {"clear": True, "armed": True, "status": "running", "updated_at": time.time() - 15})
+    assert outbox_importer.poll_once().state == "idle"
+    with patch.object(outbox_importer.time, "monotonic", return_value=time.monotonic() + outbox_importer.UNAVAILABLE_GRACE_SECONDS):
+        assert outbox_importer.poll_once().state == "unavailable"
+    assert outbox_importer.poll_once().state == "unavailable"
+    box.state("heartbeat", {"clear": False, "armed": True, "status": "running", "updated_at": time.time()})
+    assert outbox_importer.poll_once().state == "candidate"
+
+
+def test_collector_reports_a_scale_outage_only_after_five_seconds_of_failed_reads(tmp_path):
+    import sqlite3
+    import time as real_time
+    from types import SimpleNamespace
+    box = Outbox(tmp_path)
+    collector = Collector(box)
+    clock = {"now": 1000.0}
+    plan = [(0, "ready")] * 3 + [(0, "unavailable")] + [(0, "ready")] * 2 + [(0, "unavailable")] * 8 + [(0, "ready")]
+    readings = iter(observation(weight, second, state=state) for second, (weight, state) in enumerate(plan))
+    fake_time = SimpleNamespace(monotonic=lambda: clock["now"], time=real_time.time, sleep=real_time.sleep)
+    statuses = []
+    with patch("weighbridge.collector.time", fake_time), \
+            patch("apps.grain.scale.read_truck_scale_observation", side_effect=lambda *_: next(readings)):
+        for _ in plan:
+            collector.poll()
+            clock["now"] += 1
+            statuses.append(collector.status)
+    collector.close()
+    assert statuses[:11] == ["running"] * 11  # one bad reading between good ones is not an outage
+    assert statuses[11:14] == ["hardware_unavailable"] * 3 and statuses[14] == "running"
+    codes = [code for (code,) in sqlite3.connect(box.path).execute("SELECT code FROM incidents ORDER BY id")]
+    assert [code for code in codes if code in {"running", "hardware_unavailable"}] == ["running", "hardware_unavailable", "running"]
+
+
 def test_outbox_writer_retains_fifo_order_across_a_busy_database(tmp_path):
     from weighbridge.writer import OutboxWriter
     box = Outbox(tmp_path)

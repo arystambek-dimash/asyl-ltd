@@ -169,9 +169,14 @@ class Collector:
                 self.box.incident(f"rearmed_by_weight_change:{self.lane.rearmed_by_change}")
                 self.lane.rearmed_by_change = None
             if observation.state not in {"ready", "unstable"} or observation.weight_kg is None:
+                # One failed read is not an outage. The status, its incident and
+                # the CRM's degraded badge only flip once the scale has given no
+                # usable reading for over 5 s; the lane itself restarts at once.
                 if now - self.last_good > 5:
                     self.current = None
-                new_status = "running" if observation.state == "unstable" else "hardware_unavailable"
+                    new_status = "running" if observation.state == "unstable" else "hardware_unavailable"
+                else:
+                    new_status = self.status
             else:
                 # A fresh nonzero unstable reading is still the same vehicle.
                 # Direction/frame work ends on empty weight or a real data gap.
@@ -209,10 +214,12 @@ class Collector:
             self.lane.since = self.lane.weight = None
             new_status = "running"
         except (APIException, OSError, ValueError):
+            self.lane.unavailable(time.monotonic())
             if time.monotonic() - self.last_good > 5:
                 self.current = None
-            self.lane.unavailable(time.monotonic())
-            new_status = "hardware_unavailable"
+                new_status = "hardware_unavailable"
+            else:
+                new_status = self.status
         if new_status != self.status:
             self.box.incident(new_status)
             self.status = new_status

@@ -452,7 +452,7 @@ def _claim(*, automatic=False):
                 identity_check__status__in=["pending", "retrying", "processing"],
                 identity_check__next_attempt_at__lte=now,
             )
-            | (Q(identity_check__status="review", identity_check__reason__in=["saved_tare_missing", "entry_weight_required"], identity_check__next_attempt_at__lte=now) if automatic else Q(pk__isnull=True))
+            | (Q(identity_check__status="review", identity_check__reason__in=["saved_tare_missing", "entry_weight_required", "previous_exit_missing"], identity_check__next_attempt_at__lte=now) if automatic else Q(pk__isnull=True))
             | (Q(identity_check__status="review", identity_check__reason="photo_unavailable") & ~Q(photo="") & Q(photo__isnull=False) if automatic else Q(pk__isnull=True))
         )
         .filter(
@@ -799,7 +799,7 @@ def _finish_single(check, item, reading, response_id="", *, final=True, source="
     if reason == "earlier_entry_pending":
         locked.status = "retrying"
         locked.next_attempt_at = timezone.now() + timedelta(seconds=5)
-    elif reason in {"saved_tare_missing", "entry_weight_required"}:
+    elif reason in {"saved_tare_missing", "entry_weight_required", "previous_exit_missing"}:
         locked.next_attempt_at = timezone.now() + timedelta(seconds=30)
     locked.save()
     if not reason:

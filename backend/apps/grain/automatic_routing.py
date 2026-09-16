@@ -7,11 +7,20 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from . import historical_tare, services, statuses as st
-from .models import PassageScaleAutomationState, UnassignedWeighing, Wagon
+from .models import PassageScaleAutomationState, UnassignedWeighing, Wagon, WeighingIdentityCheck
+
+# A truck re-weighed at the gate within this window is still the same visit
+# (it turned around before loading). Later than that it has had time to load
+# and leave, so a new front weighing means the previous exit went unseen.
+REENTRY_GAP = timedelta(minutes=30)
+# Rear plates are read with doubled letters or one swapped digit; up to this
+# many edits still identifies the standing truck's own missed exit.
+NEAR_PLATE_EDITS = 2
 
 
 def _earlier_entry_pending(item, number):
@@ -24,7 +33,7 @@ def _earlier_entry_pending(item, number):
     ).filter(Q(vehicle_number="") | Q(vehicle_number=number)).select_related("identity_check").order_by("stable_weight_at")
     for entry in earlier[:100]:
         check = getattr(entry, "identity_check", None)
-        if check and check.status in {"review", "matched"}:
+        if check and check.status in {"review", "matched"} and check.reason != "previous_exit_missing":
             continue
         if check and check.reason == "daily_budget_exhausted":
             continue
@@ -34,6 +43,79 @@ def _earlier_entry_pending(item, number):
         # Terminal unreadable entries do not block unrelated traffic forever.
         return True
     return False
+
+
+def _plate_distance(left, right, *, limit=NEAR_PLATE_EDITS):
+    """Bounded Levenshtein distance between two plates (7-8 characters)."""
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    previous = list(range(len(right) + 1))
+    for row, a in enumerate(left, 1):
+        current = [row]
+        for column, b in enumerate(right, 1):
+            current.append(min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + (a != b)))
+        if min(current) > limit:
+            return limit + 1
+        previous = current
+    return previous[-1]
+
+
+def _open_visit(number):
+    """The newest open visit of this plate.
+
+    Two open visits can only mean the older one's exit was missed (a re-entry
+    opened the newer one); the truck on the scale now belongs to the newest.
+    """
+    return (
+        Wagon.objects.select_for_update()
+        .filter(direction=Wagon.PASSAGE, number=number, status__in=st.ON_SITE_STATUSES)
+        .annotate(entered=Coalesce("silo_arrived_at", "arrived_at"))
+        .order_by(F("entered").desc(nulls_last=True), "-pk")
+        .first()
+    )
+
+
+def _unseen_departure(item, wagon, number):
+    """Did the standing truck leave unseen before this second front weighing?
+
+    Returns ``("exit", weighing)`` when exactly one heavier rear weighing parked
+    between the visit's entry and this one reads as this plate within
+    NEAR_PLATE_EDITS: that is the missed exit. ``("unknown", None)`` when the
+    truck stood longer than REENTRY_GAP without such a candidate: it left, but
+    its exit needs the operator. ``("", None)`` for a quick re-weigh at the gate.
+    """
+    entry_at = services._passage_entry_at(wagon)
+    parked = UnassignedWeighing.objects.filter(
+        status=UnassignedWeighing.OPEN, scale_number=item.scale_number,
+        orientation__in=["rear", "", "unknown"],
+        stable_weight_at__gt=entry_at, stable_weight_at__lt=item.stable_weight_at,
+        weight_kg__gt=wagon.gross_weight_kg,
+    ).exclude(pk=item.pk).order_by("stable_weight_at")
+    matches = [
+        row for row in parked[:100]
+        if row.vehicle_number and _plate_distance(number, row.vehicle_number) <= NEAR_PLATE_EDITS
+    ]
+    if len(matches) == 1:
+        return "exit", matches[0]
+    if item.stable_weight_at - entry_at >= REENTRY_GAP:
+        return "unknown", None
+    return "", None
+
+
+def _recover_exit(wagon, departure, number):
+    """Close the previous visit with the rear weighing its re-entry revealed."""
+    departure = services.assign_unassigned_weighing(departure, wagon, None)
+    WeighingIdentityCheck.objects.filter(weighing=departure).update(
+        status="matched", reason="automatic_exit", lease_until=None,
+    )
+    if departure.capture_id:
+        departure.capture.__class__.objects.filter(pk=departure.capture_id).update(wagon_id=wagon.pk, action="exit")
+    services._log(
+        wagon, "automatic_binding",
+        f"Вывоз {number}: выезд восстановлен по повторному заезду, на выезде номер прочитан как {departure.vehicle_number}",
+        None, auto=True, unassigned_id=departure.pk, orientation="rear",
+        weight_kg=departure.weight_kg, occurred_at=departure.stable_weight_at.isoformat(),
+    )
 
 
 @transaction.atomic
@@ -52,15 +134,23 @@ def book(item, number, orientation):
     # on the event itself so all later matching and the UI use the same plate.
     item.vehicle_number, item.orientation = number, orientation
     item.save(update_fields=["vehicle_number", "orientation"])
-    open_visits = list(Wagon.objects.select_for_update().filter(
-        direction=Wagon.PASSAGE, number=number, status__in=st.ON_SITE_STATUSES,
-    ).order_by("pk")[:2])
-    if len(open_visits) > 1:
-        raise ValueError("ambiguous_active_passage")
-    wagon = open_visits[0] if open_visits else None
+    wagon = _open_visit(number)
     if orientation == "rear" and _earlier_entry_pending(item, number):
         raise ValueError("earlier_entry_pending")
     if orientation == "front":
+        if wagon is not None and wagon.status == st.AT_SILO and wagon.tare_weight_kg is None:
+            entry_at = services._passage_entry_at(wagon)
+            if entry_at is None or item.stable_weight_at <= entry_at:
+                raise ValueError("passage_time_conflict")
+            verdict, departure = _unseen_departure(item, wagon, number)
+            if verdict == "exit":
+                _recover_exit(wagon, departure, number)
+                wagon = None
+            elif verdict == "unknown":
+                # The open visit keeps its own entry; this weighing waits in the
+                # review queue until the operator attaches that visit's exit,
+                # then books itself as the next visit (see _earlier_entry_pending).
+                raise ValueError("previous_exit_missing")
         if wagon is None:
             # Direct creation intentionally avoids the manual-action lane fence.
             wagon = Wagon.objects.create(
@@ -70,10 +160,7 @@ def book(item, number, orientation):
                 cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
             )
         if wagon.status == st.AT_SILO and wagon.tare_weight_kg is None:
-            entry_at = services._passage_entry_at(wagon)
-            if entry_at is None or item.stable_weight_at <= entry_at:
-                raise ValueError("passage_time_conflict")
-            # A fresh, distinct front weighing updates the tare for this plate.
+            # A fresh, distinct front weighing of the same visit updates its tare.
             wagon.gross_weight_kg = services._record_weighing(
                 wagon, "gross", item.weight_kg, None,
                 occurred_at=item.stable_weight_at, **services._unassigned_scale_kwargs(item),

@@ -1,6 +1,8 @@
 """Replay the collector's immutable evidence, then acknowledge after DB commit."""
 
+import logging
 import os
+import sqlite3
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -12,9 +14,25 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from weighbridge.outbox import Outbox
+from weighbridge.outbox import Outbox, is_busy
 from . import passage_scale_automation as automation, weighing_photos
 from .models import AutomaticPassageCapture as Capture, PassageScaleAutomationState as Lane, WeighingPhotoDelivery
+
+log = logging.getLogger(__name__)
+
+# The collector heartbeats every second; older than this it is not proof of life.
+STALE_AFTER_SECONDS = 10
+# A single missed heartbeat or one failed scale read is not an outage worth
+# flipping the operator's status: the collector must look down this long.
+UNAVAILABLE_GRACE_SECONDS = 20
+PHOTO_RECOVERY_INTERVAL_SECONDS = 30
+BUSY_LOG_INTERVAL_SECONDS = 60
+
+# What this process already knows about each outbox, so a poll neither rewrites
+# unchanged state into the collector's SQLite file (every write competes with
+# the collector for the lock) nor forgets the last confirmed state while the
+# file is briefly locked.
+_memory: dict[str, dict] = {}
 
 
 def directory():
@@ -23,6 +41,12 @@ def directory():
 
 def enabled():
     return (directory() / "enabled").is_file()
+
+
+def _remembered(path):
+    return _memory.setdefault(str(path), {
+        "config": None, "photo_recovery_at": 0.0, "state": None, "down_since": None, "busy_logged_at": 0.0,
+    })
 
 
 def _bound_camera_frame(event):
@@ -118,28 +142,65 @@ def import_event(event):
     return capture
 
 
-def poll_once():
-    box = Outbox(directory())
-    box.state("config", automation.scale_automation_settings())
+def _collector_state(heartbeat, remembered):
+    """Project the heartbeat onto the lane state, smoothing short blips.
+
+    ``unavailable`` is reported once the collector has looked down for
+    UNAVAILABLE_GRACE_SECONDS (or when nothing better was ever confirmed);
+    until then the last confirmed state stands.
+    """
+    stale = time.time() - heartbeat.get("updated_at", 0) > STALE_AFTER_SECONDS
+    down = stale or heartbeat.get("status") != "running"
+    now = time.monotonic()
+    if not down:
+        remembered["down_since"] = None
+        state = "idle" if heartbeat.get("clear") else "awaiting_clear" if heartbeat.get("current") else "candidate"
+    else:
+        if remembered["down_since"] is None:
+            remembered["down_since"] = now
+        confirmed = remembered["state"] in (None, "unavailable") or now - remembered["down_since"] >= UNAVAILABLE_GRACE_SECONDS
+        state = "unavailable" if confirmed else remembered["state"]
+    remembered["state"] = state
+    return state, stale
+
+
+def _poll(box, remembered):
+    config = automation.scale_automation_settings()
+    if config != remembered["config"]:
+        box.state("config", config)
+        remembered["config"] = config
     for _ in range(10):
         event = box.next()
         if event is None:
             break
         import_event(event)  # atomic decorator COMMITs before ack
         box.ack(event["id"])
-    last_repair = box.state("photo_recovery") or {}
-    if time.time() - last_repair.get("checked_at", 0) >= 30:
+    if time.time() - remembered["photo_recovery_at"] >= PHOTO_RECOVERY_INTERVAL_SECONDS:
         recover_collector_photos(box)
-        box.state("photo_recovery", {"checked_at": time.time()})
+        remembered["photo_recovery_at"] = time.time()
     heartbeat = box.state("heartbeat") or {}
-    stale = time.time() - heartbeat.get("updated_at", 0) > 10
-    state = "unavailable" if stale or heartbeat.get("status") != "running" else (
-        "idle" if heartbeat.get("clear") else "awaiting_clear" if heartbeat.get("current") else "candidate"
-    )
+    state, stale = _collector_state(heartbeat, remembered)
     automation._store_runtime({
         "enabled": True, "state": state, "heartbeat_stale": stale,
         "last_checked_at": timezone.now().isoformat(), "active": None,
-        "stable_weight_seconds": automation.scale_automation_settings()["stable_weight_seconds"],
+        "stable_weight_seconds": config["stable_weight_seconds"],
         "collector": {**box.counts(), "status": heartbeat.get("status", "starting")},
     })
     return automation.MonitorIteration(state=state)
+
+
+def poll_once():
+    remembered = _remembered(directory())
+    try:
+        return _poll(Outbox(directory()), remembered)
+    except sqlite3.OperationalError as exc:
+        if not is_busy(exc):
+            raise
+        # The collector holds the write lock for a moment (a photo blob, a WAL
+        # checkpoint). Nothing was lost: unacknowledged events replay on the
+        # next poll, and the last confirmed lane state stands meanwhile.
+        state = remembered["state"] or "unavailable"
+        if time.monotonic() - remembered["busy_logged_at"] >= BUSY_LOG_INTERVAL_SECONDS:
+            remembered["busy_logged_at"] = time.monotonic()
+            log.warning("Weighbridge outbox is locked by the collector; keeping state=%s until the next poll", state)
+        return automation.MonitorIteration(state=state)
