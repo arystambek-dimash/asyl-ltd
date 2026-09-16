@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { OrderConfirmation } from "./order-confirmation";
-import type { Department, Order } from "@/lib/types";
+import type { Department, Me, Order } from "@/lib/types";
+import { useAuth } from "@/store/auth";
 
 const order = {
   id: 12,
@@ -40,7 +41,34 @@ it("requires an explicit department even when a legacy order contains the defaul
   expect(screen.getByRole("button", { name: "Подтвердить заказ" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox"), "city");
   await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+  expect(confirm).not.toHaveBeenCalled();
+  expect(screen.getByRole("alertdialog", { name: "Закрепить клиента за отделом «Город»?" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Да, закрепить и подтвердить" }));
   expect(confirm).toHaveBeenCalledWith({ department: "city", prices: { "1": "100" } });
+});
+
+it("offers a department employee only their own department and asks before assigning the client", async () => {
+  const user = userEvent.setup();
+  const confirm = vi.fn();
+  useAuth.setState({ me: { sales_department: { id: 2, code: "city", name: "Город", color: "#000" } } as Me });
+  try {
+    render(<OrderConfirmation order={order} departments={departments} busy={false} onConfirm={confirm} />);
+
+    expect(screen.getByRole("combobox")).toHaveValue("city");
+    expect(screen.getByRole("combobox")).toBeDisabled();
+    expect(screen.queryByRole("option", { name: "Мельница" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+    await user.click(screen.getByRole("button", { name: "Нет" }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+    await user.click(screen.getByRole("button", { name: "Да, закрепить и подтвердить" }));
+    expect(confirm).toHaveBeenCalledWith({ department: "city", prices: { "1": "100" } });
+  } finally {
+    useAuth.setState({ me: null });
+  }
 });
 
 it("requires positive prices and hides inactive department choices", async () => {

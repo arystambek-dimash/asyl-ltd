@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -128,6 +128,7 @@ describe("WarehousePage multi-warehouse inventory", () => {
       if (url === "/stock/?warehouse=2") return apiState([]);
       return apiState(null);
     });
+    me.permissions = ["warehouse.view", "warehouse.adjust", "catalog.view"];
     apiMocks.post.mockReset();
     apiMocks.patch.mockReset();
     apiMocks.delete.mockReset();
@@ -181,6 +182,55 @@ describe("WarehousePage multi-warehouse inventory", () => {
         delta: 25,
       }),
     );
+  });
+
+  it("creates a new product right from the warehouse when the whole catalog is already there", async () => {
+    navigation.search = "warehouse=1";
+    me.permissions = ["warehouse.view", "warehouse.adjust", "catalog.create"];
+    useApiMock.mockImplementation((url: string | null) => {
+      if (url === "/warehouses/") return apiState(warehouses);
+      if (url === "/products/") return apiState([products[0]]);
+      if (url === "/stock/" || url === "/stock/?warehouse=1") return apiState([assignedStock]);
+      return apiState(null);
+    });
+    apiMocks.post.mockImplementation(async (url: string) => ({ data: url === "/products/" ? { id: 30 } : {} }));
+    const user = userEvent.setup();
+    render(<WarehousePage />);
+
+    const add = screen.getByRole("button", { name: "Добавить товар на склад Резервный склад" });
+    expect(add).toBeEnabled();
+    await user.click(add);
+
+    expect(await screen.findByLabelText("Товар")).toHaveValue("__new");
+    const dialog = within(screen.getByRole("dialog"));
+    await user.type(dialog.getByLabelText("Название"), "Первый сорт");
+    await user.selectOptions(dialog.getByLabelText("Цвет (тип)"), "Blue");
+    await user.selectOptions(dialog.getByLabelText("Фасовка"), "25");
+    await user.type(dialog.getByLabelText("Количество мешков"), "30");
+    await user.click(dialog.getByRole("button", { name: "Добавить 30 меш." }));
+
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith("/stock/adjust/", { warehouse: 1, product: 30, delta: 30 }),
+    );
+    expect(apiMocks.post).toHaveBeenCalledWith("/products/", { name: "Первый сорт", weight_kg: "25", color: "Blue" });
+  });
+
+  it("explains why a warehouse keeper without catalog rights cannot add a new product", async () => {
+    navigation.search = "warehouse=1";
+    me.permissions = ["warehouse.view", "warehouse.adjust"];
+    useApiMock.mockImplementation((url: string | null) => {
+      if (url === "/warehouses/") return apiState(warehouses);
+      if (url === "/products/") return apiState([products[0]]);
+      if (url === "/stock/" || url === "/stock/?warehouse=1") return apiState([assignedStock]);
+      return apiState(null);
+    });
+    const user = userEvent.setup();
+    render(<WarehousePage />);
+
+    await user.click(screen.getByRole("button", { name: "Добавить товар на склад Резервный склад" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Все товары каталога уже есть на этом складе");
+    expect(screen.queryByRole("option", { name: "+ Новый товар…" })).not.toBeInTheDocument();
   });
 
   it("edits a warehouse through the management dialog", async () => {

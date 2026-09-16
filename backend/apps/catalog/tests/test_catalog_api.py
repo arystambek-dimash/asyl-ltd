@@ -68,3 +68,23 @@ def test_new_packaging_weights_are_supported(auth_client, manager):
         )
         assert resp.status_code == 201
         assert resp.data["cv_class"] == f"Red_{weight}"
+
+
+def test_warehouse_adjuster_lists_products_with_colors(auth_client, user_with_perms):
+    keeper = user_with_perms("warehouse-keeper", codes=["warehouse.view", "warehouse.adjust"])
+    prod = _make_product(name="Для склада", color="Blue", weight="25")
+
+    resp = auth_client(keeper).get("/api/products/")
+
+    assert resp.status_code == 200
+    row = next(item for item in resp.data if item["id"] == prod.id)
+    assert row["label"] == "Для склада · Синий 25 кг"
+    assert auth_client(keeper).post(
+        "/api/products/", {"name": "X", "color": "Red", "weight_kg": "50"}
+    ).status_code == 403
+
+
+def test_warehouse_viewer_cannot_list_products(auth_client, user_with_perms):
+    viewer = user_with_perms("warehouse-viewer", codes=["warehouse.view"])
+
+    assert auth_client(viewer).get("/api/products/").status_code == 403

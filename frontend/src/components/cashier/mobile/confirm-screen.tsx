@@ -11,7 +11,7 @@ import { withBack } from "@/lib/navigation";
 import type { Order, PaymentQueueItem } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 import { ActionError } from "../action-error";
-import { DepartmentBadge } from "../department-badge";
+import { DepartmentBadge, OrderDepartmentBadge } from "../department-badge";
 import { OrderReviewDialogs } from "../order-review-dialogs";
 import type { CashierModel } from "../use-cashier";
 import type { CashierQueue } from "../use-cashier-queue";
@@ -104,10 +104,7 @@ function RequestRow({
             {o.client_name} · {formatCurrency(o.total_amount, o.currency)}
           </div>
         </div>
-        <DepartmentBadge
-          name={o.department ? o.department_name || o.department : "Нет отдела"}
-          color={o.department ? o.department_color : undefined}
-        />
+        <OrderDepartmentBadge order={o} />
       </div>
       <div className="flex gap-2">
         <Button className="flex-1" disabled={q.busy} onClick={onConfirm}>

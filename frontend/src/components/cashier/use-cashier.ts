@@ -156,7 +156,7 @@ export function useCashier({
   // Главной нужно только число заявок (по отделу кассы, как и очередь); сами заявки грузит экран очереди.
   const pendingCount = usePagedApi<Order>(
     homeActive && perms.canReviewOrders
-      ? apiUrl("/orders/", { ...scopeParams(scopedEmpty), status_group: "pending" })
+      ? apiUrl("/orders/", { ...scopeParams(scopedEmpty), status_group: "pending", with_unassigned: "1" })
       : null,
     1,
   );

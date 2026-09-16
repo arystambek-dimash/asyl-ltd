@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { formatCurrency } from "@/lib/utils";
 import type { Department, Order } from "@/lib/types";
+import { useAuth } from "@/store/auth";
 
 export interface OrderConfirmationData {
   department: string;
@@ -23,8 +24,13 @@ export function OrderConfirmation({
   busy: boolean;
   onConfirm: (data: OrderConfirmationData) => void;
 }) {
+  const { me } = useAuth();
+  // Клиент без отдела закрепится за отделом подтверждения; сотрудник отдела — только за своим.
+  const unassigned = !order.client_department;
+  const lockedDepartment = order.client_department || me?.sales_department?.code || "";
   // Even legacy requests may contain a department assigned by the old default.
-  const [department, setDepartment] = useState(order.client_department || "");
+  const [department, setDepartment] = useState(lockedDepartment);
+  const [askAssign, setAskAssign] = useState(false);
   const [prices, setPrices] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       order.items.map((item) => [String(item.id), String(item.unit_price ?? item.client_price ?? "")]),
@@ -41,22 +47,25 @@ export function OrderConfirmation({
       className="grid gap-4"
       onSubmit={(event) => {
         event.preventDefault();
-        if (valid && !busy) onConfirm({ department, prices });
+        if (!valid || busy) return;
+        if (unassigned && !askAssign) setAskAssign(true);
+        else onConfirm({ department, prices });
       }}
     >
       <label className="grid gap-1.5 text-sm font-medium">
         Отдел продаж
         <Select
           value={department}
-          onChange={(event) => setDepartment(event.target.value)}
+          onChange={(event) => {
+            setDepartment(event.target.value);
+            setAskAssign(false);
+          }}
           required
-          disabled={busy || !!order.client_department}
+          disabled={busy || !!lockedDepartment}
         >
           <option value="">Выберите отдел продаж</option>
           {departments
-            .filter(
-              (row) => row.is_active !== false && (!order.client_department || row.code === order.client_department),
-            )
+            .filter((row) => row.is_active !== false && (!lockedDepartment || row.code === lockedDepartment))
             .map((row) => (
               <option key={row.code} value={row.code}>
                 {row.name}
@@ -64,6 +73,11 @@ export function OrderConfirmation({
             ))}
         </Select>
       </label>
+      {unassigned && (
+        <p className="text-xs text-[var(--muted-foreground)]">
+          Клиент пока без отдела — при подтверждении закрепится за этим отделом.
+        </p>
+      )}
       {order.client_department && (
         <p className="text-xs text-[var(--muted-foreground)]">
           Отдел клиента: {order.client_department_name || order.client_department}. Продажа и оплата будут учтены здесь.
@@ -105,12 +119,37 @@ export function OrderConfirmation({
           </span>
         </div>
       ))}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
-        <p className="text-xs text-[var(--muted-foreground)]">Проверьте отдел и цены перед подтверждением.</p>
-        <Button type="submit" disabled={busy || !valid}>
-          {busy ? "Подтверждение…" : "Подтвердить заказ"}
-        </Button>
-      </div>
+      {askAssign ? (
+        <div
+          role="alertdialog"
+          aria-labelledby="assign-client-question"
+          className="grid gap-3 rounded-lg bg-[var(--muted)] p-3"
+        >
+          <div>
+            <p id="assign-client-question" className="text-sm font-medium">
+              Закрепить клиента за отделом «{departments.find((row) => row.code === department)?.name ?? department}»?
+            </p>
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+              {order.client_name || "Клиент"} перейдёт в этот отдел: его заказы и оплаты будут учитываться там.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={busy} onClick={() => setAskAssign(false)}>
+              Нет
+            </Button>
+            <Button type="submit" disabled={busy || !valid}>
+              {busy ? "Подтверждение…" : "Да, закрепить и подтвердить"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+          <p className="text-xs text-[var(--muted-foreground)]">Проверьте отдел и цены перед подтверждением.</p>
+          <Button type="submit" disabled={busy || !valid}>
+            {busy ? "Подтверждение…" : "Подтвердить заказ"}
+          </Button>
+        </div>
+      )}
     </form>
   );
 }

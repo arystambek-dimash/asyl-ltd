@@ -2,7 +2,7 @@ from decimal import Decimal
 from collections import defaultdict
 
 from django.db import transaction
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -31,8 +31,10 @@ from apps.eventlog.services import log_event
 from apps.orders.debt import debt_orders, order_remaining
 from apps.orders.models import Order
 from apps.orders.querysets import order_remaining_by_id, with_order_api_relations
-from apps.sales.access import scope_by_client_department
+from apps.sales.access import assigned_department_id, scope_by_client_department
+from apps.sales.models import Department
 
+from .assignment import assign_client_department
 from .models import Client, Store
 from .reports.statements import (
     ALL_CLIENT_SECTIONS,
@@ -126,11 +128,23 @@ class ClientViewSet(
         "picker": "clients.view",
         "set_password": "clients.manage_access",
         "purge": "clients.delete",
+        # Касса разбирает заявки саморегистрации и забирает клиента к себе.
+        "assign_department": ("clients.edit", "orders.confirm"),
     }
+    # Клиенты без отдела — общая очередь: отдел видит её отдельным списком
+    # (?department=none) и забирает клиента к себе. В свой список они не подмешиваются.
+    UNASSIGNED_VISIBLE_ACTIONS = frozenset({"retrieve", "assign_department"})
 
     def get_queryset(self):
         base = Client.objects.select_related("user", "department").order_by("-id")
-        base = scope_by_client_department(base, self.request.user)
+        unassigned_queue = self.action in self.UNASSIGNED_VISIBLE_ACTIONS or (
+            self.action == "list" and self.request.query_params.get("department") == "none"
+        )
+        base = scope_by_client_department(
+            base,
+            self.request.user,
+            unassigned=Q() if unassigned_queue else None,
+        )
         department = None
         if self.action == "list":
             department = self.request.query_params.get("department")
@@ -221,6 +235,23 @@ class ClientViewSet(
                 "department_to": current.code if current else None,
             },
         )
+
+    @action(detail=True, methods=["post"], url_path="assign-department")
+    def assign_department(self, request, pk=None):
+        """Закрепить клиента без отдела. Без ``department`` — за отделом сотрудника."""
+        client_pk = self.get_object().pk
+        raw = request.data.get("department", assigned_department_id(request.user))
+        department = Department.objects.filter(pk=raw).first() if str(raw).isdigit() else None
+        with transaction.atomic():
+            # Тот же порядок блокировок, что у переноса клиента: заказы → клиент.
+            self._lock_client_orders(client_pk)
+            try:
+                client = Client.objects.select_for_update().get(pk=client_pk)
+            except Client.DoesNotExist as exc:
+                raise ClientNoLongerAvailable() from exc
+            assign_client_department(client, department, request.user)
+        client = self.get_queryset().get(pk=client_pk)
+        return Response(ClientReadSerializer(client, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post"], url_path="purge")
     def purge(self, request, pk=None):

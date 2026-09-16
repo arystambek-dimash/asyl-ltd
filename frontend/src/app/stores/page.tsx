@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
@@ -16,8 +17,8 @@ import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
-import { formatPhone } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { isPhoneComplete } from "@/lib/phone";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
@@ -106,7 +107,8 @@ function StoreForm({
     }
   }
 
-  const valid = Boolean(client) && name.trim().length >= 2 && scheduleValidation.ok;
+  const valid =
+    Boolean(client) && name.trim().length >= 2 && (!phone || isPhoneComplete(phone)) && scheduleValidation.ok;
 
   return (
     <div className="flex flex-col gap-5">
@@ -148,14 +150,7 @@ function StoreForm({
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="store-phone">Телефон</Label>
-          <Input
-            id="store-phone"
-            type="tel"
-            autoComplete="tel"
-            placeholder="+7 (___) ___-__-__"
-            value={phone}
-            onChange={(e) => setPhone(formatPhone(e.target.value))}
-          />
+          <PhoneInput id="store-phone" value={phone} onChange={setPhone} />
         </div>
       </div>
 

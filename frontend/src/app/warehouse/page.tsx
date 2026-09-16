@@ -38,6 +38,13 @@ import {
   X,
 } from "lucide-react";
 import type { StockItem, Product, Warehouse } from "@/lib/types";
+import {
+  EMPTY_PRODUCT_DRAFT,
+  ProductFields,
+  canViewProductColor,
+  productPayload,
+  type ProductDraft,
+} from "@/components/catalog/product-fields";
 
 // Статус остатка: нет / мало (<20 мешков) / в наличии.
 function stockTone(bags: number): { tone: "destructive" | "warning" | "success"; label: string } {
@@ -47,6 +54,8 @@ function stockTone(bags: number): { tone: "destructive" | "warning" | "success";
 }
 
 const QUICK_AMOUNTS = [10, 50, 100, 500];
+// Пункт списка товаров «+ Новый товар…»: завести сорт/фасовку прямо со склада.
+const NEW_PRODUCT = "__new";
 type StockOperation = "add" | "remove" | "transfer";
 
 const LEGACY_WAREHOUSE: Warehouse = {
@@ -65,7 +74,8 @@ function WarehousePageInner() {
   const warehouseParam = searchParams.get("warehouse");
   const { me } = useAuth();
   const canAdjust = can(me, "warehouse.adjust");
-  const canBrowseCatalog = can(me, "catalog.view");
+  const canCreateProduct = can(me, "catalog.create");
+  const canViewColor = canViewProductColor(me);
   const {
     data: warehouseData,
     loading: warehousesLoading,
@@ -90,7 +100,7 @@ function WarehousePageInner() {
       : `/stock/?warehouse=${selectedWarehouse.id}`
     : null;
   const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>(stockUrl);
-  const { data: products } = useApi<Product[]>(canAdjust && canBrowseCatalog ? "/products/" : null);
+  const { data: products, reload: reloadProducts } = useApi<Product[]>(canAdjust ? "/products/" : null);
   // Aggregate stock powers ownership counts and the destination preview. The
   // selected warehouse still has its own scoped list and filters.
   const { data: allStock, reload: reloadAllStock } = useApi<StockItem[]>(legacyWarehouseMode ? null : "/stock/");
@@ -104,6 +114,7 @@ function WarehousePageInner() {
   const [open, setOpen] = useState(false);
   const [dialogIntent, setDialogIntent] = useState<"add" | "adjust">("add");
   const [product, setProduct] = useState("");
+  const [newProduct, setNewProduct] = useState<ProductDraft | null>(null);
   const [mode, setMode] = useState<StockOperation>("add");
   const [destinationWarehouse, setDestinationWarehouse] = useState("");
   const [amount, setAmount] = useState("");
@@ -180,6 +191,8 @@ function WarehousePageInner() {
   function openAdd() {
     setDialogIntent("add");
     setProduct("");
+    // Весь каталог уже на складе — сразу форма нового товара, а не пустой список.
+    setNewProduct(products && availableProducts.length === 0 && canCreateProduct ? EMPTY_PRODUCT_DRAFT : null);
     setMode("add");
     setDestinationWarehouse("");
     setAmount("");
@@ -190,6 +203,7 @@ function WarehousePageInner() {
   function openAdjust(productId: number) {
     setDialogIntent("adjust");
     setProduct(String(productId));
+    setNewProduct(null);
     setMode("add");
     setDestinationWarehouse("");
     setAmount("");
@@ -208,24 +222,43 @@ function WarehousePageInner() {
       ? (allStock.find((item) => item.product === Number(product) && item.warehouse === destination.id)?.bags ?? 0)
       : null;
 
+  const canSubmit =
+    Boolean(selectedWarehouse) &&
+    (newProduct ? Boolean(newProduct.name.trim()) : Boolean(product)) &&
+    delta > 0 &&
+    !insufficient &&
+    (mode !== "transfer" || Boolean(destination));
+
   async function submitAdjust(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedWarehouse || !product || delta <= 0 || insufficient || (mode === "transfer" && !destination)) return;
+    if (!canSubmit) return;
     setBusy(true);
     setError("");
     try {
+      let productId = product;
+      if (newProduct) {
+        const created = await api.post<Product>(
+          "/products/",
+          productPayload(newProduct, { canViewColor, editing: false }),
+        );
+        productId = String(created.data.id);
+        // Товар уже в каталоге: если приёмка ниже сорвётся, повтор не создаст дубль.
+        setProduct(productId);
+        setNewProduct(null);
+        void reloadProducts();
+      }
       if (mode === "transfer") {
         if (!destination) return;
         await api.post("/stock/transfer/", {
           from_warehouse: selectedWarehouse.id,
           to_warehouse: destination.id,
-          product: Number(product),
+          product: Number(productId),
           bags: delta,
         });
       } else {
         await api.post("/stock/adjust/", {
           ...(legacyWarehouseMode ? {} : { warehouse: selectedWarehouseId }),
-          product: Number(product),
+          product: Number(productId),
           delta: mode === "add" ? delta : -delta,
         });
       }
@@ -246,22 +279,9 @@ function WarehousePageInner() {
     setPackaging("");
   }
 
-  const productReferencesLoading = products === null;
   const addButton =
-    canAdjust && canBrowseCatalog && selectedWarehouse ? (
-      <Button
-        size="sm"
-        aria-label={`Добавить товар на склад ${selectedWarehouse.name}`}
-        onClick={openAdd}
-        disabled={productReferencesLoading || availableProducts.length === 0}
-        title={
-          productReferencesLoading
-            ? "Загружаем каталог"
-            : availableProducts.length === 0
-              ? "Все товары уже распределены по складам"
-              : undefined
-        }
-      >
+    canAdjust && selectedWarehouse ? (
+      <Button size="sm" aria-label={`Добавить товар на склад ${selectedWarehouse.name}`} onClick={openAdd}>
         <Plus className="size-4" /> <span className="hidden sm:inline">Добавить товар</span>
       </Button>
     ) : undefined;
@@ -519,12 +539,7 @@ function WarehousePageInner() {
               );
             })}
             {filtered.length === 0 && (
-              <EmptyStockState
-                hasFilters={hasFilters}
-                canAdjust={canAdjust && canBrowseCatalog && availableProducts.length > 0}
-                onReset={resetFilters}
-                onAdd={openAdd}
-              />
+              <EmptyStockState hasFilters={hasFilters} canAdjust={canAdjust} onReset={resetFilters} onAdd={openAdd} />
             )}
           </div>
 
@@ -589,7 +604,7 @@ function WarehousePageInner() {
                   <TD colSpan={canAdjust ? 6 : 5} className="p-0">
                     <EmptyStockState
                       hasFilters={hasFilters}
-                      canAdjust={canAdjust && canBrowseCatalog && availableProducts.length > 0}
+                      canAdjust={canAdjust}
                       onReset={resetFilters}
                       onAdd={openAdd}
                     />
@@ -622,22 +637,53 @@ function WarehousePageInner() {
             ) : (
               <Select
                 id="stock-product"
-                value={product}
-                autoFocus
-                onChange={(e) => setProduct(e.target.value)}
+                value={newProduct ? NEW_PRODUCT : product}
+                autoFocus={!newProduct}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setNewProduct(value === NEW_PRODUCT ? EMPTY_PRODUCT_DRAFT : null);
+                  setProduct(value === NEW_PRODUCT ? "" : value);
+                }}
                 required
               >
                 <option value="">
-                  {availableProducts.length === 0 && products !== null ? "Все товары уже добавлены" : "Выберите товар"}
+                  {products === null
+                    ? "Загружаем каталог…"
+                    : availableProducts.length === 0
+                      ? "Все товары каталога уже на этом складе"
+                      : "Выберите товар"}
                 </option>
                 {availableProducts.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.label}
                   </option>
                 ))}
+                {canCreateProduct && <option value={NEW_PRODUCT}>+ Новый товар…</option>}
               </Select>
             )}
           </Field>
+
+          {dialogIntent === "add" && newProduct && (
+            <div className="flex flex-col gap-3 rounded-lg bg-[var(--muted)]/40 p-3">
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Товар появится в каталоге и сразу будет принят на склад «{selectedWarehouse.name}».
+              </p>
+              <ProductFields
+                idPrefix="stock-new-product"
+                draft={newProduct}
+                onChange={setNewProduct}
+                canViewColor={canViewColor}
+                autoFocus
+              />
+            </div>
+          )}
+
+          {dialogIntent === "add" && !canCreateProduct && products !== null && availableProducts.length === 0 && (
+            <p role="status" className="rounded-lg bg-[var(--muted)]/40 p-3 text-sm text-[var(--muted-foreground)]">
+              Все товары каталога уже есть на этом складе. Новый сорт или фасовку заводит сотрудник с доступом «Каталог
+              · Создание».
+            </p>
+          )}
 
           {dialogIntent === "adjust" && (
             <div className="grid gap-1.5">
@@ -810,18 +856,7 @@ function WarehousePageInner() {
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Отмена
             </Button>
-            <Button
-              type="submit"
-              variant={mode === "remove" ? "destructive" : "default"}
-              disabled={
-                busy ||
-                !selectedWarehouse ||
-                !product ||
-                delta <= 0 ||
-                insufficient ||
-                (mode === "transfer" && !destination)
-              }
-            >
+            <Button type="submit" variant={mode === "remove" ? "destructive" : "default"} disabled={busy || !canSubmit}>
               {busy
                 ? "Сохранение…"
                 : mode === "add"

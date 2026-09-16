@@ -1,3 +1,6 @@
+from django.db.models import Q
+
+
 def assigned_department_id(user) -> int | None:
     if getattr(user, "is_superuser", False):
         return None
@@ -5,11 +8,17 @@ def assigned_department_id(user) -> int | None:
     return getattr(employee, "sales_department_id", None)
 
 
-def scope_by_client_department(queryset, user, client_path=""):
+def scope_by_client_department(queryset, user, client_path="", *, unassigned=None):
+    """Строки клиентов отдела сотрудника.
+
+    ``unassigned`` — условие (Q) на строки клиентов без отдела, которые видны
+    любому отделу: это общая очередь, из которой отдел забирает клиента к себе.
+    """
     department_id = assigned_department_id(user)
     if department_id is None:
         return queryset
-    lookup = "__".join(
-        part for part in (client_path, "department_id") if part
-    )
-    return queryset.filter(**{lookup: department_id})
+    prefix = f"{client_path}__" if client_path else ""
+    visible = Q(**{f"{prefix}department_id": department_id})
+    if unassigned is not None:
+        visible |= Q(**{f"{prefix}department__isnull": True}) & unassigned
+    return queryset.filter(visible)

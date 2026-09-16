@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.clients.models import Client
+from apps.clients.phone import clean_phone
 from config.throttles import RegisterRateThrottle
 
 User = get_user_model()
@@ -23,6 +24,8 @@ class RegisterSerializer(serializers.Serializer):
         max_length=200, required=False, allow_blank=True, default=""
     )
     phone = serializers.CharField(max_length=50)
+    country = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, default="")
     iin = serializers.CharField(
         min_length=12,
         max_length=12,
@@ -50,6 +53,9 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError(exc.messages)
         return value
 
+    def validate_phone(self, value):
+        return clean_phone(value)
+
     def validate_iin(self, value):
         value = value.strip()
         if not value:
@@ -76,6 +82,7 @@ class RegisterSerializer(serializers.Serializer):
             user=user,
             company_name=data.get("company_name", ""),
             phone=data["phone"],
+            country=data.get("country", ""),
             iin=data.get("iin", ""),
         )
         return user

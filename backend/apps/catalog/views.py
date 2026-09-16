@@ -19,7 +19,8 @@ from .services import archive_product, restore_product
 class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     serializer_class = ProductSerializer
     required_perms = {
-        "list": "catalog.view",
+        # Склад добавляет товар на свой склад из каталога, не имея доступа к разделу «Каталог».
+        "list": ("catalog.view", "warehouse.adjust"),
         "retrieve": "catalog.view",
         "create": "catalog.create", "update": "catalog.edit",
         "partial_update": "catalog.edit", "destroy": "catalog.delete",

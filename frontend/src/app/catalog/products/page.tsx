@@ -4,15 +4,19 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Field } from "@/components/ui/field";
-import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  EMPTY_PRODUCT_DRAFT,
+  ProductFields,
+  canViewProductColor,
+  productPayload,
+  type ProductDraft,
+} from "@/components/catalog/product-fields";
 import { Tabs } from "@/components/ui/tabs";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
@@ -33,14 +37,12 @@ function ProductsPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "catalog.create");
   const canEdit = can(me, "catalog.edit");
-  const canViewColor = can(me, "orders.create");
+  const canViewColor = canViewProductColor(me);
 
   const [tab, setTab] = useState<"active" | "archive">("active");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState("Red");
-  const [weight, setWeight] = useState("50");
+  const [draft, setDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
   const [askWeight, setAskWeight] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,18 +54,14 @@ function ProductsPageInner() {
 
   function openNew() {
     setEditing(null);
-    setName("");
-    setColor("Red");
-    setWeight("50");
+    setDraft(EMPTY_PRODUCT_DRAFT);
     setAskWeight(false);
     setError("");
     setOpen(true);
   }
   function openEdit(p: Product) {
     setEditing(p);
-    setName(p.name);
-    setColor(p.color ?? "Red");
-    setWeight(String(Number(p.weight_kg)));
+    setDraft({ name: p.name, color: p.color ?? "Red", weight: String(Number(p.weight_kg)) });
     setAskWeight(p.ask_truck_weight ?? false);
     setError("");
     setOpen(true);
@@ -75,10 +73,8 @@ function ProductsPageInner() {
     setError("");
     try {
       const body = {
-        name,
-        weight_kg: weight,
+        ...productPayload(draft, { canViewColor, editing: Boolean(editing) }),
         ask_truck_weight: askWeight,
-        ...(canViewColor ? { color } : editing ? {} : { color: "Red" }),
       };
       if (editing) await api.patch(`/products/${editing.id}/`, body);
       else await api.post("/products/", body);
@@ -324,36 +320,7 @@ function ProductsPageInner() {
         }
       >
         <form id="product-form" onSubmit={save} className="flex flex-col gap-4">
-          <Field label="Название" htmlFor="product-name">
-            <Input
-              id="product-name"
-              value={name}
-              autoFocus
-              placeholder="напр. Высший сорт"
-              onChange={(e) => setName(e.target.value)}
-              required
-            />
-          </Field>
-          <div className={`grid grid-cols-1 gap-3 ${canViewColor ? "sm:grid-cols-2" : ""}`}>
-            {canViewColor && (
-              <Field label="Цвет (тип)" htmlFor="product-color">
-                <Select id="product-color" value={color} onChange={(e) => setColor(e.target.value)}>
-                  <option value="Red">Красный</option>
-                  <option value="Green">Зелёный</option>
-                  <option value="Blue">Синий</option>
-                </Select>
-              </Field>
-            )}
-            <Field label="Фасовка" htmlFor="product-weight">
-              <Select id="product-weight" value={weight} onChange={(e) => setWeight(e.target.value)}>
-                <option value="50">50 кг</option>
-                <option value="25">25 кг</option>
-                <option value="10">10 кг</option>
-                <option value="5">5 кг</option>
-                <option value="2">2 кг</option>
-              </Select>
-            </Field>
-          </div>
+          <ProductFields idPrefix="product" draft={draft} onChange={setDraft} canViewColor={canViewColor} autoFocus />
           <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
             <input
               type="checkbox"

@@ -95,7 +95,8 @@ def test_register_weak_password_rejected(api_client):
     # Числовой пароль режется AUTH_PASSWORD_VALIDATORS, а не только min_length.
     r = api_client.post("/api/portal/register/",
                         {"username": "weakcli", "password": "12345678",
-                         "first_name": "A", "last_name": "B", "phone": "1"},
+                         "first_name": "A", "last_name": "B",
+                         "phone": "+77001112233"},
                         format="json")
     assert r.status_code == 400
     assert not get_user_model().objects.filter(username="weakcli").exists()
@@ -106,7 +107,8 @@ def test_register_duplicate_username_rejected(api_client, make_user):
     make_user(username="taken")
     r = api_client.post("/api/portal/register/",
                         {"username": "taken", "password": "secret12345",
-                         "first_name": "A", "last_name": "B", "phone": "1"},
+                         "first_name": "A", "last_name": "B",
+                         "phone": "+77001112233"},
                         format="json")
     assert r.status_code == 400
 
@@ -129,3 +131,34 @@ def test_register_rejects_password_similar_to_username(api_client):
 
     assert response.status_code == 400
     assert not get_user_model().objects.filter(username="matching-password").exists()
+
+
+@pytest.mark.django_db
+def test_register_keeps_foreign_phone_and_country(api_client):
+    payload = {
+        "username": "tashkent", "password": "secret12345",
+        "first_name": "Алишер", "phone": "+998 90 123-45-67",
+        "country": "Узбекистан",
+    }
+
+    response = api_client.post("/api/portal/register/", payload, format="json")
+
+    assert response.status_code == 201
+    client = Client.objects.get(user__username="tashkent")
+    assert client.phone == "+998 90 123-45-67"
+    assert client.country == "Узбекистан"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("phone", ["+7 (705) 56", "   ", "+1234567890123456"])
+def test_register_rejects_incomplete_phone(api_client, phone):
+    payload = {
+        "username": "short-phone", "password": "secret12345",
+        "first_name": "Иван", "phone": phone,
+    }
+
+    response = api_client.post("/api/portal/register/", payload, format="json")
+
+    assert response.status_code == 400
+    assert "phone" in response.data["detail"]
+    assert not get_user_model().objects.filter(username="short-phone").exists()

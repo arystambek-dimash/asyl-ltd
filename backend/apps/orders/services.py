@@ -6,11 +6,13 @@ from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.clients.assignment import assign_client_department
 from apps.clients.models import Client
 from apps.clients.services import is_payment_window_open
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.sales.access import assigned_department_id
+from apps.sales.models import Department
 
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .statuses import PUBLIC_MANUAL_STATUSES, PUBLIC_STATUS_LABELS, public_status_label
@@ -19,12 +21,15 @@ from .transport import validate_transport_number
 MAX_MONEY = Decimal("9999999999.99")
 
 
-def assert_order_user_scope(order: Order, user) -> None:
+def assert_order_user_scope(order: Order, user, *, allow_unassigned=False) -> None:
     """Lock and verify the client owner after the caller locks ``order``.
 
     Department reassignment locks the Client row. Taking the same row lock
     here, strictly after the Order lock, prevents an operation authorized
     against stale ownership from racing a client transfer.
+
+    ``allow_unassigned`` opens a client without a department to any department:
+    only request review (confirm/reject) uses it, the rest stays owner-only.
     """
     if user is None:
         return
@@ -36,11 +41,13 @@ def assert_order_user_scope(order: Order, user) -> None:
         .only("department_id")
         .get(pk=order.client_id)
     )
+    if client.department_id is None and allow_unassigned:
+        return
     if client.department_id != department_id:
         raise PermissionDenied("Заказ передан в другой отдел")
 
 
-def lock_live_order(order: Order | int, user=None) -> Order:
+def lock_live_order(order: Order | int, user=None, *, allow_unassigned=False) -> Order:
     """Lock an order and reject stale operations against archived rows.
 
     Callers must already be inside ``transaction.atomic()``. Using the
@@ -61,7 +68,7 @@ def lock_live_order(order: Order | int, user=None) -> Order:
             "detail": "Заказ находится в архиве",
             "code": "order_not_active",
         })
-    assert_order_user_scope(locked, user)
+    assert_order_user_scope(locked, user, allow_unassigned=allow_unassigned)
     return locked
 
 
@@ -853,9 +860,10 @@ ALLOWED_TRANSITIONS = {
 
 @transaction.atomic
 def transition(
-    order: Order, to_status: str, user, message: str | None = None, *, payload=None
+    order: Order, to_status: str, user, message: str | None = None, *, payload=None,
+    allow_unassigned=False,
 ) -> Order:
-    order = lock_live_order(order, user)
+    order = lock_live_order(order, user, allow_unassigned=allow_unassigned)
     _assert_no_open_ai_session(order)
     allowed = ALLOWED_TRANSITIONS.get(order.status, set())
     if to_status not in allowed:
@@ -880,11 +888,19 @@ def confirm_order(order: Order, user, prices: dict | None = None, *, department=
     # Freeze the order and its item set before validating/pricing. This shares
     # the parent fence with item edits and AI reservation.
     caller_order = order
-    order = lock_live_order(order, user)
+    order = lock_live_order(order, user, allow_unassigned=True)
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
     client = Client.objects.select_for_update().get(pk=order.client_id)
+    if client.department_id is None and department is not None:
+        # Заявка клиента без отдела: отдел, выбранный при подтверждении,
+        # закрепляет и клиента — иначе каждая его заявка снова «без отдела».
+        assign_client_department(
+            client,
+            Department.objects.filter(code=department).first() if isinstance(department, str) else None,
+            user,
+        )
     if client.department_id:
         assigned = client.department
         if not assigned.is_active:
@@ -901,7 +917,6 @@ def confirm_order(order: Order, user, prices: dict | None = None, *, department=
             )
         department = assigned.code
     if department is not None:
-        from apps.sales.models import Department
         if not isinstance(department, str) or not Department.objects.filter(
             code=department, is_active=True
         ).exists():
@@ -1420,7 +1435,7 @@ def replace_items(
 @transaction.atomic
 def reject_order(order: Order, user, *, reason: str) -> Order:
     caller_order = order
-    order = lock_live_order(order, user)
+    order = lock_live_order(order, user, allow_unassigned=True)
     if order.status != "pending":
         raise ValidationError(
             {"detail": "Отклонить можно только заказ на рассмотрении", "code": "invalid_status"})
@@ -1442,6 +1457,7 @@ def reject_order(order: Order, user, *, reason: str) -> Order:
         user,
         f"Заявка отклонена: {order.rejection_reason}",
         payload={"reason": order.rejection_reason, "action": "order_rejected"},
+        allow_unassigned=True,
     )
     caller_order.rejection_reason = order.rejection_reason
     caller_order.status = rejected.status

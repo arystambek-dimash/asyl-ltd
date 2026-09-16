@@ -27,10 +27,16 @@ class ProductSerializer(serializers.ModelSerializer):
         if request is None:
             return True
         user = request.user
+        # Складу цвет и так виден в остатках: без него «Синий» и «Красный»
+        # одной фасовки в списке товаров не различить.
         return bool(
             user
             and user.is_authenticated
-            and (user.is_superuser or user.has_perm_code("orders.create"))
+            and (
+                user.is_superuser
+                or user.has_perm_code("orders.create")
+                or user.has_perm_code("warehouse.view")
+            )
         )
 
     def get_label(self, obj):

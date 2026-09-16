@@ -11,6 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Modal } from "@/components/ui/modal";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
@@ -25,12 +26,15 @@ import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
-import { cn, currencySymbol, formatPhone, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
+import { cn, currencySymbol, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
+import { isPhoneComplete } from "@/lib/phone";
 import { COUNTRIES } from "@/lib/countries";
 import { BarChart3, FileSpreadsheet, KeyRound, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Badge } from "@/components/ui/badge";
+import { UnassignedClients } from "@/components/clients/unassigned-clients";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import type { Client, ClientDebt, Department, Me } from "@/lib/types";
 
@@ -40,7 +44,7 @@ const schema = z.object({
   first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
   last_name: z.string().trim().max(100, "Не более 100 символов"),
   company_name: z.string().optional(),
-  phone: z.string().refine((v) => v.replace(/\D/g, "").length === 11, "Введите номер полностью"),
+  phone: z.string().refine(isPhoneComplete, "Введите номер полностью"),
   country: z.string().optional(),
   iin: z
     .string()
@@ -187,12 +191,13 @@ function ClientForm({
             <FormItem>
               <FormLabel>Номер телефона</FormLabel>
               <FormControl>
-                <Input
-                  type="tel"
-                  inputMode="tel"
-                  placeholder="+7 (___) ___-__-__"
+                <PhoneInput
                   value={field.value}
-                  onChange={(e) => field.onChange(formatPhone(e.target.value))}
+                  onChange={field.onChange}
+                  defaultCountry={editing?.country}
+                  onCountryChange={(country) => {
+                    if (!form.getValues("country")) form.setValue("country", country);
+                  }}
                 />
               </FormControl>
               <FormMessage />
@@ -412,6 +417,12 @@ function ClientForm({
 
 const digits = (s: string) => s.replace(/\D/g, "");
 
+const WaitingDepartmentBadge = () => (
+  <Badge tone="warning" dot>
+    Ждёт отдела
+  </Badge>
+);
+
 function ClientPortalAccessForm({
   client,
   onDone,
@@ -508,6 +519,8 @@ function ClientsPageInner() {
   const canManagePortalAccess = can(me, "clients.manage_access");
   const canMoney = can(me, "reports.view"); // финансовая аналитика — под reports.view
   const canExport = can(me, "reports.export");
+  // Закрепить клиента без отдела может и касса: она разбирает заявки саморегистрации.
+  const canAssignDepartment = canEdit || can(me, "orders.confirm");
   const assignedDepartment = me?.sales_department ?? null;
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Client | null>(null);
@@ -742,6 +755,16 @@ function ClientsPageInner() {
         </div>
       )}
 
+      {canAssignDepartment && (
+        <UnassignedClients
+          ownDepartment={assignedDepartment}
+          onAssigned={() => {
+            void reload();
+            if (canMoney) void reloadClientDebts();
+          }}
+        />
+      )}
+
       {clientDebtsError && (
         <div className="mb-4">
           <ErrorAlert message={clientDebtsError} onRetry={reloadClientDebts} />
@@ -819,7 +842,9 @@ function ClientsPageInner() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <div className="text-sm font-semibold">{c.name}</div>
-                  <div className="text-xs text-[var(--muted-foreground)]">{c.department_name || "Без отдела"}</div>
+                  <div className="text-xs text-[var(--muted-foreground)]">
+                    {c.department_name || <WaitingDepartmentBadge />}
+                  </div>
                   <a
                     href={`tel:${c.phone}`}
                     className="relative z-10 flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]"
@@ -903,7 +928,9 @@ function ClientsPageInner() {
                         <span className="font-medium">{c.name}</span>
                       )}
                     </TD>
-                    <TD className="text-[var(--muted-foreground)]">{c.department_name || "—"}</TD>
+                    <TD className="text-[var(--muted-foreground)]">
+                      {c.department_name || <WaitingDepartmentBadge />}
+                    </TD>
                     <TD className="tabular-nums">{c.iin || "—"}</TD>
                     <TD className="tabular-nums">{c.phone}</TD>
                     {canMoney && (

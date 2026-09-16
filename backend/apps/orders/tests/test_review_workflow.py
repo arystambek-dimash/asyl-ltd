@@ -71,7 +71,9 @@ def test_department_prices_atomic_and_inactive_rejected(
     assert response.data["department"] == dept.code
     assert response.data["total_amount"] == "300.50"
     assert response.data["status"] == "confirmed"
-    assert Client.objects.get(pk=order.client_id).department_id is None
+    # Подтверждение заявки клиента без отдела закрепляет и клиента: иначе касса
+    # отдела не увидит ни этот заказ, ни следующие заявки клиента.
+    assert Client.objects.get(pk=order.client_id).department_id == dept.pk
 
 
 @pytest.mark.parametrize("target", ["confirmed", "shipped"])
@@ -102,6 +104,12 @@ def test_review_is_idempotent_scoped_and_separates_queues(
     assert summary["new"] == 0 and summary["review"] == 1
     manager.employee.sales_department = dept
     manager.employee.save()
+    # Заявка клиента без отдела — общая очередь любого отдела.
+    assert api.get("/api/orders/workflow-summary/").data["review"] == 1
+    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
+    # Клиента забрал другой отдел — заявка уходит из очереди.
+    other = Department.objects.create(code="other", name="Другой отдел")
+    Client.objects.filter(pk=order.client_id).update(department=other)
     assert api.get("/api/orders/workflow-summary/").data["all"] == 0
     assert api.post(f"/api/orders/{order.pk}/review/").status_code == 404
 

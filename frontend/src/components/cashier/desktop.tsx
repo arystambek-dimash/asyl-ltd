@@ -23,7 +23,7 @@ import { cn, formatCurrency, formatDateTime, todayLocalIsoDate } from "@/lib/uti
 import { ActionError } from "./action-error";
 import { CashFiltersPanel } from "./cash-filters-panel";
 import { debtPaymentState, matchesDebtQuery } from "./debt-state";
-import { DepartmentBadge } from "./department-badge";
+import { DepartmentBadge, OrderDepartmentBadge } from "./department-badge";
 import { OrderReviewDialogs } from "./order-review-dialogs";
 import { RestorePaymentDialog } from "./restore-payment-dialog";
 import type { CashierModel } from "./use-cashier";
@@ -86,10 +86,7 @@ function ConfirmQueueSection({
                           {o.client_name} · {formatCurrency(o.total_amount, o.currency)}
                         </div>
                       </div>
-                      <DepartmentBadge
-                        name={o.department ? o.department_name || o.department : "Нет отдела"}
-                        color={o.department ? o.department_color : undefined}
-                      />
+                      <OrderDepartmentBadge order={o} />
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button className="flex-1" size="sm" disabled={q.busy} onClick={() => setConfirming(o)}>

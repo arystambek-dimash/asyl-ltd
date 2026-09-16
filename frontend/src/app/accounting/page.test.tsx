@@ -151,7 +151,9 @@ it("loads only overview totals initially and fetches each confirmation page once
   await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
   await screen.findByRole("button", { name: "Подтвердить получение" });
   expect(urls().filter((url) => url === "/orders/payments-queue/?page=1&page_size=50")).toHaveLength(1);
-  expect(urls().filter((url) => url === "/orders/?status_group=pending&page=1&page_size=50")).toHaveLength(1);
+  expect(
+    urls().filter((url) => url === "/orders/?status_group=pending&with_unassigned=1&page=1&page_size=50"),
+  ).toHaveLength(1);
 });
 
 it("keeps entered confirmation data when a background refresh removes the row from the page", async () => {
@@ -187,7 +189,7 @@ it("keeps entered confirmation data when a background refresh removes the row fr
   render(<CashierPage />);
   await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
   const confirm = await screen.findByRole("button", { name: "Проверить и подтвердить" });
-  expect(screen.getAllByText("Нет отдела").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Ждёт отдела").length).toBeGreaterThan(0);
   await user.click(confirm);
   await user.selectOptions(await screen.findByRole("combobox", { name: "Отдел продаж" }), "main");
   await user.type(screen.getByRole("spinbutton", { name: "Цена: Мука" }), "1234");
@@ -198,6 +200,8 @@ it("keeps entered confirmation data when a background refresh removes the row fr
   expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toHaveValue("main");
   expect(screen.getByRole("spinbutton", { name: "Цена: Мука" })).toHaveValue(1234);
   await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+  // Клиент без отдела: касса сперва подтверждает, что закрепляет его за отделом.
+  await user.click(screen.getByRole("button", { name: "Да, закрепить и подтвердить" }));
   await waitFor(() => expect(screen.queryByRole("combobox", { name: "Отдел продаж" })).not.toBeInTheDocument());
   expect(mocks.post).toHaveBeenCalledWith("/orders/621/confirm/", { department: "main", prices: { "7": "1234" } });
 });

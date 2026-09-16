@@ -9,6 +9,7 @@ interface RegisterPayload {
   last_name: string;
   company_name: string;
   phone: string;
+  country: string;
   iin: string;
 }
 

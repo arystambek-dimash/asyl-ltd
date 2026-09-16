@@ -20,8 +20,11 @@ export function useCashierQueue(
   const queueActive = enabled && filtersAreValid(queueFilters);
   const queueParams = scopeParams(queueFilters);
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
+  // Заявки клиентов без отдела видны при любом отделе: касса забирает их себе.
   const pendingPage = usePagedApi<Order>(
-    queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, status_group: "pending" }) : null,
+    queueActive && canReviewOrders
+      ? apiUrl("/orders/", { ...queueParams, status_group: "pending", with_unassigned: "1" })
+      : null,
   );
   const queuePage = usePagedApi<PaymentQueueItem>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
   const { reload: reloadPending } = pendingPage;

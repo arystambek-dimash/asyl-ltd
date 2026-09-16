@@ -43,7 +43,7 @@ from .querysets import (
 from .reports import summary_report
 from .references import build_order_form_options
 from .statuses import (
-    PUBLIC_STATUS_LABELS, is_financial, is_in_progress, statuses_in_group,
+    PUBLIC_STATUS_LABELS, REVIEWABLE_STATUSES, is_financial, is_in_progress, statuses_in_group,
 )
 from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
                           StatusChangeRequestSerializer)
@@ -737,11 +737,21 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             ]
         return super().get_permissions()
 
+    # Новая заявка клиента без отдела — общая очередь: её видит и разбирает
+    # любой отдел, подтверждение закрепляет клиента за отделом.
+    UNASSIGNED_REQUEST_ACTIONS = frozenset(
+        {"list", "retrieve", "workflow_summary", "review", "confirm", "reject"}
+    )
+
     def get_queryset(self):
         qs = scope_by_client_department(
             super().get_queryset(),
             self.request.user,
             client_path="client",
+            unassigned=(
+                Q(status__in=REVIEWABLE_STATUSES)
+                if self.action in self.UNASSIGNED_REQUEST_ACTIONS else None
+            ),
         )
         if self.action == "list":
             params = self.request.query_params
@@ -755,10 +765,24 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 ).first()
                 days = row.completed_orders_days if row else 1
                 qs = for_post_board(qs, days, **post_board_params(params))
-            for field in ("department", "status", "payment_status"):
+            department = params.get("department")
+            if department == "__unassigned":
+                qs = qs.filter(department="")
+            elif department:
+                # Заказ без своего отдела учитывается в отделе клиента.
+                match = Q(department=department) | Q(department="", client__department__code=department)
+                if params.get("with_unassigned") == "1":
+                    # Касса отдела видит и заявки клиентов без отдела, чтобы забрать их к себе.
+                    match |= Q(
+                        department="",
+                        client__department__isnull=True,
+                        status__in=REVIEWABLE_STATUSES,
+                    )
+                qs = qs.filter(match)
+            for field in ("status", "payment_status"):
                 value = params.get(field)
                 if value:
-                    qs = qs.filter(**{field: "" if field == "department" and value == "__unassigned" else value})
+                    qs = qs.filter(**{field: value})
             # Фильтр по публичной группе: «Ожидает загрузки» покрывает
             # confirmed/arrived/loading — точечный status для этого не годится.
             group = params.get("status_group")
@@ -803,8 +827,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         from django.db import transaction
         from .services import lock_live_order
         with transaction.atomic():
-            order = lock_live_order(self.get_object(), request.user)
-            if order.status not in ("draft", "pending"):
+            order = lock_live_order(self.get_object(), request.user, allow_unassigned=True)
+            if order.status not in REVIEWABLE_STATUSES:
                 raise ValidationError({"detail": "На рассмотрение можно взять только новую заявку"})
             if order.reviewed_at is None:
                 order.reviewed_at = timezone.now()

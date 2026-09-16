@@ -89,7 +89,9 @@ def test_assigned_employee_can_only_list_pick_and_retrieve_owned_clients(
     assert api.get(
         "/api/clients/", {"department": second.code}
     ).data == []
-    assert api.get("/api/clients/", {"department": "none"}).data == []
+    # Клиенты без отдела — общая очередь: отдел видит её отдельным фильтром,
+    # чтобы забрать клиента к себе, но не в своём общем списке.
+    assert [row["name"] for row in api.get("/api/clients/", {"department": "none"}).data] == ["БезОтдела"]
 
 
 def test_unassigned_employee_can_filter_clients_and_find_legacy_rows(
