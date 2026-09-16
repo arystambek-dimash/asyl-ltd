@@ -3,6 +3,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -12,6 +13,7 @@ from apps.sales.access import scope_by_client_department
 from apps.warehouse.models import StockItem
 
 from .models import ClientPrice, Product
+from .photos import remove_product_photo, set_product_photo
 from .serializers import ProductSerializer
 from .services import archive_product, restore_product
 
@@ -25,6 +27,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "catalog.create", "update": "catalog.edit",
         "partial_update": "catalog.edit", "destroy": "catalog.delete",
         "archive": "catalog.edit", "restore": "catalog.edit",
+        "photo": "catalog.edit",
     }
 
     def get_queryset(self):
@@ -51,6 +54,21 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="archive")
     def archive(self, request, pk=None):
         product = archive_product(self._any_product(pk), request.user)
+        return Response(ProductSerializer(product, context={"request": request}).data)
+
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        url_path="photo",
+        parser_classes=[MultiPartParser],
+    )
+    def photo(self, request, pk=None):
+        """POST multipart ``photo`` заменяет фото товара, DELETE убирает его."""
+        product = self._any_product(pk)
+        if request.method == "DELETE":
+            product = remove_product_photo(product, request.user)
+        else:
+            product = set_product_photo(product, request.FILES.get("photo"), request.user)
         return Response(ProductSerializer(product, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="restore")

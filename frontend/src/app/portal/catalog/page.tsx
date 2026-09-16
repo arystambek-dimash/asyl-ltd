@@ -1,58 +1,40 @@
 "use client";
-import { useState } from "react";
 import Link from "next/link";
+import { Boxes, ShoppingCart } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { Card, CardContent } from "@/components/ui/card";
+import { ProductPhoto } from "@/components/catalog/product-photo";
+import { AddToCart } from "@/components/portal/add-to-cart";
+import { CartBar } from "@/components/portal/cart-bar";
+import { bagsLabel } from "@/components/portal/cart-button";
+import { CurrencyToggle } from "@/components/portal/currency-toggle";
 import { buttonVariants } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { DataGate } from "@/components/ui/data-state";
-import { useApi } from "@/lib/use-api";
-import { formatCurrency, currencySymbol } from "@/lib/utils";
-import { Boxes, ShoppingCart, Tag } from "lucide-react";
-
-interface PortalProduct {
-  id: number;
-  label: string;
-  weight_kg: string;
-  price: string | null;
-  currency: "KZT" | "USD";
-}
+import { priceCart } from "@/lib/cart";
+import { usePortalCatalog } from "@/lib/use-portal-catalog";
+import { cn, formatCurrency } from "@/lib/utils";
+import { useCart } from "@/store/cart";
 
 export default function PortalCatalogPage() {
-  const [currency, setCurrency] = useState<"KZT" | "USD" | null>(null);
-  const {
-    data: products,
-    loading,
-    error,
-    reload,
-  } = useApi<PortalProduct[]>(currency ? `/portal/catalog/?currency=${currency}` : "/portal/catalog/");
-  const selectedCurrency = currency ?? products?.[0]?.currency ?? "KZT";
+  const { data: products, loading, error, reload, currency, setCurrency } = usePortalCatalog();
+  const cart = useCart();
+  const priced = priceCart(cart.lines, products);
   return (
-    <AppShell title="Товары" portal>
+    <AppShell
+      title="Товары"
+      portal
+      footer={<CartBar count={priced.quantity} total={priced.total} currency={currency} />}
+    >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="font-medium">Ваш личный прайс-лист</p>
           <p className="text-xs text-[var(--muted-foreground)]">Цены закреплены специально для вашей компании</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex rounded-lg border bg-[var(--muted)]/30 p-1">
-            {(["KZT", "USD"] as const).map((code) => (
-              <button
-                key={code}
-                type="button"
-                onClick={() => setCurrency(code)}
-                className={
-                  "rounded-md px-3 py-1.5 text-xs font-semibold transition-all " +
-                  (selectedCurrency === code
-                    ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-                    : "text-[var(--muted-foreground)]")
-                }
-              >
-                {code} {currencySymbol(code)}
-              </button>
-            ))}
-          </div>
-          <Link href="/portal/orders/new" className={buttonVariants({ size: "sm" })}>
-            <ShoppingCart className="size-4" /> Оформить заказ
+          <CurrencyToggle value={currency} onChange={setCurrency} />
+          <Link href="/portal/cart" className={cn(buttonVariants({ size: "sm" }), "hidden md:inline-flex")}>
+            <ShoppingCart className="size-4" />
+            {priced.quantity > 0 ? `Корзина · ${bagsLabel(priced.quantity)}` : "Корзина"}
           </Link>
         </div>
       </div>
@@ -69,23 +51,24 @@ export default function PortalCatalogPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4">
           {products.map((p) => (
-            <Card key={p.id} className="p-6">
-              <div className="flex items-start justify-between gap-3">
-                <div className="font-medium">{p.label}</div>
-                <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--primary)]/8 text-[var(--primary)]">
-                  <Tag className="size-4" />
-                </span>
-              </div>
-              <div className="mt-1 text-xs text-[var(--muted-foreground)]">{p.weight_kg} кг / мешок</div>
-              <div className="mt-4 border-t pt-4">
-                <div className="text-[11px] text-[var(--muted-foreground)]">Ваша цена за мешок</div>
+            <Card key={p.id} className="flex flex-col overflow-hidden">
+              <ProductPhoto url={p.photo_url} alt={p.label} className="aspect-[4/3] w-full" iconClassName="size-10" />
+              <div className="flex flex-1 flex-col gap-3 p-3 sm:p-4">
+                <div className="flex-1">
+                  <div className="text-sm font-medium leading-snug sm:text-[15px]">{p.label}</div>
+                  <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{Number(p.weight_kg)} кг / мешок</div>
+                </div>
                 {p.price ? (
-                  <div className="mt-1 text-xl font-semibold tabular-nums">{formatCurrency(p.price, p.currency)}</div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {formatCurrency(p.price, p.currency)}
+                    <span className="ml-1 text-xs font-normal text-[var(--muted-foreground)]">/ мешок</span>
+                  </div>
                 ) : (
-                  <div className="mt-1 text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
+                  <div className="text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
                 )}
+                <AddToCart product={p} />
               </div>
             </Card>
           ))}

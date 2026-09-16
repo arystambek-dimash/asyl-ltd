@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from .models import ClientPrice, Product
+from .photos import product_photo_url
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -10,12 +11,16 @@ class ProductSerializer(serializers.ModelSerializer):
     color_label = serializers.CharField(source="get_color_display", read_only=True)
     cv_class = serializers.CharField(read_only=True)
     available_bags = serializers.SerializerMethodField()
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = ["id", "name", "color", "color_label", "weight_kg",
                   "is_active", "ask_truck_weight",
-                  "label", "cv_class", "available_bags"]
+                  "label", "cv_class", "available_bags", "photo_url"]
+
+    def get_photo_url(self, obj):
+        return product_photo_url(obj)
 
     def get_available_bags(self, obj):
         # This legacy catalogue field is intentionally a company-wide total.

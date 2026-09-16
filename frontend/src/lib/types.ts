@@ -30,6 +30,17 @@ export interface Product {
   warehouse?: number | null;
   warehouse_name?: string | null;
   ask_truck_weight?: boolean;
+  /** Подписанная ссылка на фото (см. apiFileUrl); null — фото нет. */
+  photo_url?: string | null;
+}
+/** Товар в каталоге клиента: цена из его личного прайса, остатков нет намеренно. */
+export interface PortalProduct {
+  id: number;
+  label: string;
+  weight_kg: string;
+  price: string | null;
+  currency: "KZT" | "USD";
+  photo_url?: string | null;
 }
 export interface Warehouse {
   id: number;

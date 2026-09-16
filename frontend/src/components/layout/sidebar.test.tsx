@@ -50,25 +50,25 @@ function Harness() {
 describe("подсветка активного пункта", () => {
   const activeClass = "font-medium";
 
-  it("на «Новый заказ» горит только он, без «Мои заказы»", () => {
-    nav.pathname = "/portal/orders/new";
+  it("на корзине горит только «Корзина», без «Мои заказы»", () => {
+    nav.pathname = "/portal/cart";
     render(<Sidebar me={client} />);
-    expect(screen.getByRole("link", { name: "Новый заказ" })).toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Корзина" })).toHaveClass(activeClass);
     expect(screen.getByRole("link", { name: "Мои заказы" })).not.toHaveClass(activeClass);
   });
 
-  it("на списке заказов горят «Мои заказы», а не «Новый заказ»", () => {
+  it("на списке заказов горят «Мои заказы», а не «Корзина»", () => {
     nav.pathname = "/portal/orders";
     render(<Sidebar me={client} />);
     expect(screen.getByRole("link", { name: "Мои заказы" })).toHaveClass(activeClass);
-    expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Корзина" })).not.toHaveClass(activeClass);
   });
 
   it("на деталке заказа по-прежнему горят «Мои заказы»", () => {
     nav.pathname = "/portal/orders/42";
     render(<Sidebar me={client} />);
     expect(screen.getByRole("link", { name: "Мои заказы" })).toHaveClass(activeClass);
-    expect(screen.getByRole("link", { name: "Новый заказ" })).not.toHaveClass(activeClass);
+    expect(screen.getByRole("link", { name: "Корзина" })).not.toHaveClass(activeClass);
   });
 
   it("показывает склады и силосы отдельными пунктами, активен самый специфичный", () => {

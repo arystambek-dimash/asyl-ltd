@@ -269,7 +269,7 @@ def test_portal_catalog_does_not_leak_exact_balance_but_staff_catalog_keeps_it(
         item for item in portal_response.data if item["id"] == product.pk
     )
     assert set(portal_row) == {
-        "id", "label", "weight_kg", "price", "currency",
+        "id", "label", "weight_kg", "price", "currency", "photo_url",
     }
     assert 987_654 not in portal_row.values()
 

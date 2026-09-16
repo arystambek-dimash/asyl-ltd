@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Boxes,
   ClipboardList,
+  ShoppingCart,
   Users,
   ScrollText,
   ListChecks,
@@ -106,14 +107,14 @@ const PORTAL_SECTIONS: NavSection[] = [
     title: "Кабинет",
     items: [
       { href: "/portal/catalog", label: "Товары", icon: Boxes },
-      { href: "/portal/orders/new", label: "Новый заказ", icon: ClipboardList },
+      { href: "/portal/cart", label: "Корзина", icon: ShoppingCart },
       { href: "/portal/orders", label: "Мои заказы", icon: ScrollText },
     ],
   },
 ];
 
 // Активен только самый специфичный из совпавших пунктов: без этого на
-// /portal/orders/new горели бы и «Новый заказ», и «Мои заказы» (/portal/orders).
+// /portal/orders/42 горели бы и вложенный пункт, и «Мои заказы» (/portal/orders).
 function findActiveHref(sections: NavSection[], pathname: string): string | undefined {
   return sections
     .flatMap((section) => section.items.map((item) => ({ href: item.href, match: item.activePrefix ?? item.href })))

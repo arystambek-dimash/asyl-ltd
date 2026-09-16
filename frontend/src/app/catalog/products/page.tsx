@@ -17,6 +17,8 @@ import {
   productPayload,
   type ProductDraft,
 } from "@/components/catalog/product-fields";
+import { ProductPhoto, ProductPhotoPicker } from "@/components/catalog/product-photo";
+import { saveProductPhoto } from "@/lib/product-photo";
 import { Tabs } from "@/components/ui/tabs";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
@@ -43,6 +45,8 @@ function ProductsPageInner() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [draft, setDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoRemoved, setPhotoRemoved] = useState(false);
   const [askWeight, setAskWeight] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,6 +59,8 @@ function ProductsPageInner() {
   function openNew() {
     setEditing(null);
     setDraft(EMPTY_PRODUCT_DRAFT);
+    setPhotoFile(null);
+    setPhotoRemoved(false);
     setAskWeight(false);
     setError("");
     setOpen(true);
@@ -62,6 +68,8 @@ function ProductsPageInner() {
   function openEdit(p: Product) {
     setEditing(p);
     setDraft({ name: p.name, color: p.color ?? "Red", weight: String(Number(p.weight_kg)) });
+    setPhotoFile(null);
+    setPhotoRemoved(false);
     setAskWeight(p.ask_truck_weight ?? false);
     setError("");
     setOpen(true);
@@ -76,14 +84,19 @@ function ProductsPageInner() {
         ...productPayload(draft, { canViewColor, editing: Boolean(editing) }),
         ask_truck_weight: askWeight,
       };
-      if (editing) await api.patch(`/products/${editing.id}/`, body);
-      else await api.post("/products/", body);
+      const saved = editing
+        ? await api.patch<Product>(`/products/${editing.id}/`, body)
+        : await api.post<Product>("/products/", body);
+      // Фото — отдельный запрос: товар уже сохранён, и повтор после ошибки фото
+      // пойдёт правкой этого товара, а не созданием дубля.
+      setEditing(saved.data);
+      await saveProductPhoto(saved.data.id, { file: photoFile, removed: photoRemoved && Boolean(editing?.photo_url) });
       setOpen(false);
-      reload();
     } catch (e) {
       setError(apiError(e));
     } finally {
       setBusy(false);
+      reload();
     }
   }
 
@@ -259,7 +272,17 @@ function ProductsPageInner() {
                   <TBody>
                     {sorted.map((p) => (
                       <TR key={p.id}>
-                        <TD className="font-medium">{p.name}</TD>
+                        <TD className="font-medium">
+                          <span className="flex items-center gap-3">
+                            <ProductPhoto
+                              url={p.photo_url}
+                              alt={p.name}
+                              className="size-10 shrink-0 rounded-md"
+                              iconClassName="size-4"
+                            />
+                            {p.name}
+                          </span>
+                        </TD>
                         {canViewColor && <TD>{p.color_label}</TD>}
                         <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
                         <TD>
@@ -320,6 +343,20 @@ function ProductsPageInner() {
         }
       >
         <form id="product-form" onSubmit={save} className="flex flex-col gap-4">
+          <ProductPhotoPicker
+            currentUrl={editing?.photo_url}
+            file={photoFile}
+            removed={photoRemoved}
+            disabled={busy}
+            onPick={(file) => {
+              setPhotoFile(file);
+              setPhotoRemoved(false);
+            }}
+            onRemove={() => {
+              setPhotoFile(null);
+              setPhotoRemoved(true);
+            }}
+          />
           <ProductFields idPrefix="product" draft={draft} onChange={setDraft} canViewColor={canViewColor} autoFocus />
           <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
             <input

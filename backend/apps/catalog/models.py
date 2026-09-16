@@ -4,6 +4,11 @@ from django.conf import settings
 from django.db import connections, models, router, transaction
 
 
+def product_photo_path(instance, filename):
+    # Имя файла задаёт сервис (uuid), путь по товару — чтобы файлы легко найти.
+    return f"products/{instance.pk}/{filename}"
+
+
 class Product(models.Model):
     COLORS = [("Red", "Красный"), ("Green", "Зелёный"), ("Blue", "Синий")]
     WEIGHTS = [
@@ -21,6 +26,8 @@ class Product(models.Model):
         max_digits=12, decimal_places=2, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     ask_truck_weight = models.BooleanField(default=False)
+    # db_default: откат релиза и старые миграции вставляют товары без этой колонки.
+    photo = models.FileField(upload_to=product_photo_path, blank=True, default="", db_default="")
 
     class Meta:
         unique_together = ("name", "color", "weight_kg")

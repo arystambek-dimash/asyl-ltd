@@ -4,6 +4,7 @@ from django.db import transaction
 from rest_framework import serializers
 from apps.common.money import money_string
 from apps.catalog.models import ClientPrice, Product
+from apps.catalog.photos import product_photo_url
 from apps.clients.models import Store
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.statuses import is_financial
@@ -40,13 +41,17 @@ class CatalogProductSerializer(serializers.ModelSerializer):
     )
     price = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
+    photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         # Warehouse balance is staff-only operational data.  The portal may
         # list orderable catalogue references and the client's own price, but
         # must never serialize an exact stock quantity.
-        fields = ["id", "label", "weight_kg", "price", "currency"]
+        fields = ["id", "label", "weight_kg", "price", "currency", "photo_url"]
+
+    def get_photo_url(self, obj):
+        return product_photo_url(obj)
 
     def get_price(self, obj):
         # Только закреплённая цена текущего клиента. Базовую цену не раскрываем.

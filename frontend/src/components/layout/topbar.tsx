@@ -2,6 +2,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { LogOut, Sun, Moon, Monitor, Menu, CircleHelp, ChevronLeft } from "lucide-react";
 import { NotificationBell } from "@/components/notification-bell";
+import { CartButton } from "@/components/portal/cart-button";
 import { TOUR_START_EVENT } from "@/components/onboarding-tour";
 import { useAuth } from "@/store/auth";
 import { useRouter } from "next/navigation";
@@ -173,6 +174,7 @@ export function Topbar({
           </button>
         )}
         <ThemeToggle />
+        {me.is_client && <CartButton />}
         {me.is_client && <NotificationBell />}
         <div data-tour="profile" className="flex items-center gap-2.5 border-l pl-3">
           <div className="flex size-8 items-center justify-center rounded-full bg-[var(--secondary)] text-xs font-semibold">

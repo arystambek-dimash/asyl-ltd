@@ -18,7 +18,7 @@ export default function PortalOrdersPage() {
       title="Мои заказы"
       portal
       actions={
-        <Link href="/portal/orders/new" className={buttonVariants({ size: "sm" })} aria-label="Новый заказ">
+        <Link href="/portal/catalog" className={buttonVariants({ size: "sm" })} aria-label="Новый заказ">
           <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
         </Link>
       }
