@@ -6,7 +6,8 @@ _SECTIONS = {
     ),
     "warehouse": ("Склад", ["view", "adjust"]),
     "silos": ("Силосы", ["view"]),
-    "orders": ("Заказы", ["view", "create", "edit", "confirm", "correct_price"]),
+    # confirm_all — заявки всех отделов для сотрудника, закреплённого за отделом.
+    "orders": ("Заказы", ["view", "create", "edit", "confirm", "confirm_all", "correct_price"]),
     "payments": ("Оплаты", ["view", "create", "confirm"]),
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
     "ai_247": ("AI 24/7", ["manage"]),
@@ -27,6 +28,7 @@ _SECTIONS = {
 _ACTION_LABELS = {
     "view": "Просмотр", "create": "Создание", "edit": "Редактирование",
     "delete": "Удаление", "adjust": "Корректировка", "confirm": "Подтверждение",
+    "confirm_all": "Заявки всех отделов",
     "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
     "debt_override": "Отгрузка в долг", "manage": "Управление",
     "rollback": "Откат отгрузки",

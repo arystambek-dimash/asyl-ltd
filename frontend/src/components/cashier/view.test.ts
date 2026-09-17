@@ -61,7 +61,6 @@ describe("cashierPerms", () => {
   it("derives combined permissions", () => {
     const perms = cashierPerms(me(["payments.create", "orders.view"]));
     expect(perms.canDebtEntry).toBe(true);
-    expect(perms.canReviewOrders).toBe(false);
     expect(mobileMenu(perms)).toEqual(["debts"]);
     expect(mobileMenu(all)).toEqual(["confirm", "debts", "transactions", "journal", "report"]);
   });

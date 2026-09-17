@@ -468,9 +468,8 @@ def release_client_payment(payment: Payment, user) -> Payment:
     return _sync_payment_instance(payment, payment)
 
 
-@transaction.atomic
-def request_client_debt(order: Order, user) -> Order:
-    """Зафиксировать выбор «В долг» без создания денежной оплаты."""
+def _lock_shipped_order_for_debt(order: Order, user, *, in_progress_detail: str) -> Order:
+    """Долг фиксируется только у отгруженного заказа без незавершённой оплаты."""
     order = _locked_payment_order(order, user)
     if order.status != "shipped":
         raise ValidationError({"detail": "Долг фиксируется после отгрузки",
@@ -478,19 +477,49 @@ def request_client_debt(order: Order, user) -> Order:
     if order.payments.select_for_update().filter(
         status__in=Payment.IN_PROGRESS_STATUSES,
     ).exists():
-        raise ValidationError({
-            "detail": (
-                "Сначала завершите текущую оплату или выберите «Другой способ» "
-                "у своей заявки."
-            ),
-            "code": "payment_in_progress",
-        })
+        raise ValidationError({"detail": in_progress_detail, "code": "payment_in_progress"})
+    return order
+
+
+@transaction.atomic
+def request_client_debt(order: Order, user) -> Order:
+    """Зафиксировать выбор «В долг» без создания денежной оплаты."""
+    order = _lock_shipped_order_for_debt(
+        order,
+        user,
+        in_progress_detail=(
+            "Сначала завершите текущую оплату или выберите «Другой способ» "
+            "у своей заявки."
+        ),
+    )
     order.payment_method = "debt"
     order.settlement_intent = "debt"
     order.debt_requested = True
     order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
     log_event("debt_override", "Клиент запросил долг", user=user, order=order,
               payload={"payment_method": "debt"})
+    return order
+
+
+@transaction.atomic
+def move_order_to_debt(order: Order, user) -> Order:
+    """Касса переводит отгруженный заказ из «Ждут оплаты» в долг клиента."""
+    order = _lock_shipped_order_for_debt(
+        order,
+        user,
+        in_progress_detail="По заказу есть незавершённая оплата — сначала подтвердите или отклоните её.",
+    )
+    if order.settlement_intent == "debt":
+        raise ValidationError({"detail": "Заказ уже в долге", "code": "already_debt"})
+    remaining = order.remaining_amount
+    if remaining <= 0:
+        raise ValidationError({"detail": "Заказ уже оплачен", "code": "nothing_to_pay"})
+    order.payment_method = "debt"
+    order.settlement_intent = "debt"
+    order.save(update_fields=["payment_method", "settlement_intent"])
+    log_event("debt_override", "Касса перевела заказ в долг", user=user, order=order,
+              payload={"payment_method": "debt", "amount": str(remaining),
+                       "currency": order.currency})
     return order
 
 

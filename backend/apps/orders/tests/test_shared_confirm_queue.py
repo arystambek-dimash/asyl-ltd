@@ -1,8 +1,9 @@
-"""«Заявки и оплаты» — общая очередь кассы.
+"""Общие очереди для сотрудника, закреплённого за отделом.
 
-Кассир, закреплённый за отделом, видит и разбирает заявки и оплаты всех
-отделов. Всё остальное (обычный список заказов, карточки подтверждённых
-заказов, журнал, возврат подтверждения, транзакции) остаётся в его отделе.
+Оплаты ручной очереди кассы видны всем отделам. Заявки всех отделов
+(«Заказы» → «Заявки») — только с правом orders.confirm_all. Всё остальное
+(обычный список заказов, карточки подтверждённых заказов, журнал, возврат
+подтверждения, транзакции) остаётся в его отделе.
 """
 
 from decimal import Decimal
@@ -29,7 +30,7 @@ def departments():
 def mill_cashier(user_with_perms, departments):
     user = user_with_perms(
         "mill-cashier",
-        codes=["orders.view", "orders.confirm", "payments.view", "payments.confirm"],
+        codes=["orders.view", "orders.confirm", "orders.confirm_all", "payments.view", "payments.confirm"],
     )
     user.employee.sales_department = departments[0]
     user.employee.save(update_fields=["sales_department"])
@@ -84,6 +85,25 @@ def test_queue_flag_needs_confirm_permission(auth_client, user_with_perms, depar
 
     assert _ids(api.get("/api/orders/?status_group=pending&confirm_queue=1")) == set()
     assert api.get(f"/api/orders/{request.pk}/").status_code == 404
+
+
+def test_foreign_requests_need_all_departments_permission(auth_client, user_with_perms, departments, city_client):
+    foreign = _order(city_client, status="pending")
+    unassigned = Order.objects.create(
+        client=Client.objects.create_with_user(first_name="Новый", phone="+7 (705) 565-65-66"),
+        status="pending",
+    )
+    confirmer = user_with_perms("mill-confirmer", codes=["orders.view", "orders.confirm", "payments.confirm"])
+    confirmer.employee.sales_department = departments[0]
+    confirmer.employee.save(update_fields=["sales_department"])
+    api = auth_client(confirmer)
+
+    # Без права — только заявки своего отдела и клиентов без отдела.
+    assert _ids(api.get("/api/orders/?status_group=pending&confirm_queue=1")) == {unassigned.pk}
+    assert api.get(f"/api/orders/{foreign.pk}/").status_code == 404
+    assert api.post(f"/api/orders/{foreign.pk}/reject/", {"reason": "нет"}, format="json").status_code == 404
+    foreign.refresh_from_db()
+    assert foreign.status == "pending"
 
 
 def test_cashier_confirms_foreign_request_into_client_department(auth_client, mill_cashier, city_client, departments):

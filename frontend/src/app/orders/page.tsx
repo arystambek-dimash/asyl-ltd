@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -28,6 +28,10 @@ import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/componen
 import { ArchiveDock } from "@/components/orders/archive-dock";
 import { OrderPurgeDialog } from "@/components/orders/order-purge-dialog";
 import { DepartmentManager } from "@/components/orders/department-manager";
+import { OrderRequestsSection } from "@/components/orders/order-requests";
+import { useOrderRequests } from "@/components/orders/use-order-requests";
+import { departmentScope } from "@/components/cashier/scope";
+import { Tabs } from "@/components/ui/tabs";
 import {
   ORDER_PUBLIC_STATUSES,
   ORDER_STATUS_LABELS,
@@ -305,12 +309,15 @@ function OrdersAnalytics({
   onSelect,
   orders,
   activeCount,
+  scopeName,
 }: {
   rows: DepartmentSummary[];
   active: string;
   onSelect: (code: string) => void;
   orders: Order[];
   activeCount: number;
+  /** Отдел сотрудника, закреплённого за отделом: сервер отдаёт карточку только его отдела. */
+  scopeName?: string;
 }) {
   const [view, setView] = useState<"departments" | "overview">("departments");
   const analyticsTabs = useRovingTabs({
@@ -391,7 +398,8 @@ function OrdersAnalytics({
                 </>
               ) : (
                 <>
-                  Все отделы · <strong className="text-[var(--foreground)] tabular-nums">{totalOrders}</strong> заказов
+                  {scopeName ? `Отдел ${scopeName}` : "Все отделы"} ·{" "}
+                  <strong className="text-[var(--foreground)] tabular-nums">{totalOrders}</strong> заказов
                 </>
               )}
             </p>
@@ -576,6 +584,9 @@ function OrdersPageInner() {
   const [sortKey, setSortKey] = useState("id");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [view, setView] = useState<"orders" | "archive">("orders");
+  const [tab, setTab] = useState<"orders" | "requests">(() =>
+    searchParams.get("tab") === "requests" ? "requests" : "orders",
+  );
   // Фильтры уходят на бэк: список, карточки и сумма считаются по выборке сервера.
   const ordersUrl = useMemo(() => {
     const params = new URLSearchParams();
@@ -610,6 +621,17 @@ function OrdersPageInner() {
   const canExport = can(me, "reports.export");
   const canRollback = can(me, "shipping.rollback");
   const canManageDepartments = can(me, "sys_permissions.manage");
+  // Заявки клиентов разбирает сотрудник с правом подтверждения; закреплённый за отделом видит свой отдел.
+  const canReviewOrders = can(me, "orders.confirm");
+  const { assigned } = departmentScope(me);
+  const activeTab = canReviewOrders && tab === "requests" ? "requests" : "orders";
+  const reloadAfterReview = useCallback(() => Promise.all([reload(), reloadSummary()]), [reload, reloadSummary]);
+  const requests = useOrderRequests(canReviewOrders && view === "orders", reloadAfterReview);
+  function chooseTab(key: string) {
+    const next = key === "requests" ? "requests" : "orders";
+    setTab(next);
+    router.replace(next === "requests" ? "/orders?tab=requests" : "/orders", { scroll: false });
+  }
   const showDept = (departments?.length ?? 0) > 1 || orders.some((order) => !order.department);
   const [open, setOpen] = useState(false);
   const [templateOrder, setTemplateOrder] = useState<Order | null>(null);
@@ -838,258 +860,287 @@ function OrdersPageInner() {
         />
       ) : (
         <>
-          <OrdersAnalytics
-            rows={departmentSummary ?? []}
-            active={dept}
-            onSelect={setDept}
-            orders={countable}
-            activeCount={activeCount}
-          />
-
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="relative max-w-md flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-              <Input
-                className="pl-9"
-                placeholder="Поиск по клиенту, номеру или #ID"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
+          {canReviewOrders && (
+            <Tabs
+              className="mb-4"
+              label="Заказы и заявки"
+              tabs={[
+                { key: "orders", label: "Все заказы" },
+                { key: "requests", label: "Заявки", count: requests.loading ? undefined : requests.count },
+              ]}
+              active={activeTab}
+              onChange={chooseTab}
+            />
+          )}
+          {activeTab === "requests" ? (
+            <OrderRequestsSection requests={requests} />
+          ) : (
+            <>
+              <OrdersAnalytics
+                rows={departmentSummary ?? []}
+                active={dept}
+                onSelect={setDept}
+                orders={countable}
+                activeCount={activeCount}
+                scopeName={assigned?.name}
               />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onDateFrom={setDateFrom} onDateTo={setDateTo} />
-              {(departments?.length ?? 0) > 0 && (
-                <FilterDropdown
-                  label="Отдел"
-                  active={dept}
-                  onChange={setDept}
-                  options={[
-                    { key: "all", label: "Все" },
-                    { key: "__unassigned", label: "Нет отдела" },
-                    ...(departments ?? []).map((department) => ({
-                      key: department.code,
-                      label: department.name,
-                    })),
-                  ]}
-                />
+
+              <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="relative max-w-md flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
+                  <Input
+                    className="pl-9"
+                    placeholder="Поиск по клиенту, номеру или #ID"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onDateFrom={setDateFrom} onDateTo={setDateTo} />
+                  {(departments?.length ?? 0) > 0 && !assigned && (
+                    <FilterDropdown
+                      label="Отдел"
+                      active={dept}
+                      onChange={setDept}
+                      options={[
+                        { key: "all", label: "Все" },
+                        { key: "__unassigned", label: "Нет отдела" },
+                        ...(departments ?? []).map((department) => ({
+                          key: department.code,
+                          label: department.name,
+                        })),
+                      ]}
+                    />
+                  )}
+                  <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
+                </div>
+              </div>
+
+              {error && (
+                <div className="mb-4">
+                  <ErrorAlert message={error} onRetry={reload} />
+                </div>
               )}
-              <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
-            </div>
-          </div>
+              {statusActionError && (
+                <div className="mb-4">
+                  <ErrorAlert message={statusActionError} />
+                </div>
+              )}
 
-          {error && (
-            <div className="mb-4">
-              <ErrorAlert message={error} onRetry={reload} />
-            </div>
-          )}
-          {statusActionError && (
-            <div className="mb-4">
-              <ErrorAlert message={statusActionError} />
-            </div>
-          )}
-
-          {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
-          <div className="flex flex-col gap-3 md:hidden">
-            {loading ? (
-              <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-            ) : sorted.length === 0 ? (
-              <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
-            ) : (
-              sorted.map((o) => (
-                <ActionCard
-                  key={o.id}
-                  primaryAction={{
-                    kind: "link",
-                    href: `/orders/${o.id}`,
-                    label: `Открыть заказ #${o.id}`,
-                  }}
-                  className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold">#{o.id}</span>
-                      {showDept && <DepartmentBadge order={o} />}
-                    </div>
-                    {canEdit && (o.status !== "shipped" || canRollback) ? (
-                      <div className="relative z-10">
-                        <OrderStatusSelect
-                          status={o.status}
-                          disabled={statusBusyId === o.id}
-                          onChange={(target) => chooseStatus(o, target)}
-                        />
-                      </div>
-                    ) : (
-                      <StatusBadge status={o.status} dot />
-                    )}
-                  </div>
-                  <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
-                  <div className="text-xs text-[var(--muted-foreground)]">Создан {formatDateTime(o.created_at)}</div>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div>
-                      <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
-                      <div className="font-semibold tabular-nums">
-                        {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
-                      <div className="tabular-nums">
-                        {formatMoney(o.paid_total)} {currencySymbol(o.currency)}
-                      </div>
-                    </div>
-                    {o.truck_number && (
-                      <div>
-                        <div className="text-[11px] text-[var(--muted-foreground)]">
-                          {o.transport_type === "train" ? "Вагон" : "Машина"}
+              {/* Мобильные карточки: таблица на телефоне нечитаемая. */}
+              <div className="flex flex-col gap-3 md:hidden">
+                {loading ? (
+                  <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+                ) : sorted.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
+                ) : (
+                  sorted.map((o) => (
+                    <ActionCard
+                      key={o.id}
+                      primaryAction={{
+                        kind: "link",
+                        href: `/orders/${o.id}`,
+                        label: `Открыть заказ #${o.id}`,
+                      }}
+                      className="flex cursor-pointer flex-col gap-2.5 rounded-xl border bg-[var(--card)] p-4 shadow-card"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold">#{o.id}</span>
+                          {showDept && <DepartmentBadge order={o} />}
                         </div>
-                        <div className="tabular-nums">{formatTransportNumber(o.truck_number, o.transport_type)}</div>
-                      </div>
-                    )}
-                    {o.arrival_date && (
-                      <div>
-                        <div className="text-[11px] text-[var(--muted-foreground)]">Прибытие</div>
-                        <div>{formatIsoDate(o.arrival_date)}</div>
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-between border-t pt-2">
-                    {o.status === "shipped" && o.payment_status ? (
-                      <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                        {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                      </Badge>
-                    ) : (
-                      <span />
-                    )}
-                    {(canEdit || canCorrectPrice) && (
-                      <div className="relative z-10">
-                        <ActionMenu items={rowActions(o)} />
-                      </div>
-                    )}
-                  </div>
-                </ActionCard>
-              ))
-            )}
-          </div>
-
-          <Card className="hidden md:block">
-            <CardContent className="pt-6">
-              {loading ? (
-                <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-              ) : (
-                <Table>
-                  <THead>
-                    <TR>
-                      <SortableHeader label="№" sortKey="id" activeKey={sortKey} dir={sortDir} onClick={toggleSort} />
-                      <SortableHeader
-                        label="Создан"
-                        sortKey="created"
-                        activeKey={sortKey}
-                        dir={sortDir}
-                        onClick={toggleSort}
-                      />
-                      {showDept && <TH>Отдел</TH>}
-                      <SortableHeader
-                        label="Клиент"
-                        sortKey="client"
-                        activeKey={sortKey}
-                        dir={sortDir}
-                        onClick={toggleSort}
-                      />
-                      <SortableHeader
-                        label="Сумма"
-                        sortKey="amount"
-                        activeKey={sortKey}
-                        dir={sortDir}
-                        onClick={toggleSort}
-                        align="right"
-                      />
-                      <SortableHeader
-                        label="Статус"
-                        sortKey="status"
-                        activeKey={sortKey}
-                        dir={sortDir}
-                        onClick={toggleSort}
-                      />
-                      {(canEdit || canCorrectPrice) && <TH></TH>}
-                    </TR>
-                  </THead>
-                  <TBody>
-                    {sorted.map((o) => (
-                      <TR key={o.id} className="cursor-pointer" onClick={() => router.push(`/orders/${o.id}`)}>
-                        <TD className="font-medium">
-                          <Link
-                            href={`/orders/${o.id}`}
-                            className="hover:underline"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            #{o.id}
-                          </Link>
-                        </TD>
-                        <TD className="whitespace-nowrap tabular-nums text-[var(--muted-foreground)]">
-                          {formatDateTime(o.created_at)}
-                        </TD>
-                        {showDept && (
-                          <TD>
-                            <DepartmentBadge order={o} />
-                          </TD>
-                        )}
-                        <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                        <TD className="text-right tabular-nums">
-                          {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
-                        </TD>
-                        <TD>
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {canEdit && (o.status !== "shipped" || canRollback) ? (
-                              <OrderStatusSelect
-                                status={o.status}
-                                disabled={statusBusyId === o.id}
-                                onChange={(target) => chooseStatus(o, target)}
-                              />
-                            ) : (
-                              <StatusBadge status={o.status} dot />
-                            )}
-                            {o.payment_status && (
-                              <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                                {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                              </Badge>
-                            )}
+                        {canEdit && (o.status !== "shipped" || canRollback) ? (
+                          <div className="relative z-10">
+                            <OrderStatusSelect
+                              status={o.status}
+                              disabled={statusBusyId === o.id}
+                              onChange={(target) => chooseStatus(o, target)}
+                            />
                           </div>
-                        </TD>
-                        {(canEdit || canCorrectPrice) && (
-                          <TD onClick={(e) => e.stopPropagation()}>
-                            <div className="flex justify-end">
-                              <ActionMenu items={rowActions(o)} />
-                            </div>
-                          </TD>
+                        ) : (
+                          <StatusBadge status={o.status} dot />
                         )}
-                      </TR>
-                    ))}
-                    {sorted.length === 0 && (
-                      <TR>
-                        <TD
-                          colSpan={(showDept ? 6 : 5) + (canEdit ? 1 : 0)}
-                          className="py-4 text-center text-[var(--muted-foreground)]"
-                        >
-                          Заказов пока нет.
-                        </TD>
-                      </TR>
-                    )}
-                  </TBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-          <LoadMore
-            shown={list.length}
-            total={paged.count}
-            hasMore={paged.hasMore}
-            loading={paged.loading || paged.loadingMore}
-            onClick={paged.loadMore}
-          />
+                      </div>
+                      <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
+                      <div className="text-xs text-[var(--muted-foreground)]">
+                        Создан {formatDateTime(o.created_at)}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
+                          <div className="font-semibold tabular-nums">
+                            {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
+                          <div className="tabular-nums">
+                            {formatMoney(o.paid_total)} {currencySymbol(o.currency)}
+                          </div>
+                        </div>
+                        {o.truck_number && (
+                          <div>
+                            <div className="text-[11px] text-[var(--muted-foreground)]">
+                              {o.transport_type === "train" ? "Вагон" : "Машина"}
+                            </div>
+                            <div className="tabular-nums">
+                              {formatTransportNumber(o.truck_number, o.transport_type)}
+                            </div>
+                          </div>
+                        )}
+                        {o.arrival_date && (
+                          <div>
+                            <div className="text-[11px] text-[var(--muted-foreground)]">Прибытие</div>
+                            <div>{formatIsoDate(o.arrival_date)}</div>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between border-t pt-2">
+                        {o.status === "shipped" && o.payment_status ? (
+                          <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
+                            {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
+                          </Badge>
+                        ) : (
+                          <span />
+                        )}
+                        {(canEdit || canCorrectPrice) && (
+                          <div className="relative z-10">
+                            <ActionMenu items={rowActions(o)} />
+                          </div>
+                        )}
+                      </div>
+                    </ActionCard>
+                  ))
+                )}
+              </div>
+
+              <Card className="hidden md:block">
+                <CardContent className="pt-6">
+                  {loading ? (
+                    <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
+                  ) : (
+                    <Table>
+                      <THead>
+                        <TR>
+                          <SortableHeader
+                            label="№"
+                            sortKey="id"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onClick={toggleSort}
+                          />
+                          <SortableHeader
+                            label="Создан"
+                            sortKey="created"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onClick={toggleSort}
+                          />
+                          {showDept && <TH>Отдел</TH>}
+                          <SortableHeader
+                            label="Клиент"
+                            sortKey="client"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onClick={toggleSort}
+                          />
+                          <SortableHeader
+                            label="Сумма"
+                            sortKey="amount"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onClick={toggleSort}
+                            align="right"
+                          />
+                          <SortableHeader
+                            label="Статус"
+                            sortKey="status"
+                            activeKey={sortKey}
+                            dir={sortDir}
+                            onClick={toggleSort}
+                          />
+                          {(canEdit || canCorrectPrice) && <TH></TH>}
+                        </TR>
+                      </THead>
+                      <TBody>
+                        {sorted.map((o) => (
+                          <TR key={o.id} className="cursor-pointer" onClick={() => router.push(`/orders/${o.id}`)}>
+                            <TD className="font-medium">
+                              <Link
+                                href={`/orders/${o.id}`}
+                                className="hover:underline"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                #{o.id}
+                              </Link>
+                            </TD>
+                            <TD className="whitespace-nowrap tabular-nums text-[var(--muted-foreground)]">
+                              {formatDateTime(o.created_at)}
+                            </TD>
+                            {showDept && (
+                              <TD>
+                                <DepartmentBadge order={o} />
+                              </TD>
+                            )}
+                            <TD>{o.client_name || `Клиент #${o.client}`}</TD>
+                            <TD className="text-right tabular-nums">
+                              {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
+                            </TD>
+                            <TD>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {canEdit && (o.status !== "shipped" || canRollback) ? (
+                                  <OrderStatusSelect
+                                    status={o.status}
+                                    disabled={statusBusyId === o.id}
+                                    onChange={(target) => chooseStatus(o, target)}
+                                  />
+                                ) : (
+                                  <StatusBadge status={o.status} dot />
+                                )}
+                                {o.payment_status && (
+                                  <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
+                                    {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
+                                  </Badge>
+                                )}
+                              </div>
+                            </TD>
+                            {(canEdit || canCorrectPrice) && (
+                              <TD onClick={(e) => e.stopPropagation()}>
+                                <div className="flex justify-end">
+                                  <ActionMenu items={rowActions(o)} />
+                                </div>
+                              </TD>
+                            )}
+                          </TR>
+                        ))}
+                        {sorted.length === 0 && (
+                          <TR>
+                            <TD
+                              colSpan={(showDept ? 6 : 5) + (canEdit ? 1 : 0)}
+                              className="py-4 text-center text-[var(--muted-foreground)]"
+                            >
+                              Заказов пока нет.
+                            </TD>
+                          </TR>
+                        )}
+                      </TBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
+              <LoadMore
+                shown={list.length}
+                total={paged.count}
+                hasMore={paged.hasMore}
+                loading={paged.loading || paged.loadingMore}
+                onClick={paged.loadMore}
+              />
+            </>
+          )}
         </>
       )}
 
-      {canEdit && view === "orders" && (
+      {canEdit && view === "orders" && activeTab === "orders" && (
         <ArchiveDock
           trashed={trashPreview?.results ?? []}
           count={trashPreview?.count ?? 0}

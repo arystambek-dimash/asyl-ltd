@@ -1,22 +1,22 @@
 "use client";
 import { OrderConfirmation } from "@/components/order-confirmation";
 import { OrderRejectionDialog } from "@/components/order-rejection-dialog";
+import { ActionError } from "@/components/cashier/action-error";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import type { Department, Order } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import { ActionError } from "./action-error";
-import type { CashierQueue } from "./use-cashier-queue";
+import type { OrderRequests } from "./use-order-requests";
 
 /** Подтверждение и отклонение заявки — одни и те же окна на десктопе и телефоне. */
 export function OrderReviewDialogs({
-  q,
+  requests,
   confirming,
   rejecting,
   onConfirmClose,
   onRejectClose,
 }: {
-  q: CashierQueue;
+  requests: OrderRequests;
   confirming: Order | null;
   rejecting: Order | null;
   onConfirmClose: () => void;
@@ -36,20 +36,20 @@ export function OrderReviewDialogs({
           onClose={onRejectClose}
           onDone={() => {
             onRejectClose();
-            void q.reload();
+            void requests.reload();
           }}
         />
       )}
       <Modal
         open={!!confirming}
         onClose={() => {
-          if (!q.busy) onConfirmClose();
+          if (!requests.busy) onConfirmClose();
         }}
         eyebrow="Подтверждение"
         title={`Заказ #${confirming?.id ?? ""}`}
         mobileFullscreen
       >
-        <ActionError message={q.error} />
+        <ActionError message={requests.actionError} />
         {departmentsError ? (
           <ErrorAlert message={departmentsError} onRetry={retryDepartments} />
         ) : (
@@ -58,9 +58,9 @@ export function OrderReviewDialogs({
               key={confirming.id}
               order={confirming}
               departments={departments ?? []}
-              busy={q.busy}
+              busy={requests.busy}
               onConfirm={async (payload) => {
-                if (await q.confirmOrder(confirming, payload)) onConfirmClose();
+                if (await requests.confirm(confirming, payload)) onConfirmClose();
               }}
             />
           )

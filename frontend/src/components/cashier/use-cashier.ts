@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CashierLogItem, ClientDebt, Department, Me, Order, Store } from "@/lib/types";
+import type { CashierLogItem, ClientDebt, Department, Me, Store } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -24,8 +24,15 @@ import {
   scopeLabel,
   storeDepartment,
 } from "./scope";
-import { debtTotals, incomeTotals, queueTotals, type IncomeSummary, type QueueTotal } from "./totals";
-import { PENDING_REQUESTS_PARAMS, useCashierQueue } from "./use-cashier-queue";
+import {
+  debtTotals,
+  incomeTotals,
+  queueTotals,
+  type AwaitingTotal,
+  type IncomeSummary,
+  type QueueTotal,
+} from "./totals";
+import { useCashierQueue } from "./use-cashier-queue";
 import type { CashView, CashierPerms } from "./view";
 
 /** Фильтры экрана с отделом кассы; null — отдел не навязывается. */
@@ -39,8 +46,8 @@ function withDepartment(filters: CashFilters, department: string | null): CashFi
  * (телефон) — те же три запроса без фильтров, сводка строго за сегодня;
  * отчёт и долги на телефоне — свои фильтры; очередь и журнал — одинаково везде.
  * POS — список должников без фильтров для поиска клиента.
- * На телефоне отдел для всех экранов задаёт переключатель в шапке, кроме очереди
- * «Заявки и оплаты»: она общая для всех отделов (см. queueDepartment).
+ * На телефоне отдел для всех экранов задаёт переключатель в шапке, кроме оплат
+ * к подтверждению: эта очередь общая для всех отделов (см. queueDepartment).
  */
 export function useCashier({
   view,
@@ -94,7 +101,7 @@ export function useCashier({
   // Касса на телефоне работает по одному отделу: закреплённому или выбранному в шапке.
   const department = assigned ? assigned.code : chosen;
   const scopeDepartment = mobile ? department : null;
-  // Очередь «Заявки и оплаты» общая: закреплённый отдел её не сужает.
+  // Оплаты к подтверждению — общая очередь: закреплённый отдел её не сужает.
   const queueScopeDepartment = mobile ? queueDepartment(departmentAccess, chosen) : null;
   // Экранные фильтры с отделом из шапки; на десктопе отдел остаётся в панели фильтров.
   const scoped = useMemo<CashFiltersByScreen>(
@@ -106,6 +113,11 @@ export function useCashier({
       journal: withDepartment(filtersByScreen.journal, scopeDepartment),
     }),
     [filtersByScreen, queueScopeDepartment, scopeDepartment],
+  );
+  // «Ждут оплаты» — заказы отдела кассы, как долги: фильтры экрана «Оплаты» с отделом из шапки.
+  const awaitingFilters = useMemo(
+    () => withDepartment(filtersByScreen.confirm, scopeDepartment),
+    [filtersByScreen.confirm, scopeDepartment],
   );
   const scopedEmpty = useMemo(() => withDepartment(EMPTY_CASH_FILTERS, scopeDepartment), [scopeDepartment]);
   const queueEmpty = useMemo(() => withDepartment(EMPTY_CASH_FILTERS, queueScopeDepartment), [queueScopeDepartment]);
@@ -160,12 +172,11 @@ export function useCashier({
   const summary = useApi<IncomeSummary>(summaryUrl);
   const debts = useApi<ClientDebt[]>(debtsUrl);
   const queueSummary = useApi<QueueTotal[]>(queueSummaryUrl);
-  // Главной нужно только число заявок (по тому же отбору, что и очередь); сами заявки грузит экран очереди.
-  const pendingCount = usePagedApi<Order>(
-    homeActive && perms.canReviewOrders
-      ? apiUrl("/orders/", { ...scopeParams(queueEmpty), ...PENDING_REQUESTS_PARAMS })
+  // Главной нужны только итоги заказов, которые ждут оплаты; сами заказы грузит экран «Оплаты».
+  const awaitingSummary = useApi<AwaitingTotal[]>(
+    homeActive && perms.canPayments
+      ? apiUrl("/orders/awaiting-payment/", { summary: "1", ...scopeParams(scopedEmpty) })
       : null,
-    1,
   );
   const journalFilters = scoped.journal;
   const journalLog = usePagedApi<CashierLogItem>(
@@ -179,22 +190,22 @@ export function useCashier({
   const { reload: reloadSummary } = summary;
   const { reload: reloadDebts } = debts;
   const { reload: reloadQueueSummary } = queueSummary;
-  const { reload: reloadPendingCount } = pendingCount;
+  const { reload: reloadAwaitingSummary } = awaitingSummary;
   const { reload: reloadJournal } = journalLog;
   const reloadOverview = useCallback(async () => {
-    // На десктопе pendingCount — хук с null-URL: перезагружать его незачем.
+    // На десктопе итоги «Ждут оплаты» — хук с null-URL: перезагружать его незачем.
     const tasks = [reloadSummary(), reloadDebts(), reloadQueueSummary()];
-    if (homeActive) tasks.push(reloadPendingCount());
+    if (homeActive) tasks.push(reloadAwaitingSummary());
     await Promise.all(tasks);
-  }, [homeActive, reloadDebts, reloadPendingCount, reloadQueueSummary, reloadSummary]);
+  }, [homeActive, reloadAwaitingSummary, reloadDebts, reloadQueueSummary, reloadSummary]);
   const paymentChanged = useCallback(async () => {
     await Promise.all([reloadOverview(), reloadJournal()]);
   }, [reloadJournal, reloadOverview]);
 
   const queue = useCashierQueue(
     perms.canPayments && view === "confirm",
-    perms.canReviewOrders,
     scoped.confirm,
+    awaitingFilters,
     paymentChanged,
   );
 
@@ -208,14 +219,15 @@ export function useCashier({
     perms.canPayments &&
       view === "confirm" &&
       !queue.busy &&
-      !queue.pendingPage.loadingMore &&
+      !queue.awaitingPage.loadingMore &&
       !queue.queuePage.loadingMore &&
-      queue.pendingOrders.length <= 50 &&
+      queue.awaiting.length <= 50 &&
       queue.toReview.length <= 50,
   );
 
   const debtRows = debts.data ?? [];
   return {
+    me,
     perms,
     view,
     mobile,
@@ -227,7 +239,7 @@ export function useCashier({
     summary,
     debts,
     queueSummary,
-    pendingCount,
+    awaitingSummary,
     journalLog,
     queue,
     stores: stores ?? [],
@@ -240,13 +252,15 @@ export function useCashier({
       setDepartment,
       cashier: cashierName(me),
       ...scopeLabel(department, departments ?? [], assigned),
-      /** Подпись очереди «Заявки и оплаты»: у закреплённого кассира — все отделы. */
+      /** Подпись оплат к подтверждению: у закреплённого кассира — все отделы. */
       queueName: scopeLabel(queueScopeDepartment ?? ALL_DEPARTMENTS, departments ?? [], null).name,
     },
     income: incomeTotals(summary.data),
     incomeReady: summary.data !== null && !summary.error,
     queueTotals: queueTotals(queueSummary.data ?? []),
     queueReady: queueSummary.data !== null && !queueSummary.error,
+    awaitingTotals: queueTotals(awaitingSummary.data ?? []),
+    awaitingReady: awaitingSummary.data !== null && !awaitingSummary.error,
     debtRows,
     debtTotals: debtTotals(debtRows),
     debtsReady: debts.data !== null && !debts.error,

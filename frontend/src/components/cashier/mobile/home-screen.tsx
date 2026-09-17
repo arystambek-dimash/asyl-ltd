@@ -10,7 +10,7 @@ import type { MobileMenuKey } from "../view";
 export type HomeItemKey = MobileMenuKey;
 
 const ITEMS: Record<HomeItemKey, { title: string; icon: React.ElementType; hint: string }> = {
-  confirm: { title: "Заявки и оплаты", icon: HandCoins, hint: "Очередь подтверждения" },
+  confirm: { title: "Оплаты", icon: HandCoins, hint: "Подтверждение и приём оплат" },
   debts: { title: "Долги клиентов", icon: Users, hint: "Остатки по клиентам" },
   transactions: { title: "Транзакции", icon: Receipt, hint: "Все платежи, возвраты и чеки" },
   journal: { title: "Журнал", icon: History, hint: "Действия по оплатам" },
@@ -20,14 +20,16 @@ const ITEMS: Record<HomeItemKey, { title: string; icon: React.ElementType; hint:
 function confirmSubtitle(model: CashierModel): string {
   if (!model.queueReady) return ITEMS.confirm.hint;
   const parts: string[] = [];
-  const pending = model.pendingCount;
-  if (model.perms.canReviewOrders && !pending.error && pending.count > 0) {
-    parts.push(`${pending.count} ${pluralRu(pending.count, ["заявка", "заявки", "заявок"])}`);
-  }
   const { count, total, currency } = model.queueTotals;
   if (count > 0) {
     parts.push(
       `${count} ${pluralRu(count, ["оплата", "оплаты", "оплат"])} на ${formatCompactCurrency(total, currency)}`,
+    );
+  }
+  const awaiting = model.awaitingTotals;
+  if (model.awaitingReady && awaiting.count > 0) {
+    parts.push(
+      `${awaiting.count} ${pluralRu(awaiting.count, ["ждёт", "ждут", "ждут"])} оплаты на ${formatCompactCurrency(awaiting.total, awaiting.currency)}`,
     );
   }
   return parts.length ? parts.join(" · ") : "Очередь пуста";

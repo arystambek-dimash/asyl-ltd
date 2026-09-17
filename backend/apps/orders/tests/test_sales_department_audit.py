@@ -196,7 +196,8 @@ def test_department_staff_reject_foreign_requests_but_reports_stay_scoped(
 ):
     client, dept, _ = sale
     user = user_with_perms(
-        "foreign-department", codes=["orders.view", "orders.confirm", "reports.view"]
+        "foreign-department",
+        codes=["orders.view", "orders.confirm", "orders.confirm_all", "reports.view"],
     )
     user.employee.sales_department = Department.objects.create(
         code="foreign", name="Другой отдел"
@@ -204,7 +205,7 @@ def test_department_staff_reject_foreign_requests_but_reports_stay_scoped(
     user.employee.save(update_fields=["sales_department"])
     order = Order.objects.create(client=client, department=dept.code, status="pending")
     api = auth_client(user)
-    # Заявки — общая очередь кассы: отклоняет сотрудник любого отдела.
+    # Заявки всех отделов (orders.confirm_all): отклоняет сотрудник другого отдела.
     assert (
         api.post(
             f"/api/orders/{order.pk}/reject/", {"reason": "Нет товара"}

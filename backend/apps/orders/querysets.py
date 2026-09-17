@@ -89,6 +89,21 @@ def with_order_amounts(
     return annotate(amount_remaining=F("amount_total") - F("amount_paid"))
 
 
+def awaiting_payment_orders(queryset: QuerySet[Order]) -> QuerySet[Order]:
+    """«Ждут оплаты»: отгруженные заказы с остатком, не ушедшие в долг.
+
+    Заказ из кабинета клиента, где способ оплаты не выбран (``pending``) или
+    выбранная оплата не дошла (``instant``), иначе не виден кассе нигде:
+    «Долги клиентов» берут только ``settlement_intent="debt"``.
+    """
+    return with_order_amounts(
+        queryset.filter(status="shipped")
+        .exclude(settlement_intent="debt")
+        .exclude(payment_status="settled"),
+        select=False,
+    ).filter(amount_remaining__gt=0)
+
+
 def order_remaining_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
     """Остаток по каждому заказу выборки за два группирующих запроса.
 

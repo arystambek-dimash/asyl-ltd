@@ -1,44 +1,39 @@
 "use client";
 import { useCallback, useRef, useState } from "react";
-import type { OrderConfirmationData } from "@/components/order-confirmation";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import type { CashierLogItem, Order, PaymentQueueItem } from "@/lib/types";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { apiUrl, filtersAreValid, scopeParams, type CashFilters } from "./filters";
 
-/**
- * Заявки очереди кассы: `confirm_queue=1` открывает заявки всех отделов (очередь общая) и клиентов без отдела —
- * при выбранном отделе касса видит их, чтобы забрать клиента к себе.
- */
-export const PENDING_REQUESTS_PARAMS = { status_group: "pending", confirm_queue: "1" };
-
-/* ── Очередь кассира: данные и действия, общие для вкладок ─────────────── */
+/* ── «Оплаты» кассы: данные и действия, общие для вкладок ─────────────── */
 // Журнал живёт на своей вкладке со своими фильтрами и ленивой подгрузкой —
-// хук очереди отдаёт только заявки и оплаты, а об изменениях сообщает
-// наружу, чтобы журнал перезагрузил себя сам.
+// хук отдаёт оплаты к подтверждению и заказы, которые ждут оплаты, а об
+// изменениях сообщает наружу, чтобы журнал перезагрузил себя сам.
+// Оплаты к подтверждению — общая очередь всех отделов; «Ждут оплаты» — отдел кассы.
 export function useCashierQueue(
   enabled: boolean,
-  canReviewOrders: boolean,
   queueFilters: CashFilters,
+  awaitingFilters: CashFilters,
   onChanged?: () => Promise<unknown>,
 ) {
   const queueActive = enabled && filtersAreValid(queueFilters);
-  const queueParams = scopeParams(queueFilters);
-  // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
-  const pendingPage = usePagedApi<Order>(
-    queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, ...PENDING_REQUESTS_PARAMS }) : null,
+  const awaitingActive = enabled && filtersAreValid(awaitingFilters);
+  const queuePage = usePagedApi<PaymentQueueItem>(
+    queueActive ? apiUrl("/orders/payments-queue/", scopeParams(queueFilters)) : null,
   );
-  const queuePage = usePagedApi<PaymentQueueItem>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
-  const { reload: reloadPending } = pendingPage;
+  const awaitingPage = usePagedApi<Order>(
+    awaitingActive ? apiUrl("/orders/awaiting-payment/", scopeParams(awaitingFilters)) : null,
+  );
   const { reload: reloadQueue } = queuePage;
+  const { reload: reloadAwaiting } = awaitingPage;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const loadError = pendingPage.error || queuePage.error;
+  const loadError = queuePage.error || awaitingPage.error;
 
   const refresh = useCallback(async () => {
-    await Promise.all([reloadPending(), reloadQueue()]);
-  }, [reloadPending, reloadQueue]);
+    await Promise.all([reloadQueue(), reloadAwaiting()]);
+  }, [reloadAwaiting, reloadQueue]);
   async function reloadAll() {
     await Promise.all([refresh(), onChanged?.()]);
   }
@@ -66,24 +61,23 @@ export function useCashierQueue(
   }
 
   return {
-    loading: pendingPage.loading || queuePage.loading,
+    loading: queuePage.loading || awaitingPage.loading,
     refresh,
-    pendingOrders: pendingPage.items,
     toReview: queuePage.items,
-    pendingPage,
+    awaiting: awaitingPage.items,
     queuePage,
+    awaitingPage,
     busy,
     error,
     loadError,
     reload: reloadAll,
-    confirmOrder: (o: Order, payload: OrderConfirmationData) =>
-      act(() => api.post(`/orders/${o.id}/confirm/`, payload), "Заказ подтверждён"),
     confirmPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`), "Оплата подтверждена"),
     receivePayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`), "Поступление подтверждено"),
     rejectPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`), "Оплата отклонена"),
+    moveToDebt: (order: Order) => act(() => api.post(`/orders/${order.id}/to-debt/`), "Заказ переведён в долг"),
     reopenPayment: (event: CashierLogItem) => {
       const paymentId = event.payload.payment_id;
       if (!paymentId) return;

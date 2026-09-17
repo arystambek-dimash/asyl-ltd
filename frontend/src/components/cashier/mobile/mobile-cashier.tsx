@@ -29,7 +29,7 @@ export const SCREEN_TITLES: Record<Exclude<CashView, "pos" | "remote">, string> 
   overview: "Касса",
   report: "Отчёт по поступлениям",
   debts: "Долги клиентов",
-  confirm: "Заявки и оплаты",
+  confirm: "Оплаты",
   journal: "Журнал",
   transactions: "Транзакции",
 };

@@ -9,6 +9,7 @@ from apps.clients.services import client_history
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem, Payment
 from apps.sales.models import Department
+from apps.sys_permissions.models import Permission
 from apps.warehouse.models import StockItem
 
 pytestmark = pytest.mark.django_db
@@ -107,11 +108,17 @@ def test_review_is_idempotent_scoped_and_separates_queues(
     # Заявка клиента без отдела — общая очередь любого отдела.
     assert api.get("/api/orders/workflow-summary/").data["review"] == 1
     assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
-    # Клиента забрал другой отдел — заявка уходит из сводки отдела, но остаётся
-    # в общей очереди кассы: взять её на рассмотрение может любой отдел.
+    # Клиента забрал другой отдел — заявка уходит из сводки отдела; взять её на
+    # рассмотрение может только сотрудник с правом на заявки всех отделов.
     other = Department.objects.create(code="other", name="Другой отдел")
     Client.objects.filter(pk=order.client_id).update(department=other)
     assert api.get("/api/orders/workflow-summary/").data["all"] == 0
+    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 404
+    confirm_all, _ = Permission.objects.get_or_create(
+        code="orders.confirm_all",
+        defaults={"section": "orders", "action": "confirm_all", "label": "orders.confirm_all"},
+    )
+    manager.employee.permissions.add(confirm_all)
     assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
 
 

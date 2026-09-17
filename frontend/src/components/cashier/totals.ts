@@ -5,6 +5,8 @@ import { sumDebtByCurrency, sumMoneyByCurrency } from "@/lib/utils";
 export type IncomeSummary = Pick<ReportSummary, "income" | "departments" | "from" | "to">;
 /** Строка `/orders/payments-queue/?summary=1`: сумма и число оплат на валюту+способ. */
 export type QueueTotal = Pick<PaymentQueueItem, "amount" | "currency" | "method"> & { count?: number };
+/** Строка `/orders/awaiting-payment/?summary=1`: остаток и число заказов, которые ждут оплаты, на валюту. */
+export type AwaitingTotal = Pick<PaymentQueueItem, "amount" | "currency"> & { count: number };
 
 export interface IncomeTotals {
   currency: string;
@@ -48,14 +50,14 @@ export interface QueueTotals {
   other: [string, number][];
 }
 
-export function queueTotals(rows: readonly QueueTotal[]): QueueTotals {
+export function queueTotals(rows: readonly (QueueTotal | AwaitingTotal)[]): QueueTotals {
   const byCurrency = sumMoneyByCurrency(
     rows,
     (row) => row.amount,
     (row) => row.currency,
   );
   const cashByCurrency = sumMoneyByCurrency(
-    rows.filter((row) => row.method === "cash"),
+    rows.filter((row) => "method" in row && row.method === "cash"),
     (row) => row.amount,
     (row) => row.currency,
   );

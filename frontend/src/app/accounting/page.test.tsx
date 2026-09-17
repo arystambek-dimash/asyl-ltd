@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
@@ -78,7 +78,7 @@ beforeEach(() => {
       if (url.searchParams.has("page")) return { data: { results: rows, count: rows.length, next: null } };
       return { data: rows };
     }
-    if (url.pathname === "/orders/") return { data: { results: [], count: 0, next: null } };
+    if (url.pathname === "/orders/awaiting-payment/") return { data: { results: [], count: 0, next: null } };
     if (url.pathname === "/clients/debts/")
       return {
         data: mocks.paid
@@ -123,7 +123,7 @@ it("confirmation refreshes income, debt and the overview queue when returning to
   const user = userEvent.setup();
   render(<CashierPage />);
   await waitFor(() => expect(card("Дебиторка").getByText(/100/)).toBeInTheDocument());
-  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
   await user.click(await screen.findByRole("button", { name: "Подтвердить получение" }));
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/1/payments/1/confirm/"));
   await user.click(screen.getByRole("tab", { name: "Общее" }));
@@ -156,13 +156,13 @@ it("loads only overview totals initially and fetches each confirmation page once
   expect(urls().filter((url) => url.startsWith("/orders/payments-queue/"))).toEqual([
     "/orders/payments-queue/?summary=1",
   ]);
-  expect(urls().some((url) => url.startsWith("/orders/?"))).toBe(false);
-  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  expect(urls().some((url) => url.startsWith("/orders/awaiting-payment/"))).toBe(false);
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
   await screen.findByRole("button", { name: "Подтвердить получение" });
   expect(urls().filter((url) => url === "/orders/payments-queue/?page=1&page_size=50")).toHaveLength(1);
-  expect(
-    urls().filter((url) => url === "/orders/?status_group=pending&confirm_queue=1&page=1&page_size=50"),
-  ).toHaveLength(1);
+  expect(urls().filter((url) => url === "/orders/awaiting-payment/?page=1&page_size=50")).toHaveLength(1);
+  // Заявки на заказ переехали в «Заказы».
+  expect(urls().some((url) => url.startsWith("/orders/?"))).toBe(false);
 });
 
 it("gives a cashier locked to a department the queue of every department and links only own orders", async () => {
@@ -183,71 +183,75 @@ it("gives a cashier locked to a department the queue of every department and lin
     return baseGet(raw);
   });
   render(<CashierPage />);
-  await user.click(await screen.findByRole("tab", { name: /Заявки и оплаты/ }));
+  await user.click(await screen.findByRole("tab", { name: /^Оплаты/ }));
   expect(await screen.findByRole("link", { name: "Заказ #11" })).toBeInTheDocument();
   const urls = mocks.get.mock.calls.map(([url]) => String(url));
   expect(urls).toContain("/orders/payments-queue/?page=1&page_size=50");
-  expect(urls).toContain("/orders/?status_group=pending&confirm_queue=1&page=1&page_size=50");
+  // «Ждут оплаты» сервер сам режет по отделу кассира.
+  expect(urls).toContain("/orders/awaiting-payment/?page=1&page_size=50");
   // Бейдж отдела показывает, чья оплата; карточку заказа другого отдела касса не открывает.
   expect(screen.getByText("Нью-Сити")).toBeInTheDocument();
   expect(screen.getByText("Заказ #12")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Заказ #12" })).not.toBeInTheDocument();
 });
 
-it("keeps entered confirmation data when a background refresh removes the row from the page", async () => {
+it("takes payment for a shipped order or moves it to debt from «Ждут оплаты»", async () => {
   const user = userEvent.setup();
   const baseGet = mocks.get.getMockImplementation()!;
-  let includeRequest = true;
   mocks.get.mockImplementation(async (raw: string) => {
-    const path = new URL(raw, "http://localhost").pathname;
-    if (path === "/orders/")
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/awaiting-payment/")
       return {
         data: {
-          results: includeRequest
-            ? [
-                {
-                  id: 621,
-                  department: "",
-                  department_name: "Мельница",
-                  client_name: "Клиент",
-                  status: "pending",
-                  currency: "KZT",
-                  total_amount: "0",
-                  items: [{ id: 7, product: 1, quantity: 2, product_label: "Мука" }],
-                },
-              ]
-            : [],
-          count: includeRequest ? 1 : 0,
+          results: [
+            {
+              id: 632,
+              client_name: "Покупатель",
+              status: "shipped",
+              currency: "KZT",
+              department: "field",
+              department_name: "Нью-Сити",
+              total_amount: "300",
+              paid_total: "100",
+              remaining_amount: "200",
+              settlement_intent: "instant",
+              pending_payments: [],
+              items: [],
+            },
+          ],
+          count: 1,
           next: null,
         },
       };
-    if (path === "/departments/") return { data: [{ id: 1, code: "main", name: "Мельница", is_active: true }] };
     return baseGet(raw);
   });
   render(<CashierPage />);
-  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
-  const confirm = await screen.findByRole("button", { name: "Проверить и подтвердить" });
-  expect(screen.getAllByText("Ждёт отдела").length).toBeGreaterThan(0);
-  await user.click(confirm);
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Отдел продаж" }), "main");
-  await user.type(screen.getByRole("spinbutton", { name: "Цена: Мука" }), "1234");
-  includeRequest = false;
-  await act(async () => {
-    await mocks.poll();
-  });
-  expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toHaveValue("main");
-  expect(screen.getByRole("spinbutton", { name: "Цена: Мука" })).toHaveValue(1234);
-  await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
-  // Клиент без отдела: касса сперва подтверждает, что закрепляет его за отделом.
-  await user.click(screen.getByRole("button", { name: "Да, закрепить и подтвердить" }));
-  await waitFor(() => expect(screen.queryByRole("combobox", { name: "Отдел продаж" })).not.toBeInTheDocument());
-  expect(mocks.post).toHaveBeenCalledWith("/orders/621/confirm/", { department: "main", prices: { "7": "1234" } });
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
+  expect(await screen.findByRole("link", { name: "Заказ #632" })).toBeInTheDocument();
+  expect(screen.getByText("Оплата не завершена")).toBeInTheDocument();
+  expect(screen.getByText(/оплачено 100 ₸ из 300 ₸/)).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+  expect(await screen.findByLabelText(/Сумма/)).toHaveValue(200);
+  await user.click(screen.getByRole("button", { name: "Принять" }));
+  await waitFor(() =>
+    expect(mocks.post).toHaveBeenCalledWith("/orders/632/payments/", {
+      amount: "200",
+      method: "cash",
+      stage: "received",
+    }),
+  );
+
+  await user.click(screen.getByRole("button", { name: "В долг" }));
+  const dialog = await screen.findByRole("dialog", { name: "Перевести заказ #632 в долг?" });
+  await user.click(within(dialog).getByRole("button", { name: "В долг" }));
+  await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/632/to-debt/"));
 });
 
 it("desktop tab click mirrors the view into the URL and deep links open the tab", async () => {
   const user = userEvent.setup();
   render(<CashierPage />);
-  await user.click(screen.getByRole("tab", { name: /Заявки и оплаты/ }));
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
   expect(routerCalls.replace).toContain("/accounting?view=confirm");
 
   resetNavigation("/accounting?view=journal");

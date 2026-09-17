@@ -18,13 +18,13 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { withBack } from "@/lib/navigation";
-import type { CashierLogItem, ClientDebt, Order } from "@/lib/types";
-import { cn, formatCurrency, formatDateTime, todayLocalIsoDate } from "@/lib/utils";
+import type { CashierLogItem, ClientDebt, Me } from "@/lib/types";
+import { formatCurrency, formatDateTime, todayLocalIsoDate } from "@/lib/utils";
 import { ActionError } from "./action-error";
 import { CashFiltersPanel } from "./cash-filters-panel";
 import { debtPaymentState, matchesDebtQuery } from "./debt-state";
-import { DepartmentBadge, OrderDepartmentBadge } from "./department-badge";
-import { OrderReviewDialogs } from "./order-review-dialogs";
+import { AwaitingPaymentRow } from "./awaiting-payment-row";
+import { DepartmentBadge } from "./department-badge";
 import { RestorePaymentDialog } from "./restore-payment-dialog";
 import { canOpenQueueOrder, type DepartmentScope } from "./scope";
 import type { CashierModel } from "./use-cashier";
@@ -36,85 +36,52 @@ const TransactionsSection = dynamic(() =>
   import("@/components/transactions-section").then((m) => m.TransactionsSection),
 );
 
-/* ── Вкладка «Подтверждение»: заявки и оплаты по всем динамическим отделам ── */
-// Очередь общая и для кассира, закреплённого за отделом; бейдж отдела на карточке говорит, чья это заявка.
-function ConfirmQueueSection({
+/* ── Вкладка «Оплаты»: ждут оплаты и оплаты к подтверждению ─────────────── */
+// Оплаты к подтверждению — общая очередь всех отделов, бейдж отдела на карточке говорит, чья это оплата.
+// «Ждут оплаты» — отгруженные заказы отдела кассы без долга: принять оплату или перевести в долг.
+function PaymentsSection({
   q,
+  me,
   canViewOrders,
-  canReviewOrders,
   canReceivePayments,
   assigned,
 }: {
   q: CashierQueue;
+  me: Me | null;
   canViewOrders: boolean;
-  canReviewOrders: boolean;
   canReceivePayments: boolean;
   assigned: DepartmentScope["assigned"];
 }) {
-  const [confirming, setConfirming] = useState<Order | null>(null);
-  const [rejecting, setRejecting] = useState<Order | null>(null);
   return (
     <section className="flex flex-col gap-4">
-      <OrderReviewDialogs
-        q={q}
-        confirming={confirming}
-        rejecting={rejecting}
-        onConfirmClose={() => setConfirming(null)}
-        onRejectClose={() => setRejecting(null)}
-      />
       <ActionError message={q.error} />
       {q.loadError && <ErrorAlert message={q.loadError} onRetry={q.reload} />}
 
-      <div className={cn("grid grid-cols-1 gap-6", canReviewOrders && "xl:grid-cols-2")}>
-        {canReviewOrders && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Заявки на подтверждение</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              {!q.loading && !q.loadError && q.pendingOrders.length === 0 && (
-                <p className="text-sm text-[var(--muted-foreground)]">Нет заявок, ожидающих подтверждения.</p>
-              )}
-              {q.pendingOrders.map((o) => {
-                return (
-                  <div key={o.id} className="flex flex-col gap-2 rounded-lg border p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <Link
-                          href={withBack(`/orders/${o.id}`, "/accounting?view=confirm")}
-                          className="text-sm font-semibold hover:underline"
-                        >
-                          Заказ #{o.id}
-                        </Link>
-                        <div className="text-xs text-[var(--muted-foreground)]">
-                          {o.client_name} · {formatCurrency(o.total_amount, o.currency)}
-                        </div>
-                      </div>
-                      <OrderDepartmentBadge order={o} />
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button className="flex-1" size="sm" disabled={q.busy} onClick={() => setConfirming(o)}>
-                        Проверить и подтвердить
-                      </Button>
-                      {o.status === "pending" && (
-                        <Button size="sm" variant="outline" disabled={q.busy} onClick={() => setRejecting(o)}>
-                          Отклонить
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-              <LoadMore
-                shown={q.pendingOrders.length}
-                total={q.pendingPage.count}
-                hasMore={q.pendingPage.hasMore}
-                loading={q.pendingPage.loadingMore}
-                onClick={q.pendingPage.loadMore}
-              />
-            </CardContent>
-          </Card>
-        )}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Ждут оплаты</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {!q.loading && !q.loadError && q.awaiting.length === 0 && (
+              <p className="text-sm text-[var(--muted-foreground)]">Все отгруженные заказы оплачены или в долге.</p>
+            )}
+            {q.awaiting.length > 0 && (
+              <ul className="divide-y divide-[var(--border)] rounded-lg border">
+                {q.awaiting.map((order) => (
+                  <AwaitingPaymentRow key={order.id} order={order} q={q} me={me} canOpenOrder={canViewOrders} />
+                ))}
+              </ul>
+            )}
+            <LoadMore
+              shown={q.awaiting.length}
+              total={q.awaitingPage.count}
+              hasMore={q.awaitingPage.hasMore}
+              loading={q.awaitingPage.loadingMore}
+              onClick={q.awaitingPage.loadMore}
+            />
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
@@ -442,8 +409,8 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
       ? [
           {
             key: "confirm",
-            label: "Заявки и оплаты",
-            count: view === "confirm" && !queue.loading ? queue.pendingPage.count + queue.queuePage.count : undefined,
+            label: "Оплаты",
+            count: view === "confirm" && !queue.loading ? queue.awaitingPage.count + queue.queuePage.count : undefined,
           },
           { key: "journal", label: "Журнал" },
         ]
@@ -452,11 +419,7 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
   ];
 
   return (
-    <AppShell
-      title="Касса"
-      section="Работа"
-      description="Поступления, очередь подтверждений, долги и транзакции в одном месте."
-    >
+    <AppShell title="Касса" section="Работа" description="Поступления, оплаты, долги и транзакции в одном месте.">
       <div className="flex flex-col gap-6">
         <Tabs
           className="overflow-x-auto whitespace-nowrap"
@@ -580,10 +543,10 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
         )}
 
         {view === "confirm" && perms.canPayments && (
-          <ConfirmQueueSection
+          <PaymentsSection
             q={queue}
+            me={model.me}
             canViewOrders={perms.canViewOrders}
-            canReviewOrders={perms.canReviewOrders}
             canReceivePayments={perms.canPayments}
             assigned={model.scope.assigned}
           />

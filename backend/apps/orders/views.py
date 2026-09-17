@@ -17,7 +17,7 @@ from apps.common.money import as_money_strings, money_string, primary_currency
 from apps.common.query_params import (
     filter_date_range, parse_date_range, parse_store_id, parse_search_param,
 )
-from apps.sales.access import scope_by_client_department
+from apps.sales.access import assigned_department_id, scope_by_client_department
 from apps.sales.models import Department
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
@@ -37,6 +37,8 @@ from .invoices import build_invoice_pdf, build_payment_receipt_pdf
 from .debt import order_remaining
 from .querysets import (
     CASHIER_QUEUE_PAYMENT,
+    awaiting_payment_orders,
+    order_remaining_by_id,
     for_post_board,
     post_board_params,
     with_order_api_relations,
@@ -59,7 +61,7 @@ from .services import (add_payment, confirm_order, reject_order,
                        reopen_confirmed_payment, reject_payment,
                        restore_rejected_payment, soft_delete_order, restore_order,
                        purge_order,
-                       repeat_order, lock_live_order,
+                       repeat_order, lock_live_order, move_order_to_debt,
                        request_status_change, approve_status_change, reject_status_change)
 from apps.shipments.services import rollback_shipment
 
@@ -766,6 +768,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "restore_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
         "payments_queue": "payments.confirm",
+        # «Оплаты» кассы: принять оплату или перевести в долг отгруженный заказ.
+        "awaiting_payment": ("payments.confirm", "payments.create"),
+        "to_debt": ("payments.confirm", "payments.create"),
         "cashier_log": "payments.confirm",
         "train": "train.load",
         "loading_camera": "shipping.load",
@@ -801,10 +806,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     UNASSIGNED_REQUEST_ACTIONS = frozenset(
         {"list", "retrieve", "workflow_summary", "review", "confirm", "reject"}
     )
-    # «Заявки и оплаты» — общая очередь кассы: сотрудник, закреплённый за
-    # отделом, разбирает заявки и оплаты ВСЕХ отделов. Журнал (cashier-log,
+    # Общие очереди для сотрудника, закреплённого за отделом. Оплаты в ручной
+    # очереди кассы видны и разбираются всеми отделами. Заявки всех отделов
+    # («Заказы» → «Заявки») — только с правом orders.confirm_all; список заявок
+    # входит в очередь только с ``?confirm_queue=1``. Журнал (cashier-log,
     # reopen/restore), долги, отчёты, транзакции и POS остаются в его отделе.
-    # Список заявок входит в очередь только с ``?confirm_queue=1``.
     SHARED_REQUEST_ACTIONS = frozenset({"retrieve", "review", "confirm", "reject"})
     SHARED_PAYMENT_ACTIONS = frozenset(
         {"receive_payment", "confirm_payment", "reject_payment"}
@@ -826,7 +832,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             self._confirm_queue_requested() if self.action == "list"
             else self.action in self.SHARED_REQUEST_ACTIONS
         )
-        if in_queue and self.request.user.has_perm_code("orders.confirm"):
+        user = self.request.user
+        if in_queue and user.has_perm_code("orders.confirm") and user.has_perm_code("orders.confirm_all"):
             return Q(status__in=REVIEWABLE_STATUSES)
         return None
 
@@ -1050,6 +1057,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if stage in ("new", "review"):
             qs = qs.filter(status__in=("draft", "pending"), reviewed_at__isnull=stage == "new")
 
+        # Закреплённый за отделом сотрудник видит одну карточку — своего отдела:
+        # в неё идут все его заказы, даже записанные на другой код отдела.
+        department_id = assigned_department_id(request.user)
+        own = Department.objects.filter(pk=department_id).first() if department_id else None
+        departments = [own] if own else Department.objects.all()
         rows = {department.code: {
             "id": department.id,
             "code": department.code,
@@ -1071,7 +1083,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "partial_orders": 0,
             "unpaid_orders": 0,
             "debt_orders": 0,
-        } for department in Department.objects.all()}
+        } for department in departments}
         rows[""] = {
             "id": 0, "code": "__unassigned", "name": "Нет отдела",
             "color": "#64748B", "is_active": False,
@@ -1085,7 +1097,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "department", "status", "currency", "settlement_intent", "amount_total", "amount_paid"
         )
         for order in totals.iterator(chunk_size=2000):
-            row = rows.get(order["department"])
+            row = rows[own.code] if own else rows.get(order["department"])
             if row is None:
                 continue
             row["orders"] += 1
@@ -1177,6 +1189,44 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             context=self.get_serializer_context(),
         ).data
         return self.get_paginated_response(data) if page is not None else Response(data)
+
+    @action(detail=False, methods=["get"], url_path="awaiting-payment")
+    def awaiting_payment(self, request):
+        """«Ждут оплаты»: отгруженные заказы отдела с остатком, не ушедшие в долг."""
+        params = request.query_params
+        qs = awaiting_payment_orders(self.get_queryset())
+        department = params.get("department")
+        if department:
+            # Заказ без своего отдела учитывается в отделе клиента — как в списке заказов.
+            qs = qs.filter(Q(department=department) | Q(department="", client__department__code=department))
+        store = parse_store_id(params.get("store"))
+        if store:
+            qs = qs.filter(store_id=store)
+        date_from, date_to = parse_date_range(params)
+        qs = filter_date_range(qs, "shipment__shipped_at", date_from, date_to)
+        if params.get("summary") == "1":
+            rows = list(qs.order_by().values("pk", "currency"))
+            remaining = order_remaining_by_id(qs)
+            totals: dict[str, dict] = {}
+            for row in rows:
+                entry = totals.setdefault(row["currency"] or "KZT", {"amount": Decimal("0"), "count": 0})
+                entry["amount"] += remaining.get(row["pk"], Decimal("0"))
+                entry["count"] += 1
+            return Response([
+                {"currency": currency, "amount": money_string(entry["amount"]), "count": entry["count"]}
+                for currency, entry in sorted(totals.items())
+            ])
+        qs = qs.order_by("-shipment__shipped_at", "-id")
+        page = self.paginate_queryset(qs)
+        data = self.get_serializer(page if page is not None else qs, many=True).data
+        return self.get_paginated_response(data) if page is not None else Response(data)
+
+    @action(detail=True, methods=["post"], url_path="to-debt")
+    def to_debt(self, request, pk=None):
+        """Касса переводит отгруженный заказ из «Ждут оплаты» в долг клиента."""
+        order = move_order_to_debt(self.get_object(), request.user)
+        order = self.get_queryset().get(pk=order.pk)
+        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="cashier-log")
     def cashier_log(self, request):

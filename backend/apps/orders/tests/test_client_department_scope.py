@@ -332,9 +332,10 @@ def test_reports_transactions_queue_log_and_department_summary_are_scoped(
     # отчёт, транзакции, журнал и сводка — только свой отдел.
     assert [row["id"] for row in queue.data] == [first_pending.pk, second_pending.pk]
     assert [row["order"] for row in cashier_log.data] == [first_order.pk]
-    by_code = {row["code"]: row for row in department_summary.data}
-    assert by_code[order_department]["orders"] == 1
-    assert by_code[order_department]["revenue"] == "100.00"
+    # Закреплённый сотрудник видит одну карточку — своего отдела, куда идут все его заказы.
+    assert [row["code"] for row in department_summary.data] == [scope["first_department"].code]
+    assert department_summary.data[0]["orders"] == 1
+    assert department_summary.data[0]["revenue"] == "100.00"
 
 
 def test_top_level_payment_actions_hide_foreign_department_ids(
