@@ -193,7 +193,7 @@ def test_store_endpoints_and_writes_follow_client_ownership(
     foreign_store = Store.objects.create(client=foreign_client, name="Чужой магазин")
     employee = user_with_perms(
         "scoped-store-writer",
-        codes=["clients.view", "clients.create", "clients.edit"],
+        codes=["stores.view", "stores.create", "stores.edit"],
     )
     _assign(employee, first)
     api = auth_client(employee)
@@ -259,7 +259,7 @@ def test_store_financial_projections_and_mutations_follow_client_ownership(
         )
     employee = user_with_perms(
         "scoped-store-financial",
-        codes=["clients.edit", "clients.delete", "reports.view"],
+        codes=["stores.edit", "stores.delete", "reports.view"],
     )
     _assign(employee, first)
     api = auth_client(employee)

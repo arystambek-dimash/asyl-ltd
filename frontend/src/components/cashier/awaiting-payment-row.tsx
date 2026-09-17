@@ -1,8 +1,8 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import { AddPaymentActions } from "@/components/payment-chain";
 import { Badge } from "@/components/ui/badge";
+import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { withBack } from "@/lib/navigation";
@@ -75,7 +75,7 @@ export function AwaitingPaymentRow({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <AddPaymentActions order={order} me={me} mode="receive" onChanged={() => void q.reload()} />
+        <OrderPaymentActions order={order} me={me} onChanged={() => void q.reload()} />
         <Button
           size="sm"
           variant="outline"

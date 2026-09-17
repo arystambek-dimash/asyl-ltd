@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Suspense } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -106,73 +106,86 @@ async function renderPage() {
   });
 }
 
-it("renders debt orders as cards on phones", async () => {
+it("renders debt orders as cards on phones with payment actions only inside details", async () => {
   mockPhone();
   const user = userEvent.setup();
   await renderPage();
 
   expect(await screen.findByText("#130")).toBeInTheDocument();
   expect(screen.getByText("Остаток")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Оплатить" })).toBeInTheDocument();
   expect(screen.queryByRole("columnheader", { name: "Отгружен" })).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Открыть/ })).toHaveAttribute(
+  // Свёрнутая карточка: ни «Оплатить», ни «Открыть», ни «Внести оплату».
+  expect(screen.queryByRole("button", { name: "Оплатить" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Внести оплату/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /Открыть/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Принять оплату/ })).not.toBeInTheDocument();
+
+  const toggle = screen.getByRole("button", { name: /^#130/ });
+  expect(toggle).toHaveTextContent("Открыть детали");
+  await user.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(toggle).toHaveTextContent("Скрыть детали");
+  expect(await screen.findByText("АТ 1с 50кг · Красный 50 кг")).toBeInTheDocument();
+  expect(screen.getByText("100 × 1 958,4 ₸")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Отправить удалённый счёт/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Запросить оплату/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /Карточка заказа/ })).toHaveAttribute(
     "href",
     "/orders/130?back=%2Faccounting%2Fdebts%2Fclients%2F1",
   );
-
-  const toggle = screen.getByRole("button", { name: /^#130/ });
-  await user.click(toggle);
-  expect(toggle).toHaveAttribute("aria-expanded", "true");
-  expect(await screen.findByText("АТ 1с 50кг · Красный 50 кг")).toBeInTheDocument();
-  expect(screen.getByText("100 × 1 958,4 ₸")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Детали/ })).not.toBeInTheDocument();
 
   expect(screen.getByRole("link", { name: /К долгам/ })).toHaveAttribute("href", "/accounting?view=debts");
 });
 
-it("keeps the table on desktop", async () => {
+it("keeps the table on desktop and expands a row by clicking it", async () => {
+  const user = userEvent.setup();
   await renderPage();
   expect(await screen.findByRole("columnheader", { name: "Отгружен" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Открыть/ })).toHaveAttribute(
+  expect(screen.queryByRole("link", { name: /Открыть/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Оплатить" })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("cell", { name: "#130" }));
+  expect(screen.getByRole("button", { name: "Скрыть детали заказа #130" })).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /Карточка заказа/ })).toHaveAttribute(
     "href",
     "/orders/130?back=%2Faccounting%2Fdebts%2Fclients%2F1",
   );
 });
 
-it("locks the payment modal to the tapped order until 'Другой заказ' is chosen", async () => {
-  mockPhone();
-  // Второй заказ с остатком — иначе при единственном заказе селектор и так
-  // не появился бы, и тест не отличил бы «нет выбора» от «нечего выбирать».
-  const secondOrder = { ...debtOrder, id: 131, total_amount: "50000", paid_total: "0" };
+it("shows the client with phone above the debt summary", async () => {
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
     if (url.pathname === "/clients/1/debt-detail/")
-      return { data: { ...debtDetail, orders: [debtOrder, secondOrder] } };
+      return { data: { ...debtDetail, client: { ...debtDetail.client, phone: "+7 700 123 45 67" } } };
     if (url.pathname === "/clients/1/history/") return { data: { payments: [] } };
     return { data: [] };
   });
-  const user = userEvent.setup();
   await renderPage();
 
-  const payButtons = await screen.findAllByRole("button", { name: "Оплатить" });
-  await user.click(payButtons[0]);
+  expect(await screen.findByRole("link", { name: /\+7 700 123 45 67/ })).toHaveAttribute("href", "tel:+77001234567");
+  expect(screen.getByText("Текущий долг")).toBeInTheDocument();
+});
 
-  const dialog = await screen.findByRole("dialog", { name: "Внести оплату" });
-  expect(within(dialog).getByText("Заказ #130 · Мельница")).toBeInTheDocument();
-  // Селектор заказа отсутствует целиком (его подпись "Заказ" и есть его
-  // индикатор): остаётся только комбобокс способа оплаты одной части.
-  expect(within(dialog).queryByText("Заказ")).not.toBeInTheDocument();
-  expect(within(dialog).getAllByRole("combobox")).toHaveLength(1);
-  expect(within(dialog).queryByText(/Заказ #131/)).not.toBeInTheDocument();
+it("disables payment for an order whose store is outside its payment window", async () => {
+  const user = userEvent.setup();
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/clients/1/debt-detail/")
+      return {
+        data: {
+          ...debtDetail,
+          orders: [{ ...debtOrder, store: 5 }],
+          stores: [{ id: 5, name: "Береке", payment_schedule_type: "weekly", payment_days: [1], window_open: false }],
+        },
+      };
+    if (url.pathname === "/clients/1/history/") return { data: { payments: [] } };
+    return { data: [] };
+  });
+  await renderPage();
 
-  await user.click(within(dialog).getByRole("button", { name: "Другой заказ" }));
-  expect(within(dialog).getByText("Заказ")).toBeInTheDocument();
-  const comboboxes = within(dialog).getAllByRole("combobox");
-  expect(comboboxes).toHaveLength(2);
-  // Radix Select не открывается через userEvent.click в jsdom (нет
-  // hasPointerCapture) — обычный click-event хватает, чтобы раскрыть список.
-  // Список пунктов уходит в портал прямо в document.body (не внутрь dialog),
-  // поэтому дальше ищем без within(dialog).
-  fireEvent.click(comboboxes[0]);
-  expect(screen.getByText(/Заказ #131/)).toBeInTheDocument();
+  await user.click(await screen.findByRole("cell", { name: "#130" }));
+  expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Отправить удалённый счёт/ })).toBeDisabled();
 });

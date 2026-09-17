@@ -716,10 +716,10 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     pagination_class = OptInPageNumberPagination
 
     required_perms = {
-        "list": "clients.view", "retrieve": "clients.view",
-        "create": "clients.create", "update": "clients.edit",
-        "partial_update": "clients.edit", "destroy": "clients.delete",
-        "check_overdue": "clients.edit",
+        "list": "stores.view", "retrieve": "stores.view",
+        "create": "stores.create", "update": "stores.edit",
+        "partial_update": "stores.edit", "destroy": "stores.delete",
+        "check_overdue": "stores.edit",
         "debts": ("reports.view", "payments.create"),
         "debt_detail": ("reports.view", "payments.create"),
     }

@@ -178,7 +178,7 @@ export function useCashier({
       ? apiUrl("/orders/awaiting-payment/", { summary: "1", ...scopeParams(scopedEmpty) })
       : null,
   );
-  const { data: stores } = useApi<Store[]>(perms.canReports && perms.canViewClients ? "/stores/" : null);
+  const { data: stores } = useApi<Store[]>(perms.canReports && perms.canViewStores ? "/stores/" : null);
 
   const { reload: reloadSummary } = summary;
   const { reload: reloadDebts } = debts;

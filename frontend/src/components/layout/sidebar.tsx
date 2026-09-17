@@ -77,7 +77,7 @@ function staffSections(): NavSection[] {
         // Проходная вагонов: заявки, приход, взвешивание и выход.
         { href: "/grain", label: "Приход и вывоз", icon: Wheat, perm: "grain.view" },
         { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
-        { href: "/stores", label: "Магазины", icon: Store, perm: "clients.view" },
+        { href: "/stores", label: "Магазины", icon: Store, perm: "stores.view" },
         { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
         // Без perm: свои задачи доступны каждому сотруднику, иначе исполнитель
         // не смог бы открыть то, что ему поручили.

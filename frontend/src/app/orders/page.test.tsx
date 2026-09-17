@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import OrdersPage from "./page";
@@ -152,9 +152,27 @@ it("gives staff who confirm orders a «Заявки» tab and keeps a department
   const requestsTab = await screen.findByRole("tab", { name: /Заявки/ });
   await waitFor(() => expect(requestsTab).toHaveTextContent("1"));
   expect(screen.getByRole("tab", { name: "Все заказы" })).toHaveAttribute("aria-selected", "true");
+  // Аналитика скрыта в окне и не грузится, пока его не открыли.
+  expect(screen.queryByText(/Отдел Мельница/)).not.toBeInTheDocument();
+  const summaryCalls = () =>
+    mocks.get.mock.calls.filter(([raw]) => String(raw).startsWith("/orders/department-summary/")).length;
+  expect(summaryCalls()).toBe(0);
+  await user.click(screen.getByRole("button", { name: /Аналитика/ }));
+  const analytics = await screen.findByRole("dialog", { name: "Аналитика заказов" });
   // Закреплённый сотрудник видит свой отдел: без выбора отдела и с его названием в аналитике.
-  expect(await screen.findByText(/Отдел Мельница/)).toBeInTheDocument();
+  expect(await within(analytics).findByText(/Отдел Мельница/)).toBeInTheDocument();
+  expect(summaryCalls()).toBe(1);
   expect(screen.queryByRole("button", { name: /^Отдел/ })).not.toBeInTheDocument();
+  // Нажал на отдел — окно закрывается, список показывает заказы отдела.
+  await user.click(within(analytics).getByRole("button", { name: /Мельница/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Аналитика заказов" })).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(
+      mocks.get.mock.calls
+        .map(([raw]) => new URL(String(raw), "http://localhost"))
+        .some((url) => url.pathname === "/orders/" && url.searchParams.get("department") === "main"),
+    ).toBe(true),
+  );
 
   await user.click(requestsTab);
   expect(mocks.replace).toHaveBeenCalledWith("/orders?tab=requests", { scroll: false });

@@ -15,7 +15,7 @@ export interface CashierPerms {
   canDebtEntry: boolean;
   canTransactions: boolean;
   canViewOrders: boolean;
-  canViewClients: boolean;
+  canViewStores: boolean;
   canCheckOverdue: boolean;
 }
 
@@ -31,8 +31,8 @@ export function cashierPerms(me: Me | null): CashierPerms {
     canDebtEntry: canReports || canCreatePayments,
     canTransactions: can(me, "payments.view"),
     canViewOrders,
-    canViewClients: can(me, "clients.view"),
-    canCheckOverdue: can(me, "clients.edit"),
+    canViewStores: can(me, "stores.view"),
+    canCheckOverdue: can(me, "stores.edit"),
   };
 }
 

@@ -114,11 +114,11 @@ def test_payment_recorder_gets_minimal_client_debt_detail(user_with_perms):
     assert _api(recorder).get(f"/api/clients/{client.id}/history/").status_code == 403
 
 
-def test_check_overdue_requires_clients_edit(user_with_perms):
+def test_check_overdue_requires_stores_edit(user_with_perms):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     Store.objects.create(client=c, name="S", payment_schedule_type="none")
-    viewer = user_with_perms("cv5", codes=["clients.view"])
-    editor = user_with_perms("ce", codes=["clients.edit"])
+    viewer = user_with_perms("cv5", codes=["stores.view", "clients.edit"])
+    editor = user_with_perms("ce", codes=["stores.edit"])
     assert _api(viewer).post("/api/stores/check-overdue/").status_code == 403
     assert _api(editor).post("/api/stores/check-overdue/").status_code == 200
 
@@ -135,7 +135,7 @@ def test_check_overdue_checks_all_clients(user_with_perms):
         payment_schedule_type="weekly",
         payment_days=[1],
     )
-    editor = user_with_perms("scoped-editor", codes=["clients.edit"])
+    editor = user_with_perms("scoped-editor", codes=["stores.edit"])
 
     with patch("apps.clients.views.detect_overdue", return_value=0) as detect:
         response = _api(editor).post("/api/stores/check-overdue/")

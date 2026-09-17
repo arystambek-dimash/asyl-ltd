@@ -262,9 +262,9 @@ function StoreForm({
 function StoresPageInner() {
   const { items: stores, count, hasMore, loadingMore, error, reload, loadMore } = usePagedApi<Store>("/stores/", 50);
   const { me } = useAuth();
-  const canCreate = can(me, "clients.create");
-  const canEdit = can(me, "clients.edit");
-  const canDelete = can(me, "clients.delete");
+  const canCreate = can(me, "stores.create");
+  const canEdit = can(me, "stores.edit");
+  const canDelete = can(me, "stores.delete");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Store | null>(null);
   const [delItem, setDelItem] = useState<Store | null>(null);
@@ -437,7 +437,7 @@ function StoresPageInner() {
 
 export default function StoresPage() {
   return (
-    <RequirePerm perm="clients.view" title="Магазины">
+    <RequirePerm perm="stores.view" title="Магазины">
       <StoresPageInner />
     </RequirePerm>
   );

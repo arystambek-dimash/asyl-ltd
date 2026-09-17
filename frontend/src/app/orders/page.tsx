@@ -345,18 +345,13 @@ function OrdersAnalytics({
   const mainOrders = orders.filter((order) => (order.currency ?? "KZT") === mainCurrency);
 
   return (
-    <section className="mb-5 overflow-hidden rounded-2xl border bg-[var(--card)] shadow-card">
-      <div className="flex flex-col gap-4 border-b px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-bold">
-            <BarChart3 className="size-4 text-[var(--ring)]" /> Аналитика заказов
-          </div>
-          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-            {view === "departments"
-              ? "Сравнение отделов и быстрый переход к их заказам"
-              : "Общие показатели по текущим фильтрам и поиску"}
-          </p>
-        </div>
+    <section className="flex flex-col">
+      <div className="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs text-[var(--muted-foreground)]">
+          {view === "departments"
+            ? "Сравнение отделов: нажмите на отдел, чтобы показать его заказы"
+            : "Общие показатели по текущим фильтрам и поиску"}
+        </p>
         <div
           {...analyticsTabs.tabListProps}
           className="grid grid-cols-2 rounded-xl border bg-[var(--muted)]/55 p-1 sm:w-fit"
@@ -389,7 +384,7 @@ function OrdersAnalytics({
       </div>
 
       {view === "departments" ? (
-        <div {...analyticsTabs.getTabPanelProps("departments")} className="p-3 sm:p-4">
+        <div {...analyticsTabs.getTabPanelProps("departments")} className="pt-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
             <p className="text-xs text-[var(--muted-foreground)]">
               {activeDepartment ? (
@@ -481,10 +476,7 @@ function OrdersAnalytics({
           )}
         </div>
       ) : (
-        <div
-          {...analyticsTabs.getTabPanelProps("overview")}
-          className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 sm:p-4"
-        >
+        <div {...analyticsTabs.getTabPanelProps("overview")} className="grid grid-cols-2 gap-3 pt-4 sm:grid-cols-3">
           <p className="col-span-full text-xs text-[var(--muted-foreground)]">
             Показатели по загруженным заказам. Следующие заказы доступны под списком.
           </p>
@@ -610,8 +602,10 @@ function OrdersPageInner() {
     const query = params.toString();
     return `/orders/department-summary/${query ? `?${query}` : ""}`;
   }, [dateFrom, dateTo, status]);
+  // Аналитика по отделам скрыта в окне: сводка грузится, только пока окно открыто.
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const { data: departmentSummary, reload: reloadSummary } = useApi<DepartmentSummary[]>(
-    view === "orders" ? summaryUrl : null,
+    view === "orders" && analyticsOpen ? summaryUrl : null,
   );
   const { data: departments, reload: reloadDepartments } = useApi<Department[]>("/departments/");
   const { me } = useAuth();
@@ -876,14 +870,26 @@ function OrdersPageInner() {
             <OrderRequestsSection requests={requests} />
           ) : (
             <>
-              <OrdersAnalytics
-                rows={departmentSummary ?? []}
-                active={dept}
-                onSelect={setDept}
-                orders={countable}
-                activeCount={activeCount}
-                scopeName={assigned?.name}
-              />
+              <Modal
+                open={analyticsOpen}
+                onClose={() => setAnalyticsOpen(false)}
+                title="Аналитика заказов"
+                className="max-w-5xl"
+                mobileFullscreen
+              >
+                <OrdersAnalytics
+                  rows={departmentSummary ?? []}
+                  active={dept}
+                  onSelect={(code) => {
+                    setDept(code);
+                    // Выбрал отдел — сразу к его заказам; сброс выбора оставляет окно открытым.
+                    if (code !== "all") setAnalyticsOpen(false);
+                  }}
+                  orders={countable}
+                  activeCount={activeCount}
+                  scopeName={assigned?.name}
+                />
+              </Modal>
 
               <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="relative max-w-md flex-1">
@@ -913,6 +919,9 @@ function OrdersPageInner() {
                     />
                   )}
                   <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
+                  <Button size="sm" variant="outline" onClick={() => setAnalyticsOpen(true)}>
+                    <BarChart3 className="size-4" /> Аналитика
+                  </Button>
                 </div>
               </div>
 

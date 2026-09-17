@@ -1,13 +1,13 @@
 "use client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import dynamic from "next/dynamic";
-import { ArrowUpRight, RefreshCw, Search } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PaymentStageBadge } from "@/components/payment-chain";
-import { DepartmentComparison } from "@/components/reports/department-comparison";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -154,6 +154,8 @@ function PaymentsSection({
 }
 
 /* ── Долги клиентов ─────────────────────────────────────────────────────── */
+const debtHref = (row: ClientDebt) => `/accounting/debts/clients/${row.client_id}`;
+
 function DebtsSection({
   rows,
   loading,
@@ -167,6 +169,7 @@ function DebtsSection({
   reload: () => void;
   canCheckOverdue: boolean;
 }) {
+  const router = useRouter();
   const [q, setQ] = useState("");
   const overdue = useOverdueCheck(reload);
   // Данные уже загружены целиком — лениво рендерим, чтобы длинный список
@@ -227,25 +230,24 @@ function DebtsSection({
                 <TH>Статус оплаты</TH>
                 <TH>Магазины</TH>
                 <TH>Просрочки</TH>
-                <TH></TH>
               </TR>
             </THead>
             <TBody>
               {loading ? (
                 <TR>
-                  <TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">
+                  <TD colSpan={6} className="py-8 text-center text-[var(--muted-foreground)]">
                     Загрузка…
                   </TD>
                 </TR>
               ) : error && rows.length === 0 ? (
                 <TR>
-                  <TD colSpan={7} className="py-4">
+                  <TD colSpan={6} className="py-4">
                     <ErrorAlert message={error} onRetry={reload} />
                   </TD>
                 </TR>
               ) : filtered.length === 0 ? (
                 <TR>
-                  <TD colSpan={7} className="py-8 text-center text-[var(--muted-foreground)]">
+                  <TD colSpan={6} className="py-8 text-center text-[var(--muted-foreground)]">
                     Долгов нет.
                   </TD>
                 </TR>
@@ -253,9 +255,19 @@ function DebtsSection({
                 visible.map((row) => {
                   const state = debtPaymentState(row);
                   return (
-                    <TR key={row.client_id}>
+                    <TR
+                      key={row.client_id}
+                      className="cursor-pointer transition-colors hover:bg-[var(--muted)]/40"
+                      onClick={() => router.push(debtHref(row))}
+                    >
                       <TD>
-                        <div className="font-medium">{row.client_name || "—"}</div>
+                        <Link
+                          href={debtHref(row)}
+                          className="font-medium underline-offset-2 hover:underline"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          {row.client_name || "—"}
+                        </Link>
                         <div className="text-xs text-[var(--muted-foreground)]">{row.client_phone || "—"}</div>
                       </TD>
                       <TD className="tabular-nums text-lg font-semibold text-[var(--destructive)]">
@@ -286,17 +298,6 @@ function DebtsSection({
                         ) : (
                           <span className="text-[var(--muted-foreground)]">0</span>
                         )}
-                      </TD>
-                      <TD>
-                        <div className="flex justify-end">
-                          <Link
-                            href={`/accounting/debts/clients/${row.client_id}`}
-                            className={buttonVariants({ size: "sm", variant: "ghost" })}
-                          >
-                            Детали
-                            <ArrowUpRight className="size-4" />
-                          </Link>
-                        </div>
                       </TD>
                     </TR>
                   );
@@ -465,14 +466,6 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
               />
             </section>
 
-            {perms.canReports && summary.data?.departments && (
-              <DepartmentComparison
-                rows={summary.data.departments}
-                incomeOnly
-                from={summary.data.from}
-                to={summary.data.to}
-              />
-            )}
             <DebtsSection
               rows={debtRows}
               loading={debts.loading}

@@ -36,11 +36,3 @@ it("ranks sales within one currency and distinguishes receipts from sales", asyn
   expect(first.getByText("Город")).toBeInTheDocument();
   expect(first.getByText("Больше продаж · USD")).toBeInTheDocument();
 });
-it("cashier comparison ranks net receipts without pretending sales were loaded", () => {
-  render(
-    <DepartmentComparison rows={rows.map((row) => ({ ...row, sales_by_currency: null, orders: null }))} incomeOnly />,
-  );
-  expect(screen.queryByRole("columnheader", { name: "Отгружено" })).not.toBeInTheDocument();
-  expect(within(screen.getAllByRole("row")[1]).getByText("Город")).toBeInTheDocument();
-  expect(screen.getByText("Больше поступлений · KZT")).toBeInTheDocument();
-});

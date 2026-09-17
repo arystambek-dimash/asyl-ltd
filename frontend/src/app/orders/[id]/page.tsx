@@ -37,7 +37,8 @@ import {
 import { DataGate } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu } from "@/components/ui/action-menu";
-import { PaymentChain, AddPaymentActions, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
+import { PaymentChain, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
+import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
 import { formatTransportNumber } from "@/components/ui/transport-number";
 import { OrderForm } from "@/components/order-form";
 import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
@@ -106,7 +107,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     };
   }, []);
   const { data: store } = useApi<Store>(
-    order?.store && canViewClients && section === "delivery" ? `/stores/${order.store}/` : null,
+    order?.store && can(me, "stores.view") && section === "delivery" ? `/stores/${order.store}/` : null,
   );
   const [confirmationOpen, setConfirmationOpen] = useState(false);
   const [rejectionOpen, setRejectionOpen] = useState(false);
@@ -495,9 +496,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 {pendingPayments.length > 0 && (
                   <>
                     <PaymentChain order={order} me={me} onChanged={reload} />
-                    <div className="border-t pt-3">
-                      <AddPaymentActions order={order} me={me} onChanged={reload} mode="request" />
-                    </div>
+                    <OrderPaymentActions order={order} me={me} onChanged={() => reload()} className="border-t pt-3" />
                   </>
                 )}
                 {pendingPayments.length === 0 && canStartPayment && (
@@ -508,7 +507,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                         {formatMoney(String(remaining))} {moneySymbol}
                       </div>
                     </div>
-                    <AddPaymentActions order={order} me={me} onChanged={reload} />
+                    <OrderPaymentActions order={order} me={me} onChanged={() => reload()} />
                   </div>
                 )}
                 {pendingPayments.length === 0 && !canStartPayment && (

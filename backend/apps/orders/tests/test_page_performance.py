@@ -26,6 +26,7 @@ def perf_user(user_with_perms):
             "payments.view",
             "reports.view",
             "clients.view",
+            "stores.view",
         ],
     )
 

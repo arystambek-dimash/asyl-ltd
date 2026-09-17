@@ -10,12 +10,10 @@ import type { DepartmentReport } from "@/lib/types";
 
 export function DepartmentComparison({
   rows,
-  incomeOnly = false,
   from,
   to,
 }: {
   rows: DepartmentReport[];
-  incomeOnly?: boolean;
   from?: string | null;
   to?: string | null;
 }) {
@@ -26,9 +24,9 @@ export function DepartmentComparison({
     ),
   ].sort();
   const currency = currencies.includes(selectedCurrency) ? selectedCurrency : currencies[0] || "KZT";
-  const metric = incomeOnly ? "net_by_currency" : "sales_by_currency";
-  const sorted = [...rows].sort((a, b) => Number(b[metric]?.[currency] || 0) - Number(a[metric]?.[currency] || 0));
-  const leading = Number(sorted[0]?.[metric]?.[currency] || 0);
+  const sales = (row: DepartmentReport) => Number(row.sales_by_currency?.[currency] || 0);
+  const sorted = [...rows].sort((a, b) => sales(b) - sales(a));
+  const leading = sorted[0] ? sales(sorted[0]) : 0;
   function download() {
     const cell = (value: string | number) => {
       const raw = String(value);
@@ -39,12 +37,12 @@ export function DepartmentComparison({
     };
     const lines: (string | number)[][] = [
       ["Период", from || "С начала учёта", to || "По текущую дату"],
-      ["Отдел", "Валюта", ...(!incomeOnly ? ["Отгружено"] : []), "Поступило", "Возвращено", "Чистое поступление"],
+      ["Отдел", "Валюта", "Отгружено", "Поступило", "Возвращено", "Чистое поступление"],
       ...rows.flatMap((row) =>
         currencies.map((unit) => [
           row.name,
           unit,
-          ...(!incomeOnly ? [row.sales_by_currency?.[unit] || "0"] : []),
+          row.sales_by_currency?.[unit] || "0",
           row.received_by_currency[unit] || "0",
           row.refunded_by_currency[unit] || "0",
           row.net_by_currency[unit] || "0",
@@ -66,11 +64,9 @@ export function DepartmentComparison({
     <Card>
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
         <div>
-          <CardTitle>{incomeOnly ? "Поступления по отделам" : "Продажи по отделам"}</CardTitle>
+          <CardTitle>Продажи по отделам</CardTitle>
           <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-            {incomeOnly
-              ? "Оплаты по дате подтверждения, возвраты — по дате завершения."
-              : "Продажи по дате отгрузки. Оплаты и возвраты — по дате операции."}
+            Продажи по дате отгрузки. Оплаты и возвраты — по дате операции.
           </p>
         </div>
         <div className="flex gap-2">
@@ -98,7 +94,7 @@ export function DepartmentComparison({
             <THead>
               <TR>
                 <TH>Отдел</TH>
-                {!incomeOnly && <TH className="text-right">Отгружено</TH>}
+                <TH className="text-right">Отгружено</TH>
                 <TH className="text-right">Поступило</TH>
                 <TH className="text-right">Возвращено</TH>
                 <TH className="text-right">Чистое поступление</TH>
@@ -112,17 +108,13 @@ export function DepartmentComparison({
                       <span className="size-2 rounded-full" style={{ backgroundColor: row.color }} />
                       {row.name}
                     </span>
-                    {leading > 0 && Number(row[metric]?.[currency] || 0) === leading && (
-                      <span className="mt-1 block text-xs text-[var(--success)]">
-                        {incomeOnly ? "Больше поступлений" : "Больше продаж"} · {currency}
-                      </span>
+                    {leading > 0 && sales(row) === leading && (
+                      <span className="mt-1 block text-xs text-[var(--success)]">Больше продаж · {currency}</span>
                     )}
                   </TD>
-                  {!incomeOnly && (
-                    <TD className="text-right font-semibold tabular-nums">
-                      {formatCurrency(row.sales_by_currency?.[currency] || "0", currency)}
-                    </TD>
-                  )}
+                  <TD className="text-right font-semibold tabular-nums">
+                    {formatCurrency(row.sales_by_currency?.[currency] || "0", currency)}
+                  </TD>
                   <TD className="text-right tabular-nums">
                     {formatCurrency(row.received_by_currency[currency] || "0", currency)}
                   </TD>

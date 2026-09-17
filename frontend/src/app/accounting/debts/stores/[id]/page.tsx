@@ -4,13 +4,12 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
 import { StatCard } from "@/components/ui/stat-card";
 import { DataGate } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
-import { api, apiError } from "@/lib/api";
 import { withBack } from "@/lib/navigation";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { formatCurrency } from "@/lib/utils";
@@ -35,12 +34,8 @@ interface StoreDebtDetail {
 function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me } = useAuth();
-  const isAccountant = can(me, "payments.create");
   const canViewOrders = can(me, "orders.view");
   const { data, loading, error: loadError, reload } = useApi<StoreDebtDetail>(`/stores/${id}/debt-detail/`);
-  const [amounts, setAmounts] = useState<Record<number, string>>({});
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
   if (!data)
@@ -56,24 +51,6 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   const debtCurrency = primaryMoneyCurrency(debtByCurrency, data.debt_currency ?? "KZT");
   const debtTotal = amountForCurrency(debtByCurrency, data.debt_total, debtCurrency);
   const otherDebts = otherCurrencyAmounts(debtByCurrency, debtCurrency);
-
-  async function pay(orderId: number) {
-    const amount = amounts[orderId];
-    if (!amount) return;
-    setBusyId(orderId);
-    setError("");
-    setNotice("");
-    try {
-      await api.post(`/orders/${orderId}/payments/`, { amount });
-      setAmounts((a) => ({ ...a, [orderId]: "" }));
-      setNotice(`Оплата по заказу #${orderId} принята — долг уменьшен сразу.`);
-      await reload();
-    } catch (e) {
-      setError(apiError(e));
-    } finally {
-      setBusyId(null);
-    }
-  }
 
   return (
     <AppShell
@@ -117,7 +94,6 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
         />
       </section>
 
-      {error && <p className="mb-4 text-sm text-[var(--destructive)]">{error}</p>}
       {notice && (
         <p className="mb-4 rounded-lg border border-[var(--success)]/30 bg-[var(--success)]/10 px-3 py-2 text-sm text-[var(--success)]">
           {notice}
@@ -187,24 +163,16 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                       </span>
                     </div>
                   )}
-                  {isAccountant && remaining > 0 && (
-                    <div className="flex gap-2 border-t pt-3">
-                      <Input
-                        type="number"
-                        placeholder="Сумма"
-                        disabled={blocked}
-                        value={amounts[o.id] ?? ""}
-                        onChange={(e) => setAmounts((a) => ({ ...a, [o.id]: e.target.value }))}
-                      />
-                      <Button
-                        size="sm"
-                        disabled={blocked || busyId === o.id || !amounts[o.id]}
-                        onClick={() => pay(o.id)}
-                      >
-                        Внести
-                      </Button>
-                    </div>
-                  )}
+                  <OrderPaymentActions
+                    order={o}
+                    me={me}
+                    className="border-t pt-3"
+                    blockedReason={blocked ? "Сегодня не день оплаты по расписанию магазина" : null}
+                    onChanged={(message) => {
+                      setNotice(message);
+                      void reload();
+                    }}
+                  />
                 </CardContent>
               </Card>
             );
