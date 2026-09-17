@@ -62,6 +62,9 @@ class ReconciliationStats:
     missing: int = 0
     unexpected: int = 0
     failed: int = 0
+    # Счета отдела без ключа ApiPay: это настройка, а не сбой сверки —
+    # повтор с backoff её не исправит, и монитор из-за неё не «болеет».
+    unconfigured: int = 0
 
 
 def _response_invoices(response: object) -> list[dict[str, Any]]:
@@ -112,8 +115,8 @@ def _department_batches(
 ):
     """Батчи внутри одного отдела: у каждого отдела свой ключ ApiPay.
 
-    Группа без ключа считается упавшей и не трогает ``updated_at``: как только
-    суперюзер подключит Kaspi отделу, счета сверятся в следующем цикле.
+    Группа без ключа учитывается как ``unconfigured`` и не трогает ``updated_at``:
+    как только суперюзер подключит Kaspi отделу, счета сверятся в следующем цикле.
     """
     grouped: dict[str, list[ApiPayInvoice]] = {}
     for record in candidates:
@@ -124,7 +127,7 @@ def _department_batches(
                 department_code
             )
         except ApiPayConfigurationError as exc:
-            stats.failed += len(records)
+            stats.unconfigured += len(records)
             log.warning(
                 "ApiPay reconciliation skipped department=%r: %s",
                 department_code,

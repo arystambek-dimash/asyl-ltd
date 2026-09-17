@@ -766,6 +766,8 @@ def test_reconciliation_skips_department_without_key(check_statuses):
 
     check_statuses.assert_not_called()
     assert stats.selected == 1
-    assert stats.failed == 1
+    # Отдел без ключа — не сбой: монитор не уходит в error и не блокирует деплой.
+    assert stats.failed == 0
+    assert stats.unconfigured == 1
     assert stats.batches == 0
     assert ApiPayInvoice.objects.get(pk=record.pk).updated_at == before

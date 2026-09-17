@@ -248,6 +248,7 @@ class ApiPayReconciliationResult:
             f"missing={self.invoices.missing} "
             f"unexpected={self.invoices.unexpected} "
             f"failed={self.invoices.failed} "
+            f"unconfigured={self.invoices.unconfigured} "
             f"inbox_processed={self.inbox.get('processed', 0)} "
             f"inbox_waiting={self.inbox.get('waiting_for_invoice', 0)} "
             f"inbox_failed={self.inbox.get('failed', 0)} "
