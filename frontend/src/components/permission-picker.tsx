@@ -14,6 +14,7 @@ const PERM_SECTION_LABELS: Record<string, string> = {
   shipping: "Пост отгрузки",
   ai_247: "AI 24/7",
   train: "Вагон",
+  loader: "Грузчик",
   events: "Журнал",
   reports: "Отчёты",
   employees: "Сотрудники",

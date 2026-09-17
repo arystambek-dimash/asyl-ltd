@@ -8,6 +8,7 @@ import { paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 import { currencySymbol, formatMoney } from "@/lib/utils";
 import { QrCodeImage } from "./qr-code-image";
+import { QrRefundModal } from "./qr-refund-modal";
 import { TransactionActions, transactionActions, type TransactionActionHandlers } from "./transaction-actions";
 import { TransactionDetail } from "./transaction-detail";
 import type { Transactions } from "./use-transactions";
@@ -67,6 +68,10 @@ export function TransactionModals({
       t.closeStatus();
       t.openRefund(payment);
     },
+    openQrRefund: (payment) => {
+      t.closeStatus();
+      t.openQrRefund(payment);
+    },
     openReject: (payment) => {
       t.closeStatus();
       t.openReject(payment);
@@ -87,9 +92,11 @@ export function TransactionModals({
         eyebrow={t.refundFor?.provider ? "ApiPay · Возврат" : "Касса · Возврат"}
         title="Вернуть оплату"
         description={
-          t.refundFor?.provider
-            ? "Возврат будет отправлен через ApiPay. Деньги учтутся после подтверждения платёжного сервиса."
-            : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
+          t.refundFor?.provider?.channel === "qr"
+            ? "Kaspi вернёт оплату по QR только после подтверждения покупателем: вы получите ссылку, которую нужно ему отправить."
+            : t.refundFor?.provider
+              ? "Возврат будет отправлен через ApiPay. Деньги учтутся после подтверждения платёжного сервиса."
+              : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
         }
         footer={
           <>
@@ -97,7 +104,7 @@ export function TransactionModals({
               Отмена
             </Button>
             <Button disabled={t.busy || !t.amount || !t.reason.trim()} onClick={() => void t.refund()}>
-              {t.busy ? "Отправка…" : "Оформить возврат"}
+              {t.busy ? "Отправка…" : t.refundFor?.provider?.channel === "qr" ? "Получить ссылку" : "Оформить возврат"}
             </Button>
           </>
         }
@@ -209,6 +216,15 @@ export function TransactionModals({
       />
 
       {t.qrFor && <PaymentQrPreview payment={t.qrFor} onClose={() => t.setQrFor(null)} />}
+      {t.qrRefund && (
+        <QrRefundModal
+          key={t.qrRefund.payment.id}
+          payment={t.qrRefund.payment}
+          initial={t.qrRefund.initial}
+          onClose={() => t.setQrRefund(null)}
+          onChanged={t.refreshFromStart}
+        />
+      )}
     </>
   );
 }

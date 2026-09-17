@@ -115,13 +115,12 @@ def test_transaction_history_is_paginated_with_complete_currency_totals(
 def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
     api_request, auth_client, accountant,
 ):
+    # QR-оплату Kaspi возвращает только после подтверждения покупателем по ссылке.
     api_request.return_value = {
-        "refund": {
-            "id": 502,
-            "amount": "1.00",
-            "status": "pending",
-            "reason": "Тестовый платёж",
-        }
+        "id": 42,
+        "status": "awaiting_customer",
+        "customer_url": "https://qr.apipay.kz/refund/token",
+        "link_expires_at": "2026-09-18T10:00:00+00:00",
     }
     client = Client.objects.create_with_user(
         first_name="Возврат", phone="87770000000"
@@ -158,7 +157,7 @@ def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
     )
 
     assert response.status_code == 201
-    assert response.data["method"] == "apipay"
+    assert response.data["method"] == "apipay_qr"
     assert response.data["status"] == "pending"
     payment.refresh_from_db()
     order.refresh_from_db()
@@ -174,10 +173,7 @@ def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
     assert serialized["refunds"][0]["reason"] == "Тестовый платёж"
     assert serialized["refunds"][0]["status"] == "pending"
     api_request.assert_called_once_with(
-        "POST",
-        "/invoices/990/refund",
-        {"amount": 1.0, "reason": "Тестовый платёж"},
-        credentials=ANY,
+        "POST", "/qr-refunds/links", {}, credentials=ANY,
     )
 
 

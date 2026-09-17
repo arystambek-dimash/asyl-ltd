@@ -51,3 +51,32 @@ it("lets the cashier reject a manual payment that is still open", () => {
   });
   expect(actions.map((action) => action.key)).toEqual(["reject"]);
 });
+
+it("shows the buyer-link refund state for a Kaspi QR payment with a pending link refund", async () => {
+  const h = { ...handlers(), openQrRefund: vi.fn() };
+  const qrPayment: Payment = {
+    ...confirmed,
+    method: "kaspi",
+    pending_refund_amount: "100",
+    available_for_refund: "0",
+    refunds: [
+      {
+        id: 1,
+        amount: "100",
+        method: "apipay_qr",
+        status: "pending",
+        reason: "Ошибочная оплата",
+        requested_by_name: null,
+        completed_at: null,
+        created_at: "2026-09-17T10:00:00",
+      },
+    ],
+  };
+
+  const actions = transactionActions(qrPayment, h, { canConfirm: true, canCreate: false });
+
+  expect(actions.map((action) => action.key)).toEqual(["receipt", "qr_refund"]);
+  render(<TransactionActions actions={actions} layout="list" />);
+  await userEvent.click(screen.getByRole("button", { name: /Возврат по ссылке/ }));
+  expect(h.openQrRefund).toHaveBeenCalledWith(qrPayment);
+});

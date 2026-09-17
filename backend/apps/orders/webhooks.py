@@ -41,6 +41,14 @@ INVOICE_STATUS_EVENTS = frozenset({
     "invoice.status_changed",
     "invoice.qr_scanned",
 })
+# Возврат по Kaspi QR через ссылку покупателю: в событии нет счёта, только сессия.
+QR_REFUND_EVENTS = frozenset({
+    "qr_refund.identified",
+    "qr_refund.completed",
+    "qr_refund.expired",
+    "qr_refund.failed",
+    "qr_refund.execution_uncertain",
+})
 WEBHOOK_PROCESSING_ERRORS = (
     KeyError,
     TypeError,
@@ -147,6 +155,15 @@ def _event_metadata(
     payload: dict, event_name: str
 ) -> tuple[dict | None, int | None, str | None]:
     """Validate routing fields and build ApiPay's documented dedupe key."""
+    if event_name in QR_REFUND_EVENTS:
+        qr_refund = payload.get("qr_refund")
+        if not isinstance(qr_refund, dict):
+            raise WebhookPayloadError("qr_refund_required")
+        session_id = _positive_int(qr_refund.get("id"), "qr_refund_id_required")
+        qr_status = qr_refund.get("status")
+        if not isinstance(qr_status, str) or not qr_status or len(qr_status) > 40:
+            raise WebhookPayloadError("qr_refund_status_required")
+        return None, None, f"qr_refund:{session_id}:{qr_status}"
     if event_name not in INVOICE_EVENTS:
         return None, None, None
 
@@ -222,6 +239,8 @@ def _replay_one_webhook(event_id: int) -> str:
         )
         if event.processed_at is not None:
             return "already_processed"
+        if event.event in QR_REFUND_EVENTS:
+            return _replay_qr_refund_event(event)
         if event.event not in INVOICE_EVENTS:
             event.processed_at = timezone.now()
             event.processing_error = ""
@@ -290,6 +309,46 @@ def _replay_one_webhook(event_id: int) -> str:
             "next_attempt_at",
         ])
         return "processed"
+
+
+def _replay_qr_refund_event(event: ApiPayWebhookEvent) -> str:
+    """Применить событие QR-возврата под блокировкой события (вызывается из транзакции)."""
+    from .models import ApiPayQrRefund
+    from .qr_refunds import apply_qr_refund_snapshot, auto_execute_qr_refund
+
+    qr_payload = event.payload.get("qr_refund") or {}
+    session = (
+        ApiPayQrRefund.objects.select_related("invoice__payment__order")
+        .filter(session_id=qr_payload.get("id"))
+        .first()
+    )
+    if session is None:
+        _defer_locked_event(event, "waiting_for_qr_refund")
+        return "waiting_for_invoice"
+    if event.department_id is not None and _invoice_department_code(session.invoice) != event.department.code:
+        _defer_locked_event(event, "qr_refund_department_mismatch")
+        return "failed"
+    try:
+        needs_execute = apply_qr_refund_snapshot(session.pk, qr_payload, source="webhook")
+    except WEBHOOK_PROCESSING_ERRORS as exc:
+        _defer_locked_event(event, str(exc))
+        return "failed"
+    event.invoice = session.invoice
+    event.processed_at = timezone.now()
+    event.processing_error = ""
+    event.next_attempt_at = None
+    event.save(update_fields=["invoice", "processed_at", "processing_error", "next_attempt_at"])
+    if needs_execute:
+        # Денежный запрос — только после коммита события и вне его блокировки.
+        transaction.on_commit(lambda: _auto_execute_safely(auto_execute_qr_refund, session.pk))
+    return "processed"
+
+
+def _auto_execute_safely(executor, session_pk: int) -> None:
+    try:
+        executor(session_pk)
+    except Exception:  # pragma: no cover - сверка повторит выбор покупки
+        logger.exception("ApiPay QR refund auto-execute failed session_pk=%s", session_pk)
 
 
 def replay_pending_apipay_webhooks(

@@ -241,6 +241,7 @@ def api_request(
     payload: dict[str, Any] | None = None,
     *,
     credentials: ApiPayCredentials,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Call ApiPay with the department's server-side X-API-Key header."""
     body = None
@@ -259,7 +260,7 @@ def api_request(
     )
     try:
         with urllib.request.urlopen(
-            request, timeout=settings.APIPAY_TIMEOUT_SECONDS
+            request, timeout=timeout or settings.APIPAY_TIMEOUT_SECONDS
         ) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:

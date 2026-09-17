@@ -191,7 +191,7 @@ def test_global_admin_creates_order_in_client_department(sale, auth_client, boss
     assert response.data["department"] == department.code
 
 
-def test_department_staff_cannot_reject_foreign_requests(
+def test_department_staff_reject_foreign_requests_but_reports_stay_scoped(
     sale, auth_client, user_with_perms
 ):
     client, dept, _ = sale
@@ -204,15 +204,17 @@ def test_department_staff_cannot_reject_foreign_requests(
     user.employee.save(update_fields=["sales_department"])
     order = Order.objects.create(client=client, department=dept.code, status="pending")
     api = auth_client(user)
+    # Заявки — общая очередь кассы: отклоняет сотрудник любого отдела.
     assert (
         api.post(
             f"/api/orders/{order.pk}/reject/", {"reason": "Нет товара"}
         ).status_code
-        == 404
+        == 200
     )
     assert api.get("/api/reports/summary/").data["departments"] == []
     order.refresh_from_db()
-    assert order.status == "pending"
+    assert order.status == "rejected"
+    assert order.department == dept.code
 
 
 def test_report_departments_reconcile_across_periods_currencies_and_refunds(sale):

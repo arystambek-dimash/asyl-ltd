@@ -420,6 +420,56 @@ it("locks a cashier to the department from the employee card", async () => {
   expect(mocks.get.mock.calls.some(([url]) => String(url).includes("department=main"))).toBe(false);
 });
 
+it("shows a locked cashier the shared queue of every department, keeping the rest on their own", async () => {
+  const user = userEvent.setup();
+  mocks.pendingCount = 2;
+  mocks.me = {
+    ...mocks.me,
+    is_superuser: false,
+    permissions: ["payments.confirm", "payments.view", "reports.view", "orders.view", "orders.confirm"],
+    sales_department: { id: 2, code: "field", name: "Нью-Сити", color: "#654321" },
+  };
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/payments-queue/" && url.searchParams.get("summary") !== "1") {
+      const own = { ...queueItem, id: 1, order: 11, department: "field", department_name: "Нью-Сити" };
+      const foreign = { ...queueItem, id: 2, order: 12, department: "main", department_name: "Мельница" };
+      return { data: { results: [own, foreign], count: 2, next: null } };
+    }
+    return baseGet(raw);
+  });
+  const urls = () => mocks.get.mock.calls.map(([url]) => String(url));
+  render(<CashierPage />);
+  const menu = within(await screen.findByRole("navigation", { name: "Разделы кассы" }));
+  await waitFor(() => expect(menu.getByText("2 заявки · 1 оплата на 100 ₸")).toBeInTheDocument());
+  // Счётчики очереди на главной — по всем отделам; долги и отчёт — по своему.
+  expect(urls()).toContain("/orders/payments-queue/?summary=1");
+  expect(urls()).toContain("/orders/?status_group=pending&confirm_queue=1&page=1&page_size=1");
+  await waitFor(() => expect(urls()).toContain("/clients/debts/?department=field"));
+  expect(urls()).toContain(`/reports/summary/?section=income&from=${todayIso}&to=${todayIso}&department=field`);
+
+  await user.click(menu.getByRole("button", { name: /Заявки и оплаты/ }));
+  expect(await screen.findByRole("heading", { name: "Заявки и оплаты" })).toBeInTheDocument();
+  expect(screen.getByTestId("section")).toHaveTextContent("Все отделы");
+  await waitFor(() => expect(urls()).toContain("/orders/payments-queue/?page=1&page_size=50"));
+  expect(urls()).toContain("/orders/?status_group=pending&confirm_queue=1&page=1&page_size=50");
+  expect(urls().filter((url) => /^\/orders\/(payments-queue\/)?\?/.test(url) && url.includes("department="))).toEqual(
+    [],
+  );
+  // Бейдж отдела показывает, чья оплата; карточку чужого заказа касса не открывает.
+  expect(screen.getByRole("link", { name: "Заказ #11" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Заказ #12" })).not.toBeInTheDocument();
+  expect(screen.getByText("Заказ #12")).toBeInTheDocument();
+  expect(screen.getByText("Мельница")).toBeInTheDocument();
+  await user.click(screen.getAllByRole("button", { name: "Подтвердить получение" })[1]);
+  await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/12/payments/2/confirm/"));
+
+  await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
+  await user.click(await screen.findByRole("button", { name: /Журнал/ }));
+  await waitFor(() => expect(urls()).toContain("/orders/cashier-log/?department=field&page=1&page_size=50"));
+});
+
 it("opens the only available section directly, without a home screen or a bar", async () => {
   mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.view"] };
   render(<CashierPage />);

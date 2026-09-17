@@ -381,13 +381,13 @@ def test_portal_debt_choice_does_not_bulk_reject_pending_payments(
 def test_explicit_apipay_refund_supports_paid_qr_without_cash_fallback(
     api_request, auth_client, accountant,
 ):
+    # Kaspi не возвращает оплату по QR запросом /invoices/{id}/refund
+    # (refund_requires_buyer_confirmation) — касса получает ссылку для покупателя.
     api_request.return_value = {
-        "refund": {
-            "id": 808,
-            "amount": "10.00",
-            "status": "pending",
-            "reason": "Проверка явного режима",
-        }
+        "id": 42,
+        "status": "awaiting_customer",
+        "customer_url": "https://qr.apipay.kz/refund/token",
+        "link_expires_at": "2026-09-18T10:00:00+00:00",
     }
     order = _order()
     payment = Payment.objects.create(
@@ -417,19 +417,17 @@ def test_explicit_apipay_refund_supports_paid_qr_without_cash_fallback(
     )
 
     assert response.status_code == 201
-    assert response.data["method"] == "apipay"
+    assert response.data["method"] == "apipay_qr"
     assert response.data["status"] == "pending"
+    assert response.data["qr_refund"]["customer_url"] == "https://qr.apipay.kz/refund/token"
     local_refund = PaymentRefund.objects.get(payment=payment)
-    assert local_refund.method == "apipay"
+    assert local_refund.method == "apipay_qr"
     assert local_refund.status == "pending"
     payment.refresh_from_db()
     assert payment.refunded_amount == Decimal("0.00")
     assert payment.pending_refund_amount == Decimal("10.00")
     api_request.assert_called_once_with(
-        "POST",
-        "/invoices/707/refund",
-        {"amount": 10.0, "reason": "Проверка явного режима"},
-        credentials=ANY,
+        "POST", "/qr-refunds/links", {}, credentials=ANY,
     )
 
 

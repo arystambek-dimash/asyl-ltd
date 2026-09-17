@@ -140,7 +140,7 @@ export function MobileCashier({ model }: { model: CashierModel }) {
           SCREEN_TITLES[screen]
         )
       }
-      section={view === "home" ? scope.cashier || "Касса" : scope.name}
+      section={view === "home" ? scope.cashier || "Касса" : view === "confirm" ? scope.queueName : scope.name}
       back={showBack ? { label: "Назад в кассу", onClick: back } : undefined}
       trailing={filterScreen ? <FilterButton count={activeFilters} onClick={() => setFiltersOpen(true)} /> : undefined}
       footer={

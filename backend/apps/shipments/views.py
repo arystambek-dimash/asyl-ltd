@@ -1,21 +1,42 @@
+from datetime import date
 from typing import ClassVar
 
+from django.db.models import F
+from django.db.models.functions import Coalesce, TruncDate
+from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from apps.common.permissions import PermViewSetMixin
+from apps.common.pagination import OptInPageNumberPagination
+from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
+from apps.common.query_params import parse_date_range, parse_search_param
 from apps.orders.models import Order
+from apps.orders.querysets import filter_order_search
 from apps.sales.access import scope_by_client_department
 
-from .serializers import ArrivalSerializer, LoadSerializer, ShipmentSerializer
+from .models import WaybillSettings
+from .serializers import (
+    ArrivalSerializer,
+    LoadSerializer,
+    LoaderDispatchSerializer,
+    LoaderOrderSerializer,
+    ShipmentSerializer,
+    WaybillSettingsSerializer,
+)
 from .services import (
+    DISPATCHABLE_STATUSES,
+    dispatch_order,
     finish_loading,
     record_arrival,
     record_count,
     record_shipment,
     rewind_loading,
 )
+from .waybill import build_waybill_pdf
 
 
 class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
@@ -73,3 +94,91 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     def ship(self, request, pk=None):
         shipment = record_shipment(self.get_object(), request.user)
         return Response(ShipmentSerializer(shipment).data)
+
+
+class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
+    """Страница грузчика: очередь к отгрузке, одна кнопка «Отгружено», история и накладная."""
+
+    serializer_class = LoaderOrderSerializer
+    pagination_class = OptInPageNumberPagination
+    required_perms: ClassVar[dict[str, str]] = {
+        "queue": "loader.view",
+        "history": "loader.view",
+        "waybill": "loader.view",
+        "confirm": "loader.confirm",
+    }
+
+    def get_queryset(self):
+        queryset = Order.objects.select_related("client__user", "shipment").prefetch_related("items__product")
+        return scope_by_client_department(queryset, self.request.user, client_path="client")
+
+    def _page(self, queryset):
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        return Response(self.get_serializer(queryset, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="queue")
+    def queue(self, request):
+        """Ждут отгрузки. ``day`` — плановый день (дата приезда или создания), без него — все."""
+        queryset = self.get_queryset().filter(status__in=DISPATCHABLE_STATUSES).annotate(
+            planned_on=Coalesce("arrival_date", TruncDate("created_at")),
+        )
+        raw_day = request.query_params.get("day")
+        if raw_day:
+            try:
+                queryset = queryset.filter(planned_on=date.fromisoformat(raw_day))
+            except ValueError as exc:
+                raise ValidationError({"day": "Дата в формате ГГГГ-ММ-ДД"}) from exc
+        queryset = filter_order_search(queryset, parse_search_param(request.query_params.get("search")))
+        return self._page(queryset.order_by("planned_on", "id"))
+
+    @action(detail=False, methods=["get"], url_path="history")
+    def history(self, request):
+        """Отгруженные за период по времени выезда; по умолчанию — сегодня."""
+        date_from, date_to = parse_date_range(request.query_params)
+        today = timezone.localdate()
+        queryset = self.get_queryset().filter(
+            status="shipped",
+            shipment__shipped_at__date__gte=date_from or today,
+            shipment__shipped_at__date__lte=date_to or date_from or today,
+        )
+        queryset = filter_order_search(queryset, parse_search_param(request.query_params.get("search")))
+        return self._page(queryset.order_by(F("shipment__shipped_at").desc(nulls_last=True), "-id"))
+
+    @action(detail=True, methods=["post"], url_path="dispatch")
+    def confirm(self, request, pk=None):
+        serializer = LoaderDispatchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        dispatch_order(self.get_object(), request.user, truck_number=serializer.validated_data["truck_number"])
+        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+
+    @action(detail=True, methods=["get"], url_path="waybill")
+    def waybill(self, request, pk=None):
+        order = self.get_object()
+        if order.status != "shipped":
+            raise ValidationError({
+                "detail": "Накладная печатается после отгрузки",
+                "code": "waybill_not_available",
+            })
+        response = HttpResponse(build_waybill_pdf(order), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="nakladnaya_{order.pk}.pdf"'
+        return response
+
+
+class WaybillSettingsView(PermAPIViewMixin, APIView):
+    """Шапка и подписи накладной: видит грузчик, меняет администратор доступов."""
+
+    required_perms: ClassVar[dict] = {
+        "get": ("loader.view", "loader.confirm"),
+        "put": "sys_permissions.manage",
+    }
+
+    def get(self, request):
+        return Response(WaybillSettingsSerializer(WaybillSettings.load()).data)
+
+    def put(self, request):
+        serializer = WaybillSettingsSerializer(WaybillSettings.load(), data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

@@ -198,7 +198,7 @@ def _operation_description(operation: StatementOperation) -> tuple[str, str]:
             raise ValueError("Refund operation must contain a refund")
         method = (
             "ApiPay"
-            if refund.method == "apipay"
+            if refund.method in ("apipay", "apipay_qr")
             else payment_method_label(refund.method, archived_hint=True)
         )
         return "Возврат", method

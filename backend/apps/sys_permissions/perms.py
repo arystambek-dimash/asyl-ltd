@@ -11,6 +11,8 @@ _SECTIONS = {
     "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
     "ai_247": ("AI 24/7", ["manage"]),
     "train": ("Вагон", ["view", "load"]),
+    # Страница грузчика: очередь отгрузки, одна кнопка «Отгружено» и накладная.
+    "loader": ("Грузчик", ["view", "confirm"]),
     "events": ("Журнал", ["view"]),
     "reports": ("Отчёты", ["view", "export"]),
     "employees": ("Сотрудники", ["view", "manage"]),

@@ -19,13 +19,19 @@ import {
   ALL_DEPARTMENTS,
   cashierName,
   departmentScope,
+  queueDepartment,
   readStoredDepartment,
   scopeLabel,
   storeDepartment,
 } from "./scope";
 import { debtTotals, incomeTotals, queueTotals, type IncomeSummary, type QueueTotal } from "./totals";
-import { useCashierQueue } from "./use-cashier-queue";
+import { PENDING_REQUESTS_PARAMS, useCashierQueue } from "./use-cashier-queue";
 import type { CashView, CashierPerms } from "./view";
+
+/** Фильтры экрана с отделом кассы; null — отдел не навязывается. */
+function withDepartment(filters: CashFilters, department: string | null): CashFilters {
+  return department === null ? filters : { ...filters, department };
+}
 
 /**
  * Данные кассы для обеих раскладок. Активные запросы зависят от экрана:
@@ -33,7 +39,8 @@ import type { CashView, CashierPerms } from "./view";
  * (телефон) — те же три запроса без фильтров, сводка строго за сегодня;
  * отчёт и долги на телефоне — свои фильтры; очередь и журнал — одинаково везде.
  * POS — список должников без фильтров для поиска клиента.
- * На телефоне отдел для всех экранов задаёт переключатель в шапке.
+ * На телефоне отдел для всех экранов задаёт переключатель в шапке, кроме очереди
+ * «Заявки и оплаты»: она общая для всех отделов (см. queueDepartment).
  */
 export function useCashier({
   view,
@@ -64,7 +71,8 @@ export function useCashier({
 
   // Отдел кассы: закреплённый в карточке сотрудника или выбранный в шапке (запоминается на устройстве
   // отдельно для каждого пользователя — телефон у кассиров может быть общий).
-  const { assigned, switchable } = departmentScope(me);
+  const departmentAccess = departmentScope(me);
+  const { assigned, switchable } = departmentAccess;
   const userId = me?.id;
   const [chosen, setChosen] = useState(
     () => readStoredDepartment(userId) ?? me?.sales_department?.code ?? ALL_DEPARTMENTS,
@@ -86,22 +94,21 @@ export function useCashier({
   // Касса на телефоне работает по одному отделу: закреплённому или выбранному в шапке.
   const department = assigned ? assigned.code : chosen;
   const scopeDepartment = mobile ? department : null;
+  // Очередь «Заявки и оплаты» общая: закреплённый отдел её не сужает.
+  const queueScopeDepartment = mobile ? queueDepartment(departmentAccess, chosen) : null;
   // Экранные фильтры с отделом из шапки; на десктопе отдел остаётся в панели фильтров.
-  const scoped = useMemo<CashFiltersByScreen>(() => {
-    if (scopeDepartment === null) return filtersByScreen;
-    const withDepartment = (screen: CashFilters): CashFilters => ({ ...screen, department: scopeDepartment });
-    return {
+  const scoped = useMemo<CashFiltersByScreen>(
+    () => ({
       overview: filtersByScreen.overview,
-      report: withDepartment(filtersByScreen.report),
-      debts: withDepartment(filtersByScreen.debts),
-      confirm: withDepartment(filtersByScreen.confirm),
-      journal: withDepartment(filtersByScreen.journal),
-    };
-  }, [filtersByScreen, scopeDepartment]);
-  const scopedEmpty = useMemo<CashFilters>(
-    () => (scopeDepartment === null ? EMPTY_CASH_FILTERS : { ...EMPTY_CASH_FILTERS, department: scopeDepartment }),
-    [scopeDepartment],
+      report: withDepartment(filtersByScreen.report, scopeDepartment),
+      debts: withDepartment(filtersByScreen.debts, scopeDepartment),
+      confirm: withDepartment(filtersByScreen.confirm, queueScopeDepartment),
+      journal: withDepartment(filtersByScreen.journal, scopeDepartment),
+    }),
+    [filtersByScreen, queueScopeDepartment, scopeDepartment],
   );
+  const scopedEmpty = useMemo(() => withDepartment(EMPTY_CASH_FILTERS, scopeDepartment), [scopeDepartment]);
+  const queueEmpty = useMemo(() => withDepartment(EMPTY_CASH_FILTERS, queueScopeDepartment), [queueScopeDepartment]);
 
   const overviewActive = !mobile && view === "overview";
   const homeActive = mobile && view === "home";
@@ -123,7 +130,7 @@ export function useCashier({
       : homeActive || posActive
         ? scopedEmpty
         : null;
-  const queueSummaryFilters = overviewActive ? scoped.overview : homeActive ? scopedEmpty : null;
+  const queueSummaryFilters = overviewActive ? scoped.overview : homeActive ? queueEmpty : null;
 
   const summaryUrl =
     perms.canReports && summaryFilters && filtersAreValid(summaryFilters)
@@ -153,10 +160,10 @@ export function useCashier({
   const summary = useApi<IncomeSummary>(summaryUrl);
   const debts = useApi<ClientDebt[]>(debtsUrl);
   const queueSummary = useApi<QueueTotal[]>(queueSummaryUrl);
-  // Главной нужно только число заявок (по отделу кассы, как и очередь); сами заявки грузит экран очереди.
+  // Главной нужно только число заявок (по тому же отбору, что и очередь); сами заявки грузит экран очереди.
   const pendingCount = usePagedApi<Order>(
     homeActive && perms.canReviewOrders
-      ? apiUrl("/orders/", { ...scopeParams(scopedEmpty), status_group: "pending", with_unassigned: "1" })
+      ? apiUrl("/orders/", { ...scopeParams(queueEmpty), ...PENDING_REQUESTS_PARAMS })
       : null,
     1,
   );
@@ -233,6 +240,8 @@ export function useCashier({
       setDepartment,
       cashier: cashierName(me),
       ...scopeLabel(department, departments ?? [], assigned),
+      /** Подпись очереди «Заявки и оплаты»: у закреплённого кассира — все отделы. */
+      queueName: scopeLabel(queueScopeDepartment ?? ALL_DEPARTMENTS, departments ?? [], null).name,
     },
     income: incomeTotals(summary.data),
     incomeReady: summary.data !== null && !summary.error,

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiError } from "@/lib/api";
 import { PAYMENT_STAGE_LABELS } from "@/lib/constants";
 import { downloadBlob } from "@/lib/download";
-import type { Payment } from "@/lib/types";
+import type { Payment, QrRefundState } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -110,6 +110,8 @@ export function useTransactions({
   const [rejectFor, setRejectFor] = useState<Payment | null>(null);
   const [restoreFor, setRestoreFor] = useState<Payment | null>(null);
   const [qrFor, setQrFor] = useState<Payment | null>(null);
+  // Возврат по Kaspi QR: ответ POST сразу показывает ссылку, дальше окно опрашивает сервер.
+  const [qrRefund, setQrRefund] = useState<{ payment: Payment; initial: QrRefundState | null } | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
@@ -145,11 +147,11 @@ export function useTransactions({
     setBusy(true);
     setError("");
     try {
-      await api.post(`/payment-transactions/${refundFor.id}/refund/`, {
-        amount: amount || undefined,
-        reason,
-        mode: "auto",
-      });
+      const response = await api.post<{ method: string; qr_refund?: QrRefundState }>(
+        `/payment-transactions/${refundFor.id}/refund/`,
+        { amount: amount || undefined, reason, mode: "auto" },
+      );
+      if (response.data.qr_refund) setQrRefund({ payment: refundFor, initial: response.data.qr_refund });
       setRefundFor(null);
       setAmount("");
       setReason("");
@@ -222,6 +224,10 @@ export function useTransactions({
     setAmount(row.available_for_refund ?? "");
     setReason("");
   }
+  function openQrRefund(row: Payment) {
+    setError("");
+    setQrRefund({ payment: row, initial: null });
+  }
   function openReject(row: Payment) {
     setError("");
     setRejectFor(row);
@@ -272,6 +278,9 @@ export function useTransactions({
     setRestoreFor,
     qrFor,
     setQrFor,
+    qrRefund,
+    setQrRefund,
+    openQrRefund,
     rejectReason,
     setRejectReason,
     amount,

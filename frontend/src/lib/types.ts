@@ -442,7 +442,7 @@ export interface Payment {
   refunds?: {
     id: number;
     amount: string;
-    method: "apipay" | "cash";
+    method: "apipay" | "apipay_qr" | "cash";
     status: "pending" | "completed" | "failed";
     reason: string;
     requested_by_name: string | null;
@@ -1445,5 +1445,32 @@ export interface GrainTimelineEvent {
   message: string;
   user_name: string | null;
   payload: Record<string, unknown>;
+  created_at: string;
+}
+
+/** Возврат по Kaspi QR через ссылку покупателю (GET /payment-transactions/{id}/qr-refund/). */
+export interface QrRefundState {
+  id: number;
+  status:
+    | "issuing"
+    | "awaiting_customer"
+    | "activating"
+    | "awaiting_scan"
+    | "customer_identified"
+    | "executing"
+    | "completed"
+    | "execution_uncertain"
+    | "expired"
+    | "failed";
+  amount: string;
+  refunded_amount: string | null;
+  client_name: string | null;
+  /** Ссылка для покупателя — только пока он её не открыл. */
+  customer_url: string | null;
+  link_expires_at: string | null;
+  operations: { ref: string; amount: string; date: string | null; returnable: string; client_name: string | null }[];
+  receipt_url: string | null;
+  error_code: string | null;
+  error_message: string | null;
   created_at: string;
 }

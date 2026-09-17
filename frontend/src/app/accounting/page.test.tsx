@@ -4,13 +4,21 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
 import CashierPage from "./page";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), paid: false, queueError: false, poll: async () => {} }));
+const SUPERUSER = { is_superuser: true, permissions: [] as string[] };
+const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
+  post: vi.fn(),
+  paid: false,
+  queueError: false,
+  poll: async () => {},
+  me: null as unknown,
+}));
 vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: (poll: () => Promise<void>, _interval: number, active: boolean) => {
     if (active) mocks.poll = poll;
   },
 }));
-vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { is_superuser: true, permissions: [] }, loading: false }) }));
+vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
 vi.mock("@/components/layout/app-shell", () => ({
   AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -41,6 +49,7 @@ function card(title: string) {
 }
 beforeEach(() => {
   resetNavigation("/accounting");
+  mocks.me = SUPERUSER;
   mocks.paid = false;
   mocks.queueError = false;
   mocks.get.mockReset();
@@ -152,8 +161,37 @@ it("loads only overview totals initially and fetches each confirmation page once
   await screen.findByRole("button", { name: "Подтвердить получение" });
   expect(urls().filter((url) => url === "/orders/payments-queue/?page=1&page_size=50")).toHaveLength(1);
   expect(
-    urls().filter((url) => url === "/orders/?status_group=pending&with_unassigned=1&page=1&page_size=50"),
+    urls().filter((url) => url === "/orders/?status_group=pending&confirm_queue=1&page=1&page_size=50"),
   ).toHaveLength(1);
+});
+
+it("gives a cashier locked to a department the queue of every department and links only own orders", async () => {
+  const user = userEvent.setup();
+  mocks.me = {
+    is_superuser: false,
+    permissions: ["payments.confirm", "payments.view", "reports.view", "orders.view", "orders.confirm"],
+    sales_department: { id: 1, code: "main", name: "Мельница", color: "#123456" },
+  };
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/payments-queue/" && url.searchParams.has("page")) {
+      const own = { ...queueItem, id: 1, order: 11, department: "main", department_name: "Мельница" };
+      const foreign = { ...queueItem, id: 2, order: 12, department: "field", department_name: "Нью-Сити" };
+      return { data: { results: [own, foreign], count: 2, next: null } };
+    }
+    return baseGet(raw);
+  });
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("tab", { name: /Заявки и оплаты/ }));
+  expect(await screen.findByRole("link", { name: "Заказ #11" })).toBeInTheDocument();
+  const urls = mocks.get.mock.calls.map(([url]) => String(url));
+  expect(urls).toContain("/orders/payments-queue/?page=1&page_size=50");
+  expect(urls).toContain("/orders/?status_group=pending&confirm_queue=1&page=1&page_size=50");
+  // Бейдж отдела показывает, чья оплата; карточку заказа другого отдела касса не открывает.
+  expect(screen.getByText("Нью-Сити")).toBeInTheDocument();
+  expect(screen.getByText("Заказ #12")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Заказ #12" })).not.toBeInTheDocument();
 });
 
 it("keeps entered confirmation data when a background refresh removes the row from the page", async () => {

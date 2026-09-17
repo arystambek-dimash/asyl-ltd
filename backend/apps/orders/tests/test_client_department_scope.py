@@ -120,6 +120,9 @@ def test_order_scope_covers_list_detail_and_trash(
     second = _order(
         scope["second_client"],
         department=scope["first_department"].code,
+        # Заявка (draft/pending) — общая очередь кассы, её карточку открывает
+        # любой отдел (test_shared_confirm_queue.py). Здесь — обычный заказ.
+        status="confirmed",
     )
     api = auth_client(scope["user"])
 
@@ -325,7 +328,9 @@ def test_reports_transactions_queue_log_and_department_summary_are_scoped(
     assert transactions.data["summary"]["paid_by_currency"]["KZT"] == "40.00"
     assert filtered_transactions.data["count"] == 2
     assert wrong_order_department.data["count"] == 0
-    assert [row["id"] for row in queue.data] == [first_pending.pk]
+    # Очередь подтверждения общая для всех отделов (test_shared_confirm_queue.py);
+    # отчёт, транзакции, журнал и сводка — только свой отдел.
+    assert [row["id"] for row in queue.data] == [first_pending.pk, second_pending.pk]
     assert [row["order"] for row in cashier_log.data] == [first_order.pk]
     by_code = {row["code"]: row for row in department_summary.data}
     assert by_code[order_department]["orders"] == 1
@@ -447,8 +452,7 @@ def test_post_board_and_dashboard_projection_are_ownership_scoped(
         ("post", "payments/{payment}/reopen/", {}),
         ("post", "payments/{payment}/restore/", {}),
         ("post", "payments/{payment}/reject/", {"reason": "no"}),
-        ("post", "confirm/", {}),
-        ("post", "reject/", {}),
+        # confirm/ и reject/ заявки — общая очередь кассы: test_shared_confirm_queue.py.
         ("post", "set-status/", {"status": "confirmed"}),
         ("post", "rollback-shipment/", {"reason": "no"}),
         ("get", "status-requests/", None),
@@ -468,11 +472,13 @@ def test_foreign_order_detail_actions_are_hidden_before_action_logic(
         scope["second_client"],
         department=scope["second_department"].code,
     )
+    # Подтверждённая оплата не стоит в общей очереди кассы — её действия
+    # остаются только отделу клиента.
     payment = Payment.objects.create(
         order=foreign,
         amount="10.00",
         method="cash",
-        status="received",
+        status="confirmed",
     )
     status_request = StatusChangeRequest.objects.create(
         order=foreign,
@@ -498,7 +504,7 @@ def test_foreign_order_detail_actions_are_hidden_before_action_logic(
     status_request.refresh_from_db()
     assert foreign.notes == ""
     assert foreign.status == "draft"
-    assert payment.status == "received"
+    assert payment.status == "confirmed"
     assert status_request.status == "pending"
 
 

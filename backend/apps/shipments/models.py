@@ -15,3 +15,26 @@ class Shipment(models.Model):
     arrived_at = models.DateTimeField(null=True, blank=True)
     loading_started_at = models.DateTimeField(null=True, blank=True)
     shipped_at = models.DateTimeField(null=True, blank=True)
+
+
+def default_waybill_signers():
+    # Как на бумажном бланке мельницы; меняется в настройках накладной.
+    return [
+        {"role": "Бухгалтер", "name": "Егамбердиева Д"},
+        {"role": "Склад", "name": "Тажи А"},
+        {"role": "Кассир", "name": "Ибрагимова Г"},
+    ]
+
+
+class WaybillSettings(models.Model):
+    """Шапка и подписи «Накладной на отпуск товаров» — одна строка на всё приложение."""
+
+    singleton = models.BooleanField(default=True, unique=True, editable=False)
+    point_name = models.CharField(max_length=120, default="мельница Аксу")
+    signers = models.JSONField(default=default_waybill_signers)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def load(cls) -> "WaybillSettings":
+        settings, _ = cls.objects.get_or_create(singleton=True)
+        return settings

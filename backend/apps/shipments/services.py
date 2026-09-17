@@ -727,6 +727,42 @@ def record_shipment(order, user):
     return _do_ship(order, shipment, user, label)
 
 
+# Заказ ждёт отгрузки: подтверждён и ещё не выехал — на любом шаге поста.
+DISPATCHABLE_STATUSES = ("confirmed", "arrived", "loading", "loaded")
+
+
+@transaction.atomic
+def dispatch_order(order, user, *, truck_number: str = ""):
+    """Грузчик: одна кнопка — заказ отгружен на заказанное количество.
+
+    Без въезда, счёта мешков и камер: списание со склада, долг и журнал — те же,
+    что у выезда с поста (``_do_ship``). Номер накладной — номер заказа.
+    """
+    from apps.orders.services import set_truck_number
+
+    order = _locked(order, user)
+    if order.status not in DISPATCHABLE_STATUSES:
+        raise ValidationError({
+            "detail": "Отгрузить можно только подтверждённый заказ, который ещё не выехал",
+            "code": "invalid_status",
+        })
+    _assert_no_open_ai_session(order)
+    truck_number = " ".join(str(truck_number or "").split()).upper()
+    if truck_number and truck_number != order.truck_number:
+        set_truck_number(order, truck_number, user)
+    shipment, _ = Shipment.objects.get_or_create(order=order)
+    if not shipment.bags_loaded:
+        shipment.bags_loaded = sum(item.quantity for item in order.items.all())
+    if order.transport_type == "truck":
+        shipment.truck_number = order.truck_number
+    label = (
+        f"Вагон отгружен по накладной №{order.pk}"
+        if order.transport_type == "train"
+        else f"Отгружено по накладной №{order.pk}"
+    )
+    return _do_ship(order, shipment, user, label)
+
+
 @transaction.atomic
 def start_train_loading(order, user):
     """Вагон: старт сессии загрузки (без въезда и взвешивания)."""

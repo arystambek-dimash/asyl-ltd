@@ -172,8 +172,9 @@ def test_optimized_lists_and_totals_keep_client_ownership_scope(perf_user):
     orders = api.get("/api/orders/?page=1&search=Client&ordering=amount").json()
     assert orders["count"] == 1
     assert orders["results"][0]["client"] == visible.pk
+    # Очередь подтверждения общая для всех отделов — в сводке оплаты обоих клиентов.
     assert api.get("/api/orders/payments-queue/?summary=1").json() == [
-        {"currency": "KZT", "method": "cash", "amount": "20.00", "count": 1}
+        {"currency": "KZT", "method": "cash", "amount": "40.00", "count": 2}
     ]
     debts = api.get("/api/clients/debts/").json()
     assert [row["client_id"] for row in debts] == [visible.pk]

@@ -9,6 +9,7 @@ import {
   Boxes,
   ClipboardList,
   ShoppingCart,
+  Truck,
   Users,
   ScrollText,
   ListChecks,
@@ -74,6 +75,8 @@ function staffSections(): NavSection[] {
           icon: ScanLine,
           perm: ["shipping.load", "shipping.view", "train.view"],
         },
+        // Грузчик: очередь к отгрузке, одна кнопка «Отгружено» и печать накладной.
+        { href: "/loader", label: "Отгрузка", icon: Truck, perm: "loader.view" },
         { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
         // Силосы имеют отдельное право независимо от зернового процесса.
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },

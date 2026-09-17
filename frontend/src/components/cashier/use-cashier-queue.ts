@@ -7,6 +7,12 @@ import type { CashierLogItem, Order, PaymentQueueItem } from "@/lib/types";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { apiUrl, filtersAreValid, scopeParams, type CashFilters } from "./filters";
 
+/**
+ * Заявки очереди кассы: `confirm_queue=1` открывает заявки всех отделов (очередь общая) и клиентов без отдела —
+ * при выбранном отделе касса видит их, чтобы забрать клиента к себе.
+ */
+export const PENDING_REQUESTS_PARAMS = { status_group: "pending", confirm_queue: "1" };
+
 /* ── Очередь кассира: данные и действия, общие для вкладок ─────────────── */
 // Журнал живёт на своей вкладке со своими фильтрами и ленивой подгрузкой —
 // хук очереди отдаёт только заявки и оплаты, а об изменениях сообщает
@@ -20,11 +26,8 @@ export function useCashierQueue(
   const queueActive = enabled && filtersAreValid(queueFilters);
   const queueParams = scopeParams(queueFilters);
   // Кассе нужны заявки на подтверждение и оплаты — отбор отдела общий.
-  // Заявки клиентов без отдела видны при любом отделе: касса забирает их себе.
   const pendingPage = usePagedApi<Order>(
-    queueActive && canReviewOrders
-      ? apiUrl("/orders/", { ...queueParams, status_group: "pending", with_unassigned: "1" })
-      : null,
+    queueActive && canReviewOrders ? apiUrl("/orders/", { ...queueParams, ...PENDING_REQUESTS_PARAMS }) : null,
   );
   const queuePage = usePagedApi<PaymentQueueItem>(queueActive ? apiUrl("/orders/payments-queue/", queueParams) : null);
   const { reload: reloadPending } = pendingPage;

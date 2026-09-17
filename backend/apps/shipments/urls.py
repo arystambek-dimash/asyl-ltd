@@ -1,6 +1,6 @@
 from django.urls import path
 
-from .views import ShipmentViewSet
+from .views import LoaderViewSet, ShipmentViewSet, WaybillSettingsView
 
 shipment_actions = {
     "arrive": ShipmentViewSet.as_view({"post": "arrive"}),
@@ -16,4 +16,9 @@ urlpatterns = [
     path("orders/<int:pk>/finish-loading/", shipment_actions["finish_loading"]),
     path("orders/<int:pk>/rewind-loading/", shipment_actions["rewind_loading"]),
     path("orders/<int:pk>/ship/", shipment_actions["ship"]),
+    path("loader/queue/", LoaderViewSet.as_view({"get": "queue"})),
+    path("loader/history/", LoaderViewSet.as_view({"get": "history"})),
+    path("loader/orders/<int:pk>/dispatch/", LoaderViewSet.as_view({"post": "confirm"})),
+    path("loader/orders/<int:pk>/waybill/", LoaderViewSet.as_view({"get": "waybill"})),
+    path("loader/waybill-settings/", WaybillSettingsView.as_view()),
 ]

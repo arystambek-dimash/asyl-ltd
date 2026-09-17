@@ -13,6 +13,7 @@ import { formatCurrency } from "@/lib/utils";
 import { ActionError } from "../action-error";
 import { DepartmentBadge, OrderDepartmentBadge } from "../department-badge";
 import { OrderReviewDialogs } from "../order-review-dialogs";
+import { canOpenQueueOrder } from "../scope";
 import type { CashierModel } from "../use-cashier";
 import type { CashierQueue } from "../use-cashier-queue";
 
@@ -22,12 +23,12 @@ const LIST_CLASS =
 function PaymentRow({
   p,
   q,
-  canViewOrders,
+  canOpenOrder,
   canReceive,
 }: {
   p: PaymentQueueItem;
   q: CashierQueue;
-  canViewOrders: boolean;
+  canOpenOrder: boolean;
   canReceive: boolean;
 }) {
   return (
@@ -36,7 +37,7 @@ function PaymentRow({
         <div className="min-w-0">
           <div className="text-[17px] font-bold tabular-nums">{formatCurrency(p.amount, p.currency ?? "KZT")}</div>
           <div className="mt-0.5 text-[13px] text-[var(--muted-foreground)]">
-            {canViewOrders ? (
+            {canOpenOrder ? (
               <Link
                 href={withBack(`/orders/${p.order}`, "/accounting?view=confirm")}
                 className="underline-offset-2 hover:underline"
@@ -120,7 +121,7 @@ function RequestRow({
   );
 }
 
-/** Очередь на телефоне: сегмент «Оплаты / Заявки», действия прямо в строках. */
+/** Очередь на телефоне: сегмент «Оплаты / Заявки», действия прямо в строках. Очередь общая для всех отделов. */
 export function ConfirmScreen({ model }: { model: CashierModel }) {
   const { queue: q, perms } = model;
   const [segment, setSegment] = useState<"payments" | "requests">("payments");
@@ -184,7 +185,13 @@ export function ConfirmScreen({ model }: { model: CashierModel }) {
           ) : (
             <ul className="divide-y divide-[var(--border)]">
               {q.toReview.map((p) => (
-                <PaymentRow key={p.id} p={p} q={q} canViewOrders={perms.canViewOrders} canReceive={perms.canPayments} />
+                <PaymentRow
+                  key={p.id}
+                  p={p}
+                  q={q}
+                  canOpenOrder={perms.canViewOrders && canOpenQueueOrder(model.scope.assigned, p.department)}
+                  canReceive={perms.canPayments}
+                />
               ))}
             </ul>
           )}

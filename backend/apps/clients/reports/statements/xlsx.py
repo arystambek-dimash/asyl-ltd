@@ -261,7 +261,7 @@ def _operation_display(operation):
         refund = operation.refund
         if refund is None:
             raise ValueError("Refund statement operation has no refund")
-        method = "ApiPay" if refund.method == "apipay" else _method_label(
+        method = "ApiPay" if refund.method in ("apipay", "apipay_qr") else _method_label(
             refund.method
         )
         return (

@@ -26,6 +26,7 @@ import { debtPaymentState, matchesDebtQuery } from "./debt-state";
 import { DepartmentBadge, OrderDepartmentBadge } from "./department-badge";
 import { OrderReviewDialogs } from "./order-review-dialogs";
 import { RestorePaymentDialog } from "./restore-payment-dialog";
+import { canOpenQueueOrder, type DepartmentScope } from "./scope";
 import type { CashierModel } from "./use-cashier";
 import type { CashierQueue, PagedCashierLog } from "./use-cashier-queue";
 import { useOverdueCheck } from "./use-overdue-check";
@@ -36,16 +37,19 @@ const TransactionsSection = dynamic(() =>
 );
 
 /* ── Вкладка «Подтверждение»: заявки и оплаты по всем динамическим отделам ── */
+// Очередь общая и для кассира, закреплённого за отделом; бейдж отдела на карточке говорит, чья это заявка.
 function ConfirmQueueSection({
   q,
   canViewOrders,
   canReviewOrders,
   canReceivePayments,
+  assigned,
 }: {
   q: CashierQueue;
   canViewOrders: boolean;
   canReviewOrders: boolean;
   canReceivePayments: boolean;
+  assigned: DepartmentScope["assigned"];
 }) {
   const [confirming, setConfirming] = useState<Order | null>(null);
   const [rejecting, setRejecting] = useState<Order | null>(null);
@@ -128,7 +132,7 @@ function ConfirmQueueSection({
                       {formatCurrency(p.amount, p.currency ?? "KZT")}
                     </div>
                     <div className="text-xs text-[var(--muted-foreground)]">
-                      {canViewOrders ? (
+                      {canViewOrders && canOpenQueueOrder(assigned, p.department) ? (
                         <Link
                           href={withBack(`/orders/${p.order}`, "/accounting?view=confirm")}
                           className="hover:underline"
@@ -581,6 +585,7 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
             canViewOrders={perms.canViewOrders}
             canReviewOrders={perms.canReviewOrders}
             canReceivePayments={perms.canPayments}
+            assigned={model.scope.assigned}
           />
         )}
 

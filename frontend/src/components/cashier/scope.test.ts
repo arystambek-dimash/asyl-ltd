@@ -3,8 +3,10 @@ import type { Department, Me } from "@/lib/types";
 import {
   ALL_DEPARTMENTS,
   DEPARTMENT_STORAGE_KEY,
+  canOpenQueueOrder,
   cashierName,
   departmentScope,
+  queueDepartment,
   readStoredDepartment,
   scopeLabel,
   storeDepartment,
@@ -50,6 +52,25 @@ describe("scopeLabel", () => {
     expect(scopeLabel("bran", departments, null)).toEqual({ name: "Отруби", color: "#654321" });
     expect(scopeLabel("gone", departments, null)).toEqual({ name: "Отдел", color: null });
     expect(scopeLabel("bran", departments, mill)).toEqual({ name: "Мельница", color: "#123456" });
+  });
+});
+
+describe("queueDepartment", () => {
+  it("never narrows the shared queue to the department from the employee card", () => {
+    expect(queueDepartment({ assigned: mill, switchable: false }, "main")).toBeNull();
+    expect(queueDepartment({ assigned: mill, switchable: false }, "bran")).toBeNull();
+  });
+  it("keeps the department explicitly chosen by staff without one", () => {
+    expect(queueDepartment({ assigned: null, switchable: true }, "bran")).toBe("bran");
+    expect(queueDepartment({ assigned: null, switchable: true }, ALL_DEPARTMENTS)).toBeNull();
+  });
+});
+
+describe("canOpenQueueOrder", () => {
+  it("opens only orders of the cashier's own department", () => {
+    expect(canOpenQueueOrder(mill, "main")).toBe(true);
+    expect(canOpenQueueOrder(mill, "bran")).toBe(false);
+    expect(canOpenQueueOrder(null, "bran")).toBe(true);
   });
 });
 

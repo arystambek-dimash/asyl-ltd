@@ -1,13 +1,13 @@
 "use client";
 import type { LucideIcon } from "lucide-react";
-import { Download, ExternalLink, RotateCcw, Send, Undo2, XCircle } from "lucide-react";
+import { Download, ExternalLink, Link2, RotateCcw, Send, Undo2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Payment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_PROVIDER_STATUSES = new Set(["creating", "processing", "pending", "cancelling"]);
 
-export type TransactionActionKey = "restore" | "issue" | "qr" | "receipt" | "refund" | "reject";
+export type TransactionActionKey = "restore" | "issue" | "qr" | "receipt" | "qr_refund" | "refund" | "reject";
 
 export interface TransactionAction {
   key: TransactionActionKey;
@@ -27,6 +27,8 @@ export interface TransactionActionHandlers {
   receipt: (payment: Payment) => unknown;
   issue: (payment: Payment) => unknown;
   openRefund: (payment: Payment) => void;
+  /** Возврат по Kaspi QR через ссылку покупателю: состояние и ссылка. */
+  openQrRefund?: (payment: Payment) => void;
   openReject: (payment: Payment) => void;
   openRestore: (payment: Payment) => void;
 }
@@ -81,6 +83,17 @@ export function transactionActions(
       icon: Download,
       variant: "ghost",
       run: () => void t.receipt(row),
+    });
+  }
+  const openQrRefund = t.openQrRefund;
+  if (perms.canConfirm && openQrRefund && row.refunds?.some((refund) => refund.method === "apipay_qr")) {
+    actions.push({
+      key: "qr_refund",
+      label: "Возврат по ссылке",
+      title: "Ссылка на возврат и её статус",
+      icon: Link2,
+      variant: Number(row.pending_refund_amount ?? 0) > 0 ? "outline" : "ghost",
+      run: () => openQrRefund(row),
     });
   }
   if (perms.canConfirm && row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0) {

@@ -277,6 +277,17 @@ def post_board_params(params) -> dict:
     }
 
 
+# Очередь подтверждения кассы («Заявки и оплаты»): оплата в работе без счёта
+# платёжного сервиса. Кассой вручную закрывается всё, за что сервис не
+# отвечает, — это включает старые клиентские способы оплаты, поэтому методы не
+# перечисляются: устойчивый признак один — у заявки нет счёта провайдера.
+# Очередь общая для всех отделов.
+CASHIER_QUEUE_PAYMENT = Q(
+    apipay_invoice__isnull=True,
+    status__in=Payment.IN_PROGRESS_STATUSES,
+)
+
+
 def with_payment_api_relations(
     queryset: QuerySet[Payment], *, order_context: bool = False
 ) -> QuerySet[Payment]:

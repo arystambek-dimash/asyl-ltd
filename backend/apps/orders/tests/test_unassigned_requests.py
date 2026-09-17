@@ -43,10 +43,13 @@ def test_department_queue_shows_unassigned_requests_only(auth_client, mill_cashi
     api = auth_client(mill_cashier)
 
     assert _pending_ids(api) == {request.pk}
+    assert _pending_ids(api, "&department=mill&confirm_queue=1") == {request.pk}
+    # Прежнее имя флага очереди у касс, открытых до обновления страницы.
     assert _pending_ids(api, "&department=mill&with_unassigned=1") == {request.pk}
     assert _pending_ids(api, "&department=mill") == set()
     assert api.get(f"/api/orders/{already_confirmed.pk}/").status_code == 404
-    assert api.get(f"/api/orders/{foreign.pk}/").status_code == 404
+    # Заявка другого отдела — в общей очереди кассы (test_shared_confirm_queue.py).
+    assert api.get(f"/api/orders/{foreign.pk}/").status_code == 200
 
 
 def test_order_without_department_counts_in_client_department(auth_client, mill_cashier, departments):

@@ -107,11 +107,12 @@ def test_review_is_idempotent_scoped_and_separates_queues(
     # Заявка клиента без отдела — общая очередь любого отдела.
     assert api.get("/api/orders/workflow-summary/").data["review"] == 1
     assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
-    # Клиента забрал другой отдел — заявка уходит из очереди.
+    # Клиента забрал другой отдел — заявка уходит из сводки отдела, но остаётся
+    # в общей очереди кассы: взять её на рассмотрение может любой отдел.
     other = Department.objects.create(code="other", name="Другой отдел")
     Client.objects.filter(pk=order.client_id).update(department=other)
     assert api.get("/api/orders/workflow-summary/").data["all"] == 0
-    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 404
+    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
 
 
 def test_review_requires_permission(auth_client, user_with_perms, request_order):

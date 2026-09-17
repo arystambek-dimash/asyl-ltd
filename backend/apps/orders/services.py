@@ -21,17 +21,18 @@ from .transport import validate_transport_number
 MAX_MONEY = Decimal("9999999999.99")
 
 
-def assert_order_user_scope(order: Order, user, *, allow_unassigned=False) -> None:
+def assert_order_user_scope(order: Order, user, *, any_department=False) -> None:
     """Lock and verify the client owner after the caller locks ``order``.
 
     Department reassignment locks the Client row. Taking the same row lock
     here, strictly after the Order lock, prevents an operation authorized
     against stale ownership from racing a client transfer.
 
-    ``allow_unassigned`` opens a client without a department to any department:
-    only request review (confirm/reject) uses it, the rest stays owner-only.
+    ``any_department`` — операция общей очереди подтверждения кассы («Заявки и
+    оплаты»): разбор заявки или оплаты в очереди доступен сотруднику любого
+    отдела. Всё остальное — только отделу клиента.
     """
-    if user is None:
+    if user is None or any_department:
         return
     department_id = assigned_department_id(user)
     if department_id is None:
@@ -41,13 +42,11 @@ def assert_order_user_scope(order: Order, user, *, allow_unassigned=False) -> No
         .only("department_id")
         .get(pk=order.client_id)
     )
-    if client.department_id is None and allow_unassigned:
-        return
     if client.department_id != department_id:
         raise PermissionDenied("Заказ передан в другой отдел")
 
 
-def lock_live_order(order: Order | int, user=None, *, allow_unassigned=False) -> Order:
+def lock_live_order(order: Order | int, user=None, *, any_department=False) -> Order:
     """Lock an order and reject stale operations against archived rows.
 
     Callers must already be inside ``transaction.atomic()``. Using the
@@ -68,7 +67,7 @@ def lock_live_order(order: Order | int, user=None, *, allow_unassigned=False) ->
             "detail": "Заказ находится в архиве",
             "code": "order_not_active",
         })
-    assert_order_user_scope(locked, user, allow_unassigned=allow_unassigned)
+    assert_order_user_scope(locked, user, any_department=any_department)
     return locked
 
 
@@ -83,9 +82,11 @@ def _locked_payment_order(order: Order, user=None) -> Order:
     )
 
 
-def _locked_payment_with_order(payment: Payment, user=None) -> tuple[Payment, Order]:
+def _locked_payment_with_order(
+    payment: Payment, user=None, *, any_department=False,
+) -> tuple[Payment, Order]:
     """Use one lock order (Order -> Payment) across every payment transition."""
-    order = lock_live_order(payment.order_id, user)
+    order = lock_live_order(payment.order_id, user, any_department=any_department)
     locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
     # Reuse the row-locked instance for totals, currency and audit logging.
     locked_payment.order = order
@@ -510,19 +511,19 @@ def _advance_payment(payment: Payment, expected_from: str, user) -> Payment:
 
 
 @transaction.atomic
-def receive_payment(payment: Payment, user) -> Payment:
+def receive_payment(payment: Payment, user, *, any_department=False) -> Payment:
     """Менеджер/оператор отметил: деньги получены от клиента."""
     original = payment
-    payment, _order = _locked_payment_with_order(payment, user)
+    payment, _order = _locked_payment_with_order(payment, user, any_department=any_department)
     _advance_payment(payment, "requested", user)
     return _sync_payment_instance(original, payment)
 
 
 @transaction.atomic
-def accountant_confirm_payment(payment: Payment, user) -> Payment:
+def accountant_confirm_payment(payment: Payment, user, *, any_department=False) -> Payment:
     """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
     original = payment
-    payment, order = _locked_payment_with_order(payment, user)
+    payment, order = _locked_payment_with_order(payment, user, any_department=any_department)
     provider = getattr(payment, "apipay_invoice", None)
     if provider is not None and provider.status != "paid":
         raise ValidationError({
@@ -633,7 +634,7 @@ def confirm_received_staff_payments(
 
 
 @transaction.atomic
-def receive_and_confirm_payment(payment: Payment, user) -> Payment:
+def receive_and_confirm_payment(payment: Payment, user, *, any_department=False) -> Payment:
     """Accept a providerless request and finalize it as one staff decision.
 
     The outer transaction is intentional: if confirmation fails, the request
@@ -649,8 +650,8 @@ def receive_and_confirm_payment(payment: Payment, user) -> Payment:
             ),
             "code": "provider_payment_auto_confirmation",
         })
-    receive_payment(payment, user)
-    accountant_confirm_payment(payment, user)
+    receive_payment(payment, user, any_department=any_department)
+    accountant_confirm_payment(payment, user, any_department=any_department)
     original.refresh_from_db()
     return original
 
@@ -712,9 +713,9 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
 
 
 @transaction.atomic
-def reject_payment(payment: Payment, user) -> Payment:
+def reject_payment(payment: Payment, user, *, any_department=False) -> Payment:
     original = payment
-    payment, _order = _locked_payment_with_order(payment, user)
+    payment, _order = _locked_payment_with_order(payment, user, any_department=any_department)
     if payment.status in ("confirmed", "rejected"):
         raise ValidationError(
             {"detail": "Оплата уже финализирована", "code": "invalid_payment_stage"})
@@ -861,9 +862,9 @@ ALLOWED_TRANSITIONS = {
 @transaction.atomic
 def transition(
     order: Order, to_status: str, user, message: str | None = None, *, payload=None,
-    allow_unassigned=False,
+    any_department=False,
 ) -> Order:
-    order = lock_live_order(order, user, allow_unassigned=allow_unassigned)
+    order = lock_live_order(order, user, any_department=any_department)
     _assert_no_open_ai_session(order)
     allowed = ALLOWED_TRANSITIONS.get(order.status, set())
     if to_status not in allowed:
@@ -888,7 +889,9 @@ def confirm_order(order: Order, user, prices: dict | None = None, *, department=
     # Freeze the order and its item set before validating/pricing. This shares
     # the parent fence with item edits and AI reservation.
     caller_order = order
-    order = lock_live_order(order, user, allow_unassigned=True)
+    # Заявка — общая очередь кассы: подтверждает сотрудник любого отдела, а
+    # заказ всё равно учитывается в отделе клиента (проверка ниже).
+    order = lock_live_order(order, user, any_department=True)
     if order.status not in ("draft", "pending"):
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
@@ -921,7 +924,7 @@ def confirm_order(order: Order, user, prices: dict | None = None, *, department=
             code=department, is_active=True
         ).exists():
             raise ValidationError({"department": "Выберите действующий отдел продаж"})
-        set_order_department(order, department, user)
+        set_order_department(order, department, user, any_department=True)
     if not order.department:
         raise ValidationError({"department": "Перед подтверждением выберите отдел продаж"})
     if order.warehouse_id is None:
@@ -930,7 +933,7 @@ def confirm_order(order: Order, user, prices: dict | None = None, *, department=
         order.warehouse = resolve_warehouse()
         order.save(update_fields=["warehouse"])
     _apply_prices(order, prices or {}, user)
-    confirmed = transition(order, "confirmed", user, "Заказ подтверждён")
+    confirmed = transition(order, "confirmed", user, "Заказ подтверждён", any_department=True)
     caller_order.status = confirmed.status
     return confirmed
 
@@ -1435,7 +1438,7 @@ def replace_items(
 @transaction.atomic
 def reject_order(order: Order, user, *, reason: str) -> Order:
     caller_order = order
-    order = lock_live_order(order, user, allow_unassigned=True)
+    order = lock_live_order(order, user, any_department=True)
     if order.status != "pending":
         raise ValidationError(
             {"detail": "Отклонить можно только заказ на рассмотрении", "code": "invalid_status"})
@@ -1457,7 +1460,7 @@ def reject_order(order: Order, user, *, reason: str) -> Order:
         user,
         f"Заявка отклонена: {order.rejection_reason}",
         payload={"reason": order.rejection_reason, "action": "order_rejected"},
-        allow_unassigned=True,
+        any_department=True,
     )
     caller_order.rejection_reason = order.rejection_reason
     caller_order.status = rejected.status
@@ -1598,10 +1601,10 @@ def set_transport_type(order: Order, value: str, user) -> Order:
 
 
 @transaction.atomic
-def set_order_department(order: Order, value: str, user) -> Order:
+def set_order_department(order: Order, value: str, user, *, any_department=False) -> Order:
     """Keep an active camera order inside the scope that can stop it."""
     caller_order = order
-    order = lock_live_order(order, user)
+    order = lock_live_order(order, user, any_department=any_department)
     if not value and order.status not in ("draft", "pending"):
         raise ValidationError({"department": "У подтверждённого заказа должен быть отдел продаж"})
     if value == order.department:

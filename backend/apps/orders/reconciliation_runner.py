@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 
@@ -34,9 +34,12 @@ DEFAULT_HEARTBEAT_FILE = "/tmp/apipay-monitor-heartbeat"
 DEFAULT_TASK_LOCK_SECONDS = 1_200
 
 InboxStats = dict[str, int]
+# Активных QR-возвратов единицы, а окно после подтверждения покупателем короткое.
+QR_REFUND_RECONCILE_LIMIT = 5
 InvoiceReconciler = Callable[..., ReconciliationStats]
 RefundReconciler = Callable[..., RefundReconciliationStats]
 WebhookReplayer = Callable[[], InboxStats]
+QrRefundReconciler = Callable[..., dict[str, int]]
 HeartbeatWriter = Callable[[str, str], None]
 
 
@@ -215,6 +218,7 @@ class ApiPayReconciliationResult:
     invoices: ReconciliationStats
     refunds: RefundReconciliationStats
     inbox: InboxStats
+    qr_refunds: dict[str, int] = field(default_factory=dict)
 
     @property
     def retryable_failures(self) -> int:
@@ -226,6 +230,7 @@ class ApiPayReconciliationResult:
             self.invoices.failed
             + self.refunds.failed
             + int(self.inbox.get("failed", 0))
+            + int(self.qr_refunds.get("failed", 0))
         )
 
     def summary(self) -> str:
@@ -254,6 +259,8 @@ class ApiPayReconciliationResult:
             f"refund_ambiguous={self.refunds.ambiguous} "
             f"refund_incomplete={self.refunds.incomplete} "
             f"refund_failed={self.refunds.failed} "
+            f"qr_refund_selected={self.qr_refunds.get('selected', 0)} "
+            f"qr_refund_failed={self.qr_refunds.get('failed', 0)} "
             f"request_budget={self.options.request_budget} "
             f"invoice_request_budget={self.options.invoice_request_budget} "
             f"refund_request_budget={self.options.refund_request_budget}"
@@ -267,6 +274,7 @@ def run_apipay_reconciliation_iteration(
     refund_reconciler: RefundReconciler = reconcile_apipay_refunds,
     webhook_replayer: WebhookReplayer = replay_pending_apipay_webhooks,
     heartbeat_writer: HeartbeatWriter = _write_heartbeat,
+    qr_refund_reconciler: QrRefundReconciler | None = None,
 ) -> ApiPayReconciliationResult:
     """Run one bounded, heartbeat-observed reconciliation iteration."""
 
@@ -289,11 +297,15 @@ def run_apipay_reconciliation_iteration(
                 seconds=options.refund_sweep_stale_seconds
             ),
         )
+        if qr_refund_reconciler is None:
+            from .qr_refunds import reconcile_qr_refunds as qr_refund_reconciler
+        qr_refunds = qr_refund_reconciler(limit=QR_REFUND_RECONCILE_LIMIT)
         result = ApiPayReconciliationResult(
             options=options,
             invoices=invoices,
             refunds=refunds,
             inbox=inbox,
+            qr_refunds=qr_refunds,
         )
         heartbeat_writer(
             options.heartbeat_file,

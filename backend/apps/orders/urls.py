@@ -2,7 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 from .views import (
     OrderViewSet, PaymentReceiptView, PaymentRefundView,
-    PaymentProviderIssueView, PaymentRejectView, PaymentRestoreView,
+    PaymentProviderIssueView, PaymentQrRefundView, PaymentRejectView, PaymentRestoreView,
     PaymentTransactionListView, ReportSummaryView,
 )
 
@@ -16,6 +16,10 @@ urlpatterns = [
          PaymentReceiptView.as_view(), name="payment-receipt"),
     path("payment-transactions/<int:payment_id>/refund/",
          PaymentRefundView.as_view(), name="payment-refund"),
+    path("payment-transactions/<int:payment_id>/qr-refund/",
+         PaymentQrRefundView.as_view(), name="payment-qr-refund"),
+    path("payment-transactions/<int:payment_id>/qr-refund/<str:action>/",
+         PaymentQrRefundView.as_view(), name="payment-qr-refund-action"),
     path("payment-transactions/<int:payment_id>/reject/",
          PaymentRejectView.as_view(), name="payment-reject"),
     path("payment-transactions/<int:payment_id>/restore/",

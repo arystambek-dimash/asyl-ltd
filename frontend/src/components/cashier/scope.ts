@@ -28,6 +28,19 @@ export function scopeLabel(
   return department ? { name: department.name, color: department.color } : { name: "Отдел", color: null };
 }
 
+/**
+ * Отдел запросов очереди «Заявки и оплаты». Очередь общая для всех отделов: закреплённый отдел её не сужает
+ * (null — все отделы); сужает только отдел, выбранный в шапке сотрудником без закрепления.
+ */
+export function queueDepartment(scope: DepartmentScope, chosen: string): string | null {
+  return scope.assigned || chosen === ALL_DEPARTMENTS ? null : chosen;
+}
+
+/** Карточка заказа из очереди открывается только его отделу — очередь общая, а заказы нет. */
+export function canOpenQueueOrder(assigned: DepartmentScope["assigned"], orderDepartment: string): boolean {
+  return !assigned || assigned.code === orderDepartment;
+}
+
 export function cashierName(me: Me | null): string {
   if (!me) return "";
   return [me.first_name, me.last_name].filter(Boolean).join(" ").trim() || me.username;

@@ -380,7 +380,8 @@ class ApiPayRefund(models.Model):
 class PaymentRefund(models.Model):
     """Единый журнал возвратов: ApiPay или выдача из кассы."""
 
-    METHODS = ["apipay", "cash"]
+    # apipay_qr — возврат по Kaspi QR через ссылку покупателю (ApiPayQrRefund).
+    METHODS = ["apipay", "apipay_qr", "cash"]
     STATUSES = ["pending", "completed", "failed"]
 
     payment = models.ForeignKey(
@@ -398,6 +399,51 @@ class PaymentRefund(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="requested_payment_refunds",
     )
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ApiPayQrRefund(models.Model):
+    """Возврат по Kaspi QR: Kaspi вернёт деньги только после подтверждения покупателем.
+
+    Касса выпускает ссылку «Возврат ApiPay», покупатель подтверждает её в Kaspi,
+    после чего сервер один раз выполняет возврат (``execute``). Повтор execute —
+    второй возврат живых денег, поэтому ``execute_requested_at`` фиксируется в
+    базе ДО сетевого запроса и больше не снимается.
+    """
+
+    # Сессия ещё может дойти до денег: ждём покупателя или исход execute.
+    ACTIVE_STATUSES = (
+        "issuing", "awaiting_customer", "activating", "awaiting_scan",
+        "customer_identified", "executing",
+    )
+
+    refund = models.OneToOneField(
+        PaymentRefund, on_delete=models.CASCADE, related_name="qr_refund"
+    )
+    invoice = models.ForeignKey(
+        ApiPayInvoice, on_delete=models.CASCADE, related_name="qr_refunds"
+    )
+    session_id = models.BigIntegerField(unique=True, null=True, blank=True)
+    status = models.CharField(max_length=32, default="issuing", db_index=True)
+    # Ссылка предъявительская и отдаётся ApiPay один раз: храним только шифром,
+    # чтобы касса могла отправить её покупателю повторно.
+    customer_url_encrypted = models.TextField(blank=True, default="")
+    link_expires_at = models.DateTimeField(null=True, blank=True)
+    client_name = models.CharField(max_length=120, blank=True, default="")
+    operation_ref = models.CharField(max_length=255, blank=True, default="")
+    # Покупки покупателя, когда подходящую нельзя выбрать автоматически.
+    operations = models.JSONField(default=list, blank=True)
+    execute_requested_at = models.DateTimeField(null=True, blank=True)
+    refunded_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    receipt_url = models.URLField(max_length=1000, blank=True, default="")
+    error_code = models.CharField(max_length=100, blank=True, default="")
+    error_message = models.TextField(blank=True, default="")
+    snapshot = models.JSONField(default=dict, blank=True)
+    checked_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
