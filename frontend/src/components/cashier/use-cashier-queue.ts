@@ -2,14 +2,13 @@
 import { useCallback, useRef, useState } from "react";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
-import type { CashierLogItem, Order, PaymentQueueItem } from "@/lib/types";
+import type { Order, PaymentQueueItem } from "@/lib/types";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { apiUrl, filtersAreValid, scopeParams, type CashFilters } from "./filters";
 
 /* ── «Оплаты» кассы: данные и действия, общие для вкладок ─────────────── */
-// Журнал живёт на своей вкладке со своими фильтрами и ленивой подгрузкой —
-// хук отдаёт оплаты к подтверждению и заказы, которые ждут оплаты, а об
-// изменениях сообщает наружу, чтобы журнал перезагрузил себя сам.
+// Хук отдаёт оплаты к подтверждению и заказы, которые ждут оплаты, а об
+// изменениях сообщает наружу — сводки главной перезагружаются сами.
 // Оплаты к подтверждению — общая очередь всех отделов; «Ждут оплаты» — отдел кассы.
 export function useCashierQueue(
   enabled: boolean,
@@ -77,19 +76,8 @@ export function useCashierQueue(
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/receive/`), "Поступление подтверждено"),
     rejectPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/reject/`), "Оплата отклонена"),
-    moveToDebt: (order: Order) => act(() => api.post(`/orders/${order.id}/to-debt/`), "Заказ переведён в долг"),
-    reopenPayment: (event: CashierLogItem) => {
-      const paymentId = event.payload.payment_id;
-      if (!paymentId) return;
-      act(() => api.post(`/orders/${event.order}/payments/${paymentId}/reopen/`));
-    },
-    restorePayment: (event: CashierLogItem) => {
-      const paymentId = event.payload.payment_id;
-      if (!paymentId) return;
-      return act(() => api.post(`/orders/${event.order}/payments/${paymentId}/restore/`));
-    },
+    moveToDebt: (order: Order) => act(() => api.post(`/orders/${order.id}/to-debt/`), "Долг согласован"),
   };
 }
 
 export type CashierQueue = ReturnType<typeof useCashierQueue>;
-export type PagedCashierLog = ReturnType<typeof usePagedApi<CashierLogItem>>;

@@ -117,7 +117,7 @@ def ai_key(monkeypatch):
 
 @pytest.fixture
 def loader(user_with_perms):
-    return user_with_perms("loader", codes=["shipping.load"])
+    return user_with_perms("loader", codes=["monoblock.view", "loader.confirm"])
 
 
 @pytest.fixture
@@ -1222,11 +1222,7 @@ def test_monoblock_stop_saves_ai_total_and_only_finishes_loading(
         {"session_id": session.pk},
     )
 
-    # The loading-post permission may finish AI counting, but it must never
-    # cross the separate shipping permission boundary or deduct stock.
-    ship_attempt = api_client.post(f"/api/orders/{order.pk}/ship/", format="json")
-    assert ship_attempt.status_code == 403
-
+    # Завершение подсчёта не отгружает: списание со склада — отдельное действие грузчика.
     order.refresh_from_db()
     assert order.status == "loaded"
     assert order.loading_camera == ""
@@ -1817,7 +1813,7 @@ def test_authoritative_final_rejects_wrong_identity_or_invalid_payload(
 def test_only_starter_or_admin_can_stop_session(
     api_client, loader, user_with_perms, loading_order,
 ):
-    other_loader = user_with_perms("other-loader", codes=["shipping.load"])
+    other_loader = user_with_perms("other-loader", codes=["monoblock.view", "loader.confirm"])
     session = AiCountingSession.objects.create(
         order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
         started_by=loader,
@@ -1834,7 +1830,7 @@ def test_only_starter_or_admin_can_stop_session(
     assert session.status == AiCountingSession.ACTIVE
 
     admin = user_with_perms(
-        "session-admin", codes=["shipping.load", "sys_permissions.manage"]
+        "session-admin", codes=["monoblock.view", "loader.confirm", "sys_permissions.manage"]
     )
     api_client.force_authenticate(admin)
     with patch.object(
@@ -1856,7 +1852,7 @@ def test_only_starter_or_admin_can_stop_session(
 def test_only_starter_or_admin_can_recover_session(
     api_client, loader, user_with_perms, loading_order,
 ):
-    other_loader = user_with_perms("other-recovery", codes=["shipping.load"])
+    other_loader = user_with_perms("other-recovery", codes=["monoblock.view", "loader.confirm"])
     AiCountingSession.objects.create(
         order=loading_order,
         camera="cam2",
@@ -1880,7 +1876,7 @@ def test_only_starter_or_admin_can_recover_session(
 def test_open_sessions_list_contains_owner_and_control_flag(
     api_client, loader, user_with_perms, loading_order,
 ):
-    viewer = user_with_perms("session-viewer", codes=["shipping.load"])
+    viewer = user_with_perms("session-viewer", codes=["monoblock.view", "loader.confirm"])
     AiCountingSession.objects.create(
         order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
         started_by=loader, last_status={"total": 17},
@@ -1914,7 +1910,7 @@ def test_open_sessions_require_load_permission(api_client, make_user):
 def test_session_dtos_identify_transport_without_changing_number(
     api_client, user_with_perms, loading_order, endpoint, transport_type, number,
 ):
-    viewer = user_with_perms("transport-viewer", codes=["shipping.view"])
+    viewer = user_with_perms("transport-viewer", codes=["monoblock.view"])
     loading_order.transport_type = transport_type
     loading_order.truck_number = number
     loading_order.save(update_fields=["transport_type", "truck_number"])
@@ -2123,7 +2119,7 @@ def test_clients_cannot_even_read(api_client, make_user):
 def test_history_returns_final_count_and_local_recording_metadata(
     api_client, user_with_perms, loader, loading_order,
 ):
-    viewer = user_with_perms("history-viewer", codes=["shipping.view"])
+    viewer = user_with_perms("history-viewer", codes=["monoblock.view"])
     ended = timezone.now() - timedelta(hours=1)
     session = AiCountingSession.objects.create(
         order=loading_order,
@@ -2152,7 +2148,7 @@ def test_history_post_board_projection_filters_server_side(
     api_client,
     user_with_perms,
 ):
-    viewer = user_with_perms("board-history", codes=["shipping.view"])
+    viewer = user_with_perms("board-history", codes=["monoblock.view"])
     client = Client.objects.create_with_user(first_name="Board", phone="1")
     active = Order.objects.create(client=client, status="loading")
     outside = Order.objects.create(client=client, status="pending")
@@ -2180,7 +2176,7 @@ def test_history_post_board_follows_day_and_search(
     api_client,
     user_with_perms,
 ):
-    viewer = user_with_perms("board-history-day", codes=["shipping.view"])
+    viewer = user_with_perms("board-history-day", codes=["monoblock.view"])
     client = Client.objects.create_with_user(first_name="Board", phone="1")
     yesterday = timezone.now() - timedelta(days=1)
     shipped_yesterday = Order.objects.create(
@@ -2221,7 +2217,7 @@ def test_history_post_board_follows_day_and_search(
 def test_recording_list_is_resolved_on_camera_pc(
     api_client, user_with_perms, loader, loading_order,
 ):
-    viewer = user_with_perms("recording-viewer", codes=["shipping.view"])
+    viewer = user_with_perms("recording-viewer", codes=["monoblock.view"])
     session = AiCountingSession.objects.create(
         order=loading_order,
         camera="cam2",
@@ -2249,7 +2245,7 @@ def test_recording_list_is_resolved_on_camera_pc(
 def test_recording_video_proxies_bytes_without_server_storage(
     api_client, user_with_perms, loader, loading_order,
 ):
-    viewer = user_with_perms("video-viewer", codes=["shipping.view"])
+    viewer = user_with_perms("video-viewer", codes=["monoblock.view"])
     session = AiCountingSession.objects.create(
         order=loading_order,
         camera="cam2",
@@ -2285,7 +2281,7 @@ def test_recording_video_proxies_bytes_without_server_storage(
 def test_recording_archive_expires_but_count_metadata_remains(
     api_client, user_with_perms, loader, loading_order,
 ):
-    viewer = user_with_perms("expired-video-viewer", codes=["shipping.view"])
+    viewer = user_with_perms("expired-video-viewer", codes=["monoblock.view"])
     old = timezone.now() - timedelta(days=15)
     session = AiCountingSession.objects.create(
         order=loading_order,

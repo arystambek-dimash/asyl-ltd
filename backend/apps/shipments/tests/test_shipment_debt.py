@@ -38,7 +38,8 @@ def test_shipment_sets_unpaid_debt(boss):
     assert debt_event.payload["intent"] == "debt"
 
 
-def test_instant_settlement_shipment_is_not_logged_as_debt(boss):
+def test_instant_settlement_shipment_is_logged_as_debt(boss):
+    """Товар уехал без оплаты — это долг клиента, даже если он собирался платить сразу."""
     product = Product.objects.create(
         name="Instant settlement product",
         color="Blue",
@@ -65,8 +66,8 @@ def test_instant_settlement_shipment_is_not_logged_as_debt(boss):
     finish_loading(order, boss)
     record_shipment(order, boss)
 
-    assert not EventLog.objects.filter(order=order, event_type="debt").exists()
+    debt_event = EventLog.objects.get(order=order, event_type="debt")
+    assert debt_event.payload["intent"] == "instant"
     shipment_event = EventLog.objects.get(order=order, event_type="shipment")
-    assert "в долг" not in shipment_event.message
     assert shipment_event.payload["settlement_intent"] == "instant"
     assert shipment_event.payload["amount"] == str(order.total_amount)

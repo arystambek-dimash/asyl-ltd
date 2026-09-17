@@ -139,9 +139,7 @@ def can_control_session(session, user) -> bool:
             or (
                 session.automatically_started
                 and not user.is_client
-                and user.has_perm_code(
-                    "train.load" if session.order.transport_type == "train" else "shipping.load"
-                )
+                and user.has_perm_code("loader.confirm")
             )
         )
     )

@@ -1,8 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CashierLogItem, ClientDebt, Department, Me, Store } from "@/lib/types";
+import type { ClientDebt, Department, Me, Store } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import {
   EMPTY_CASH_FILTERS,
@@ -110,14 +109,15 @@ export function useCashier({
       report: withDepartment(filtersByScreen.report, scopeDepartment),
       debts: withDepartment(filtersByScreen.debts, scopeDepartment),
       confirm: withDepartment(filtersByScreen.confirm, queueScopeDepartment),
-      journal: withDepartment(filtersByScreen.journal, scopeDepartment),
     }),
     [filtersByScreen, queueScopeDepartment, scopeDepartment],
   );
-  // «Ждут оплаты» — заказы отдела кассы, как долги: фильтры экрана «Оплаты» с отделом из шапки.
+  // «Ждут оплаты» — заказы отдела кассы, как долги: закреплённый отдел или отдел из шапки;
+  // при «Все отделы» в шапке отдел выбирают быстрые фильтры экрана.
+  const awaitingDepartment = mobile ? (assigned ? assigned.code : chosen === ALL_DEPARTMENTS ? null : chosen) : null;
   const awaitingFilters = useMemo(
-    () => withDepartment(filtersByScreen.confirm, scopeDepartment),
-    [filtersByScreen.confirm, scopeDepartment],
+    () => withDepartment(filtersByScreen.confirm, awaitingDepartment),
+    [filtersByScreen.confirm, awaitingDepartment],
   );
   const scopedEmpty = useMemo(() => withDepartment(EMPTY_CASH_FILTERS, scopeDepartment), [scopeDepartment]);
   const queueEmpty = useMemo(() => withDepartment(EMPTY_CASH_FILTERS, queueScopeDepartment), [queueScopeDepartment]);
@@ -178,20 +178,12 @@ export function useCashier({
       ? apiUrl("/orders/awaiting-payment/", { summary: "1", ...scopeParams(scopedEmpty) })
       : null,
   );
-  const journalFilters = scoped.journal;
-  const journalLog = usePagedApi<CashierLogItem>(
-    perms.canPayments && view === "journal" && filtersAreValid(journalFilters)
-      ? apiUrl("/orders/cashier-log/", scopeParams(journalFilters))
-      : null,
-    50,
-  );
   const { data: stores } = useApi<Store[]>(perms.canReports && perms.canViewClients ? "/stores/" : null);
 
   const { reload: reloadSummary } = summary;
   const { reload: reloadDebts } = debts;
   const { reload: reloadQueueSummary } = queueSummary;
   const { reload: reloadAwaitingSummary } = awaitingSummary;
-  const { reload: reloadJournal } = journalLog;
   const reloadOverview = useCallback(async () => {
     // На десктопе итоги «Ждут оплаты» — хук с null-URL: перезагружать его незачем.
     const tasks = [reloadSummary(), reloadDebts(), reloadQueueSummary()];
@@ -199,8 +191,8 @@ export function useCashier({
     await Promise.all(tasks);
   }, [homeActive, reloadAwaitingSummary, reloadDebts, reloadQueueSummary, reloadSummary]);
   const paymentChanged = useCallback(async () => {
-    await Promise.all([reloadOverview(), reloadJournal()]);
-  }, [reloadJournal, reloadOverview]);
+    await reloadOverview();
+  }, [reloadOverview]);
 
   const queue = useCashierQueue(
     perms.canPayments && view === "confirm",
@@ -240,7 +232,6 @@ export function useCashier({
     debts,
     queueSummary,
     awaitingSummary,
-    journalLog,
     queue,
     stores: stores ?? [],
     departments: departments ?? [],

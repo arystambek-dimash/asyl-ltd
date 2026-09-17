@@ -277,7 +277,7 @@ export function AddPaymentActions({
             <Input
               id="payment-amount"
               type="number"
-              min="1"
+              min="0.01"
               step="0.01"
               value={amount}
               autoFocus

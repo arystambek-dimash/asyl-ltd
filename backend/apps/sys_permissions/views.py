@@ -16,12 +16,6 @@ class PermissionViewSet(
     http_method_names = ["get", "head", "options"]
 
     required_perms = {
-        "list": (
-            "sys_permissions.view",
-            "employees.manage"
-        ),
-        "retrieve": (
-            "sys_permissions.view",
-            "employees.manage"
-        ),
+        "list": ("sys_permissions.manage", "employees.manage"),
+        "retrieve": ("sys_permissions.manage", "employees.manage"),
     }

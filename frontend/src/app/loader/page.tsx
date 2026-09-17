@@ -183,7 +183,7 @@ function LoaderPageInner() {
   const showFooter = Boolean(shipped || error || (view === "queue" && canConfirm));
   return (
     <AppShell
-      title="Отгрузка"
+      title="Грузчик"
       section="Работа"
       tabs={
         <Tabs
@@ -464,7 +464,7 @@ function HistoryList({
 
 export default function LoaderPage() {
   return (
-    <RequirePerm perm="loader.view" title="Отгрузка">
+    <RequirePerm perm="loader.view" title="Грузчик">
       <LoaderPageInner />
     </RequirePerm>
   );

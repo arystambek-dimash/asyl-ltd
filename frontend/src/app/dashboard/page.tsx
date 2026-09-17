@@ -666,7 +666,7 @@ function AnalyticsView() {
 
 export default function DashboardPage() {
   const { me } = useAuth();
-  const showCameras = can(me, "shipping.view") || !!me?.is_superuser;
+  const showCameras = can(me, "monoblock.view") || !!me?.is_superuser;
   const [view, setView] = useState<DashboardView | null>(null);
 
   useEffect(() => {

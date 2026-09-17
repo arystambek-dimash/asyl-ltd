@@ -14,7 +14,7 @@ pytestmark = pytest.mark.django_db
 def loader(user_with_perms):
     return user_with_perms(
         "loader",
-        codes=["train.view", "train.load", "shipping.ship"],
+        codes=["monoblock.view", "loader.view", "loader.confirm"],
     )
 
 

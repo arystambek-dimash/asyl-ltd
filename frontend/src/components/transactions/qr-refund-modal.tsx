@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2, Copy, Loader2, Send, Share2 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
@@ -24,7 +25,7 @@ function stepText(state: QrRefundState): string {
     case "issuing":
       return "Выпускаем ссылку…";
     case "awaiting_customer":
-      return "Отправьте ссылку покупателю. Он откроет её и подтвердит возврат в Kaspi — деньги вернутся автоматически.";
+      return "Покажите QR покупателю или отправьте ему ссылку. Он подтвердит возврат в Kaspi — деньги вернутся автоматически.";
     case "activating":
     case "awaiting_scan":
       return "Покупатель открыл ссылку. Ждём подтверждения в Kaspi…";
@@ -39,7 +40,7 @@ function stepText(state: QrRefundState): string {
   }
 }
 
-/** Возврат по Kaspi QR: ссылка для покупателя и живой статус до денег. */
+/** Возврат по Kaspi QR как в POS-терминале: QR на экране кассира (та же ссылка — поделиться) и живой статус до денег. */
 export function QrRefundModal({
   payment,
   initial,
@@ -100,7 +101,7 @@ export function QrRefundModal({
       open
       onClose={() => !busy && onClose()}
       eyebrow={`PAY-${String(payment.id).padStart(6, "0")} · Kaspi QR`}
-      title="Возврат по ссылке"
+      title="Возврат по QR"
       description={`${payment.client_name ?? "Покупатель"} · ${formatMoney(state?.amount ?? payment.amount)} ${currency}`}
       footer={<Button onClick={onClose}>Закрыть</Button>}
     >
@@ -124,22 +125,22 @@ export function QrRefundModal({
         )}
 
         {link && (
-          <div className="space-y-2">
-            <div className="break-all rounded-lg border bg-[var(--card)] px-3 py-2 font-mono text-xs select-all">
-              {link}
-            </div>
+          <div className="space-y-3">
+            {/* Покупатель у кассы сканирует QR камерой телефона; если его нет рядом — та же ссылка в мессенджер. */}
+            <figure className="flex flex-col items-center gap-2">
+              <QRCodeSVG
+                value={link}
+                size={224}
+                level="M"
+                marginSize={2}
+                title="QR для возврата оплаты"
+                className="size-56 max-w-full rounded-2xl bg-white shadow-sm"
+              />
+              <figcaption className="text-center text-xs text-[var(--muted-foreground)]">
+                Покупатель сканирует камерой телефона и подтверждает возврат в Kaspi
+              </figcaption>
+            </figure>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              <Button variant="outline" onClick={() => void copy()}>
-                <Copy className="size-4" /> Скопировать
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() =>
-                  window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank", "noopener")
-                }
-              >
-                <Send className="size-4" /> WhatsApp
-              </Button>
               {typeof navigator !== "undefined" && "share" in navigator && (
                 <Button
                   variant="outline"
@@ -148,6 +149,17 @@ export function QrRefundModal({
                   <Share2 className="size-4" /> Поделиться
                 </Button>
               )}
+              <Button
+                variant="outline"
+                onClick={() =>
+                  window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank", "noopener")
+                }
+              >
+                <Send className="size-4" /> WhatsApp
+              </Button>
+              <Button variant="outline" onClick={() => void copy()}>
+                <Copy className="size-4" /> Скопировать
+              </Button>
             </div>
             <p className="text-xs text-[var(--muted-foreground)]">
               Отправьте только тому, кто платил: кто откроет ссылку, тот и получит возврат.

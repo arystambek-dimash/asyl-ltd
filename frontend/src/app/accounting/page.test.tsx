@@ -110,7 +110,6 @@ beforeEach(() => {
           summary: { paid_by_currency: { KZT: "100", USD: "0" }, refunded_by_currency: { KZT: "0", USD: "0" } },
         },
       };
-    if (url.pathname === "/orders/cashier-log/") return { data: { results: [], count: 0, next: null } };
     return { data: [] };
   });
   mocks.post.mockImplementation(async () => {
@@ -243,7 +242,7 @@ it("takes payment for a shipped order or moves it to debt from «Ждут опл
   );
 
   await user.click(screen.getByRole("button", { name: "В долг" }));
-  const dialog = await screen.findByRole("dialog", { name: "Перевести заказ #632 в долг?" });
+  const dialog = await screen.findByRole("dialog", { name: "Оставить заказ #632 в долг?" });
   await user.click(within(dialog).getByRole("button", { name: "В долг" }));
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/632/to-debt/"));
 });
@@ -254,6 +253,7 @@ it("desktop tab click mirrors the view into the URL and deep links open the tab"
   await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
   expect(routerCalls.replace).toContain("/accounting?view=confirm");
 
-  resetNavigation("/accounting?view=journal");
-  expect(await screen.findByText("Журнал действий по оплатам")).toBeInTheDocument();
+  resetNavigation("/accounting?view=overview");
+  expect(await screen.findByText("Дебиторка")).toBeInTheDocument();
+  expect(screen.queryByRole("tab", { name: "Журнал" })).not.toBeInTheDocument();
 });

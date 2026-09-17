@@ -136,7 +136,7 @@ function StopRow({
 
 export function WagonArchStops() {
   const [before, setBefore] = useState<number | null>(null);
-  const canDismiss = useAuth((state) => can(state.me, "grain.edit"));
+  const canDismiss = useAuth((state) => can(state.me, "grain.weigh"));
   const { data, loading, error, reload, setData } = useApi<StopsPage>(
     `/grain/wagon-arch/stops/${before ? `?before=${before}` : ""}`,
   );

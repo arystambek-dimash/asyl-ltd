@@ -13,7 +13,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm
+from apps.common.permissions import HasPerm, IsSuperUser
 from apps.common.query_params import filter_date_range, parse_iso_date
 from apps.common.signed_media import SignedMediaView
 from apps.eventlog.services import log_event
@@ -25,8 +25,9 @@ from ..analytics import _color_payload
 from ..event_protocol import event_color_key
 from ..models import ShippingLoadingEvent, ShippingLoadingSegment, ShippingLoadingSession, ShippingSessionSettings
 
-READ_PERMS = ("shipping.view", "shipping.load", "train.view", "train.load")
-WRITE_PERMS = ("shipping.load", "train.load")
+# Моноблок только для просмотра: одно право видит машины и вагоны. Ручная
+# привязка номера и таймаут простоя — только суперпользователь.
+READ_PERMS = ("monoblock.view",)
 IMAGE_SALT = "shipping-segment-evidence-v1"
 PAGE_SIZE = 20
 # A conveyor needs tens of minutes per wagon, so a real day stays far below
@@ -38,15 +39,16 @@ def _allowed(user, codes):
     return bool(user.is_active and not user.is_client and any(user.has_perm_code(code) for code in codes))
 
 
+def _can_manage(user):
+    return bool(user.is_active and user.is_superuser)
+
+
 def _visible_sessions(user):
     visible_orders = scope_by_client_department(Order.objects.all(), user, client_path="client")
     rows = ShippingLoadingSession.objects.exclude(status="merged").filter(Q(order__isnull=True) | Q(order__in=visible_orders))
-    kinds = []
-    if _allowed(user, ("shipping.view", "shipping.load")):
-        kinds.extend(("vehicle_number", ""))
-    if _allowed(user, ("train.view", "train.load")):
-        kinds.extend(("wagon_number", ""))
-    return rows.filter(recognition_model__in=kinds)
+    if not _allowed(user, READ_PERMS):
+        return rows.none()
+    return rows.filter(recognition_model__in=("vehicle_number", "wagon_number", ""))
 
 
 def _visible_segments(user):
@@ -54,10 +56,7 @@ def _visible_segments(user):
 
 
 def _can_identify(user, row):
-    if not row.recognition_model:
-        return row.identity_status == "unidentified" and _allowed(user, WRITE_PERMS)
-    code = "train.load" if row.recognition_model == "wagon_number" else "shipping.load"
-    return row.identity_status == "unidentified" and _allowed(user, (code,))
+    return row.identity_status == "unidentified" and _can_manage(user)
 
 
 def segment_payload(row, user, *, order_id=None):
@@ -173,7 +172,7 @@ class ShippingSegmentDetailView(APIView):
 
 class ShippingSegmentIdentifyView(APIView):
     def get_permissions(self):
-        return [HasPerm(*WRITE_PERMS)]
+        return [IsSuperUser()]
 
     def post(self, request, pk):
         number = request.data.get("number")
@@ -183,11 +182,6 @@ class ShippingSegmentIdentifyView(APIView):
             row = get_object_or_404(_visible_segments(request.user), pk=pk)
             if not _can_identify(request.user, row):
                 raise PermissionDenied("Ручная привязка доступна только для неопознанного отрезка")
-            if not row.recognition_model:
-                kind = "wagon_number" if shipping_segments.normalized_number(number, "wagon_number") else "vehicle_number"
-                code = "train.load" if kind == "wagon_number" else "shipping.load"
-                if not _allowed(request.user, (code,)):
-                    raise PermissionDenied("Нет права указывать номер этого типа транспорта")
             # Core locks the lane before the segment, matching projection/AI.
             try:
                 shipping_segments.apply_identity(row.pk, number, "manual", user=request.user)
@@ -211,12 +205,14 @@ class IdleSettingsSerializer(serializers.Serializer):
 
 class ShippingSessionSettingsView(APIView):
     def get_permissions(self):
-        return [HasPerm(*(WRITE_PERMS if self.request.method == "PATCH" else READ_PERMS))]
+        if self.request.method == "PATCH":
+            return [IsSuperUser()]
+        return [HasPerm(*READ_PERMS)]
 
     def get(self, request):
         row = ShippingSessionSettings.objects.filter(singleton=True).first()
         return Response({"idle_timeout_seconds": row.idle_timeout_seconds if row else 300,
-                         "can_manage": _allowed(request.user, WRITE_PERMS)})
+                         "can_manage": _can_manage(request.user)})
 
     def patch(self, request):
         serializer = IdleSettingsSerializer(data=request.data)

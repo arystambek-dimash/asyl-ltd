@@ -30,7 +30,7 @@ def test_range_covers_old_days_zero_fills_and_keeps_today_and_lifetime_separate(
 
 @pytest.mark.parametrize('query', ['date_from=oops', 'date_from=2026-09-08&date_to=2026-09-07', 'date_from=2020-01-01&date_to=2026-01-01', 'camera=../cam3'])
 def test_range_endpoint_rejects_invalid_input(auth_client, user_with_perms, query):
-    user = user_with_perms('analytics-range-reader', codes=['shipping.load'])
+    user = user_with_perms('analytics-range-reader', codes=['monoblock.view'])
     for endpoint in ['always-on-analytics', 'shipping-continuous-analytics']:
         response = auth_client(user).get(f'/api/cameras/{endpoint}/?{query}')
         assert response.status_code == 400
@@ -41,7 +41,7 @@ def test_range_api_preserves_contour_isolation(auth_client, user_with_perms):
     MonoblockCameraSettings.objects.create(camera_sources=['cam2'], always_on_camera_sources=['cam3'])
     AlwaysOnDailyAnalytics.objects.create(camera='cam3', day=today, model_total=20)
     ShippingDailyAnalytics.objects.create(camera='cam2', day=today, model_total=7)
-    user = user_with_perms('analytics-range-reader', codes=['shipping.load'])
+    user = user_with_perms('analytics-range-reader', codes=['monoblock.view'])
     client = auth_client(user)
     query = f'?date_from={today}&date_to={today}'
     response = client.get('/api/cameras/shipping-continuous-analytics/'+query)

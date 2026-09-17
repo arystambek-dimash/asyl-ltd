@@ -131,7 +131,7 @@ class MonoblockCameraSettingsView(APIView):
 
     def get_permissions(self):
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
-            return [HasPerm("shipping.load", "sys_permissions.manage")]
+            return [HasPerm("monoblock.view", "sys_permissions.manage")]
         return [HasPerm("sys_permissions.manage")]
 
     @staticmethod

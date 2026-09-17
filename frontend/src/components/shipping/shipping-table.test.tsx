@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CameraFeed } from "@/components/camera-wall";
@@ -92,14 +92,7 @@ const loaded = order({ id: 11, status: "loaded", bags_loaded: 40, loading_camera
 const loading = order({ id: 12, status: "loading", bags_loaded: 5, loading_camera: "cam2" });
 const shipped = order({ id: 14, status: "shipped", bags_loaded: 40, shipped_at: "2026-08-27T07:00:00Z" });
 
-const noCapabilities: ShippingTableCapabilities = {
-  canLoad: false,
-  canTrain: false,
-  canShip: false,
-  canRollback: false,
-  canViewShipping: false,
-  canOpenOrder: false,
-};
+const noCapabilities: ShippingTableCapabilities = { canOpenOrder: false };
 
 const reloadOrders = vi.fn().mockResolvedValue(undefined);
 const reloadSessions = vi.fn().mockResolvedValue(undefined);
@@ -186,7 +179,7 @@ describe("ShippingTable", () => {
 
   it("waits for automatic acquisition and requires an explicit row expansion", async () => {
     const user = userEvent.setup();
-    renderTable({ capabilities: { canLoad: true } });
+    renderTable({});
 
     expect(within(rowOf(10)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Начать погрузку" })).not.toBeInTheDocument();
@@ -202,13 +195,14 @@ describe("ShippingTable", () => {
     );
   });
 
-  it("shows only states and the counting history to shipping.view", async () => {
+  it("is read-only: shows states and the counting history, no shipping actions", async () => {
     const user = userEvent.setup();
-    renderTable({ capabilities: { canViewShipping: true }, histories: [history] });
+    renderTable({ histories: [history] });
 
     expect(within(rowOf(10)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
     expect(within(rowOf(12)).getByText("Идёт погрузка")).toBeInTheDocument();
     expect(within(rowOf(11)).getByText("Ожидает оформления выезда")).toBeInTheDocument();
+    // Отгружает грузчик на своей странице: в Моноблоке кнопок отгрузки нет.
     expect(screen.queryByRole("button", { name: /^(Начать погрузку|Завершить погрузку|Оформить выезд)$/ })).toBeNull();
     expect(screen.getByText(/Выехали · сегодня/)).toBeInTheDocument();
     expect(within(rowOf(11)).getByRole("button", { name: "камера: 40" })).toBeInTheDocument();
@@ -219,7 +213,7 @@ describe("ShippingTable", () => {
   });
 
   it("waits for automatic recognition for both wagons and trucks", () => {
-    renderTable({ orders: [waiting, waitingWagon], capabilities: { canTrain: true } });
+    renderTable({ orders: [waiting, waitingWagon] });
 
     expect(within(rowOf(13)).getByText("Ожидает распознавания номера")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Начать загрузку вагона" })).not.toBeInTheDocument();
@@ -227,61 +221,16 @@ describe("ShippingTable", () => {
     expect(screen.queryByRole("button", { name: "Начать погрузку" })).not.toBeInTheDocument();
   });
 
-  it("disables finishing a loading that someone else's session owns", () => {
-    renderTable({
-      capabilities: { canLoad: true },
-      sessions: [session({ can_stop: false, started_by_name: "Айдос" })],
-    });
-
-    const finish = within(rowOf(12)).getByRole("button", { name: "Завершить погрузку" });
-    expect(finish).toBeDisabled();
-    // Причина блокировки видна текстом: на планшете подсказки по наведению нет.
-    expect(within(rowOf(12)).getByText("сессию запустил Айдос")).toBeInTheDocument();
-  });
-
-  it("expands a row from its cells but not from its buttons", async () => {
+  it("expands a row from its cells", async () => {
     const user = userEvent.setup();
-    renderTable({ capabilities: { canLoad: true } });
+    renderTable({ capabilities: { canOpenOrder: true } });
 
     expect(screen.queryByTestId("row-detail")).not.toBeInTheDocument();
-    await user.click(within(rowOf(12)).getByRole("button", { name: "Завершить погрузку" }));
-    expect(screen.queryByTestId("row-detail")).not.toBeInTheDocument();
-    const dialog = screen.getByRole("dialog", { name: "Завершить погрузку?" });
-    expect(dialog).toHaveTextContent("зафиксировано 7 из 40 меш.");
-    await user.click(within(dialog).getByRole("button", { name: "Отмена" }));
-
     await user.click(within(rowOf(12)).getByText("Магнум"));
     expect(screen.getByTestId("row-detail")).toHaveTextContent("панель заказа #12");
     // Confirmed orders have nothing to expand.
     await user.click(within(rowOf(10)).getByText("Магнум"));
     expect(screen.getByTestId("row-detail")).toHaveTextContent("панель заказа #12");
-  });
-
-  it("posts the exit of a loaded order after confirmation", async () => {
-    const user = userEvent.setup();
-    postMock.mockResolvedValue({ data: {} });
-    renderTable({ capabilities: { canShip: true } });
-
-    await user.click(within(rowOf(11)).getByRole("button", { name: "Оформить выезд" }));
-    const dialog = screen.getByRole("dialog", { name: "Оформить выезд?" });
-    await user.click(within(dialog).getByRole("button", { name: "Подтвердить выезд" }));
-
-    await waitFor(() => expect(postMock).toHaveBeenCalledWith("/orders/11/ship/", {}));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    expect(reloadOrders).toHaveBeenCalled();
-    expect(reloadSessions).toHaveBeenCalled();
-  });
-
-  it("keeps a failed exit inside the confirmation", async () => {
-    const user = userEvent.setup();
-    postMock.mockRejectedValueOnce(new Error("boom"));
-    renderTable({ capabilities: { canShip: true } });
-
-    await user.click(within(rowOf(11)).getByRole("button", { name: "Оформить выезд" }));
-    await user.click(screen.getByRole("button", { name: "Подтвердить выезд" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("Сервер не ответил");
-    expect(screen.getByRole("dialog", { name: "Оформить выезд?" })).toBeInTheDocument();
   });
 
   it("renders the day and search controls of the header filter", async () => {
@@ -309,7 +258,6 @@ describe("ShippingTable", () => {
     const user = userEvent.setup();
     const onDayChange = vi.fn();
     renderTable({
-      capabilities: { canLoad: true },
       filter: {
         day: "2026-09-05",
         today: "2026-09-06",
@@ -332,7 +280,6 @@ describe("ShippingTable", () => {
     renderTable({
       orders: [shipped],
       sessions: [],
-      capabilities: { canViewShipping: true },
       filter: {
         day: "2026-09-05",
         today: "2026-09-06",
@@ -393,18 +340,15 @@ describe("ShippingTable", () => {
     renderTable({
       orders: [waiting],
       sessions: [session({ id: 200, order_id: 999, order_client_name: "Чужой отдел" })],
-      capabilities: { canLoad: true },
     });
 
     const row = rowOf(999);
     expect(within(row).getByText("нет доступа к заказу")).toBeInTheDocument();
     expect(within(row).getByText("7 / —")).toBeInTheDocument();
-    expect(within(row).getByRole("button", { name: "Завершить погрузку" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "Завершить погрузку" })).not.toBeInTheDocument();
   });
 
-  it("allows train staff to finish an automatic wagon session and labels its source", async () => {
-    const user = userEvent.setup();
-    deleteMock.mockResolvedValue({ data: {} });
+  it("labels the source of an automatic wagon session without offering to finish it", () => {
     renderTable({
       orders: [],
       sessions: [
@@ -415,23 +359,15 @@ describe("ShippingTable", () => {
           started_by_name: "",
         }),
       ],
-      capabilities: { canTrain: true },
     });
     expect(within(rowOf(12)).getAllByText(/Автоматически/).length).toBeGreaterThan(0);
-    await user.click(within(rowOf(12)).getByRole("button", { name: "Завершить погрузку" }));
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Завершить погрузку" }));
-    await waitFor(() =>
-      expect(deleteMock).toHaveBeenCalledWith("/cameras/cam2/ai/", {
-        params: { order_id: 12, session_id: 100, complete_order: 1 },
-        data: { order_id: 12, session_id: 100, complete_order: true },
-      }),
-    );
-    expect(postMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Завершить погрузку" })).not.toBeInTheDocument();
+    expect(deleteMock).not.toHaveBeenCalled();
   });
 
   it("keeps saved transport details accessible after loading and departure", async () => {
     const user = userEvent.setup();
-    renderTable({ orders: [loaded, shipped], sessions: [], capabilities: { canLoad: true } });
+    renderTable({ orders: [loaded, shipped], sessions: [] });
     await user.click(within(rowOf(11)).getByRole("button", { name: "Раскрыть заказ #11" }));
     expect(screen.getByRole("region", { name: "Распознанный транспорт" })).toBeInTheDocument();
     expect(screen.queryByTestId("row-detail")).not.toBeInTheDocument();

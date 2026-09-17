@@ -108,6 +108,7 @@ export function useTransactions({
   const [refundFor, setRefundFor] = useState<Payment | null>(null);
   const [statusFor, setStatusFor] = useState<Payment | null>(null);
   const [rejectFor, setRejectFor] = useState<Payment | null>(null);
+  const [reopenFor, setReopenFor] = useState<Payment | null>(null);
   const [restoreFor, setRestoreFor] = useState<Payment | null>(null);
   const [qrFor, setQrFor] = useState<Payment | null>(null);
   // Возврат по Kaspi QR: ответ POST сразу показывает ссылку, дальше окно опрашивает сервер.
@@ -202,6 +203,23 @@ export function useTransactions({
     }
   }
 
+  async function reopen() {
+    if (!reopenFor || mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await api.post(`/orders/${reopenFor.order}/payments/${reopenFor.id}/reopen/`);
+      setReopenFor(null);
+      await Promise.all([refreshFromStart(), onChanged?.()]);
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      mutationInFlight.current = false;
+      setBusy(false);
+    }
+  }
+
   async function issue(payment: Payment) {
     setBusy(true);
     setError("");
@@ -237,6 +255,10 @@ export function useTransactions({
     setError("");
     setRestoreFor(row);
   }
+  function openReopen(row: Payment) {
+    setError("");
+    setReopenFor(row);
+  }
   function openStatus(row: Payment) {
     setStatusFor(row);
   }
@@ -269,6 +291,10 @@ export function useTransactions({
     refund,
     reject,
     restore,
+    reopen,
+    reopenFor,
+    setReopenFor,
+    openReopen,
     refundFor,
     setRefundFor,
     statusFor,

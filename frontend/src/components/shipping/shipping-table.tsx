@@ -1,41 +1,27 @@
 "use client";
 
-import { Fragment, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight, Film, Search } from "lucide-react";
 import type { CameraFeed } from "@/components/camera-wall";
-import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
-import type { BagCounterHandle } from "@/components/shipping/bag-counter";
 import { CountingHistoryModal } from "@/components/shipping/counting-history-modal";
-import { RewindLoadingModal } from "@/components/shipping/rewind-loading-modal";
 import { ShippingRowDetail } from "@/components/shipping/shipping-row-detail";
 import { ShippingTransportEvidence } from "@/components/shipping/shipping-transport-evidence";
-import {
-  finishLoadingConfirmText,
-  shipOutConfirmText,
-  useShippingActions,
-  type ShippingActionResult,
-  type ShippingConfirmText,
-} from "@/components/shipping/use-shipping-actions";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { TransportNumberBadge } from "@/components/ui/transport-number";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
-import { apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
 import { indexFirstBy } from "@/lib/shipping-cameras";
-import type { ShippingCapabilities } from "@/lib/shipping-flow";
 import type { AiCountingHistory, AiCountingSession, Order } from "@/lib/types";
 import { cn, formatDateTime, formatIsoDate, formatTime } from "@/lib/utils";
 
-export interface ShippingTableCapabilities extends ShippingCapabilities {
-  /** shipping.view — история подсчёта и подпись «камера: N». */
-  canViewShipping: boolean;
+/** Очередь Моноблока только для просмотра: отгружает грузчик на своей странице. */
+export interface ShippingTableCapabilities {
   /** orders.view — пункт «Открыть заказ». */
   canOpenOrder: boolean;
 }
@@ -59,7 +45,7 @@ export interface ShippingTableProps {
   /** null — первая загрузка (скелет); при ошибке с данными таблица держит последние строки. */
   orders: Order[] | null;
   sessions: AiCountingSession[];
-  /** История подсчёта (только при shipping.view, иначе []). */
+  /** История подсчёта завершённых погрузок. */
   histories: AiCountingHistory[];
   /** Играбельные камеры по src — зона, имя, сохранённая линия подсчёта. */
   camerasBySrc: Map<string, CameraFeed>;
@@ -72,7 +58,6 @@ export interface ShippingTableProps {
   transportType?: "truck" | "train" | "unknown";
   reloadOrders: () => Promise<unknown>;
   reloadSessions: () => Promise<unknown>;
-  /** Только при shipping.view. */
   reloadHistories?: () => Promise<unknown>;
 }
 
@@ -87,9 +72,6 @@ type OrderRow = {
 /** Сессия, чей заказ не пришёл в /orders/?post_board=1 (скоуп отдела). */
 type SessionRow = { kind: "session"; key: string; id: number; session: AiCountingSession };
 type Row = OrderRow | SessionRow;
-
-type Dialog =
-  { kind: "finish"; row: Row; text: ShippingConfirmText } | { kind: "ship"; order: Order; text: ShippingConfirmText };
 
 const LOADING_STATUSES = ["arrived", "loading"];
 const COLUMN_COUNT = 6;
@@ -149,22 +131,15 @@ export function ShippingTable({
   completedOrdersDays,
   filter,
   transportType,
-  reloadOrders,
-  reloadSessions,
-  reloadHistories,
 }: ShippingTableProps) {
   const router = useRouter();
-  const { canLoad, canTrain, canShip, canRollback, canViewShipping, canOpenOrder } = capabilities;
+  const { canOpenOrder } = capabilities;
   // Поиск важнее дня: бэкенд при непустом запросе игнорирует правило дня,
   // и шапка не должна обещать «показан день», которого в строках нет.
   // Смотрим на применённый запрос, а не на набранный текст: пока задержка
   // ввода не прошла, строки ещё принадлежат очереди, а не поиску.
   const searching = !!filter && filter.appliedSearch.trim() !== "";
   const viewingDay = filter && filter.day && filter.day !== filter.today && !searching ? filter.day : null;
-  const flowCapabilities = useMemo<ShippingCapabilities>(
-    () => ({ canLoad, canTrain, canShip, canRollback }),
-    [canLoad, canRollback, canShip, canTrain],
-  );
 
   const { ordersById, sessionsByOrderId, sessionsByCamera, historiesByOrderId } = useMemo(
     () => ({
@@ -175,14 +150,6 @@ export function ShippingTable({
     }),
     [histories, orders, sessions],
   );
-
-  const actions = useShippingActions({
-    sessionsByOrderId,
-    capabilities: flowCapabilities,
-    reloadOrders,
-    reloadSessions,
-    reloadHistories,
-  });
 
   const groups = useMemo(() => {
     const loading: Row[] = [];
@@ -280,141 +247,37 @@ export function ShippingTable({
     toggleRow(row);
   }
 
-  /* ── Модалки и подтверждения ──────────────────────────────────────── */
-  const bagCounterRef = useRef<BagCounterHandle>(null);
-  const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [dialogBusy, setDialogBusy] = useState(false);
-  const [dialogError, setDialogError] = useState("");
-  const [rewindOrder, setRewindOrder] = useState<Order | null>(null);
-  const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
+  /* ── Просмотр строки: статус словами и меню без действий отгрузки ───── */
   const [historyOpen, setHistoryOpen] = useState<AiCountingHistory | null>(null);
 
-  function openDialog(next: Dialog) {
-    setDialogError("");
-    setDialog(next);
-  }
-
-  async function finishRow(row: Row): Promise<ShippingActionResult> {
-    if (row.kind === "session") return actions.stopSessionAi(row.session, true);
-    const order = row.order;
-    // Completion must never overtake the counter's debounce or an active save.
-    // The ref points at the expanded row's counter only.
-    let latestBags = order.bags_loaded ?? 0;
-    if (expanded === row.key) {
-      try {
-        latestBags = (await bagCounterRef.current?.saveNow()) ?? latestBags;
-      } catch (cause) {
-        return { ok: false, error: apiError(cause) };
-      }
-    }
-    return actions.executeMove(order, "exit", latestBags);
-  }
-
-  async function confirmDialog() {
-    if (!dialog) return;
-    setDialogBusy(true);
-    setDialogError("");
-    let result: ShippingActionResult;
-    if (dialog.kind === "finish") result = await finishRow(dialog.row);
-    else result = await actions.executeMove(dialog.order, "done");
-    setDialogBusy(false);
-    if (!result.ok) {
-      setDialogError(result.error);
-      return;
-    }
-    // Завершённая строка сворачивается; ключ чистим даже если строка уже уехала в другую группу.
-    if (dialog.kind === "finish" && expandedKey === dialog.row.key) setExpandedKey(null);
-    setDialog(null);
-  }
-
-  /* ── Действия строки: ровно одна главная кнопка + кебаб ───────────── */
-  type Primary = { label: string; onClick: () => void; disabled?: boolean; hint?: string };
-  function rowActions(row: Row): { primary: Primary | null; note: string | null; menu: ActionMenuItem[] } {
+  function rowView(row: Row): { note: string | null; menu: ActionMenuItem[] } {
     const menu: ActionMenuItem[] = [];
-    if (row.kind === "session") {
-      const { session } = row;
-      const own = session.can_stop && (session.order_transport_type === "train" ? canTrain : canLoad);
-      const primary: Primary | null = own ? { label: "Завершить погрузку", onClick: () => openFinish(row) } : null;
-      return { primary, note: primary ? null : "Идёт погрузка", menu };
-    }
-
+    if (row.kind === "session") return { note: "Идёт погрузка", menu };
     const { order, session, history } = row;
-    const train = order.transport_type === "train";
-    const stages = actions.allowedStages(order);
-    const canCount = train ? canTrain : canLoad;
-    let primary: Primary | null = null;
     let note: string | null = null;
-
     if (order.status === "confirmed") {
-      if (session) {
-        // Сессии опрашиваются чаще заказов: привязка может появиться
-        // раньше обновлённого статуса заказа.
-        note = session.status === "starting" ? "Привязка заказа" : "Идёт погрузка";
-      } else {
-        note = "Ожидает распознавания номера";
-      }
+      // Сессии опрашиваются чаще заказов: привязка может появиться раньше обновлённого статуса заказа.
+      note = session
+        ? session.status === "starting"
+          ? "Привязка заказа"
+          : "Идёт погрузка"
+        : "Ожидает распознавания номера";
     } else if (isLoadingStatus(order.status)) {
-      if (stages.includes("exit")) {
-        const foreign = !!session && !session.can_stop;
-        primary = {
-          label: "Завершить погрузку",
-          onClick: () => openFinish(row),
-          disabled: foreign,
-          hint: foreign ? `сессию запустил ${session.started_by_name || "другой сотрудник"}` : undefined,
-        };
-      } else {
-        note = "Идёт погрузка";
-      }
-      if (stages.includes("waiting")) {
-        menu.push({ key: "rewind", label: "Вернуть в ожидание", onSelect: () => setRewindOrder(order) });
-      }
-      if (canCount) {
-        menu.push({ key: "manual", label: "Мешки вручную", onSelect: () => setExpandedKey(row.key) });
-      }
+      note = "Идёт погрузка";
     } else if (order.status === "loaded") {
-      if (canShip && stages.includes("done")) {
-        primary = {
-          label: "Оформить выезд",
-          onClick: () => openDialog({ kind: "ship", order, text: shipOutConfirmText(order) }),
-        };
-      } else {
-        note = "Ожидает оформления выезда";
-      }
+      note = "Ожидает оформления выезда";
     }
-    if (history && canViewShipping && (order.status === "loaded" || order.status === "shipped")) {
+    if (history && (order.status === "loaded" || order.status === "shipped")) {
       menu.push({ key: "history", label: "История подсчёта", icon: Film, onSelect: () => setHistoryOpen(history) });
-    }
-    if (order.status === "shipped" && canRollback && stages.includes("waiting")) {
-      menu.push({
-        key: "rollback",
-        label: "Отменить отгрузку",
-        tone: "destructive",
-        onSelect: () => setRollbackOrder(order),
-      });
     }
     if (canOpenOrder) {
       menu.push({ key: "open", label: "Открыть заказ", onSelect: () => router.push(`/orders/${order.id}`) });
     }
-    return { primary, note, menu };
-  }
-
-  function openFinish(row: Row) {
-    const bags = liveBags(row);
-    const text =
-      row.kind === "order"
-        ? finishLoadingConfirmText(row.order, bags)
-        : {
-            title: "Завершить погрузку?",
-            description: `Камера насчитала ${bags} меш. для заказа #${row.session.order_id}. После завершения заказ перейдёт в «Готов к выезду», но выезд ещё не будет оформлен.`,
-            confirmLabel: "Завершить погрузку",
-            confirmVariant: "default" as const,
-          };
-    openDialog({ kind: "finish", row, text });
+    return { note, menu };
   }
 
   /* ── Ячейки ──────────────────────────────────────────────────────── */
   const cellClass = "";
-  const primaryButtonClass = "h-10";
   const menuClass = "size-10";
 
   function transportCell(row: Row) {
@@ -490,7 +353,7 @@ export function ShippingTable({
     const ordered = orderedBagCount(order);
     const loaded = order.bags_loaded ?? 0;
     const cameraTotal = history ? (history.final_total ?? history.last_status?.total ?? null) : null;
-    const showHistory = canViewShipping && history && (order.status === "loaded" || order.status === "shipped");
+    const showHistory = history && (order.status === "loaded" || order.status === "shipped");
     let main: ReactNode;
     if (order.status === "confirmed") main = <span className="tabular-nums">— / {ordered}</span>;
     else if (isLoadingStatus(order.status)) {
@@ -584,30 +447,17 @@ export function ShippingTable({
   }
 
   function actionsCell(row: Row) {
-    const { primary, note, menu } = rowActions(row);
-    const busy = actions.busyOrderId === row.id;
+    const { note, menu } = rowView(row);
     return (
       <div className="flex items-center justify-end gap-2">
-        {primary ? (
-          <div className="flex flex-col items-end gap-1">
-            <Button className={primaryButtonClass} disabled={primary.disabled || busy} onClick={primary.onClick}>
-              {primary.label}
-            </Button>
-            {primary.disabled && primary.hint && (
-              // На планшете нет hover: причина блокировки видна текстом.
-              <span className="max-w-[220px] text-right text-[11px] text-[var(--muted-foreground)]">
-                {primary.hint}
-              </span>
-            )}
-          </div>
-        ) : (
-          note && <span className="text-[12px] text-[var(--muted-foreground)]">{note}</span>
+        {note && <span className="text-[12px] text-[var(--muted-foreground)]">{note}</span>}
+        {menu.length > 0 && (
+          <ActionMenu
+            label={`Действия: ${row.kind === "order" ? `заказ #${row.order.id}` : `сессия #${row.session.id}`}`}
+            items={menu}
+            className={menuClass}
+          />
         )}
-        <ActionMenu
-          label={`Действия: ${row.kind === "order" ? `заказ #${row.order.id}` : `сессия #${row.session.id}`}`}
-          items={menu}
-          className={menuClass}
-        />
       </div>
     );
   }
@@ -620,15 +470,8 @@ export function ShippingTable({
     const session = row.session;
     const cameraSrc = order?.loading_camera ?? session?.camera ?? null;
     const camera = cameraSrc ? camerasBySrc.get(cameraSrc) : undefined;
-    const train = order?.transport_type === "train";
-    const canCount = !!order && (train ? canTrain : canLoad);
     const occupiedBy =
       order && !session && order.loading_camera ? (sessionsByCamera.get(order.loading_camera)?.order_id ?? null) : null;
-    const { primary } = rowActions(row);
-    const finish =
-      primary?.label === "Завершить погрузку"
-        ? { disabled: !!primary.disabled, hint: primary.hint, onClick: primary.onClick }
-        : null;
     return (
       <ShippingRowDetail
         order={order}
@@ -636,14 +479,6 @@ export function ShippingTable({
         camera={camera}
         cameraSrc={cameraSrc}
         occupiedByOrderId={occupiedBy}
-        canCount={canCount}
-        busy={actions.busyOrderId === row.id}
-        bagCounterRef={bagCounterRef}
-        onSaveBags={order ? actions.saveBags(order) : () => Promise.resolve()}
-        onAccept={(bags) =>
-          order ? actions.act(order.id, () => actions.saveBags(order)(bags)) : Promise.resolve({ ok: true, error: "" })
-        }
-        finish={finish}
       />
     );
   }
@@ -801,31 +636,6 @@ export function ShippingTable({
         </TBody>
       </Table>
 
-      <ConfirmDialog
-        open={dialog !== null}
-        onClose={() => !dialogBusy && setDialog(null)}
-        title={dialog?.text.title ?? ""}
-        description={dialog?.text.description}
-        confirmLabel={dialog?.text.confirmLabel}
-        confirmVariant={dialog?.text.confirmVariant}
-        busy={dialogBusy}
-        error={dialogError}
-        onConfirm={() => void confirmDialog()}
-      />
-      <RewindLoadingModal
-        order={rewindOrder}
-        session={rewindOrder ? (sessionsByOrderId.get(rewindOrder.id) ?? null) : null}
-        cameraName={rewindOrder?.loading_camera ? camerasBySrc.get(rewindOrder.loading_camera)?.name : undefined}
-        onClose={() => setRewindOrder(null)}
-        onConfirm={(order) => actions.executeMove(order, "waiting")}
-      />
-      <ShipmentRollbackModal
-        order={rollbackOrder}
-        onClose={() => setRollbackOrder(null)}
-        onChanged={async () => {
-          await Promise.all([reloadOrders(), reloadSessions(), reloadHistories?.()]);
-        }}
-      />
       <CountingHistoryModal history={historyOpen} onClose={() => setHistoryOpen(null)} />
     </Card>
   );

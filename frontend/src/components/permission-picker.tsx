@@ -1,24 +1,23 @@
 "use client";
 import { Check } from "lucide-react";
+import { sectionRank } from "@/lib/permission-presets";
 import type { Permission } from "@/lib/types";
 
 const PERM_SECTION_LABELS: Record<string, string> = {
-  catalog: "Товары",
-  clients: "Клиенты",
-  warehouse: "Склад",
-  silos: "Силосы",
-  tasks: "Задачи",
-  grain: "Приход и вывоз",
-  orders: "Заказы",
-  payments: "Оплаты",
-  shipping: "Пост отгрузки",
-  ai_247: "AI 24/7",
-  train: "Вагон",
-  loader: "Грузчик",
-  events: "Журнал",
   reports: "Отчёты",
+  orders: "Заказы",
+  payments: "Касса",
+  monoblock: "Моноблок",
+  loader: "Грузчик",
+  warehouse: "Склады",
+  silos: "Силосы",
+  grain: "Приход и вывоз",
+  clients: "Клиенты",
+  catalog: "Товары",
+  tasks: "Задачи",
+  events: "Журнал",
   employees: "Сотрудники",
-  sys_permissions: "Системные права",
+  sys_permissions: "Администрирование",
 };
 
 export function PermissionPicker({
@@ -32,12 +31,15 @@ export function PermissionPicker({
   onToggle: (code: string) => void;
   disabled?: Set<string>;
 }) {
-  const sections = Array.from(new Set(perms.map((permission) => permission.section)));
+  // Разделы — в порядке меню, а не по алфавиту кодов с сервера.
+  const sections = Array.from(new Set(perms.map((permission) => permission.section))).sort(
+    (a, b) => sectionRank(a) - sectionRank(b),
+  );
   return (
     <div className="flex flex-col gap-3">
       {sections.map((section) => (
         <div key={section} className="rounded-lg border p-3">
-          <div className="mb-2 text-sm font-semibold">{PERM_SECTION_LABELS[section] ?? section}</div>
+          <h3 className="mb-2 text-sm font-semibold">{PERM_SECTION_LABELS[section] ?? section}</h3>
           <div className="flex flex-wrap gap-2">
             {perms
               .filter((permission) => permission.section === section)

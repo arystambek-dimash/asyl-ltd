@@ -24,6 +24,7 @@ function handlers(): TransactionActionHandlers {
     openRefund: vi.fn(),
     openReject: vi.fn(),
     openRestore: vi.fn(),
+    openReopen: vi.fn(),
   };
 }
 
@@ -77,6 +78,19 @@ it("shows the buyer-link refund state for a Kaspi QR payment with a pending link
 
   expect(actions.map((action) => action.key)).toEqual(["receipt", "qr_refund"]);
   render(<TransactionActions actions={actions} layout="list" />);
-  await userEvent.click(screen.getByRole("button", { name: /Возврат по ссылке/ }));
+  await userEvent.click(screen.getByRole("button", { name: /Возврат по QR/ }));
   expect(h.openQrRefund).toHaveBeenCalledWith(qrPayment);
+});
+
+it("offers to return a mistakenly confirmed cash payment to review", async () => {
+  const h = handlers();
+  const reopenable = { ...confirmed, can_reopen: true };
+  const actions = transactionActions(reopenable, h, { canConfirm: true, canCreate: false });
+  expect(actions.map((action) => action.key)).toEqual(["reopen", "receipt", "refund"]);
+  render(<TransactionActions actions={actions} layout="list" />);
+  await userEvent.click(screen.getByRole("button", { name: /Вернуть на проверку/ }));
+  expect(h.openReopen).toHaveBeenCalledWith(reopenable);
+  expect(transactionActions(reopenable, h, { canConfirm: false, canCreate: true }).map((a) => a.key)).toEqual([
+    "receipt",
+  ]);
 });

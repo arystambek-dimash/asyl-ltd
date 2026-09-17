@@ -53,14 +53,13 @@ def read_ai_status():
         yield
 
 
-@pytest.mark.parametrize("permission", ["shipping.load", "ai_247.manage"])
-def test_human_with_read_or_manage_permission_can_get_all_ai_247_monitoring(
+def test_monoblock_viewer_can_get_all_ai_247_monitoring(
     auth_client,
     user_with_perms,
     read_ai_status,
-    permission,
 ):
-    user = user_with_perms(f"ai-reader-{permission}", codes=[permission])
+    # Моноблок только для просмотра: одно право видит и AI 24/7.
+    user = user_with_perms("ai-reader", codes=["monoblock.view"])
 
     for endpoint in READ_ENDPOINTS:
         assert auth_client(user).get(endpoint).status_code == 200
@@ -71,7 +70,7 @@ def test_shipping_reader_does_not_receive_stock_balances_or_warehouse_addresses(
     user_with_perms,
     read_ai_status,
 ):
-    loader = user_with_perms("ai-stock-private", codes=["shipping.load"])
+    loader = user_with_perms("ai-stock-private", codes=["monoblock.view"])
     warehouse = Warehouse.objects.create(
         code="private-address",
         name="Склад готовой продукции",
@@ -100,7 +99,7 @@ def test_ai_247_monitoring_get_denies_unprivileged_client_and_anonymous_users(
     client_user,
     read_ai_status,
 ):
-    unprivileged = user_with_perms("ai-outsider", codes=["shipping.view"])
+    unprivileged = user_with_perms("ai-outsider", codes=["orders.view"])
 
     for endpoint in READ_ENDPOINTS:
         assert auth_client(unprivileged).get(endpoint).status_code == 403
@@ -119,7 +118,7 @@ def test_technical_monoblock_account_cannot_get_ai_247_monitoring(
         name="Технический моноблок",
         camera_source="cam9",
     )
-    assert user.has_perm_code("shipping.load") is False
+    assert user.has_perm_code("monoblock.view") is False
 
     for endpoint in READ_ENDPOINTS:
         assert auth_client(user).get(endpoint).status_code == 403
@@ -133,11 +132,11 @@ def test_shipping_continuous_endpoints_require_employee_permissions(
 ):
     shipping_user = user_with_perms(
         "shipping-continuous-reader",
-        codes=["shipping.view"],
+        codes=["monoblock.view"],
     )
     ai247_only = user_with_perms(
         "ai247-only-reader",
-        codes=["ai_247.manage"],
+        codes=["loader.confirm"],
     )
     device_user = make_user(username="shipping-continuous-device")
     RetiredMonoblockAccount.objects.create(
@@ -172,16 +171,17 @@ MUTATION_REQUESTS = (
 
 
 @pytest.mark.parametrize("method,endpoint,payload", MUTATION_REQUESTS)
-def test_shipping_loader_cannot_mutate_ai_247(
+def test_only_superuser_can_mutate_ai_247(
     auth_client,
     user_with_perms,
     method,
     endpoint,
     payload,
 ):
+    # «Куда приходовать», режим и правки AI 24/7 — только суперпользователь.
     loader = user_with_perms(
         f"ai-mutation-loader-{method}-{len(endpoint)}",
-        codes=["shipping.load"],
+        codes=["monoblock.view", "loader.confirm", "sys_permissions.manage"],
     )
     request = getattr(auth_client(loader), method)
 
@@ -190,11 +190,11 @@ def test_shipping_loader_cannot_mutate_ai_247(
     assert response.status_code == 403
 
 
-def test_ai_247_manager_can_change_settings_without_shipping_load(
+def test_superuser_can_change_ai_247_settings(
     auth_client,
-    user_with_perms,
+    django_user_model,
 ):
-    manager = user_with_perms("ai-settings-manager", codes=["ai_247.manage"])
+    manager = django_user_model.objects.create_superuser("ai-settings-manager", password="pass12345")
 
     response = auth_client(manager).put(
         "/api/cameras/always-on-settings/",

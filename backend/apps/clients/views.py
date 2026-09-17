@@ -28,7 +28,7 @@ from apps.common.query_params import (
 )
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
-from apps.orders.debt import debt_orders, order_remaining
+from apps.orders.debt import DEBT_STATUS, debt_orders, order_remaining
 from apps.orders.models import Order
 from apps.orders.querysets import order_remaining_by_id, with_order_api_relations
 from apps.sales.access import assigned_department_id, scope_by_client_department
@@ -177,8 +177,7 @@ class ClientViewSet(
             Prefetch(
                 "orders",
                 queryset=Order.objects.filter(
-                    status="shipped",
-                    settlement_intent="debt",
+                    status=DEBT_STATUS,
                 ).prefetch_related("items", "payments"),
             )
         )
@@ -562,7 +561,7 @@ class ClientViewSet(
         # бэкфилл — manage.py sync_payment_status), а остаток по остальным
         # считается точно ниже. Иначе список растёт со всей историей продаж.
         orders_qs = Order.objects.filter(
-            status="shipped", settlement_intent="debt",
+            status=DEBT_STATUS,
         ).exclude(payment_status="settled")
         if department:
             orders_qs = orders_qs.filter(department=department)
@@ -658,8 +657,7 @@ class ClientViewSet(
         lifetime_paid = {}
         overdue = {}
         if can_view_reports:
-            lifetime = [o for o in client.orders.all()
-                        if o.status == "shipped" and o.settlement_intent == "debt"]
+            lifetime = [o for o in client.orders.all() if o.status == DEBT_STATUS]
             lifetime_total = sum_by_currency(lifetime, lambda o: o.total_amount)
             lifetime_paid = sum_by_currency(lifetime, lambda o: o.paid_total)
             overdue_stores = {s.id for s in stores
@@ -822,9 +820,9 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         rows = []
         # Долг считается по quantity/unit_price позиции — товар здесь не
         # читается, поэтому джоин к каталогу не нужен. Набор сразу сужен до
-        # отгруженных «в долг»: остальные заказы debt_orders всё равно отсеет.
+        # отгруженных: остальные заказы debt_orders всё равно отсеет.
         debt_candidates = Order.objects.filter(
-            status="shipped", settlement_intent="debt",
+            status=DEBT_STATUS,
         ).prefetch_related("items", "payments")
         for store in self.get_queryset().prefetch_related(
                 Prefetch("orders", queryset=debt_candidates)):

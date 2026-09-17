@@ -507,3 +507,31 @@ def test_awaiting_customer_is_counted_and_filtered_as_requested(
         "/api/payment-transactions/?status=requested").data
     assert waiting["count"] == 1
     assert waiting["results"][0]["effective_status"] == "awaiting_customer"
+
+
+def test_only_a_cash_desk_confirmation_can_be_returned_to_review(auth_client, accountant, user_with_perms):
+    """«Вернуть на проверку» в карточке транзакции — по тем же правилам, что reopen_confirmed_payment."""
+    client = Client.objects.create_with_user(first_name="Вернуть", last_name="Проверку")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(order=order, quantity=10, unit_price="100.00")
+    cash = Payment.objects.create(order=order, amount="100.00", method="cash", status="confirmed")
+    refunded = Payment.objects.create(
+        order=order, amount="100.00", method="cash", status="confirmed", refunded_amount="40.00",
+    )
+    online = Payment.objects.create(order=order, amount="100.00", method="kaspi", status="confirmed")
+    ApiPayInvoice.objects.create(payment=online, invoice_id=880001, idempotency_key="reopen-online", status="paid")
+    received = Payment.objects.create(order=order, amount="100.00", method="cash", status="received")
+
+    rows = {row["id"]: row for row in auth_client(accountant).get("/api/payment-transactions/").data["results"]}
+    assert rows[cash.id]["can_reopen"] is True
+    assert (rows[refunded.id]["can_reopen"], rows[online.id]["can_reopen"], rows[received.id]["can_reopen"]) == (
+        False, False, False,
+    )
+    viewer = user_with_perms("reopen-viewer", codes=["payments.view"])
+    viewer_rows = {row["id"]: row for row in auth_client(viewer).get("/api/payment-transactions/").data["results"]}
+    assert viewer_rows[cash.id]["can_reopen"] is False
+
+    response = auth_client(accountant).post(f"/api/orders/{order.pk}/payments/{cash.pk}/reopen/")
+    assert response.status_code == 200, response.data
+    cash.refresh_from_db()
+    assert cash.status == "received"

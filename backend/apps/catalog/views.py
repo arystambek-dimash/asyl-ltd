@@ -25,7 +25,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "list": ("catalog.view", "warehouse.adjust"),
         "retrieve": "catalog.view",
         "create": "catalog.create", "update": "catalog.edit",
-        "partial_update": "catalog.edit", "destroy": "catalog.delete",
+        "partial_update": "catalog.edit", "destroy": "catalog.edit",
         "archive": "catalog.edit", "restore": "catalog.edit",
         "photo": "catalog.edit",
     }

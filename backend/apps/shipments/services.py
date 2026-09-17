@@ -281,7 +281,7 @@ def _assert_no_open_ai_session(order) -> None:
         status__in=AiCountingSession.OPEN_STATUSES,
     ).exists():
         raise ValidationError({
-            "detail": "Сначала завершите AI-подсчёт на Моноблоке",
+            "detail": "По заказу идёт AI-подсчёт — отгрузите его на странице «Грузчик»",
             "code": "ai_session_active",
         })
 
@@ -683,17 +683,18 @@ def _do_ship(order, shipment, user, label):
     order.payment_status = "unpaid"
     order.loading_camera = ""
     order.save(update_fields=["status", "payment_status", "loading_camera"])
-    if order.settlement_intent == "debt":
-        log_event(
-            "debt",
-            f"Заказ отгружен в долг: {order.total_amount}",
-            user=user,
-            order=order,
-            payload={
-                "amount": str(order.total_amount),
-                "intent": order.settlement_intent,
-            },
-        )
+    # Отгруженный неоплаченный заказ — долг клиента (orders/debt.py), как бы он ни
+    # собирался платить: оплаты до отгрузки не принимаются.
+    log_event(
+        "debt",
+        f"Заказ отгружен в долг: {order.total_amount}",
+        user=user,
+        order=order,
+        payload={
+            "amount": str(order.total_amount),
+            "intent": order.settlement_intent,
+        },
+    )
     bag_estimate = estimated_load_kg(order)
     log_event("shipment", label, user=user, order=order,
               payload={"bags_loaded": shipment.bags_loaded,

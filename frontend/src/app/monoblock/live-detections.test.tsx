@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   apiGet: vi.fn(),
   apiPut: vi.fn(),
   apiPost: vi.fn(),
-  permissions: ["shipping.load"],
+  permissions: ["monoblock.view"],
   isSuperuser: false,
   resolveDetections: null as null | ((value: { data: { processors: unknown[] } }) => void),
   rejectDetections: null as null | ((reason?: unknown) => void),
@@ -310,7 +310,7 @@ function selectedDayPanel(day: string) {
 
 beforeEach(() => {
   mocks.requestedUrls = [];
-  mocks.permissions = ["shipping.load"];
+  mocks.permissions = ["monoblock.view"];
   mocks.isSuperuser = false;
   mocks.apiPut.mockReset();
   mocks.apiPost.mockReset();
@@ -365,7 +365,7 @@ describe("AI 24/7 live detections", () => {
   });
 
   it("does not expose number camera settings through the manage permission alone", async () => {
-    mocks.permissions = ["shipping.load", "sys_permissions.manage"];
+    mocks.permissions = ["monoblock.view", "sys_permissions.manage"];
     setupShippingHistory();
     const user = userEvent.setup();
     render(<MonoblockPage />);
@@ -706,7 +706,7 @@ describe("AI 24/7 live detections", () => {
 
   it("не показывает независимую бренд-разбивку в активной аналитике", async () => {
     const user = userEvent.setup();
-    mocks.permissions = ["shipping.load", "ai_247.manage"];
+    mocks.isSuperuser = true;
     const brandedAnalytics = {
       ...analytics,
       total: 29,
@@ -775,7 +775,7 @@ describe("AI 24/7 live detections", () => {
 
   it("не позволяет запоздавшему GET перезаписать сохранённые привязки", async () => {
     const user = userEvent.setup();
-    mocks.permissions = ["shipping.load", "ai_247.manage"];
+    mocks.isSuperuser = true;
     const initialProduction = {
       camera: "cam2",
       warehouse: 1,

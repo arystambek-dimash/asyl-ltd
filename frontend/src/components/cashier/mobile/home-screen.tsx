@@ -1,5 +1,5 @@
 "use client";
-import { ChartPie, ChevronRight, HandCoins, History, Receipt, Users } from "lucide-react";
+import { ChartPie, ChevronRight, HandCoins, Receipt, Users } from "lucide-react";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { NavList } from "@/components/ui/nav-list";
 import { cn, formatCompactCurrency, formatCurrency, pluralRu } from "@/lib/utils";
@@ -13,7 +13,6 @@ const ITEMS: Record<HomeItemKey, { title: string; icon: React.ElementType; hint:
   confirm: { title: "Оплаты", icon: HandCoins, hint: "Подтверждение и приём оплат" },
   debts: { title: "Долги клиентов", icon: Users, hint: "Остатки по клиентам" },
   transactions: { title: "Транзакции", icon: Receipt, hint: "Все платежи, возвраты и чеки" },
-  journal: { title: "Журнал", icon: History, hint: "Действия по оплатам" },
   report: { title: "Отчёт по поступлениям", icon: ChartPie, hint: "По отделам и способам оплаты" },
 };
 
@@ -87,7 +86,6 @@ export function HomeScreen({
     confirm: confirmSubtitle(model),
     debts: debtsSubtitle(model),
     transactions: ITEMS.transactions.hint,
-    journal: ITEMS.journal.hint,
     report: ITEMS.report.hint,
   };
   const loadError = summary.error || queueSummary.error || debts.error;

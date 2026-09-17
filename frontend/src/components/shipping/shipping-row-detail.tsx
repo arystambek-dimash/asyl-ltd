@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useState, type Ref } from "react";
-import { Check, Package, Phone, VideoOff } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Package, Phone, VideoOff } from "lucide-react";
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { CameraStream } from "@/components/camera-stream";
 import type { CameraFeed } from "@/components/camera-wall";
 import { DetectionOverlay } from "@/components/detection-overlay";
-import { BagCounter, type BagCounterHandle } from "@/components/shipping/bag-counter";
 import { ShippingTransportEvidence } from "@/components/shipping/shipping-transport-evidence";
-import type { ShippingActionResult } from "@/components/shipping/use-shipping-actions";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { resolveCountingLine } from "@/lib/camera-counting-line";
 import { orderedBagCount } from "@/lib/orders";
-import { bagColor, isAiOnlineStatus } from "@/lib/shipping-cameras";
+import { bagColor } from "@/lib/shipping-cameras";
 import type { AiCountingSession, Order } from "@/lib/types";
 import { useAiCounter } from "@/lib/use-ai-counter";
 import { cn, formatDateTime, formatMoney } from "@/lib/utils";
@@ -32,45 +29,28 @@ export interface ShippingRowDetailProps {
   cameraSrc: string | null;
   /** Заказ, чья сессия занимает камеру, когда у этой строки сессии нет. */
   occupiedByOrderId?: number | null;
-  /** Ручной счёт и «Принять N»: (грузовик && shipping.load) || (вагон && train.load). */
-  canCount: boolean;
-  /** Действие строки уже выполняется — кнопки панели заблокированы. */
-  busy: boolean;
-  /** Владелец таблицы читает `saveNow()` перед завершением погрузки. */
-  bagCounterRef: Ref<BagCounterHandle>;
-  onSaveBags: (bags: number) => Promise<unknown>;
-  onAccept: (bags: number) => Promise<ShippingActionResult>;
-  /** Главная кнопка «Завершить погрузку»; null — по правам недоступна. */
-  finish: { disabled: boolean; hint?: string; onClick: () => void } | null;
 }
 
-/** Раскрытая строка очереди: живое видео, AI-блок, ручной счёт и завершение. */
+/** Раскрытая строка очереди — только просмотр: живое видео, AI-подсчёт и распознанный номер.
+ * Отгружает грузчик на своей странице. */
 export function ShippingRowDetail({
   order,
   session,
   camera,
   cameraSrc,
   occupiedByOrderId = null,
-  canCount,
-  busy,
-  bagCounterRef,
-  onSaveBags,
-  onAccept,
-  finish,
 }: ShippingRowDetailProps) {
   // Вторая точность живого счёта: свёрнутые строки показывают
   // session.last_status.total из опроса сессий (лаг ≤3 с), раскрытая — этот
   // счётчик (500 мс). Он монтируется только здесь и только при сессии.
   const ai = useAiCounter(session?.camera ?? null, session?.order_id ?? null, !!session);
   const [streamOnline, setStreamOnline] = useState(false);
-  const [acceptError, setAcceptError] = useState("");
 
   const live = !!ai.status?.running;
   const total = ai.status?.total ?? session?.last_status?.total ?? 0;
   const orderTarget = order ? orderedBagCount(order) : 0;
   const target = orderTarget > 0 ? orderTarget : null;
   const goalReached = target !== null && total >= target;
-  const canStop = ai.status?.can_stop ?? session?.can_stop ?? false;
   // camNai зависит от отдельного RTSP publisher на ПК цеха. Счётчик может
   // продолжать работать, когда этот publisher переподключается, и тогда
   // карточка становилась полностью чёрной. Базовый camN уже контролируется
@@ -95,8 +75,6 @@ export function ShippingRowDetail({
   const isStarting = session?.status === "starting";
   const needsRecovery =
     isStarting || ai.status?.code === "ai_reconciliation_required" || ai.status?.code === "ai_processor_stopped";
-  const warming = !isAiOnlineStatus(ai.status?.status);
-  const accepted = order?.bags_loaded ?? 0;
   const aiLabel = !session
     ? "Ожидает привязки камеры"
     : ai.stale
@@ -119,14 +97,7 @@ export function ShippingRowDetail({
           ? "bg-emerald-400"
           : "bg-amber-400";
 
-  async function accept() {
-    setAcceptError("");
-    const result = await onAccept(total);
-    if (!result.ok) setAcceptError(result.error);
-  }
-
   const items = order?.items ?? [];
-  const sessionButton = "h-8";
   const perColor = ai.status?.per_color ?? session?.last_status?.per_color;
 
   return (
@@ -255,22 +226,9 @@ export function ShippingRowDetail({
               )}
             </div>
 
-            {order && canCount && canStop && !isStarting && (
-              <div className="pt-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={sessionButton}
-                  disabled={busy || !live || warming || total === accepted}
-                  onClick={() => void accept()}
-                >
-                  <Check className="size-3.5" /> Принять {total}
-                </Button>
-              </div>
-            )}
-            {(ai.error || acceptError) && (
+            {ai.error && (
               <p role="alert" className="text-[12px] text-[var(--destructive)]">
-                {ai.error || acceptError}
+                {ai.error}
               </p>
             )}
           </div>
@@ -283,24 +241,6 @@ export function ShippingRowDetail({
         )}
 
         {order && <ShippingTransportEvidence orderId={order.id} liveAutoFinish={!!session} />}
-
-        {order && canCount && <BagCounter ref={bagCounterRef} key={order.id} order={order} onSave={onSaveBags} />}
-
-        {finish && (
-          <div className="flex flex-col gap-1">
-            <Button
-              className="h-12 w-full"
-              disabled={finish.disabled || busy}
-              title={finish.hint}
-              onClick={finish.onClick}
-            >
-              <Check className="size-4" /> Завершить погрузку
-            </Button>
-            {finish.disabled && finish.hint && (
-              <p className="text-center text-[12px] text-[var(--muted-foreground)]">{finish.hint}</p>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );

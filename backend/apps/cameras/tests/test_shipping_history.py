@@ -112,7 +112,7 @@ def payload():
 
 
 @pytest.mark.parametrize(
-    "permission", ["shipping.view", "shipping.load", "sys_permissions.manage"]
+    "permission", ["monoblock.view", "sys_permissions.manage"]
 )
 def test_endpoint_permissions_and_no_stock_contract(
     camera, auth_client, user_with_perms, permission
@@ -144,7 +144,7 @@ def test_endpoint_denies_anonymous_and_unprivileged(
         401,
         403,
     )
-    user = user_with_perms("shipping-history-unprivileged", codes=["ai_247.manage"])
+    user = user_with_perms("shipping-history-unprivileged", codes=["loader.confirm"])
     assert (
         auth_client(user).get(URL, {"camera": "cam1", "day": str(DAY)}).status_code
         == 403
@@ -165,7 +165,7 @@ def test_endpoint_denies_anonymous_and_unprivileged(
     ],
 )
 def test_endpoint_rejects_bad_query(camera, auth_client, user_with_perms, query):
-    user = user_with_perms("shipping-history-invalid", codes=["shipping.view"])
+    user = user_with_perms("shipping-history-invalid", codes=["monoblock.view"])
     assert auth_client(user).get(URL, query).status_code == 400
 
 

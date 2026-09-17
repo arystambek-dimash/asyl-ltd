@@ -675,7 +675,7 @@ def test_a_non_retryable_code_parks_the_stop_immediately(media):
 def test_dismiss_closes_a_stop_for_the_operator(media, auth_client, user_with_perms):
     """I5c: POST .../dismiss/ — ручное закрытие любого незакрытого стопа."""
     from apps.grain import wagon_arch
-    editor = user_with_perms("arch-editor", codes=["grain.edit"])
+    editor = user_with_perms("arch-editor", codes=["grain.weigh"])
     viewer = user_with_perms("arch-onlyview", codes=["grain.view"])
     _expected_wagon()
     stop = wagon_arch.import_event(_arrival())
@@ -880,7 +880,7 @@ def test_dismissing_a_stop_without_a_wagon_writes_no_trip_line(media, auth_clien
     """Раунд 2: у стопа без рейса журнал писать некуда — и это не ошибка."""
     from apps.eventlog.models import EventLog
     from apps.grain import wagon_arch
-    editor = user_with_perms("arch-editor2", codes=["grain.edit"])
+    editor = user_with_perms("arch-editor2", codes=["grain.weigh"])
     blocker = _expected_wagon("28055531")
     blocker.status = st.AT_SILO
     blocker.save(update_fields=["status"])

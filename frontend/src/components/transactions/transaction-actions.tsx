@@ -1,13 +1,14 @@
 "use client";
 import type { LucideIcon } from "lucide-react";
-import { Download, ExternalLink, Link2, RotateCcw, Send, Undo2, XCircle } from "lucide-react";
+import { Download, ExternalLink, History, Link2, RotateCcw, Send, Undo2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Payment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_PROVIDER_STATUSES = new Set(["creating", "processing", "pending", "cancelling"]);
 
-export type TransactionActionKey = "restore" | "issue" | "qr" | "receipt" | "qr_refund" | "refund" | "reject";
+export type TransactionActionKey =
+  "restore" | "reopen" | "issue" | "qr" | "receipt" | "qr_refund" | "refund" | "reject";
 
 export interface TransactionAction {
   key: TransactionActionKey;
@@ -31,6 +32,8 @@ export interface TransactionActionHandlers {
   openQrRefund?: (payment: Payment) => void;
   openReject: (payment: Payment) => void;
   openRestore: (payment: Payment) => void;
+  /** Вернуть ошибочно подтверждённую оплату на проверку кассы. */
+  openReopen?: (payment: Payment) => void;
 }
 
 /** Какие действия доступны по операции — единый источник для таблицы и шторки. */
@@ -48,6 +51,17 @@ export function transactionActions(
       icon: Undo2,
       variant: "outline",
       run: () => t.openRestore(row),
+    });
+  }
+  const openReopen = t.openReopen;
+  if (perms.canConfirm && openReopen && row.can_reopen) {
+    actions.push({
+      key: "reopen",
+      label: "Вернуть на проверку",
+      title: "Отменить ошибочное подтверждение оплаты",
+      icon: History,
+      variant: "ghost",
+      run: () => openReopen(row),
     });
   }
   if (perms.canCreate && row.can_issue) {
@@ -89,7 +103,7 @@ export function transactionActions(
   if (perms.canConfirm && openQrRefund && row.refunds?.some((refund) => refund.method === "apipay_qr")) {
     actions.push({
       key: "qr_refund",
-      label: "Возврат по ссылке",
+      label: "Возврат по QR",
       title: "Ссылка на возврат и её статус",
       icon: Link2,
       variant: Number(row.pending_refund_amount ?? 0) > 0 ? "outline" : "ghost",

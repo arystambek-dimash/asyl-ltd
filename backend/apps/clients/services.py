@@ -131,10 +131,8 @@ def detect_overdue(store, on_date) -> int:
         return 0
     from apps.orders.models import Order
     from apps.orders.debt import debt_orders
-    # Просрочка — это непогашенный долг, а не любой неоплаченный заказ.
-    # Считаем по тому же правилу, что Order.is_debt: денормализованный
-    # payment_status может отстать от факта, а моментальная оплата
-    # («instant») долгом не является и просрочки не образует.
+    # Просрочка — это непогашенный долг. Считаем по тому же правилу, что
+    # Order.is_debt: денормализованный payment_status может отстать от факта.
     count = len(debt_orders(
         Order.objects.filter(store=store, status="shipped")
         .prefetch_related("items", "payments")

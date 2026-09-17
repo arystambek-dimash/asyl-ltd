@@ -181,7 +181,7 @@ class MonoblockCameraSettings(models.Model):
     camera_sources = models.JSONField(default=list, blank=True)
     # Камеры с AI 24/7. Фоновый overlay не публикуется, а исходный substream
     # хранится на камера-ПК в отдельном rolling-архиве для доказательств.
-    # Изменение защищено отдельным правом ai_247.manage.
+    # Изменение — только суперпользователь (режим AI 24/7).
     always_on_camera_sources = models.JSONField(default=list, blank=True)
     # Одна камера высокого разрешения, закреплённая за будущим контуром
     # круглосуточного распознавания номеров вагонов.

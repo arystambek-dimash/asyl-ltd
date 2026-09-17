@@ -32,7 +32,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/lib/can", () => ({ can: mocks.can }));
 vi.mock("@/store/auth", () => ({
   useAuth: (selector: (state: { me: { is_superuser: boolean; permissions: string[] } }) => unknown) =>
-    selector({ me: { is_superuser: true, permissions: ["grain.edit"] } }),
+    selector({ me: { is_superuser: true, permissions: ["grain.weigh"] } }),
 }));
 vi.mock("next/link", () => ({
   default: ({ children, href, ...rest }: { children: ReactNode; href: string } & Record<string, unknown>) => (
@@ -306,7 +306,7 @@ describe("WagonArchStops", () => {
     expect(updated.results.find((r) => r.id === 5)?.blocked_detail).toBe("закрыто оператором");
   });
 
-  it("lets a grain.edit user dismiss an attention stop; the row updates in place from the response", async () => {
+  it("lets a weigher dismiss an attention stop; the row updates in place from the response", async () => {
     mocks.post.mockResolvedValue({
       data: stop({
         id: 5,
@@ -336,7 +336,7 @@ describe("WagonArchStops", () => {
     expect(within(openRow).getByRole("button", { name: "Закрыть стоянку" })).toBeInTheDocument();
   });
 
-  it("hides the dismiss button without grain.edit", () => {
+  it("hides the dismiss button without grain.weigh", () => {
     mocks.can.mockReturnValue(false);
     render(<WagonArchStops />);
     expect(screen.queryByRole("button", { name: "Закрыть стоянку" })).not.toBeInTheDocument();

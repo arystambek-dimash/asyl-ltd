@@ -9,10 +9,11 @@ def test_codes_are_unique():
 def test_known_codes_are_present():
     expected = {
         "orders.create",
-        "shipping.debt_override",
+        "orders.rollback",
+        "monoblock.view",
+        "loader.confirm",
         "clients.set_price",
         "clients.manage_access",
-        "ai_247.manage",
         "reports.export",
         "employees.manage",
         "grain.delete",
@@ -20,6 +21,16 @@ def test_known_codes_are_present():
         "sys_permissions.manage",
     }
     assert expected <= ALL_CODES
+
+
+def test_retired_codes_are_not_in_runtime_catalog():
+    retired = {
+        "shipping.view", "shipping.load", "shipping.ship", "shipping.arrive",
+        "shipping.rollback", "shipping.debt_override", "train.view", "train.load",
+        "ai_247.manage", "sys_permissions.view", "catalog.delete",
+        "grain.lab", "grain.dispatch", "grain.unload", "grain.exit",
+    }
+    assert retired.isdisjoint(ALL_CODES)
 
 
 def test_legacy_rbac_codes_are_not_in_runtime_catalog():

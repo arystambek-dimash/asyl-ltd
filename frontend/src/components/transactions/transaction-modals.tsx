@@ -80,6 +80,10 @@ export function TransactionModals({
       t.closeStatus();
       t.openRestore(payment);
     },
+    openReopen: (payment) => {
+      t.closeStatus();
+      t.openReopen(payment);
+    },
   };
   const actions =
     detailActions && t.statusFor ? transactionActions(t.statusFor, handlers, { canConfirm, canCreate }) : [];
@@ -93,7 +97,7 @@ export function TransactionModals({
         title="Вернуть оплату"
         description={
           t.refundFor?.provider?.channel === "qr"
-            ? "Kaspi вернёт оплату по QR только после подтверждения покупателем: вы получите ссылку, которую нужно ему отправить."
+            ? "Kaspi вернёт оплату по QR только после подтверждения покупателем: на экране появится QR для него, а если его нет рядом — отправьте ссылку."
             : t.refundFor?.provider
               ? "Возврат будет отправлен через ApiPay. Деньги учтутся после подтверждения платёжного сервиса."
               : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
@@ -104,7 +108,7 @@ export function TransactionModals({
               Отмена
             </Button>
             <Button disabled={t.busy || !t.amount || !t.reason.trim()} onClick={() => void t.refund()}>
-              {t.busy ? "Отправка…" : t.refundFor?.provider?.channel === "qr" ? "Получить ссылку" : "Оформить возврат"}
+              {t.busy ? "Отправка…" : t.refundFor?.provider?.channel === "qr" ? "Показать QR" : "Оформить возврат"}
             </Button>
           </>
         }
@@ -213,6 +217,23 @@ export function TransactionModals({
         busy={t.busy}
         error={t.error}
         onConfirm={() => void t.restore()}
+      />
+
+      <ConfirmDialog
+        open={!!t.reopenFor}
+        onClose={() => {
+          if (!t.busy) {
+            t.setReopenFor(null);
+            t.setError("");
+          }
+        }}
+        title={`Вернуть PAY-${pad(t.reopenFor?.id ?? "")} на проверку?`}
+        description="Подтверждение отменится: сумма уйдёт из поступлений, а оплата снова появится в «Оплаты → Проверка»."
+        confirmLabel="Вернуть на проверку"
+        confirmVariant="default"
+        busy={t.busy}
+        error={t.error}
+        onConfirm={() => void t.reopen()}
       />
 
       {t.qrFor && <PaymentQrPreview payment={t.qrFor} onClose={() => t.setQrFor(null)} />}

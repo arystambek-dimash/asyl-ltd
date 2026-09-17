@@ -45,6 +45,10 @@ class HasAllPerms(HasPerm):
         return all(user.has_perm_code(code) for code in self.codes)
 
 
+# Значение в required_perms: действие доступно только суперпользователю.
+SUPERUSER_ONLY = "__superuser__"
+
+
 class PermViewSetMixin:
     required_perms: dict = {}
 
@@ -57,6 +61,8 @@ class PermViewSetMixin:
         code = self.required_perms.get(action)
         if code is None:
             return [DenyAll()]
+        if code == SUPERUSER_ONLY:
+            return [IsSuperUser()]
         codes = code if isinstance(code, (tuple, list)) else (code,)
         return [HasPerm(*codes)]
 
@@ -72,6 +78,8 @@ class PermAPIViewMixin:
 
         if codes is None:
             return [DenyAll()]
+        if codes == SUPERUSER_ONLY:
+            return [IsSuperUser()]
 
         if isinstance(codes, str):
             codes = (codes,)

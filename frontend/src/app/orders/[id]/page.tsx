@@ -139,7 +139,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const isManager = can(me, "orders.confirm");
   const canEditStatus = can(me, "orders.edit");
   const canCorrectPrice = can(me, "orders.correct_price");
-  const canRollback = can(me, "shipping.rollback");
+  const canRollback = can(me, "orders.rollback");
   const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
   const [rollbackOpen, setRollbackOpen] = useState(false);

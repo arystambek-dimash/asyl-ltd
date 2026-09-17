@@ -1,27 +1,41 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import type { Permission } from "@/lib/types";
 import { PermissionPicker } from "./permission-picker";
 
+function perm(code: string, label = code): Permission {
+  const [section, action] = code.split(".");
+  return { id: code.length, code, section, action, label };
+}
+
 describe("PermissionPicker", () => {
-  it("показывает отдельную секцию управления AI 24/7", () => {
+  it("называет разделы как страницы меню и показывает действие без раздела", () => {
     render(
       <PermissionPicker
-        perms={[
-          {
-            id: 1,
-            code: "ai_247.manage",
-            section: "ai_247",
-            action: "manage",
-            label: "AI 24/7: Управление",
-          },
-        ]}
+        perms={[perm("monoblock.view", "Моноблок: Доступ (видит всё)")]}
         selected={new Set()}
         onToggle={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("AI 24/7")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Управление" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Моноблок" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Доступ (видит всё)" })).toBeInTheDocument();
+  });
+
+  it("ставит разделы в порядке меню, а не по алфавиту", () => {
+    render(
+      <PermissionPicker
+        perms={[perm("tasks.view"), perm("orders.view"), perm("monoblock.view")]}
+        selected={new Set()}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+      "Заказы",
+      "Моноблок",
+      "Задачи",
+    ]);
   });
 });

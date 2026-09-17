@@ -25,8 +25,9 @@ export function awaitingReason(order: Order): { label: string; inProgress: boole
 }
 
 /**
- * Отгруженный заказ без долга в «Оплатах» кассы: принять оплату или перевести в долг.
- * Оплату в процессе сначала подтверждают или отклоняют — долг поверх неё не ставится.
+ * Несогласованный долг в «Оплатах» кассы: остаток отгруженного заказа уже долг клиента, но клиент
+ * не выбирал «в долг» — касса принимает оплату или согласует долг.
+ * Оплату в процессе сначала подтверждают или отклоняют — долг поверх неё не согласуют.
  */
 export function AwaitingPaymentRow({
   order,
@@ -88,8 +89,8 @@ export function AwaitingPaymentRow({
       <ConfirmDialog
         open={askDebt}
         onClose={() => setAskDebt(false)}
-        title={`Перевести заказ #${order.id} в долг?`}
-        description={`${order.client_name ?? "Клиент"}: остаток ${remaining} появится в «Долгах клиентов».`}
+        title={`Оставить заказ #${order.id} в долг?`}
+        description={`${order.client_name ?? "Клиент"}: остаток ${remaining} уже в «Долгах клиентов». Касса согласует долг — заказ уйдёт из «Ждут оплаты».`}
         confirmLabel="В долг"
         confirmVariant="default"
         busy={q.busy}

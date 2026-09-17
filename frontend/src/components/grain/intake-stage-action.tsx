@@ -107,7 +107,7 @@ export function IntakeStageAction({
         </div>
       </>
     );
-  } else if (wagon.status === "waiting_for_approval" && can(me, "grain.dispatch")) {
+  } else if (wagon.status === "waiting_for_approval" && can(me, "grain.admin")) {
     body = (
       <>
         <div className="flex flex-col gap-1.5">
@@ -128,7 +128,7 @@ export function IntakeStageAction({
     );
   } else if (wagon.status === "arrived" && can(me, "grain.weigh")) {
     body = <WagonScalePending />;
-  } else if (wagon.status === "lab_pending" && can(me, "grain.lab")) {
+  } else if (wagon.status === "lab_pending" && can(me, "grain.admin")) {
     body = (
       <>
         <div className="grid grid-cols-2 gap-3">
@@ -169,7 +169,7 @@ export function IntakeStageAction({
         </Button>
       </>
     );
-  } else if (needSilos && can(me, "grain.dispatch")) {
+  } else if (needSilos && can(me, "grain.admin")) {
     body = (
       <>
         <div className="flex flex-col gap-1.5">
@@ -202,13 +202,13 @@ export function IntakeStageAction({
         </Button>
       </>
     );
-  } else if (wagon.status === "silo_assigned" && can(me, "grain.unload")) {
+  } else if (wagon.status === "silo_assigned" && can(me, "grain.admin")) {
     body = (
       <Button disabled={busy} onClick={() => void act("start-unloading")}>
         Начать разгрузку в «{wagon.assigned_silo_name}»
       </Button>
     );
-  } else if (wagon.status === "unloading" && can(me, "grain.unload")) {
+  } else if (wagon.status === "unloading" && can(me, "grain.admin")) {
     body = (
       <div className="flex flex-wrap gap-2">
         <Button
@@ -258,7 +258,7 @@ export function IntakeStageAction({
         Оприходовать {formatKg(wagon.net_weight_kg)} в «{wagon.assigned_silo_name}»
       </Button>
     );
-  } else if (wagon.status === "exit_allowed" && can(me, "grain.exit")) {
+  } else if (wagon.status === "exit_allowed" && can(me, "grain.admin")) {
     body = (
       <Button disabled={busy} onClick={() => void act("exit")}>
         Выпустить вагон

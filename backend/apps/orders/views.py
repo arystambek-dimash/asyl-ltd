@@ -9,7 +9,7 @@ from io import BytesIO
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 import re
-from django.db.models import Count, Exists, Max, OuterRef, Q, Sum
+from django.db.models import Count, Exists, F, Max, OuterRef, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermViewSetMixin
@@ -34,7 +34,7 @@ from .apipay import (
     MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
 )
 from .invoices import build_invoice_pdf, build_payment_receipt_pdf
-from .debt import order_remaining
+from .debt import DEBT_STATUS, order_remaining
 from .querysets import (
     CASHIER_QUEUE_PAYMENT,
     awaiting_payment_orders,
@@ -757,7 +757,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "payment_detail": ("payments.create", "payments.view"),
         "correct_price": "orders.correct_price",
         "set_status": "orders.view",
-        "rollback_shipment": "shipping.rollback",
+        "rollback_shipment": "orders.rollback",
         "status_requests": "orders.view",
         "approve_status": "orders.edit",
         "reject_status": "orders.edit",
@@ -772,8 +772,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "awaiting_payment": ("payments.confirm", "payments.create"),
         "to_debt": ("payments.confirm", "payments.create"),
         "cashier_log": "payments.confirm",
-        "train": "train.load",
-        "loading_camera": "shipping.load",
+        "train": "loader.confirm",
+        "loading_camera": "loader.confirm",
         "department_summary": "orders.view",
         "workflow_summary": "orders.view",
         "review": "orders.confirm",
@@ -789,16 +789,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             and self.request.query_params.get("post_board") == "1"
         ):
             # This query is a deliberately bounded projection of active work.
-            # Loading roles must not need the unfiltered order archive just to
-            # use their workstation.
-            return [
-                HasPerm(
-                    "orders.view",
-                    "shipping.view",
-                    "shipping.load",
-                    "train.view",
-                )
-            ]
+            # Моноблок и грузчик не должны получать весь архив заказов ради очереди.
+            return [HasPerm("orders.view", "monoblock.view", "loader.view")]
         return super().get_permissions()
 
     # Новая заявка клиента без отдела — общая очередь: её видит и разбирает
@@ -1094,7 +1086,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             "paid_orders": 0, "partial_orders": 0, "unpaid_orders": 0, "debt_orders": 0,
         }
         totals = with_order_amounts(qs).values(
-            "department", "status", "currency", "settlement_intent", "amount_total", "amount_paid"
+            "department", "status", "currency", "amount_total", "amount_paid"
         )
         for order in totals.iterator(chunk_size=2000):
             row = rows[own.code] if own else rows.get(order["department"])
@@ -1115,7 +1107,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             row["paid_by_currency"][currency] += paid
             # Дебиторка — по тому же правилу, что и везде (Order.is_debt),
             # иначе цифра в дашборде разойдётся с «Кассой» и выпиской.
-            if order["status"] == "shipped" and order["settlement_intent"] == "debt" and total > paid:
+            if order["status"] == DEBT_STATUS and total > paid:
                 row["debt_orders"] += 1
                 row["debt_by_currency"][currency] += total - paid
             if total <= 0:
@@ -1192,7 +1184,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="awaiting-payment")
     def awaiting_payment(self, request):
-        """«Ждут оплаты»: отгруженные заказы отдела с остатком, не ушедшие в долг."""
+        """«Ждут оплаты»: несогласованные долги отдела — принять оплату или согласовать долг."""
         params = request.query_params
         qs = awaiting_payment_orders(self.get_queryset())
         department = params.get("department")
@@ -1216,14 +1208,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 {"currency": currency, "amount": money_string(entry["amount"]), "count": entry["count"]}
                 for currency, entry in sorted(totals.items())
             ])
-        qs = qs.order_by("-shipment__shipped_at", "-id")
+        # Свежие отгрузки сверху; заказы без записи отгрузки (старые данные) — в конце.
+        qs = qs.order_by(F("shipment__shipped_at").desc(nulls_last=True), "-id")
         page = self.paginate_queryset(qs)
         data = self.get_serializer(page if page is not None else qs, many=True).data
         return self.get_paginated_response(data) if page is not None else Response(data)
 
     @action(detail=True, methods=["post"], url_path="to-debt")
     def to_debt(self, request, pk=None):
-        """Касса переводит отгруженный заказ из «Ждут оплаты» в долг клиента."""
+        """Касса согласует долг по заказу из «Ждут оплаты»."""
         order = move_order_to_debt(self.get_object(), request.user)
         order = self.get_queryset().get(pk=order.pk)
         return Response(OrderSerializer(order, context={"request": request}).data)

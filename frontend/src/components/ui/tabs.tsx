@@ -86,7 +86,7 @@ export function Tabs({
           onKeyDown={(event) => moveFocus(event, index)}
           className={cn(
             segment
-              ? "inline-flex h-8 items-center gap-1.5 rounded px-4 text-sm transition-colors"
+              ? "inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded px-4 text-sm transition-colors"
               : "-mb-px inline-flex h-11 items-center gap-2 border-b-2 px-1 text-[15px] transition-colors",
             segment && active === t.key
               ? "bg-[var(--card)] font-medium text-[var(--foreground)] shadow-sm"

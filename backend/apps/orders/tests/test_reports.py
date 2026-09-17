@@ -133,8 +133,9 @@ def test_period_shipment_split_uses_confirmed_net_balance(auth_client, boss):
 
     assert shipped["revenue_by_currency"] == {"KZT": "2500.00"}
     assert shipped["paid_amount_by_currency"] == {"KZT": "1400.00"}
-    assert shipped["debt_amount_by_currency"] == {"KZT": "600.00"}
-    assert shipped["awaiting_amount_by_currency"] == {"KZT": "500.00"}
+    # Неоплаченный остаток отгрузки — долг и при «сразу»: «ожидает оплаты» больше не бывает.
+    assert shipped["debt_amount_by_currency"] == {"KZT": "1100.00"}
+    assert shipped["awaiting_amount_by_currency"] == {"KZT": "0.00"}
     assert Decimal(shipped["revenue"]) == (
         Decimal(shipped["paid_amount"])
         + Decimal(shipped["debt_amount"])
@@ -143,13 +144,13 @@ def test_period_shipment_split_uses_confirmed_net_balance(auth_client, boss):
 
     [day] = data["days"]
     assert day["paid_amount"] == "1400.00"
-    assert day["debt_amount"] == "600.00"
-    assert day["awaiting_amount"] == "500.00"
+    assert day["debt_amount"] == "1100.00"
+    assert day["awaiting_amount"] == "0.00"
 
     [client_row] = data["clients"]
     assert client_row["paid_amount_by_currency"] == {"KZT": "1400.00"}
-    assert client_row["debt_amount_by_currency"] == {"KZT": "600.00"}
-    assert client_row["awaiting_amount_by_currency"] == {"KZT": "500.00"}
+    assert client_row["debt_amount_by_currency"] == {"KZT": "1100.00"}
+    assert client_row["awaiting_amount_by_currency"] == {"KZT": "0.00"}
     by_id = {row["id"]: row for row in client_row["order_list"]}
     assert by_id[fully_paid_debt.id] == {
         "id": fully_paid_debt.id,
@@ -167,9 +168,9 @@ def test_period_shipment_split_uses_confirmed_net_balance(auth_client, boss):
     assert by_id[partial_debt.id]["is_debt"] is True
     assert by_id[partial_debt.id]["payment_status"] == "partial"
     assert by_id[instant_unpaid.id]["remaining_amount"] == "500.00"
-    assert by_id[instant_unpaid.id]["is_debt"] is False
+    assert by_id[instant_unpaid.id]["is_debt"] is True
     assert by_id[instant_unpaid.id]["payment_status"] == "unpaid"
-    assert data["debt_now"]["by_currency"] == {"KZT": "600.00"}
+    assert data["debt_now"]["by_currency"] == {"KZT": "1100.00"}
 
 
 def test_completed_refund_reopens_current_period_debt(auth_client, boss):
@@ -461,8 +462,8 @@ def test_clients_breakdown_groups_orders_with_details(auth_client, boss):
     assert top["bags"] == 15
     assert top["revenue_by_currency"] == {"KZT": "15000.00"}
     assert top["paid_amount_by_currency"] == {"KZT": "0.00"}
-    assert top["debt_amount_by_currency"] == {"KZT": "10000.00"}
-    assert top["awaiting_amount_by_currency"] == {"KZT": "5000.00"}
+    assert top["debt_amount_by_currency"] == {"KZT": "15000.00"}
+    assert top["awaiting_amount_by_currency"] == {"KZT": "0.00"}
 
     by_id = {o["id"]: o for o in top["order_list"]}
     assert set(by_id) == {debt_order.id, instant.id}
@@ -470,8 +471,8 @@ def test_clients_breakdown_groups_orders_with_details(auth_client, boss):
     assert by_id[debt_order.id]["bags"] == 10
     assert by_id[debt_order.id]["total"] == "10000.00"
     assert by_id[debt_order.id]["currency"] == "KZT"
-    assert by_id[instant.id]["on_debt"] is False
-    assert by_id[instant.id]["is_debt"] is False
+    assert by_id[instant.id]["on_debt"] is True
+    assert by_id[instant.id]["is_debt"] is True
     assert by_id[instant.id]["payment_status"] == "unpaid"
     assert by_id[instant.id]["remaining_amount"] == "5000.00"
 

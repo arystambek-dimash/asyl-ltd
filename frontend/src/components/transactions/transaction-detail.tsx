@@ -164,11 +164,7 @@ export function TransactionDetail({ payment }: { payment: Payment }) {
                   </span>
                 </div>
                 <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                  {refund.method === "apipay_qr"
-                    ? "По ссылке Kaspi QR"
-                    : refund.method === "apipay"
-                      ? "По счёту"
-                      : "Из кассы"}{" "}
+                  {refund.method === "apipay_qr" ? "По QR Kaspi" : refund.method === "apipay" ? "По счёту" : "Из кассы"}{" "}
                   · {refund.reason}
                 </div>
               </div>

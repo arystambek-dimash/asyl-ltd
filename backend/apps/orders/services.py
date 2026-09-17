@@ -503,21 +503,21 @@ def request_client_debt(order: Order, user) -> Order:
 
 @transaction.atomic
 def move_order_to_debt(order: Order, user) -> Order:
-    """Касса переводит отгруженный заказ из «Ждут оплаты» в долг клиента."""
+    """Касса согласует долг: заказ уходит из «Ждут оплаты», остаток остаётся долгом клиента."""
     order = _lock_shipped_order_for_debt(
         order,
         user,
         in_progress_detail="По заказу есть незавершённая оплата — сначала подтвердите или отклоните её.",
     )
     if order.settlement_intent == "debt":
-        raise ValidationError({"detail": "Заказ уже в долге", "code": "already_debt"})
+        raise ValidationError({"detail": "Долг по заказу уже согласован", "code": "already_debt"})
     remaining = order.remaining_amount
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "nothing_to_pay"})
     order.payment_method = "debt"
     order.settlement_intent = "debt"
     order.save(update_fields=["payment_method", "settlement_intent"])
-    log_event("debt_override", "Касса перевела заказ в долг", user=user, order=order,
+    log_event("debt_override", "Касса согласовала долг по заказу", user=user, order=order,
               payload={"payment_method": "debt", "amount": str(remaining),
                        "currency": order.currency})
     return order

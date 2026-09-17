@@ -14,7 +14,6 @@ import { ConfirmScreen } from "./confirm-screen";
 import { DebtsScreen } from "./debts-screen";
 import { DepartmentSheet } from "./department-sheet";
 import { HomeScreen } from "./home-screen";
-import { JournalScreen } from "./journal-screen";
 import { PosScreen } from "./pos/pos-screen";
 import { usePosFlow } from "./pos/use-pos-flow";
 import { ReportScreen } from "./report-screen";
@@ -30,7 +29,6 @@ export const SCREEN_TITLES: Record<Exclude<CashView, "pos" | "remote">, string> 
   report: "Отчёт по поступлениям",
   debts: "Долги клиентов",
   confirm: "Оплаты",
-  journal: "Журнал",
   transactions: "Транзакции",
 };
 
@@ -173,7 +171,6 @@ export function MobileCashier({ model }: { model: CashierModel }) {
       )}
       {view === "home" && <HomeScreen model={model} menu={menu} onOpen={open} />}
       {view === "confirm" && <ConfirmScreen model={model} />}
-      {view === "journal" && <JournalScreen model={model} />}
       {view === "debts" && <DebtsScreen model={model} />}
       {view === "report" && <ReportScreen model={model} />}
       {view === "transactions" && <TransactionsScreen model={model} />}

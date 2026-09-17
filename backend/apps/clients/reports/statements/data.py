@@ -7,6 +7,7 @@ from typing import Literal, TypedDict
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from apps.orders.debt import DEBT_STATUS
 from apps.orders.models import Order, Payment, PaymentRefund
 from apps.sales.models import Department
 
@@ -185,8 +186,7 @@ def _current_debt_orders(queryset):
     return [
         order
         for order in queryset.filter(
-            status="shipped",
-            settlement_intent="debt",
+            status=DEBT_STATUS,
         ).order_by("created_at", "id")
         if order.is_debt
     ]

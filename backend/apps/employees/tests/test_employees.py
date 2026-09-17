@@ -294,7 +294,6 @@ def test_permission_manager_cannot_grant_permission_they_do_not_have(
         codes=[
             "employees.view",
             "employees.manage",
-            "sys_permissions.view",
             "sys_permissions.manage",
         ],
     )

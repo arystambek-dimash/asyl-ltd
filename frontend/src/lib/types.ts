@@ -437,6 +437,8 @@ export interface Payment {
   pending_refund_amount?: string;
   available_for_refund?: string;
   can_restore?: boolean;
+  /** Ошибочно подтверждённую оплату кассы можно вернуть на проверку. */
+  can_reopen?: boolean;
   can_issue?: boolean;
   confirmation_mode?: "manual" | "automatic";
   refunds?: {
@@ -479,18 +481,6 @@ export interface PaymentQueueItem extends Payment {
   order_status: string;
   store?: number | null;
   store_name?: string | null;
-}
-export interface CashierLogItem {
-  id: number;
-  message: string;
-  user_name: string | null;
-  order: number;
-  client_name: string | null;
-  store_name: string | null;
-  payload: { payment_id?: number; amount?: string; method?: string; payment_stage?: string; action?: string };
-  created_at: string;
-  can_reopen: boolean;
-  can_restore: boolean;
 }
 export interface StockItem {
   id: number;

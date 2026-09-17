@@ -18,17 +18,16 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import { withBack } from "@/lib/navigation";
-import type { CashierLogItem, ClientDebt, Me } from "@/lib/types";
-import { formatCurrency, formatDateTime, todayLocalIsoDate } from "@/lib/utils";
+import type { ClientDebt, Me } from "@/lib/types";
+import { formatCurrency, todayLocalIsoDate } from "@/lib/utils";
 import { ActionError } from "./action-error";
 import { CashFiltersPanel } from "./cash-filters-panel";
 import { debtPaymentState, matchesDebtQuery } from "./debt-state";
 import { AwaitingPaymentRow } from "./awaiting-payment-row";
 import { DepartmentBadge } from "./department-badge";
-import { RestorePaymentDialog } from "./restore-payment-dialog";
 import { canOpenQueueOrder, type DepartmentScope } from "./scope";
 import type { CashierModel } from "./use-cashier";
-import type { CashierQueue, PagedCashierLog } from "./use-cashier-queue";
+import type { CashierQueue } from "./use-cashier-queue";
 import { useOverdueCheck } from "./use-overdue-check";
 import type { CashView } from "./view";
 
@@ -150,62 +149,6 @@ function PaymentsSection({
           </CardContent>
         </Card>
       </div>
-    </section>
-  );
-}
-
-/* ── Вкладка «Журнал»: действия по оплатам ─────────────────────────────── */
-function PaymentJournalSection({ q, log }: { q: CashierQueue; log: PagedCashierLog }) {
-  const [restoreEvent, setRestoreEvent] = useState<CashierLogItem | null>(null);
-  return (
-    <section className="flex flex-col gap-4">
-      <ActionError message={q.error} />
-      {log.error && <ErrorAlert message={log.error} onRetry={log.reload} />}
-      <Card>
-        <CardHeader>
-          <CardTitle>Журнал действий по оплатам</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {log.items.length === 0 ? (
-            <p className="text-sm text-[var(--muted-foreground)]">Действий по оплатам пока нет.</p>
-          ) : (
-            log.items.map((event) => (
-              <div
-                key={event.id}
-                className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <div className="text-sm font-medium">{event.message}</div>
-                  <div className="text-xs text-[var(--muted-foreground)]">
-                    {formatDateTime(event.created_at)}
-                    {` · заказ #${event.order}`}
-                    {event.client_name ? ` · ${event.client_name}` : ""}
-                    {event.user_name ? ` · ${event.user_name}` : ""}
-                  </div>
-                </div>
-                {event.can_reopen && (
-                  <Button size="sm" variant="outline" disabled={q.busy} onClick={() => q.reopenPayment(event)}>
-                    Вернуть на подтверждение
-                  </Button>
-                )}
-                {event.can_restore && (
-                  <Button size="sm" variant="outline" disabled={q.busy} onClick={() => setRestoreEvent(event)}>
-                    <RefreshCw className="size-3.5" /> Восстановить
-                  </Button>
-                )}
-              </div>
-            ))
-          )}
-          <LoadMore
-            shown={log.items.length}
-            total={log.count}
-            hasMore={log.hasMore}
-            loading={log.loadingMore}
-            onClick={log.loadMore}
-          />
-        </CardContent>
-      </Card>
-      <RestorePaymentDialog q={q} event={restoreEvent} onClose={() => setRestoreEvent(null)} />
     </section>
   );
 }
@@ -392,7 +335,6 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
     debtRows,
     debtTotals,
     debtsReady,
-    journalLog,
     queue,
     stores,
     departments,
@@ -412,7 +354,6 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
             label: "Оплаты",
             count: view === "confirm" && !queue.loading ? queue.awaitingPage.count + queue.queuePage.count : undefined,
           },
-          { key: "journal", label: "Журнал" },
         ]
       : []),
     ...(perms.canTransactions ? [{ key: "transactions", label: "Транзакции" }] : []),
@@ -551,8 +492,6 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
             assigned={model.scope.assigned}
           />
         )}
-
-        {view === "journal" && perms.canPayments && <PaymentJournalSection q={queue} log={journalLog} />}
 
         {view === "transactions" && perms.canTransactions && (
           <TransactionsSection

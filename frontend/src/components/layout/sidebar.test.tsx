@@ -99,17 +99,16 @@ describe("подсветка активного пункта", () => {
     expect(screen.queryByRole("link", { name: "Отчёты" })).not.toBeInTheDocument();
   });
 
-  it("ведёт на моноблок по любому из прав отгрузки, без отдельного поста погрузки", () => {
-    const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["shipping.view"] }} />);
+  it("ведёт на моноблок по одному праву просмотра, а грузчика — на его страницу", () => {
+    const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["monoblock.view"] }} />);
 
     expect(screen.getByRole("link", { name: "Моноблок" })).toHaveAttribute("href", "/monoblock");
     expect(screen.queryByRole("link", { name: "Пост погрузки" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Грузчик" })).not.toBeInTheDocument();
 
-    rerender(<Sidebar me={{ ...factoryUser, permissions: ["train.view"] }} />);
-    expect(screen.getByRole("link", { name: "Моноблок" })).toBeInTheDocument();
-
-    rerender(<Sidebar me={{ ...factoryUser, permissions: ["shipping.ship"] }} />);
+    rerender(<Sidebar me={{ ...factoryUser, permissions: ["loader.view"] }} />);
     expect(screen.queryByRole("link", { name: "Моноблок" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Грузчик" })).toHaveAttribute("href", "/loader");
   });
 
   it("оставляет общий журнал в управлении, без отдельного журнала машин", () => {

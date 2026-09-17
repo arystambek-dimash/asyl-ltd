@@ -460,22 +460,24 @@ class WagonViewSet(GrainTripViewSet):
         "set_number": "grain.arrive",
         "vehicle_plate_candidates": "grain.arrive",
         "delete_wagon": "grain.delete",
-        "approve": "grain.dispatch",
+        # Старый процесс вагонов (лаборатория, диспетчер, разгрузка, выезд) —
+        # кнопки не показываются, действия остались у администрирования.
+        "approve": "grain.admin",
         "gross": "grain.weigh",
         "tare": "grain.weigh",
         "entry_weight": "grain.weigh",
         "exit_weight": "grain.weigh",
-        "lab": "grain.lab",
-        "suggest_silos_action": "grain.dispatch",
-        "assign_silo_action": "grain.dispatch",
-        "change_silo_action": "grain.dispatch",
-        "start_unloading_action": "grain.unload",
-        "pause_unloading": "grain.unload",
-        "finish_unloading_action": "grain.unload",
+        "lab": "grain.admin",
+        "suggest_silos_action": "grain.admin",
+        "assign_silo_action": "grain.admin",
+        "change_silo_action": "grain.admin",
+        "start_unloading_action": "grain.admin",
+        "pause_unloading": "grain.admin",
+        "finish_unloading_action": "grain.admin",
         "resolve_discrepancy_action": "grain.inventory",
         "resolve_simple_discrepancy_action": "grain.inventory",
         "inventory": "grain.inventory",
-        "exit": "grain.exit",
+        "exit": "grain.admin",
         "timeline": "grain.view",
     }
 
@@ -1124,7 +1126,8 @@ class WagonArchStopListView(PermAPIViewMixin, APIView):
 class WagonArchStopDismissView(PermAPIViewMixin, APIView):
     """Оператор разобрался со стопом сам — закрыть его вручную."""
 
-    required_perms = {"post": "grain.edit"}
+    # Закрыть остановку под аркой может весовщик (grain.edit в каталоге не было).
+    required_perms = {"post": "grain.weigh"}
 
     def post(self, request, pk):
         stop = get_object_or_404(WagonArchStop, pk=pk)

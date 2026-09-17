@@ -26,7 +26,7 @@ from apps.common.money import (
 from apps.common.money import money_string as _d
 from apps.sales.models import Department
 
-from .debt import debt_orders, order_remaining
+from .debt import DEBT_STATUS, debt_orders, order_remaining
 from .models import Payment, PaymentRefund
 
 CASH_METHODS = ("cash",)
@@ -147,7 +147,7 @@ def _period_shipped_snapshots(orders_qs, date_from, date_to) -> list[dict]:
         paid = max(_ZERO, order.paid_total)
         allocated_paid = min(paid, total)
         remaining = max(_ZERO, total - paid)
-        is_debt = order.settlement_intent == "debt" and remaining > 0
+        is_debt = remaining > 0
         debt = remaining if is_debt else _ZERO
         awaiting = remaining - debt
         result.append({
@@ -231,7 +231,7 @@ def _clients_breakdown(snapshots: list[dict]):
 def _debt_now(orders_qs):
     """Снапшот дебиторки на сейчас — по правилам orders/debt.py."""
     orders = list(
-        orders_qs.filter(status="shipped", settlement_intent="debt")
+        orders_qs.filter(status=DEBT_STATUS)
         .prefetch_related("items", "payments")
     )
     outstanding = debt_orders(orders)

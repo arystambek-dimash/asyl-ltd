@@ -5,7 +5,7 @@ from django.db.models import F
 from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -42,13 +42,13 @@ from .waybill import build_waybill_pdf
 class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     queryset = Order.objects.select_related("shipment").prefetch_related("items__product")
     required_perms: ClassVar[dict[str, str]] = {
-        "arrive": "shipping.arrive",
-        "load": "shipping.load",
-        "finish_loading": "shipping.load",
-        "ship": "shipping.ship",
-        # Право управления погрузкой даёт полный контроль живого поста:
-        # завершение и безопасный возврат в ожидание.
-        "rewind_loading": "shipping.load",
+        # Отгрузка — работа грузчика. Интерфейс вызывает только «Отгружено» на его
+        # странице; пошаговые переходы поста остаются API под тем же правом.
+        "arrive": "loader.confirm",
+        "load": "loader.confirm",
+        "finish_loading": "loader.confirm",
+        "ship": "loader.confirm",
+        "rewind_loading": "loader.confirm",
     }
 
     def get_queryset(self):
@@ -148,9 +148,26 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     def confirm(self, request, pk=None):
+        # Local import avoids a shipments -> cameras -> shipments import cycle.
+        from apps.cameras import ai, counting
+
         serializer = LoaderDispatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        dispatch_order(self.get_object(), request.user, truck_number=serializer.validated_data["truck_number"])
+        order = self.get_object()
+        try:
+            # Кнопок погрузки в Моноблоке нет: открытый AI-подсчёт закрывает сама отгрузка.
+            counting.close_session_for_dispatch(order, request.user)
+        except ai.AiUnavailable:
+            return Response(
+                {"detail": "AI-сервис камер недоступен — повторите отгрузку", "code": "ai_unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except ai.AiError as exc:
+            return Response(
+                {"detail": exc.detail, "code": "ai_error"},
+                status=exc.status if exc.status in (400, 409, 503) else status.HTTP_502_BAD_GATEWAY,
+            )
+        dispatch_order(order, request.user, truck_number=serializer.validated_data["truck_number"])
         return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
 
     @action(detail=True, methods=["get"], url_path="waybill")

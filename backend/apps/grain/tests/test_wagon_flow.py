@@ -23,8 +23,7 @@ pytestmark = pytest.mark.django_db
 def grain_user(user_with_perms):
     return user_with_perms("grain", codes=[
         "grain.view", "grain.supply", "grain.arrive", "grain.weigh",
-        "grain.lab", "grain.dispatch", "grain.unload", "grain.inventory",
-        "grain.exit", "grain.admin",
+        "grain.inventory", "grain.admin",
     ])
 
 
@@ -380,7 +379,8 @@ def test_role_limits(auth_client, user_with_perms):
         {"decision": "accepted"}, format="json")
     assert denied.status_code == 403
 
-    lab = user_with_perms("lab", codes=["grain.view", "grain.lab"])
+    # Лаборатория старого процесса вагонов — у администрирования прихода.
+    lab = user_with_perms("lab", codes=["grain.view", "grain.admin"])
     allowed = auth_client(lab).post(
         f"/api/grain/wagons/{wagon.id}/lab/",
         {"decision": "accepted"}, format="json")

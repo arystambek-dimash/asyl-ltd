@@ -916,6 +916,7 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
     operator,
     client_user,
     user_with_perms,
+    django_user_model,
     monkeypatch,
 ):
     for user in (boss, operator):
@@ -933,7 +934,7 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
     )
     assert denied.status_code == 403
 
-    manager = user_with_perms("ai-247-manager", codes=["ai_247.manage"])
+    manager = django_user_model.objects.create_superuser("ai-247-manager", password="pass12345")
 
     monkeypatch.setattr(ai, "AI_KEY", "k")
     live = {

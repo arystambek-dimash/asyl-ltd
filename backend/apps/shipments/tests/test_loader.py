@@ -131,3 +131,50 @@ def test_waybill_settings_are_read_by_loader_and_changed_by_admin(auth_client, l
 
     assert response.status_code == 200
     assert WaybillSettings.load().signers == [{"role": "Кладовщик", "name": "Тажи А"}]
+
+
+def test_dispatch_closes_open_ai_counting_with_its_bags_then_ships(auth_client, loader, product, monkeypatch):
+    """Кнопок погрузки в Моноблоке нет: открытый AI-подсчёт закрывает сама отгрузка."""
+    from apps.cameras import counting
+    from apps.cameras.models import AiCountingSession
+    from apps.shipments.services import finish_ai_counting
+
+    order = _order(product, status="loading", quantity=5)
+    Shipment.objects.create(order=order)
+    session = AiCountingSession.objects.create(order=order, camera="cam2", status=AiCountingSession.ACTIVE)
+    calls = []
+
+    def fake_stop(camera, stopped_order, user, *, complete_order, expected_session_id, dispatching):
+        calls.append((camera, complete_order, expected_session_id, dispatching))
+        finish_ai_counting(stopped_order, 4, user)
+        AiCountingSession.objects.filter(pk=session.pk).update(status=AiCountingSession.CLOSED)
+        return {}
+
+    monkeypatch.setattr(counting, "stop", fake_stop)
+    response = auth_client(loader).post(f"/api/loader/orders/{order.pk}/dispatch/", {}, format="json")
+
+    assert response.status_code == 200, response.data
+    assert calls == [("cam2", True, session.pk, True)]
+    order.refresh_from_db()
+    assert order.status == "shipped"
+    assert order.shipment.bags_loaded == 4
+
+
+def test_dispatch_keeps_order_when_camera_pc_is_unreachable(auth_client, loader, product, monkeypatch):
+    from apps.cameras import ai, counting
+    from apps.cameras.models import AiCountingSession
+
+    order = _order(product, status="loading")
+    AiCountingSession.objects.create(order=order, camera="cam2", status=AiCountingSession.ACTIVE)
+
+    def unreachable(*args, **kwargs):
+        raise ai.AiUnavailable("down")
+
+    monkeypatch.setattr(counting, "stop", unreachable)
+    response = auth_client(loader).post(f"/api/loader/orders/{order.pk}/dispatch/", {}, format="json")
+
+    assert response.status_code == 502
+    assert response.data["code"] == "ai_unavailable"
+    order.refresh_from_db()
+    assert order.status == "loading"
+    assert _bags(product) == 100

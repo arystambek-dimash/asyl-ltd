@@ -40,7 +40,7 @@ class RetireMonoblockAccountsTests(TransactionTestCase):
             assert new_apps.get_model('cameras','MonoblockCameraSettings').objects.get().camera_sources == ['cam2','cam5']
             assert new_apps.get_model('eventlog','EventLog').objects.get(pk=history.pk).user_id == first.pk
             user = RuntimeUser.objects.get(pk=first.pk)
-            assert user.has_perm_code('shipping.load') is False
+            assert user.has_perm_code('monoblock.view') is False
             assert _camera_token_user(cookie) is None
             old_session = APIClient()
             old_session.credentials(HTTP_AUTHORIZATION=f'Bearer {jwt}')

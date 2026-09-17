@@ -134,7 +134,7 @@ def test_unknown_scale_preview_is_404_before_scale_io(
 
 @pytest.mark.parametrize(
     "permission_code",
-    ["shipping.arrive", "shipping.load", "shipping.ship"],
+    ["monoblock.view", "loader.view", "loader.confirm"],
 )
 def test_reading_endpoint_denies_shipping_permissions_before_scale_io(
     api_client, user_with_perms, permission_code

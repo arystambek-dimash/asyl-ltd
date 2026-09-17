@@ -122,6 +122,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     available_for_refund = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
     can_restore = serializers.SerializerMethodField()
+    can_reopen = serializers.SerializerMethodField()
     can_issue = serializers.SerializerMethodField()
     confirmation_mode = serializers.SerializerMethodField()
 
@@ -134,7 +135,7 @@ class PaymentSerializer(serializers.ModelSerializer):
                   "client_name", "provider", "effective_status",
                   "refunded_amount", "pending_refund_amount",
                   "available_for_refund", "refunds",
-                  "can_restore", "can_issue", "confirmation_mode"]
+                  "can_restore", "can_reopen", "can_issue", "confirmation_mode"]
         read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
 
     def get_recorded_by_name(self, obj):
@@ -176,6 +177,22 @@ class PaymentSerializer(serializers.ModelSerializer):
     def _request_can(self, code):
         request = self.context.get("request")
         return request is None or request.user.has_perm_code(code)
+
+    def get_can_reopen(self, obj):
+        """Ошибочно подтверждённую оплату кассы можно вернуть на проверку.
+
+        Те же условия, что у services.reopen_confirmed_payment: онлайн-оплату
+        и оплату с возвратом так не откатывают — приход и возврат остаются в истории.
+        """
+        if not self._request_can("payments.confirm") or obj.status != "confirmed":
+            return False
+        if obj.refunded_amount > 0 or obj.pending_refund_amount > 0:
+            return False
+        try:
+            obj.apipay_invoice
+        except ObjectDoesNotExist:
+            return True
+        return False
 
     def get_can_restore(self, obj):
         if (

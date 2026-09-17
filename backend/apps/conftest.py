@@ -135,10 +135,9 @@ def operator(user_with_perms):
     return user_with_perms(
         "operator",
         codes=[
-            "shipping.view",
-            "shipping.arrive",
-            "shipping.load",
-            "shipping.ship",
+            "monoblock.view",
+            "loader.view",
+            "loader.confirm",
             "orders.view",
             "warehouse.view",
             "events.view",
@@ -151,12 +150,10 @@ def boss(user_with_perms):
     return user_with_perms(
         "boss",
         codes=[
-            "shipping.view",
-            "shipping.arrive",
-            "shipping.load",
-            "shipping.ship",
-            "shipping.rollback",
-            "shipping.debt_override",
+            "monoblock.view",
+            "loader.view",
+            "loader.confirm",
+            "orders.rollback",
             "orders.view",
             "orders.edit",
             "warehouse.view",
@@ -167,7 +164,6 @@ def boss(user_with_perms):
             "clients.set_price",
             "employees.view",
             "employees.manage",
-            "sys_permissions.view",
             "sys_permissions.manage",
             "reports.view",
             "reports.export",

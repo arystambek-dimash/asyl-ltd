@@ -67,16 +67,10 @@ function staffSections(): NavSection[] {
           icon: HandCoins,
           perm: ["payments.confirm", "payments.create", "reports.view", "payments.view"],
         },
-        // Единый пост отгрузки: очередь машин и вагонов, камеры и AI-подсчёт.
-        // Права — ровно те, что бэкенд принимает на GET /orders/?post_board=1.
-        {
-          href: "/monoblock",
-          label: "Моноблок",
-          icon: ScanLine,
-          perm: ["shipping.load", "shipping.view", "train.view"],
-        },
+        // Моноблок только для просмотра: очередь машин и вагонов, камеры и AI-подсчёт — одно право.
+        { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "monoblock.view" },
         // Грузчик: очередь к отгрузке, одна кнопка «Отгружено» и печать накладной.
-        { href: "/loader", label: "Отгрузка", icon: Truck, perm: "loader.view" },
+        { href: "/loader", label: "Грузчик", icon: Truck, perm: "loader.view" },
         { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
         // Силосы имеют отдельное право независимо от зернового процесса.
         { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },

@@ -193,11 +193,10 @@ class Order(models.Model):
 
     @property
     def is_debt(self) -> bool:
-        # Долг — только отгруженный заказ «в долг» с непогашенным остатком.
-        # Черновик/на рассмотрении/в работе и моментальная оплата долгом не считаются.
-        return (self.status == "shipped"
-                and self.settlement_intent == "debt"
-                and self.remaining_amount > 0)
+        # Долг — непогашенный остаток отгруженного заказа (orders/debt.py):
+        # способ расчёта не важен, товар уже у клиента. Черновик, заявка и заказ
+        # в работе долгом не считаются.
+        return self.status == "shipped" and self.remaining_amount > 0
 
 
 class OrderItem(models.Model):

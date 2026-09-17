@@ -25,7 +25,7 @@ from ..models import (
 )
 from ..shipping_tracking import current_tracking, unknown_tracking
 
-PERMISSIONS = ("shipping.view", "shipping.load", "train.view", "train.load")
+PERMISSIONS = ("monoblock.view",)
 IMAGE_SALT = "shipping-transport-evidence-v1"
 
 

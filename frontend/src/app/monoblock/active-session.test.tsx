@@ -1,10 +1,8 @@
-import { createRef } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CameraFeed } from "@/components/camera-wall";
-import type { BagCounterHandle } from "@/components/shipping/bag-counter";
 import { ShippingRowDetail } from "@/components/shipping/shipping-row-detail";
 import type { AiCountingSession, Order } from "@/lib/types";
 import type { AiStatus } from "@/lib/use-ai-counter";
@@ -119,20 +117,7 @@ const order: Order = {
 };
 
 function renderDetail() {
-  render(
-    <ShippingRowDetail
-      order={order}
-      session={session}
-      camera={camera}
-      cameraSrc="cam2"
-      canCount
-      busy={false}
-      bagCounterRef={createRef<BagCounterHandle>()}
-      onSaveBags={vi.fn().mockResolvedValue(undefined)}
-      onAccept={vi.fn().mockResolvedValue({ ok: true, error: "" })}
-      finish={{ disabled: false, onClick: vi.fn() }}
-    />,
-  );
+  render(<ShippingRowDetail order={order} session={session} camera={camera} cameraSrc="cam2" />);
 }
 
 beforeEach(() => {
@@ -158,7 +143,10 @@ describe("активная AI-отгрузка", () => {
     expect(stream).toHaveAttribute("data-src", "cam2");
     expect(stream).not.toHaveAttribute("data-src", "cam2ai");
     expect(screen.getByTestId("transport-evidence")).toHaveTextContent("404");
-    expect(screen.queryByRole("button", { name: /Выключить AI|Обнулить AI|Повторить запуск/ })).not.toBeInTheDocument();
+    // Моноблок только для просмотра: ни управления AI, ни приёма счёта, ни завершения погрузки.
+    expect(
+      screen.queryByRole("button", { name: /Выключить AI|Обнулить AI|Повторить запуск|Принять|Завершить погрузку/ }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Подключение видео")).toBeInTheDocument();
     expect(screen.queryByTestId("active-session-detections")).not.toBeInTheDocument();
 

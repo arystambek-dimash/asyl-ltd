@@ -8,7 +8,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser, PermAPIViewMixin
+from apps.common.permissions import SUPERUSER_ONLY, HasPerm, IsStaff, IsSuperUser, PermAPIViewMixin
 
 from .. import (
     ai,
@@ -43,13 +43,11 @@ from ..serializers import (
 )
 from ..sessions import lock_camera_binding
 
-ALWAYS_ON_READ_PERMISSIONS = ("shipping.load", "ai_247.manage")
-ALWAYS_ON_MANAGE_PERMISSION = "ai_247.manage"
-SHIPPING_CONTINUOUS_READ_PERMISSIONS = (
-    "shipping.load",
-    "shipping.view",
-    "sys_permissions.manage",
-)
+# Моноблок только для просмотра: одно право видит всё. Режим AI 24/7, «Куда
+# приходовать», повтор прихода и правки аналитики — только суперпользователь.
+ALWAYS_ON_READ_PERMISSIONS = ("monoblock.view",)
+ALWAYS_ON_MANAGE_PERMISSION = SUPERUSER_ONLY
+SHIPPING_CONTINUOUS_READ_PERMISSIONS = ("monoblock.view", "sys_permissions.manage")
 
 
 def _filtered_live(
@@ -688,7 +686,7 @@ class AlwaysOnStockRetryView(PermAPIViewMixin, APIView):
 class ShippingBoardSettingsView(APIView):
     def get_permissions(self):
         if self.request.method in ("GET", "HEAD", "OPTIONS"):
-            return [HasPerm("shipping.view", "sys_permissions.manage")]
+            return [HasPerm("monoblock.view", "sys_permissions.manage")]
         return [HasPerm("sys_permissions.manage")]
 
     @staticmethod

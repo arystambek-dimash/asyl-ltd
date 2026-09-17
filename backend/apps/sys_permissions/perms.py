@@ -1,52 +1,58 @@
+# Разделы = страницы меню в том же порядке; действие — что человек на странице делает.
+# Подписи конкретны: право не должно скрывать, что оно разрешает.
 _SECTIONS = {
-    "catalog": ("Товары", ["view", "create", "edit", "delete"]),
-    "clients": (
-        "Клиенты",
-        ["view", "create", "edit", "delete", "set_price", "manage_access"],
-    ),
-    "warehouse": ("Склад", ["view", "adjust"]),
-    "silos": ("Силосы", ["view"]),
-    # confirm_all — заявки всех отделов для сотрудника, закреплённого за отделом.
-    "orders": ("Заказы", ["view", "create", "edit", "confirm", "confirm_all", "correct_price"]),
-    "payments": ("Оплаты", ["view", "create", "confirm"]),
-    "shipping": ("Пост отгрузки", ["view", "arrive", "load", "ship", "rollback", "debt_override"]),
-    "ai_247": ("AI 24/7", ["manage"]),
-    "train": ("Вагон", ["view", "load"]),
+    "reports": ("Отчёты", {"view": "Просмотр", "export": "Выписки Excel"}),
+    "orders": ("Заказы", {
+        "view": "Просмотр и запрос смены статуса",
+        "create": "Создание",
+        "edit": "Изменение и удаление",
+        "confirm": "Подтверждение заявок",
+        # Заявки всех отделов для сотрудника, закреплённого за отделом.
+        "confirm_all": "Заявки всех отделов",
+        "correct_price": "Корректировка стоимости",
+        "rollback": "Откат отгрузки",
+    }),
+    "payments": ("Касса", {
+        "view": "Транзакции",
+        "create": "Приём оплат и POS",
+        "confirm": "Подтверждение оплат и возвраты",
+    }),
+    # Моноблок только для просмотра: одно право видит всё. Отгружает грузчик.
+    "monoblock": ("Моноблок", {"view": "Доступ (видит всё)"}),
     # Страница грузчика: очередь отгрузки, одна кнопка «Отгружено» и накладная.
-    "loader": ("Грузчик", ["view", "confirm"]),
-    "events": ("Журнал", ["view"]),
-    "reports": ("Отчёты", ["view", "export"]),
-    "employees": ("Сотрудники", ["view", "manage"]),
-    "sys_permissions": ("Системные права", ["view", "manage"]),
-    "tasks": ("Задачи", ["view", "create"]),
-    "grain": ("Приход зерна", [
-        "view", "supply", "arrive", "weigh", "correct_weighing", "lab", "dispatch", "unload",
-        "inventory", "exit", "delete", "admin",
-    ]),
+    "loader": ("Грузчик", {"view": "Очередь и накладные", "confirm": "Отгрузить (списание со склада)"}),
+    "warehouse": ("Склады", {"view": "Просмотр", "adjust": "Приход, перемещение и корректировка"}),
+    "silos": ("Силосы", {"view": "Просмотр"}),
+    "grain": ("Приход и вывоз", {
+        "view": "Просмотр",
+        "supply": "Новый приход",
+        "arrive": "Приём поезда и оформление вывоза",
+        "weigh": "Взвешивание и остановки под аркой",
+        "correct_weighing": "Ручной заезд и правка выездного веса",
+        "inventory": "Расхождения веса и корректировка силосов",
+        "delete": "Удаление рейса",
+        "admin": "Настройка силосов и видов зерна",
+    }),
+    "clients": ("Клиенты", {
+        "view": "Просмотр",
+        "create": "Создание",
+        "edit": "Изменение",
+        "delete": "Удаление",
+        "set_price": "Цены клиента",
+        "manage_access": "Доступ в кабинет клиента",
+    }),
+    "catalog": ("Товары", {"view": "Просмотр", "create": "Создание", "edit": "Изменение и архив"}),
+    "tasks": ("Задачи", {"view": "Задачи всех сотрудников", "create": "Создание"}),
+    "events": ("Журнал", {"view": "Журнал событий"}),
+    "employees": ("Сотрудники", {"view": "Просмотр", "manage": "Изменение профилей"}),
+    "sys_permissions": ("Администрирование", {"manage": "Права, отделы, настройки камер и накладной"}),
 }
 
-_ACTION_LABELS = {
-    "view": "Просмотр", "create": "Создание", "edit": "Редактирование",
-    "delete": "Удаление", "adjust": "Корректировка", "confirm": "Подтверждение",
-    "confirm_all": "Заявки всех отделов",
-    "arrive": "Приём машины", "load": "Загрузка", "ship": "Отгрузка",
-    "debt_override": "Отгрузка в долг", "manage": "Управление",
-    "rollback": "Откат отгрузки",
-    "set_price": "Закрепление прайса",
-    "manage_access": "Доступ к порталу",
-    "correct_price": "Корректировка стоимости",
-    "export": "Получение выписки",
-    "supply": "Заявки на поставку", "weigh": "Взвешивание",
-    "correct_weighing": "Ручной заезд и исправление выездного веса",
-    "lab": "Лаборатория", "dispatch": "Диспетчер",
-    "unload": "Разгрузка", "inventory": "Оприходование",
-    "exit": "Выезд", "admin": "Администрирование",
-}
+SECTION_ORDER = list(_SECTIONS)
 
 PERMISSIONS = [
-    {"code": f"{sec}.{act}", "section": sec, "action": act,
-     "label": f"{sec_label}: {_ACTION_LABELS[act]}"}
-    for sec, (sec_label, acts) in _SECTIONS.items()
-    for act in acts
+    {"code": f"{sec}.{act}", "section": sec, "action": act, "label": f"{sec_label}: {label}"}
+    for sec, (sec_label, actions) in _SECTIONS.items()
+    for act, label in actions.items()
 ]
 ALL_CODES = {p["code"] for p in PERMISSIONS}

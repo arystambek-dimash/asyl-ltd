@@ -53,25 +53,31 @@ def segment(*, kind="vehicle_number", camera="cam2", status="unidentified", orde
     return row
 
 
-def test_settings_operator_can_change_timeout_and_change_is_audited(auth_client, operator):
-    client = auth_client(operator)
-    assert client.get(SETTINGS).data["idle_timeout_seconds"] == 300
-    response = client.patch(SETTINGS, {"idle_timeout_seconds": 90}, format="json")
+@pytest.fixture
+def superuser(django_user_model):
+    return django_user_model.objects.create_superuser("sessions-admin", password="pass12345")
+
+
+def test_settings_superuser_can_change_timeout_and_change_is_audited(auth_client, superuser, operator):
+    # Моноблок только для просмотра: таймаут простоя меняет суперпользователь.
+    assert auth_client(operator).get(SETTINGS).data == {"idle_timeout_seconds": 300, "can_manage": False}
+    assert auth_client(operator).patch(SETTINGS, {"idle_timeout_seconds": 90}, format="json").status_code == 403
+    response = auth_client(superuser).patch(SETTINGS, {"idle_timeout_seconds": 90}, format="json")
     assert response.status_code == 200
     assert response.data == {"idle_timeout_seconds": 90, "can_manage": True}
     assert ShippingSessionSettings.objects.get(singleton=True).idle_timeout_seconds == 90
-    assert EventLog.objects.filter(event_type="shipping_idle_timeout_changed", user=operator).exists()
+    assert EventLog.objects.filter(event_type="shipping_idle_timeout_changed", user=superuser).exists()
 
 
 @pytest.mark.parametrize("value", [0, -1, 29, 86401, True, "300", 300.4])
-def test_settings_reject_invalid_timeout_without_writing(auth_client, operator, value):
+def test_settings_reject_invalid_timeout_without_writing(auth_client, superuser, value):
     before = list(ShippingSessionSettings.objects.values_list("idle_timeout_seconds", flat=True))
-    assert auth_client(operator).patch(SETTINGS, {"idle_timeout_seconds": value}, format="json").status_code == 400
+    assert auth_client(superuser).patch(SETTINGS, {"idle_timeout_seconds": value}, format="json").status_code == 400
     assert list(ShippingSessionSettings.objects.values_list("idle_timeout_seconds", flat=True)) == before
 
 
 def test_read_only_staff_cannot_change_timeout_or_bind_number(auth_client, user_with_perms):
-    staff = user_with_perms("segment-reader", codes=["shipping.view"])
+    staff = user_with_perms("segment-reader", codes=["monoblock.view"])
     row = segment()
     client = auth_client(staff)
     response = client.get(BASE)
@@ -96,12 +102,13 @@ def test_session_list_keeps_segments_and_has_bounded_queries(auth_client, operat
     assert not any(q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for q in queries)
 
 
-def test_reader_cannot_view_other_transport_type(auth_client, operator):
-    own = segment()
-    foreign = segment(kind="wagon_number", camera="cam3")
+def test_monoblock_viewer_sees_trucks_and_wagons(auth_client, operator):
+    # Одно право Моноблока видит всё: и машины, и вагоны.
+    truck = segment()
+    wagon = segment(kind="wagon_number", camera="cam3")
     client = auth_client(operator)
-    assert [x["id"] for x in client.get(BASE).data["results"]] == [own.session_id]
-    assert client.get(f"/api/cameras/shipping-segments/{foreign.pk}/").status_code == 404
+    assert {x["id"] for x in client.get(BASE).data["results"]} == {truck.session_id, wagon.session_id}
+    assert client.get(f"/api/cameras/shipping-segments/{wagon.pk}/").status_code == 200
 
 
 def test_private_photo_rechecks_user_access(auth_client, operator, api_client, settings, tmp_path):
@@ -121,20 +128,20 @@ def test_private_photo_rechecks_user_access(auth_client, operator, api_client, s
     photo.close()
 
 
-def test_number_input_cannot_overwrite_already_identified_segment(auth_client, operator):
+def test_number_input_cannot_overwrite_already_identified_segment(auth_client, superuser):
     row = segment(status="identified")
-    response = auth_client(operator).post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json")
+    response = auth_client(superuser).post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json")
     assert response.status_code == 403
 
 
-def test_manual_number_is_audited_without_changing_counts(auth_client, operator):
+def test_manual_number_is_audited_without_changing_counts(auth_client, superuser):
     row = segment()
-    response = auth_client(operator).post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json")
+    response = auth_client(superuser).post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json")
     assert response.status_code == 200
     row.refresh_from_db()
     assert row.number == "123ABC02" and row.number_source == "manual"
     assert row.total_bags == row.session.total_bags == 3
-    assert EventLog.objects.filter(event_type="shipping_loading_identified", user=operator).exists()
+    assert EventLog.objects.filter(event_type="shipping_loading_identified", user=superuser).exists()
 
 
 def test_unknown_kind_cannot_bypass_wagon_permission(auth_client, operator):

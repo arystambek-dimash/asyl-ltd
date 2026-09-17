@@ -13,6 +13,7 @@ import { formatCurrency } from "@/lib/utils";
 import { ActionError } from "../action-error";
 import { AwaitingPaymentRow } from "../awaiting-payment-row";
 import { DepartmentBadge } from "../department-badge";
+import { PaymentsQuickFilters } from "../payments-quick-filters";
 import { canOpenQueueOrder } from "../scope";
 import type { CashierModel } from "../use-cashier";
 import type { CashierQueue } from "../use-cashier-queue";
@@ -80,7 +81,7 @@ function PaymentRow({
   );
 }
 
-/** «Оплаты» на телефоне: сегмент «К подтверждению / Ждут оплаты», действия прямо в строках.
+/** «Оплаты» на телефоне: сегмент «Проверка / Ждут оплаты», быстрые фильтры и действия прямо в строках.
  * Оплаты к подтверждению — общая очередь всех отделов; «Ждут оплаты» — отдел кассы. */
 export function ConfirmScreen({ model }: { model: CashierModel }) {
   const { queue: q, perms, me } = model;
@@ -88,7 +89,7 @@ export function ConfirmScreen({ model }: { model: CashierModel }) {
   const showAwaiting = segment === "awaiting";
   const activeRows = showAwaiting ? q.awaiting : q.toReview;
   const tabs: TabDef[] = [
-    { key: "payments", label: "К подтверждению", count: q.loading ? undefined : q.queuePage.count },
+    { key: "payments", label: "Проверка", count: q.loading ? undefined : q.queuePage.count },
     { key: "awaiting", label: "Ждут оплаты", count: q.loading ? undefined : q.awaitingPage.count },
   ];
   const empty = (text: string) => (
@@ -105,6 +106,7 @@ export function ConfirmScreen({ model }: { model: CashierModel }) {
         active={segment}
         onChange={(key) => setSegment(key as "payments" | "awaiting")}
       />
+      <PaymentsQuickFilters model={model} />
       <ActionError message={q.error} />
       {q.loadError && <ErrorAlert message={q.loadError} onRetry={q.reload} />}
       {(activeRows.length > 0 || !q.loadError) && (

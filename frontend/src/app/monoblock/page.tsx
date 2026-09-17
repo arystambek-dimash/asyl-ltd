@@ -1403,24 +1403,16 @@ function ContinuousCameraTile({
 
 function MonoblockPageInner() {
   const { me } = useAuth();
-  const canLoad = can(me, "shipping.load");
-  const canTrain = can(me, "train.load");
-  const canShip = can(me, "shipping.ship");
-  const canRollback = can(me, "shipping.rollback");
-  const canViewShipping = can(me, "shipping.view");
+  // Моноблок только для просмотра: одно право видит всё (грузовики, вагоны, AI 24/7).
+  // Отгружает грузчик на своей странице; режим AI 24/7 и «Куда приходовать» —
+  // только суперпользователь.
+  const canView = can(me, "monoblock.view");
   const canManage = can(me, "sys_permissions.manage");
-  // Техническая учётная запись физического моноблока работает только с
-  // отгрузкой своей камеры. Общий производственный мониторинг предназначен
-  // сотрудникам, которые входят на эту же страницу по shipping.load.
-  const canViewAlwaysOn = canLoad;
-  const canManageAlwaysOn = canViewAlwaysOn && can(me, "ai_247.manage");
+  const canManageAlwaysOn = !!me?.is_superuser;
   const canOpenOrder = can(me, "orders.view");
   // Без права URL = null: иначе бэкенд отвечает 403 и страница держит
   // постоянный ErrorAlert. Условия повторяют гейты бэкенда.
-  const canViewSessions = canLoad || canTrain || canViewShipping;
-  const canViewContinuous = canLoad || canTrain || canViewShipping || canManage;
-  const canViewCameraSettings = canLoad || canManage;
-  const canViewShippingSettings = canViewShipping || canManage;
+  const canViewSettings = canView || canManage;
 
   // Доска живёт сегодняшним днём; другой день и поиск — явный выбор
   // оператора. URL без фильтров остаётся ровно "/orders/?post_board=1".
@@ -1453,44 +1445,44 @@ function MonoblockPageInner() {
     data: sessions,
     error: sessionsError,
     reload: reloadSessions,
-  } = useApi<AiCountingSession[]>(canViewSessions ? "/cameras/ai/sessions/" : null);
+  } = useApi<AiCountingSession[]>(canView ? "/cameras/ai/sessions/" : null);
   const { data: cameras, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
   const {
     data: cameraSettings,
     error: cameraSettingsError,
     reload: reloadCameraSettings,
-  } = useApi<MonoblockCameraSettings>(canViewCameraSettings ? "/cameras/monoblock-settings/" : null);
+  } = useApi<MonoblockCameraSettings>(canViewSettings ? "/cameras/monoblock-settings/" : null);
   const {
     data: histories,
     error: historiesError,
     reload: reloadHistories,
-  } = useApi<AiCountingHistory[]>(canViewShipping ? `/cameras/ai/history/?post_board=1${boardQuery}` : null);
+  } = useApi<AiCountingHistory[]>(canView ? `/cameras/ai/history/?post_board=1${boardQuery}` : null);
   const {
     data: shippingSettings,
     error: shippingSettingsError,
     reload: reloadShippingSettings,
-  } = useApi<ShippingBoardSettings>(canViewShippingSettings ? "/cameras/shipping-settings/" : null);
+  } = useApi<ShippingBoardSettings>(canViewSettings ? "/cameras/shipping-settings/" : null);
   const {
     data: alwaysOnSettings,
     error: alwaysOnSettingsError,
     reload: reloadAlwaysOnSettings,
     setData: setAlwaysOnSettings,
-  } = useApi<AlwaysOnCameraSettings>(canViewAlwaysOn ? "/cameras/always-on-settings/" : null);
+  } = useApi<AlwaysOnCameraSettings>(canView ? "/cameras/always-on-settings/" : null);
   const {
     data: alwaysOnAnalytics,
     error: alwaysOnAnalyticsError,
     reload: reloadAlwaysOnAnalytics,
-  } = useApi<AlwaysOnDailyAnalytics>(canViewAlwaysOn ? "/cameras/always-on-analytics/" : null);
+  } = useApi<AlwaysOnDailyAnalytics>(canView ? "/cameras/always-on-analytics/" : null);
   const {
     data: shippingContinuousSettings,
     error: shippingContinuousSettingsError,
     reload: reloadShippingContinuousSettings,
-  } = useApi<AlwaysOnCameraSettings>(canViewContinuous ? "/cameras/shipping-continuous-settings/" : null);
+  } = useApi<AlwaysOnCameraSettings>(canViewSettings ? "/cameras/shipping-continuous-settings/" : null);
   const {
     data: shippingContinuousAnalytics,
     error: shippingContinuousAnalyticsError,
     reload: reloadShippingContinuousAnalytics,
-  } = useApi<AlwaysOnDailyAnalytics>(canViewContinuous ? "/cameras/shipping-continuous-analytics/" : null);
+  } = useApi<AlwaysOnDailyAnalytics>(canViewSettings ? "/cameras/shipping-continuous-analytics/" : null);
 
   // Страница разделена на вкладки: «Отгрузка» (по умолчанию) — очередь и
   // камеры отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
@@ -1499,8 +1491,8 @@ function MonoblockPageInner() {
   const [shippingTab, setShippingTab] = useState("conveyors");
   const shippingPanelId = useId();
   const [transportType, setTransportType] = useState<"truck" | "train" | "unknown" | null>(null);
-  const defaultTransportType = (canTrain || can(me, "train.view")) && !canLoad && !canViewShipping ? "train" : "truck";
-  const activeTab: MonoblockTab = canViewAlwaysOn ? tab : "shipments";
+  const defaultTransportType = "truck";
+  const activeTab: MonoblockTab = canView ? tab : "shipments";
   const [completedOpen, setCompletedOpen] = useState(false);
 
   const allPlayable = useMemo(() => playableCameras(cameras), [cameras]);
@@ -1517,15 +1509,15 @@ function MonoblockPageInner() {
   );
 
   useVisiblePolling(reloadOrders, BOARD_POLL_MS);
-  useVisiblePolling(reloadSessions, SESSION_POLL_MS, canViewSessions);
-  useVisiblePolling(reloadHistories, HISTORY_POLL_MS, canViewShipping);
+  useVisiblePolling(reloadSessions, SESSION_POLL_MS, canView);
+  useVisiblePolling(reloadHistories, HISTORY_POLL_MS, canView);
   useVisiblePolling(
     () =>
       Promise.all([
         reloadCameras(),
-        ...(canViewCameraSettings ? [reloadCameraSettings()] : []),
-        ...(canViewContinuous ? [reloadShippingContinuousSettings(), reloadShippingContinuousAnalytics()] : []),
-        ...(canViewAlwaysOn ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
+        ...(canViewSettings ? [reloadCameraSettings()] : []),
+        ...(canViewSettings ? [reloadShippingContinuousSettings(), reloadShippingContinuousAnalytics()] : []),
+        ...(canView ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
       ]),
     SLOW_POLL_MS,
   );
@@ -1685,14 +1677,14 @@ function MonoblockPageInner() {
     },
     { key: "monoblock", label: "AI 24/7", count: alwaysOnSettings?.camera_sources.length ?? 0 },
   ];
-  const showHeader = canViewAlwaysOn;
+  const showHeader = canView;
 
   return (
     <AppShell title="Моноблок" section="Работа">
       <div className="flex flex-col gap-6">
         {showHeader && (
           <div className="flex flex-wrap items-center gap-3">
-            {canViewAlwaysOn && (
+            {canView && (
               <Tabs
                 tabs={pageTabs}
                 active={activeTab}
@@ -1723,7 +1715,7 @@ function MonoblockPageInner() {
               <div className="mx-auto mt-1 max-w-md text-[12px] text-[var(--muted-foreground)]">
                 {canManageAlwaysOn
                   ? "Выберите камеры в настройке «AI 24/7» — модель начнёт считать круглосуточно; исходный substream будет храниться в техническом архиве 48 часов, а фоновый AI-overlay не публикуется."
-                  : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к сотруднику с правом управления AI 24/7."}
+                  : "Камеры для постоянного подсчёта пока не настроены. Обратитесь к администратору."}
               </div>
             </Card>
           ) : (
@@ -1796,7 +1788,7 @@ function MonoblockPageInner() {
                 aria-labelledby={`${shippingPanelId}-conveyors-tab`}
                 className="space-y-6"
               >
-                {canViewContinuous && (
+                {canViewSettings && (
                   <Card role="region" aria-label="Конвейеры и счёт" className="space-y-4 p-4 sm:p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
@@ -1872,7 +1864,7 @@ function MonoblockPageInner() {
                     <div>
                       <h2 className="text-lg font-semibold">Заказы отгрузки</h2>
                       <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                        Очередь, погрузка и оформление выезда.
+                        Очередь и погрузка. Отгружает грузчик на странице «Грузчик».
                       </p>
                     </div>
                     {canManage && (
@@ -1898,7 +1890,7 @@ function MonoblockPageInner() {
                       label="Готовы к выезду"
                       value={counts.ready}
                       caption="ожидают оформления выезда"
-                      tone={counts.ready > 0 && canShip ? "success" : undefined}
+                      tone={counts.ready > 0 ? "success" : undefined}
                     />
                     <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
                   </div>
@@ -1908,20 +1900,13 @@ function MonoblockPageInner() {
                     sessions={sessions ?? []}
                     histories={histories ?? []}
                     camerasBySrc={camerasBySrc}
-                    capabilities={{
-                      canLoad,
-                      canTrain,
-                      canShip,
-                      canRollback,
-                      canViewShipping,
-                      canOpenOrder,
-                    }}
+                    capabilities={{ canOpenOrder }}
                     completedOrdersDays={completedDays}
                     filter={boardFilter}
                     transportType={activeTransportType}
                     reloadOrders={reloadOrders}
                     reloadSessions={reloadSessions}
-                    reloadHistories={canViewShipping ? reloadHistories : undefined}
+                    reloadHistories={reloadHistories}
                   />
                 </Card>
               </div>
@@ -1945,11 +1930,9 @@ function MonoblockPageInner() {
 }
 
 export default function MonoblockPage() {
-  // Союз гейтов бывшего поста погрузки (shipping.view | train.view) и текущего
-  // /monoblock (shipping.load) — ровно те права, которые бэкенд принимает на
-  // GET /orders/?post_board=1.
+  // Одно право Моноблока — то же, что бэкенд принимает на GET /orders/?post_board=1.
   return (
-    <RequirePerm perm={["shipping.load", "shipping.view", "train.load", "train.view"]} title="Моноблок">
+    <RequirePerm perm="monoblock.view" title="Моноблок">
       <MonoblockPageInner />
     </RequirePerm>
   );

@@ -8,6 +8,11 @@ from .statuses import is_financial
 
 _ZERO = Decimal("0")
 
+# Долг — непогашенный остаток отгруженного заказа. Товар уехал — клиент должен,
+# как бы он ни собирался платить (settlement_intent): «в долг», сразу или ещё
+# не выбрал. Выборки кандидатов в долги сужаются этим статусом.
+DEBT_STATUS = "shipped"
+
 
 def order_remaining(order) -> Decimal:
     return max(_ZERO, order.remaining_amount)

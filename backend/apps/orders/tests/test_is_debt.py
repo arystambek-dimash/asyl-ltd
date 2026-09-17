@@ -32,9 +32,11 @@ def test_draft_is_not_debt():
     assert o.is_debt is False
 
 
-def test_instant_is_not_debt_even_if_shipped_unpaid():
-    o, _ = _order(status="shipped", intent="instant")
-    assert o.is_debt is False
+def test_shipped_unpaid_is_debt_whatever_the_settlement_intent():
+    # Товар уехал — клиент должен, даже если собирался платить сразу или не выбрал способ.
+    for intent in ("instant", "pending"):
+        o, _ = _order(status="shipped", intent=intent)
+        assert o.is_debt is True
 
 
 def test_fully_paid_is_not_debt():

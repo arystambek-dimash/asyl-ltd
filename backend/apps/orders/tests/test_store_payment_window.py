@@ -47,15 +47,12 @@ def test_detect_overdue_notifies(boss):
     assert Notification.objects.filter(client=s.client, text__icontains="Просрочка").exists()
 
 
-def test_detect_overdue_ignores_instant_settlement():
-    """Моментальная оплата долгом не является — просрочки по ней быть не может.
-
-    Просрочка должна совпадать с Order.is_debt: только заказы «в долг».
-    """
+def test_detect_overdue_counts_unpaid_instant_settlement():
+    """Просрочка совпадает с Order.is_debt: неоплаченная отгрузка «сразу» — тоже долг."""
     o, s = _shipped_store_order()
     o.settlement_intent = "instant"
     o.save(update_fields=["settlement_intent"])
-    assert detect_overdue(s, date(2026, 6, 5)) == 0
+    assert detect_overdue(s, date(2026, 6, 5)) == 1
 
 
 def test_detect_overdue_ignores_fully_paid_order(boss, settle_payment):

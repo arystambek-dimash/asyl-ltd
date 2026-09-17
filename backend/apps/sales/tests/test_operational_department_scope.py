@@ -46,7 +46,7 @@ def test_assigned_employee_cannot_mutate_foreign_shipment_but_global_employee_ca
 ):
     department_a = Department.objects.create(code="shipment-a", name="Отдел A")
     department_b = Department.objects.create(code="shipment-b", name="Отдел B")
-    permissions = ["shipping.arrive", "shipping.load", "shipping.ship"]
+    permissions = ["loader.confirm"]
     assigned = _employee(
         user_with_perms,
         "shipment-assigned-a",
@@ -101,7 +101,7 @@ def test_stale_scoped_shipment_request_rechecks_department_under_order_lock(
     assigned = _employee(
         user_with_perms,
         "stale-shipment-a",
-        ["shipping.arrive"],
+        ["loader.confirm"],
         department_a,
     )
     client = _owned_client("Stale transfer", department_a)
@@ -135,7 +135,7 @@ def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
 ):
     department_a = Department.objects.create(code="camera-a", name="Камеры A")
     department_b = Department.objects.create(code="camera-b", name="Камеры B")
-    permissions = ["shipping.view", "shipping.load"]
+    permissions = ["monoblock.view", "loader.confirm"]
     assigned = _employee(
         user_with_perms,
         "camera-assigned-a",
@@ -303,7 +303,7 @@ def test_camera_mutations_recheck_transferred_client_before_edge_side_effects(
     assigned = _employee(
         user_with_perms,
         "camera-stale-assigned-a",
-        ["shipping.load"],
+        ["monoblock.view", "loader.confirm"],
         department_a,
     )
     client = _owned_client("Camera transferred", department_a)

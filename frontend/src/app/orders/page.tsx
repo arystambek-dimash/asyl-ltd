@@ -619,7 +619,7 @@ function OrdersPageInner() {
   const canEdit = can(me, "orders.edit");
   const canCorrectPrice = can(me, "orders.correct_price");
   const canExport = can(me, "reports.export");
-  const canRollback = can(me, "shipping.rollback");
+  const canRollback = can(me, "orders.rollback");
   const canManageDepartments = can(me, "sys_permissions.manage");
   // Заявки клиентов разбирает сотрудник с правом подтверждения; закреплённый за отделом видит свой отдел.
   const canReviewOrders = can(me, "orders.confirm");

@@ -201,7 +201,7 @@ const employee: Me = {
   is_client: false,
   is_superuser: false,
 
-  permissions: ["shipping.load"],
+  permissions: ["monoblock.view"],
   position: null,
   client_id: null,
   sales_department: null,
@@ -231,7 +231,7 @@ beforeEach(() => {
 
 describe("доступ к AI 24/7 на странице моноблока", () => {
   it("separates conveyors from orders and keeps shipping sessions inside camera analytics", () => {
-    mocks.me = { ...employee, permissions: ["shipping.load", "sys_permissions.manage"] };
+    mocks.me = { ...employee, permissions: ["monoblock.view", "sys_permissions.manage"] };
     render(<MonoblockPage />);
     const conveyors = screen.getByRole("region", { name: "Конвейеры и счёт" });
     expect(screen.queryByRole("region", { name: "Сессии отгрузки" })).not.toBeInTheDocument();
@@ -274,8 +274,8 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     expect(screen.queryByRole("button", { name: /Настроить/ })).not.toBeInTheDocument();
   });
 
-  it("показывает настройку только с правом ai_247.manage", async () => {
-    mocks.me = { ...employee, permissions: ["shipping.load", "ai_247.manage"] };
+  it("показывает настройку AI 24/7 только суперпользователю", async () => {
+    mocks.me = { ...employee, is_superuser: true };
     const user = userEvent.setup();
     render(<MonoblockPage />);
 
@@ -284,7 +284,7 @@ describe("доступ к AI 24/7 на странице моноблока", () 
   });
 
   it("не даёт добавить камеру отгрузки в отдельный контур AI 24/7", async () => {
-    mocks.me = { ...employee, permissions: ["shipping.load", "ai_247.manage"] };
+    mocks.me = { ...employee, is_superuser: true };
     mocks.cameras = [
       {
         id: "camera-2",
@@ -391,14 +391,10 @@ describe("доступ к AI 24/7 на странице моноблока", () 
 });
 
 describe("гейтинг данных вкладки «Отгрузка»", () => {
-  it("uses the latest permissions for the default transport until the user chooses one", () => {
-    mocks.me = { ...employee, permissions: ["shipping.view"] };
-    const { rerender } = render(<MonoblockPage />);
+  it("opens trucks by default for the single monoblock permission", () => {
+    render(<MonoblockPage />);
     openOrders();
     expect(screen.getByRole("tab", { name: /Грузовики/ })).toHaveAttribute("aria-selected", "true");
-    mocks.me = { ...employee, permissions: ["train.view"] };
-    rerender(<MonoblockPage />);
-    expect(screen.getByRole("tab", { name: /Вагоны/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("navigates shipping panels with the keyboard and links tabs to their panels", async () => {
@@ -418,37 +414,21 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     expect(screen.getByRole("tabpanel", { name: "Конвейеры" })).toHaveAttribute("aria-labelledby", conveyors.id);
   });
 
-  it("view-only не запрашивает monoblock-settings и открывает очередь без AI-вкладки", () => {
-    mocks.me = { ...employee, permissions: ["shipping.view"] };
+  it("одно право Моноблока видит всё и ничего не может изменить", () => {
     render(<MonoblockPage />);
     openOrders();
     expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /AI 24\/7/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /AI 24\/7/ })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(mocks.urls).not.toContain("/cameras/monoblock-settings/");
-    expect(mocks.urls).not.toContain("/cameras/always-on-settings/");
+    expect(mocks.urls).toContain("/cameras/monoblock-settings/");
+    expect(mocks.urls).toContain("/cameras/always-on-settings/");
     expect(mocks.urls).toContain("/cameras/ai/sessions/");
     expect(mocks.urls).toContain("/cameras/ai/history/?post_board=1");
     expect(mocks.urls).toContain("/cameras/shipping-settings/");
     expect(mocks.urls).toContain("/cameras/shipping-continuous-settings/");
-  });
-
-  it("train.view видит таблицу и не запрашивает чужие настройки", () => {
-    mocks.me = { ...employee, permissions: ["train.view"] };
-    render(<MonoblockPage />);
-    openOrders();
-    expect(screen.getByRole("tab", { name: /Вагоны/ })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
-    expect(screen.getByText("Нет заказов на посту")).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(mocks.urls).toContain("/orders/?post_board=1");
-    expect(mocks.urls).toContain("/cameras/");
-    expect(mocks.urls).not.toContain("/cameras/ai/sessions/");
-    expect(mocks.urls).not.toContain("/cameras/ai/history/?post_board=1");
-    expect(mocks.urls).not.toContain("/cameras/monoblock-settings/");
-    expect(mocks.urls).not.toContain("/cameras/shipping-settings/");
-    expect(mocks.urls).not.toContain("/cameras/shipping-continuous-settings/");
-    expect(mocks.urls).not.toContain("/cameras/monoblock-devices/");
+    // Отгружает грузчик на своей странице; настройки — администратору.
+    expect(screen.queryByRole("button", { name: /Оформить выезд|Завершить погрузку/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Отгруженные:/ })).not.toBeInTheDocument();
   });
 
   it("настройка «Отгруженные» видна только с правом управления системой", () => {
@@ -456,7 +436,7 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     expect(screen.queryByRole("button", { name: /Отгруженные:/ })).not.toBeInTheDocument();
     unmount();
 
-    mocks.me = { ...employee, permissions: ["shipping.load", "sys_permissions.manage"] };
+    mocks.me = { ...employee, permissions: ["monoblock.view", "sys_permissions.manage"] };
     render(<MonoblockPage />);
     openOrders();
     expect(screen.getByRole("button", { name: /Отгруженные: сегодня/ })).toBeInTheDocument();
@@ -513,7 +493,7 @@ describe("день и поиск очереди отгрузки", () => {
   });
 
   it("по умолчанию запрашивает доску без фильтров", () => {
-    mocks.me = { ...employee, permissions: ["shipping.load", "shipping.view"] };
+    mocks.me = { ...employee, permissions: ["monoblock.view"] };
     render(<MonoblockPage />);
     openOrders();
 
@@ -525,7 +505,7 @@ describe("день и поиск очереди отгрузки", () => {
   });
 
   it("выбранный день уходит в запрос доски и истории, «Сегодня» его сбрасывает", async () => {
-    mocks.me = { ...employee, permissions: ["shipping.load", "shipping.view"] };
+    mocks.me = { ...employee, permissions: ["monoblock.view"] };
     const user = userEvent.setup();
     render(<MonoblockPage />);
     openOrders();
@@ -543,7 +523,7 @@ describe("день и поиск очереди отгрузки", () => {
   });
 
   it("выбор сегодняшней даты не замораживает киоск на вчера после полуночи", () => {
-    mocks.me = { ...employee, permissions: ["shipping.load", "shipping.view"] };
+    mocks.me = { ...employee, permissions: ["monoblock.view"] };
     const { rerender } = render(<MonoblockPage />);
     openOrders();
 

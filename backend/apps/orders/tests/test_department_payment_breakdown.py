@@ -62,7 +62,7 @@ def test_summary_splits_paid_partial_and_unpaid(boss, auth_client):
 
 
 def test_summary_debt_matches_is_debt_rule(boss, auth_client):
-    """Моментальная оплата долгом не считается, даже если денег ещё нет."""
+    """Отгруженный неоплаченный заказ — долг, как бы клиент ни собирался платить."""
     department = Department.objects.create(
         code="city", name="Нью-Сити", color="#1F9D6A")
     client = Client.objects.create_with_user(first_name="Мгн", last_name="Овен", phone="2")
@@ -72,8 +72,8 @@ def test_summary_debt_matches_is_debt_rule(boss, auth_client):
 
     row = _summary(auth_client, boss)["city"]
 
-    assert row["debt"] == "700.00", "в долг попадает только settlement_intent=debt"
-    assert row["debt_orders"] == 1
+    assert row["debt"] == "1200.00", "долг — весь остаток отгруженного, и «сразу» тоже"
+    assert row["debt_orders"] == 2
     assert row["unpaid_orders"] == 2, "неоплаченными числятся оба"
 
 

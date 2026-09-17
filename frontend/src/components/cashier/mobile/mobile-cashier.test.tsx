@@ -106,18 +106,6 @@ const transaction = {
   client_name: "Клиент",
   available_for_refund: "100",
 };
-const logEvent = {
-  id: 1,
-  message: "Оплата подтверждена",
-  user_name: "Касса",
-  order: 1,
-  client_name: "Клиент",
-  store_name: null,
-  payload: { payment_id: 1 },
-  created_at: `${todayIso}T09:00:00`,
-  can_reopen: true,
-  can_restore: false,
-};
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -218,7 +206,6 @@ beforeEach(() => {
         return { data: mocks.awaitingCount ? [{ currency: "KZT", amount: "250", count: mocks.awaitingCount }] : [] };
       return { data: { results: [awaitingOrder], count: 1, next: null } };
     }
-    if (url.pathname === "/orders/cashier-log/") return { data: { results: [logEvent], count: 1, next: null } };
     if (url.pathname === "/clients/debts/")
       return {
         data: [
@@ -269,7 +256,6 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
     expect.stringContaining("Оплаты"),
     expect.stringContaining("Долги клиентов"),
     expect.stringContaining("Транзакции"),
-    expect.stringContaining("Журнал"),
     expect.stringContaining("Отчёт по поступлениям"),
   ]);
   // Удалённая оплата живёт только во вкладке POS: строки на главной нет даже с полными правами.
@@ -485,10 +471,6 @@ it("shows a locked cashier the shared queue of every department, keeping the res
   expect(screen.getByText("Мельница")).toBeInTheDocument();
   await user.click(screen.getAllByRole("button", { name: "Подтвердить получение" })[1]);
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/12/payments/2/confirm/"));
-
-  await user.click(screen.getByRole("button", { name: "Назад в кассу" }));
-  await user.click(await screen.findByRole("button", { name: /Журнал/ }));
-  await waitFor(() => expect(urls()).toContain("/orders/cashier-log/?department=field&page=1&page_size=50"));
 });
 
 it("opens the only available section directly, without a home screen or a bar", async () => {
@@ -512,7 +494,7 @@ it("confirms a payment from the queue screen", async () => {
   const user = userEvent.setup();
   resetNavigation("/accounting?view=confirm");
   render(<CashierPage />);
-  expect(await screen.findByRole("tab", { name: /К подтверждению/ })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("tab", { name: /Проверка/ })).toHaveAttribute("aria-selected", "true");
   await user.click(await screen.findByRole("button", { name: "Подтвердить получение" }));
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/1/payments/1/confirm/"));
 
@@ -522,19 +504,78 @@ it("confirms a payment from the queue screen", async () => {
   expect(screen.getByText("Способ оплаты не выбран")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "В долг" }));
-  const dialog = await screen.findByRole("dialog", { name: "Перевести заказ #21 в долг?" });
+  const dialog = await screen.findByRole("dialog", { name: "Оставить заказ #21 в долг?" });
   await user.click(within(dialog).getByRole("button", { name: "В долг" }));
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/21/to-debt/"));
 });
 
-it("groups the journal by day and reopens a payment", async () => {
+it("narrows the payments screen by quick filters: today and department", async () => {
   const user = userEvent.setup();
+  resetNavigation("/accounting?view=confirm");
+  const urls = () => mocks.get.mock.calls.map(([url]) => String(url));
+  render(<CashierPage />);
+  const quick = within(await screen.findByRole("group", { name: "Быстрые фильтры" }));
+  expect(quick.getByRole("button", { name: "Все даты" })).toHaveAttribute("aria-pressed", "true");
+
+  await user.click(quick.getByRole("button", { name: "Сегодня" }));
+  await waitFor(() =>
+    expect(urls()).toContain(`/orders/payments-queue/?date_from=${todayIso}&date_to=${todayIso}&page=1&page_size=50`),
+  );
+  expect(urls()).toContain(`/orders/awaiting-payment/?date_from=${todayIso}&date_to=${todayIso}&page=1&page_size=50`);
+
+  await user.click(await quick.findByRole("button", { name: "Нью-Сити" }));
+  await waitFor(() =>
+    expect(urls()).toContain(
+      `/orders/awaiting-payment/?date_from=${todayIso}&date_to=${todayIso}&department=field&page=1&page_size=50`,
+    ),
+  );
+  expect(urls()).toContain(
+    `/orders/payments-queue/?date_from=${todayIso}&date_to=${todayIso}&department=field&page=1&page_size=50`,
+  );
+  expect(quick.getByRole("button", { name: "Нью-Сити" })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("hides department chips from a cashier locked to a department", async () => {
+  resetNavigation("/accounting?view=confirm");
+  mocks.me = {
+    ...mocks.me,
+    is_superuser: false,
+    permissions: ["payments.confirm", "payments.view"],
+    sales_department: { id: 2, code: "field", name: "Нью-Сити", color: "#654321" },
+  };
+  render(<CashierPage />);
+  const quick = within(await screen.findByRole("group", { name: "Быстрые фильтры" }));
+  expect(quick.getByRole("button", { name: "Сегодня" })).toBeInTheDocument();
+  expect(quick.queryByRole("button", { name: "Мельница" })).not.toBeInTheDocument();
+});
+
+it("has no journal: an old ?view=journal link opens the home screen", async () => {
   resetNavigation("/accounting?view=journal");
   render(<CashierPage />);
-  expect(await screen.findByRole("heading", { name: "Сегодня" })).toBeInTheDocument();
-  expect(screen.getByText("Оплата подтверждена")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Вернуть на подтверждение" }));
-  await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/1/payments/1/reopen/"));
+  const menu = within(await screen.findByRole("navigation", { name: "Разделы кассы" }));
+  expect(menu.queryByRole("button", { name: /Журнал/ })).not.toBeInTheDocument();
+  expect(mocks.get.mock.calls.some(([url]) => String(url).startsWith("/orders/cashier-log/"))).toBe(false);
+});
+
+it("returns a mistakenly confirmed payment to review from the transaction sheet", async () => {
+  const user = userEvent.setup();
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const response = await baseGet(raw);
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/payment-transactions/") {
+      return { data: { ...response.data, results: [{ ...transaction, can_reopen: true }] } };
+    }
+    return response;
+  });
+  resetNavigation("/accounting?view=transactions");
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("button", { name: /PAY-000005/ }));
+  const sheet = await screen.findByRole("dialog", { name: "Оплачено" });
+  await user.click(within(sheet).getByRole("button", { name: /Вернуть на проверку/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Вернуть PAY-000005 на проверку?" });
+  await user.click(within(dialog).getByRole("button", { name: "Вернуть на проверку" }));
+  await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/1/payments/5/reopen/"));
 });
 
 it("does not claim the queue is empty while it failed to load", async () => {

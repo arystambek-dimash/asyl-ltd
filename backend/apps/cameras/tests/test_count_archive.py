@@ -182,21 +182,21 @@ def test_deleting_a_missing_archive_is_rejected(boss):
     assert exc.value.detail["code"] == "archive_not_found"
 
 
-def test_deleting_an_archive_requires_ai_247_manage(
-    user_with_perms, auth_client, boss,
+def test_deleting_an_archive_is_superuser_only(
+    user_with_perms, auth_client, boss, django_user_model,
 ):
-    """Кнопка удаления доступна тем же, кто может архивировать."""
+    """Правки аналитики AI 24/7 — только суперпользователь."""
     _enable()
     analytics.record_snapshot(_snapshot(100))
     archive = analytics.archive_camera("cam3", "", boss)
-    loader = user_with_perms("archive-loader", codes=["shipping.load"])
+    loader = user_with_perms("archive-loader", codes=["monoblock.view", "loader.confirm"])
 
     denied = auth_client(loader).delete(
         f"/api/cameras/always-on-analytics/archives/{archive['id']}/")
     assert denied.status_code == 403
     assert AlwaysOnCountArchive.objects.filter(pk=archive["id"]).exists()
 
-    manager = user_with_perms("archive-manager", codes=["ai_247.manage"])
+    manager = django_user_model.objects.create_superuser("archive-manager", password="pass12345")
     allowed = auth_client(manager).delete(
         f"/api/cameras/always-on-analytics/archives/{archive['id']}/")
     assert allowed.status_code == 200

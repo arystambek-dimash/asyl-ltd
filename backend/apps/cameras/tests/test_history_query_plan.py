@@ -25,7 +25,7 @@ def _sessions(count):
 
 
 def test_history_query_count_does_not_grow_with_rows(auth_client, user_with_perms):
-    user = user_with_perms("cam-history", codes=["shipping.view"])
+    user = user_with_perms("cam-history", codes=["monoblock.view"])
     _sessions(12)
 
     with CaptureQueriesContext(connection) as queries:

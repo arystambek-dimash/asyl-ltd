@@ -22,7 +22,7 @@ export const EMPTY_CASH_FILTERS: CashFilters = {
 };
 
 /** Свои фильтры у каждого экрана: период журнала не должен обрезать «Общее», остаток долга нужен только долгам. */
-export type FilterScreen = "overview" | "report" | "debts" | "confirm" | "journal";
+export type FilterScreen = "overview" | "report" | "debts" | "confirm";
 export type CashFiltersByScreen = Record<FilterScreen, CashFilters>;
 
 export type PeriodPreset = "today" | "week" | "month" | "all";
@@ -69,7 +69,6 @@ export function initialFilters(now = new Date()): CashFiltersByScreen {
     report: { ...EMPTY_CASH_FILTERS, ...periodRange("today", now) },
     debts: EMPTY_CASH_FILTERS,
     confirm: EMPTY_CASH_FILTERS,
-    journal: EMPTY_CASH_FILTERS,
   };
 }
 
@@ -82,7 +81,6 @@ export function filterScreenFor(view: CashView, mobile: boolean): FilterScreen |
     case "debts":
       return mobile ? view : null;
     case "confirm":
-    case "journal":
       return view;
     default:
       return null;

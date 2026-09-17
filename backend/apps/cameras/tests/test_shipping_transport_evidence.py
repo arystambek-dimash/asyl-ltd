@@ -49,7 +49,7 @@ def review(settings, tmp_path, user_with_perms, monkeypatch):
     MonoblockCameraSettings.objects.create(camera_sources=["cam2", "cam3"])
     own = Department.objects.create(code="review-own", name="Own")
     foreign = Department.objects.create(code="review-foreign", name="Foreign")
-    user = user_with_perms("recognition-review", codes=["shipping.view"])
+    user = user_with_perms("recognition-review", codes=["monoblock.view"])
     user.employee.sales_department = own
     user.employee.save(update_fields=["sales_department"])
     own_client = Client.objects.create_with_user(

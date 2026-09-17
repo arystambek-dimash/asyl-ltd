@@ -1,5 +1,10 @@
 # Automatic shipping transport monitor
 
+> **Устарело (2026-09-17).** Сервис `shipping-transport-monitor` теперь запускает
+> `monitor_shipping_sessions` (сессии и номера отрезков, без смены статусов заказов);
+> `monitor_shipping_transports` не запускается. Моноблок только для просмотра, отгрузку
+> оформляет грузчик на странице «Грузчик» — она же закрывает открытый AI-подсчёт заказа.
+
 `shipping-transport-monitor` uses the backend image and runs
 `python manage.py monitor_shipping_transports` continuously. Saving a shipping
 conveyor's number-camera binding makes that lane available to the polling

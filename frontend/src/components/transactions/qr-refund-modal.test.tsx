@@ -33,12 +33,14 @@ beforeEach(() => {
   mocks.useApi.mockReset().mockReturnValue({ data: null, error: "", reload: vi.fn() });
 });
 
-it("shows the buyer link with send actions while waiting for the buyer", () => {
+it("shows the buyer a QR on the cashier screen and the same link to send while waiting", () => {
   render(<QrRefundModal payment={payment} initial={state({})} onClose={vi.fn()} onChanged={vi.fn()} />);
 
-  expect(screen.getByText("https://qr.apipay.kz/refund/token")).toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "Возврат по QR" })).toBeInTheDocument();
+  expect(screen.getByTitle("QR для возврата оплаты")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /WhatsApp/ })).toBeInTheDocument();
-  expect(screen.getByText(/Отправьте ссылку покупателю/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Скопировать/ })).toBeInTheDocument();
+  expect(screen.getByText(/Покажите QR покупателю или отправьте ему ссылку/)).toBeInTheDocument();
 });
 
 it("lets the cashier pick the purchase when Kaspi lists several", async () => {

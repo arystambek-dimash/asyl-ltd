@@ -16,6 +16,7 @@ import {
 
 import { AppShell } from "@/components/layout/app-shell";
 import { PermissionPicker } from "@/components/permission-picker";
+import { Chip } from "@/components/ui/chip";
 import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
+import { PERMISSION_PRESETS, applyPreset, type PermissionPreset } from "@/lib/permission-presets";
 import type { Department, Employee, Permission } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
@@ -121,6 +123,16 @@ function EmployeesPageInner() {
     setStep(1);
     setError("");
     setOpen(true);
+  }
+
+  // Шаблон не выдаёт права, которых нет у самого администратора.
+  const presetBlocked = new Set(
+    (permissions ?? [])
+      .filter((permission) => !me?.is_superuser && !me?.permissions.includes(permission.code))
+      .map((permission) => permission.code),
+  );
+  function choosePreset(preset: PermissionPreset) {
+    setSelectedPermissions(applyPreset(preset, presetBlocked));
   }
 
   function togglePermission(code: string) {
@@ -564,6 +576,18 @@ function EmployeesPageInner() {
                 <span className="text-xs text-[var(--muted-foreground)]">Выбрано: {selectedPermissions.size}</span>
               </div>
               <fieldset disabled={!canEditSecurity}>
+                <div className="mb-3 space-y-1.5">
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Шаблоны ролей">
+                    {PERMISSION_PRESETS.map((preset) => (
+                      <Chip key={preset.key} active={false} onClick={() => choosePreset(preset)}>
+                        {preset.label}
+                      </Chip>
+                    ))}
+                  </div>
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    Шаблон заменяет отмеченные права; дальше их можно поправить вручную.
+                  </p>
+                </div>
                 <PermissionPicker
                   perms={permissions ?? []}
                   selected={selectedPermissions}

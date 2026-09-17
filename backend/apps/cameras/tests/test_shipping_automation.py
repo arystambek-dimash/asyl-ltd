@@ -594,7 +594,7 @@ def test_counter_outage_keeps_active_order_and_reports_error(pipeline):
 @pytest.mark.parametrize(
     ("model", "transport"), [("vehicle_number", "truck"), ("wagon_number", "train")]
 )
-def test_automatic_session_control_requires_transport_loading_permission(
+def test_automatic_session_control_requires_loader_permission(
     pipeline, model, transport, user_with_perms, client_user
 ):
     binding = _binding(model=model)
@@ -602,18 +602,11 @@ def test_automatic_session_control_requires_transport_loading_permission(
     order = _order(pipeline, number=number, transport=transport)
     _confirm(pipeline, binding, number=number)
     session = AiCountingSession.objects.get()
-    permitted = user_with_perms(
-        "transport-loader",
-        codes=["train.load" if transport == "train" else "shipping.load"],
-    )
-    wrong_transport = user_with_perms(
-        "other-loader",
-        codes=["shipping.load" if transport == "train" else "train.load"],
-    )
-    viewer = user_with_perms("transport-viewer", codes=["shipping.view", "train.view"])
+    # Автоматическую сессию закрывает грузчик — для машин и вагонов одинаково.
+    permitted = user_with_perms("transport-loader", codes=["loader.confirm"])
+    viewer = user_with_perms("transport-viewer", codes=["monoblock.view", "loader.view"])
     assert session_started_by_name(session) == "Автоматически"
     assert can_control_session(session, permitted)
-    assert not can_control_session(session, wrong_transport)
     assert not can_control_session(session, viewer)
     assert not can_control_session(session, client_user)
     assert not can_control_session(session, None)

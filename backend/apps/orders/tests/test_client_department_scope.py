@@ -72,9 +72,9 @@ def ownership_scope(user_with_perms):
             "payments.create",
             "payments.confirm",
             "reports.view",
-            "shipping.load",
-            "shipping.rollback",
-            "train.load",
+            "monoblock.view",
+            "loader.confirm",
+            "orders.rollback",
         ],
     )
     user.employee.sales_department = first_department

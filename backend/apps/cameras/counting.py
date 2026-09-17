@@ -779,8 +779,12 @@ def stop(
     *,
     complete_order: bool = False,
     expected_session_id: int | None = None,
+    dispatching: bool = False,
 ) -> dict:
     """Finish an order exactly, or cancel local ownership best-effort.
+
+    ``dispatching`` — сессию закрывает отгрузка грузчика: право на неё уже
+    проверено (loader.confirm), а не только тот, кто подсчёт запустил.
 
     Business completion requires the scoped durable DELETE result before its
     database commit. A plain cancel may still close locally when remote cleanup
@@ -837,7 +841,7 @@ def stop(
         if session.order_id != order.pk:
             raise sessions.AiSessionBusy(session)
         locked_order = _assert_order_department_scope(session.order_id, user)
-        if not can_control_session(session, user):
+        if not dispatching and not can_control_session(session, user):
             raise PermissionDenied(
                 "Остановить отгрузку может только начавший её сотрудник "
                 "или администратор"
@@ -935,6 +939,32 @@ def stop(
     if complete_order:
         response.update(order_status="loaded", bags_loaded=actual_bags)
     return response
+
+
+def close_session_for_dispatch(order: Order, user) -> None:
+    """Грузчик отгружает заказ, по которому открыт AI-подсчёт.
+
+    Активный подсчёт идущей погрузки завершается штатно — в заказ идут мешки,
+    посчитанные камерой; незапущенный или сбойный отменяется, и отгрузка
+    возьмёт заказанное количество. Ошибки ПК камер пробрасываются: заказ
+    остаётся как был, грузчик повторит.
+    """
+    session = (
+        AiCountingSession.objects.filter(order_id=order.pk, status__in=AiCountingSession.OPEN_STATUSES)
+        .order_by("-pk")
+        .first()
+    )
+    if session is None:
+        return
+    status = Order.objects.filter(pk=order.pk).values_list("status", flat=True).first()
+    stop(
+        session.camera,
+        order,
+        user,
+        complete_order=session.status == AiCountingSession.ACTIVE and status == "loading",
+        expected_session_id=session.pk,
+        dispatching=True,
+    )
 
 
 def reset(

@@ -33,7 +33,7 @@ class CameraAiSessionListView(APIView):
     """Открытые отгрузки для моноблока — по одной на каждую камеру."""
 
     def get_permissions(self):
-        return [HasPerm("shipping.load", "shipping.view", "train.load", "train.view")]
+        return [HasPerm("monoblock.view")]
 
     def get(self, request):
         open_sessions = (
@@ -141,7 +141,7 @@ class CameraAiSessionHistoryView(APIView):
     """Order-bound AI metadata; video itself follows the two-week retention."""
 
     def get_permissions(self):
-        return [HasPerm("shipping.view")]
+        return [HasPerm("monoblock.view")]
 
     def get(self, request):
         queryset = _history_queryset(request.user).order_by("-started_at")
@@ -220,7 +220,7 @@ class CameraAiRecordingView(APIView):
     """List locally stored MediaMTX segments for one authorized session."""
 
     def get_permissions(self):
-        return [HasPerm("shipping.view")]
+        return [HasPerm("monoblock.view")]
 
     def get(self, request, pk: int):
         session = _history_session(pk, request.user)

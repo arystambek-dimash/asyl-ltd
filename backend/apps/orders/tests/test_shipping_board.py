@@ -55,7 +55,7 @@ def test_post_board_is_available_to_train_loader(
 ):
     loader = user_with_perms(
         "board-train-loader",
-        codes=["train.view", "train.load"],
+        codes=["monoblock.view"],
     )
     client = Client.objects.create_with_user(
         first_name="Train", last_name="Loader", phone="3"

@@ -1,9 +1,8 @@
 import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
-/** Экран кассы: десктоп знает overview/confirm/journal/transactions, телефон — home/report/debts/confirm/journal/transactions/pos/remote. */
-export type CashView =
-  "home" | "overview" | "report" | "debts" | "confirm" | "journal" | "transactions" | "pos" | "remote";
+/** Экран кассы: десктоп знает overview/confirm/transactions, телефон — home/report/debts/confirm/transactions/pos/remote. */
+export type CashView = "home" | "overview" | "report" | "debts" | "confirm" | "transactions" | "pos" | "remote";
 export type MobileMenuKey = Exclude<CashView, "home" | "overview" | "pos" | "remote">;
 
 /** Права раздела — RequirePerm пускает при любом из них. */
@@ -47,7 +46,6 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
     case "report":
       return perms.canReports;
     case "confirm":
-    case "journal":
       return perms.canPayments;
     case "pos":
     case "remote":
@@ -58,15 +56,14 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
 }
 
 /** Порядок пунктов мобильного меню фиксированный — как в спеке. */
-const MOBILE_MENU: MobileMenuKey[] = ["confirm", "debts", "transactions", "journal", "report"];
-const DESKTOP_VIEWS: CashView[] = ["overview", "confirm", "journal", "transactions"];
+const MOBILE_MENU: MobileMenuKey[] = ["confirm", "debts", "transactions", "report"];
+const DESKTOP_VIEWS: CashView[] = ["overview", "confirm", "transactions"];
 const ALL_VIEWS: readonly string[] = [
   "home",
   "overview",
   "report",
   "debts",
   "confirm",
-  "journal",
   "transactions",
   "pos",
   "remote",
