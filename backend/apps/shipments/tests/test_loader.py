@@ -68,6 +68,17 @@ def test_queue_filters_by_planned_day_and_search(auth_client, loader, product):
     assert today_order.pk in [row["id"] for row in api.get("/api/loader/queue/").data]
 
 
+def test_queue_separates_overdue_from_today(auth_client, loader, product):
+    today = timezone.localdate()
+    fresh = _order(product, arrival_date=today)
+    late = _order(product, arrival_date=today - timedelta(days=30))
+    api = auth_client(loader)
+
+    assert [row["id"] for row in api.get("/api/loader/queue/?overdue=1").data] == [late.pk]
+    assert [row["id"] for row in api.get(f"/api/loader/queue/?day={today}").data] == [fresh.pk]
+    assert {row["id"] for row in api.get("/api/loader/queue/").data} == {fresh.pk, late.pk}
+
+
 def test_one_button_ships_ordered_quantity_and_prints_waybill(auth_client, loader, product):
     order = _order(product, quantity=3)
     api = auth_client(loader)

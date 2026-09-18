@@ -18,6 +18,7 @@ import { can } from "@/lib/can";
 import { loaderUrl, openWaybill, shiftIsoDate, type LoaderOrder } from "@/lib/loader";
 import { groupByPlannedDay, plannedDay, shortDate } from "@/lib/loader-groups";
 import { useDebounced } from "@/lib/use-debounced";
+import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { cn, pluralRu, todayLocalIsoDate } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
@@ -33,7 +34,9 @@ function LoaderPageInner() {
   const [view, setView] = useState<View>("queue");
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounced(search.trim());
-  const [queueDay, setQueueDay] = useState("");
+  // Очередь открывается на сегодняшнем дне: месячная просрочка не должна закрывать работу.
+  const [queueFilter, setQueueFilter] = useState<"today" | "tomorrow" | "overdue" | "all" | "date">("today");
+  const [queueDay, setQueueDay] = useState(today);
   const [range, setRange] = useState({ from: today, to: today });
   const [openedId, setOpenedId] = useState<number | null>(null);
   const [truckNumber, setTruckNumber] = useState("");
@@ -43,7 +46,18 @@ function LoaderPageInner() {
   const [undone, setUndone] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const queue = usePagedApi<LoaderOrder>(loaderUrl("queue", { day: queueDay, search: debouncedSearch }));
+  const queue = usePagedApi<LoaderOrder>(
+    loaderUrl("queue", {
+      day: queueFilter === "overdue" || queueFilter === "all" ? "" : queueDay,
+      overdue: queueFilter === "overdue" ? "1" : "",
+      search: debouncedSearch,
+    }),
+  );
+  // Просроченные не теряются: их число видно на отдельной кнопке.
+  const overdue = useApi<{ count: number }>(
+    queueFilter === "overdue" ? null : "/loader/queue/?overdue=1&page=1&page_size=1",
+  );
+  const overdueCount = queueFilter === "overdue" ? queue.count : (overdue.data?.count ?? 0);
   const history = usePagedApi<LoaderOrder>(
     view === "history"
       ? loaderUrl("history", { date_from: range.from, date_to: range.to, search: debouncedSearch })
@@ -203,20 +217,40 @@ function LoaderPageInner() {
           <div className="flex flex-wrap items-center gap-2">
             {(
               [
-                ["", "Все"],
-                [today, "Сегодня"],
-                [shiftIsoDate(today, 1), "Завтра"],
+                ["today", "Сегодня", today],
+                ["tomorrow", "Завтра", shiftIsoDate(today, 1)],
+                ["all", "Все", ""],
               ] as const
-            ).map(([value, label]) => (
-              <Chip key={label} active={queueDay === value} onClick={() => setQueueDay(value)}>
+            ).map(([key, label, day]) => (
+              <Chip
+                key={key}
+                active={queueFilter === key}
+                onClick={() => {
+                  setQueueFilter(key);
+                  if (day) setQueueDay(day);
+                }}
+              >
                 {label}
               </Chip>
             ))}
+            {overdueCount > 0 && (
+              <Chip
+                active={queueFilter === "overdue"}
+                className={queueFilter === "overdue" ? "" : "border-[var(--destructive)]/40 text-[var(--destructive)]"}
+                onClick={() => setQueueFilter("overdue")}
+              >
+                Просрочено · {overdueCount}
+              </Chip>
+            )}
             <Input
               type="date"
               aria-label="Плановый день"
-              value={queueDay}
-              onChange={(event) => setQueueDay(event.target.value)}
+              value={queueFilter === "overdue" || queueFilter === "all" ? "" : queueDay}
+              onChange={(event) => {
+                if (!event.target.value) return;
+                setQueueDay(event.target.value);
+                setQueueFilter("date");
+              }}
               className="h-8 w-auto text-xs"
             />
           </div>
@@ -254,7 +288,12 @@ function LoaderPageInner() {
         )}
 
         {view === "queue" ? (
-          <QueueList queue={queue} today={today} onOpen={openOrder} filtered={Boolean(queueDay || debouncedSearch)} />
+          <QueueList
+            queue={queue}
+            today={today}
+            onOpen={openOrder}
+            filtered={queueFilter !== "all" || Boolean(debouncedSearch)}
+          />
         ) : (
           <HistoryList history={history} today={today} busy={busy} onPrint={print} onUndo={undo} />
         )}

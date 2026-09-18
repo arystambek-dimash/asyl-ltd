@@ -126,10 +126,18 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="queue")
     def queue(self, request):
-        """Ждут отгрузки. ``day`` — плановый день (дата приезда или создания), без него — все."""
+        """Ждут отгрузки.
+
+        ``day`` — плановый день (дата приезда или создания). ``overdue=1`` — только
+        просроченные: их грузчик разбирает отдельно, чтобы старьё не закрывало
+        сегодняшнюю работу. Без параметров — вся очередь.
+        """
+        today = timezone.localdate()
         queryset = self.get_queryset().filter(status__in=DISPATCHABLE_STATUSES).annotate(
             planned_on=Coalesce("arrival_date", TruncDate("created_at")),
         )
+        if request.query_params.get("overdue") == "1":
+            queryset = queryset.filter(planned_on__lt=today)
         raw_day = request.query_params.get("day")
         if raw_day:
             try:

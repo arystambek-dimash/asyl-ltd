@@ -18,6 +18,15 @@ vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: { id: 1, is_superuser: false, permissions: mocks.permissions }, loading: false }),
 }));
 vi.mock("@/lib/use-paged-api", () => ({ usePagedApi: mocks.paged }));
+// Счётчик просроченных грузится отдельным лёгким запросом; остальным хукам — пусто.
+vi.mock("@/lib/use-api", () => ({
+  useApi: (url: string | null) => ({
+    data: url?.includes("overdue=1") ? { count: 3 } : null,
+    error: "",
+    loading: false,
+    reload: vi.fn(),
+  }),
+}));
 vi.mock("@/lib/api", () => ({ api: { post: mocks.post }, apiError: (e: Error) => e.message }));
 vi.mock("@/lib/loader", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/loader")>()),
@@ -184,6 +193,30 @@ describe("LoaderPage", () => {
     await user.click(screen.getByRole("button", { name: /№701/ }));
     expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeEnabled();
+  });
+
+  it("открывается на сегодняшнем дне, просроченные — отдельной кнопкой", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation((url: string | null) =>
+      url?.startsWith("/loader/queue/") ? paged([order(624)]) : paged([]),
+    );
+    render(<LoaderPage />);
+
+    // Очередь спрашивается за сегодня; параллельный вызов истории с null не мешает.
+    const lastQueueUrl = () =>
+      mocks.paged.mock.calls
+        .map(([url]) => url)
+        .filter((url) => typeof url === "string" && url.includes("queue"))
+        .at(-1);
+    const today = new Date().toISOString().slice(0, 10);
+    expect(lastQueueUrl()).toBe(`/loader/queue/?day=${today}`);
+    expect(screen.getByRole("button", { name: "Сегодня" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(await screen.findByRole("button", { name: /Просрочено · 3/ }));
+    expect(lastQueueUrl()).toBe("/loader/queue/?overdue=1");
+
+    await user.click(screen.getByRole("button", { name: "Все" }));
+    expect(lastQueueUrl()).toBe("/loader/queue/");
   });
 
   it("группирует очередь по дням: просрочка отдельно от сегодняшних", async () => {
