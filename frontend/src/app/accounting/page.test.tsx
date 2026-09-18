@@ -42,6 +42,19 @@ const queueItem = {
   status: "received",
   client_name: "Клиент",
 };
+type User = ReturnType<typeof userEvent.setup>;
+
+/** Сводка и фильтры кассы живут в окнах — тест открывает их так же, как кассир. */
+async function openSummary(user: User) {
+  await user.click(await screen.findByRole("button", { name: /Аналитика/ }));
+}
+async function openFilters(user: User) {
+  await user.click(await screen.findByRole("button", { name: /Фильтры/ }));
+}
+async function closeModal(user: User) {
+  await user.click(screen.getAllByRole("button", { name: "Закрыть" })[0]);
+}
+
 function card(title: string) {
   const node = screen.getByText(title).parentElement;
   if (!node) throw new Error("Карточка отсутствует");
@@ -121,11 +134,13 @@ beforeEach(() => {
 it("confirmation refreshes income, debt and the overview queue when returning to overview", async () => {
   const user = userEvent.setup();
   render(<CashierPage />);
+  await openSummary(user);
   await waitFor(() => expect(card("Дебиторка").getByText(/100/)).toBeInTheDocument());
   await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
   await user.click(await screen.findByRole("button", { name: "Подтвердить получение" }));
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/1/payments/1/confirm/"));
   await user.click(screen.getByRole("tab", { name: "Общее" }));
+  await openSummary(user);
   await waitFor(() => expect(card("Чистое поступление за всё время").getAllByText(/100/).length).toBeGreaterThan(0));
   expect(card("Дебиторка").queryByText(/100/)).not.toBeInTheDocument();
   expect(card("Ожидает подтверждения").getByText("0")).toBeInTheDocument();
@@ -133,16 +148,22 @@ it("confirmation refreshes income, debt and the overview queue when returning to
 });
 
 it("uses overview dates for its payment card and never presents a failed queue as zero", async () => {
+  const user = userEvent.setup();
   render(<CashierPage />);
+  await openSummary(user);
   await waitFor(() => expect(card("Ожидает подтверждения").getAllByText(/100/).length).toBeGreaterThan(0));
   mocks.queueError = true;
+  await closeModal(user);
+  await openFilters(user);
   fireEvent.change(screen.getByLabelText("С даты"), { target: { value: "2026-09-01" } });
   await waitFor(() =>
     expect(mocks.get.mock.calls.some(([url]) => url === "/orders/payments-queue/?summary=1&date_from=2026-09-01")).toBe(
       true,
     ),
   );
+  await closeModal(user);
   expect(await screen.findByText("Очередь временно недоступна")).toBeInTheDocument();
+  await openSummary(user);
   expect(card("Ожидает подтверждения").getByText("—")).toBeInTheDocument();
   expect(card("Ожидает подтверждения").queryByText("0")).not.toBeInTheDocument();
 });
@@ -150,6 +171,7 @@ it("uses overview dates for its payment card and never presents a failed queue a
 it("loads only overview totals initially and fetches each confirmation page once on demand", async () => {
   const user = userEvent.setup();
   render(<CashierPage />);
+  await openSummary(user);
   await waitFor(() => expect(card("Ожидает подтверждения").getAllByText(/100/).length).toBeGreaterThan(0));
   const urls = () => mocks.get.mock.calls.map(([url]) => String(url));
   expect(urls().filter((url) => url.startsWith("/orders/payments-queue/"))).toEqual([
@@ -254,6 +276,7 @@ it("desktop tab click mirrors the view into the URL and deep links open the tab"
   expect(routerCalls.replace).toContain("/accounting?view=confirm");
 
   resetNavigation("/accounting?view=overview");
+  await openSummary(user);
   expect(await screen.findByText("Дебиторка")).toBeInTheDocument();
   expect(screen.queryByRole("tab", { name: "Журнал" })).not.toBeInTheDocument();
 });

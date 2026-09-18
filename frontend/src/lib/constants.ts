@@ -139,6 +139,7 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   invoice: "Счёт на оплату",
   kaspi: "QR",
   cash: "Наличные",
+  remote: "Удалённая оплата",
   debt: "Долг",
   // Легаси-способ внутренних банковских оплат.
   card: "Карта",

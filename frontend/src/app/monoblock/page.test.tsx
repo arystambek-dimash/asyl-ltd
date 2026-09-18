@@ -417,13 +417,12 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
   it("одно право Моноблока видит всё и ничего не может изменить", () => {
     render(<MonoblockPage />);
     openOrders();
-    expect(screen.getByText("Очередь отгрузки")).toBeInTheDocument();
+    expect(screen.getByText("Календарь отгрузки")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /AI 24\/7/ })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(mocks.urls).toContain("/cameras/monoblock-settings/");
     expect(mocks.urls).toContain("/cameras/always-on-settings/");
     expect(mocks.urls).toContain("/cameras/ai/sessions/");
-    expect(mocks.urls).toContain("/cameras/ai/history/?post_board=1");
     expect(mocks.urls).toContain("/cameras/shipping-settings/");
     expect(mocks.urls).toContain("/cameras/shipping-continuous-settings/");
     // Отгружает грузчик на своей странице; настройки — администратору.
@@ -447,8 +446,8 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
 });
 
 describe("день и поиск очереди отгрузки", () => {
-  const boardUrls = () => mocks.urls.filter((url) => url?.startsWith("/orders/"));
-  const historyUrls = () => mocks.urls.filter((url) => url?.startsWith("/cameras/ai/history/"));
+  const boardUrls = () => mocks.urls.filter((url) => url?.startsWith("/orders/?"));
+  const calendarUrls = () => mocks.urls.filter((url) => url?.startsWith("/orders/shipping-calendar/"));
 
   it("switches rows and summary totals by real transport type without changing API filters", () => {
     const base: Order = {
@@ -480,13 +479,13 @@ describe("день и поиск очереди отгрузки", () => {
     render(<MonoblockPage />);
     openOrders();
     expect(screen.getByRole("tab", { name: "Грузовики, 1" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByText("Test truck client")).toBeVisible();
-    expect(screen.queryByText("Test wagon client")).not.toBeInTheDocument();
+    expect(screen.getByText(/Test truck client/)).toBeVisible();
+    expect(screen.queryByText(/Test wagon client/)).not.toBeInTheDocument();
     expect(statCard("Ожидают погрузки").getByText("1")).toBeInTheDocument();
     expect(statCard("Готовы к выезду").getByText("0")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Вагоны, 1" }));
-    expect(screen.queryByText("Test truck client")).not.toBeInTheDocument();
-    expect(screen.getByText("Test wagon client")).toBeVisible();
+    expect(screen.queryByText(/Test truck client/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Test wagon client/)).toBeVisible();
     expect(statCard("Ожидают погрузки").getByText("0")).toBeInTheDocument();
     expect(statCard("Готовы к выезду").getByText("1")).toBeInTheDocument();
     expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
@@ -498,7 +497,8 @@ describe("день и поиск очереди отгрузки", () => {
     openOrders();
 
     expect(boardUrls().at(-1)).toBe("/orders/?post_board=1");
-    expect(historyUrls().at(-1)).toBe("/cameras/ai/history/?post_board=1");
+    // Сетка месяца приходит отдельным итогом по дням, список дня — очередью поста.
+    expect(calendarUrls().at(-1)).toMatch(/^\/orders\/shipping-calendar\/\?month=\d{4}-\d{2}$/);
     expect(screen.getByLabelText("Поиск")).toBeInTheDocument();
     expect(screen.getByLabelText("День")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Сегодня" })).toBeDisabled();
@@ -513,7 +513,7 @@ describe("день и поиск очереди отгрузки", () => {
     fireEvent.change(screen.getByLabelText("День"), { target: { value: "2025-12-31" } });
 
     expect(boardUrls().at(-1)).toBe("/orders/?post_board=1&day=2025-12-31");
-    expect(historyUrls().at(-1)).toBe("/cameras/ai/history/?post_board=1&day=2025-12-31");
+    expect(calendarUrls().at(-1)).toBe("/orders/shipping-calendar/?month=2025-12");
     expect(screen.getByText("Показан день 31.12.2025")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Сегодня" }));

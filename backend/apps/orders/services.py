@@ -600,7 +600,8 @@ def record_staff_payment(
     The CRM endpoint itself is protected by ``payments.create`` and cannot be
     called by portal users.  Consequently the source boundary, rather than a
     second ``payments.confirm`` permission, determines whether received cash
-    or a till-side Kaspi payment can be finalized immediately.
+    or a till-side Kaspi payment can be finalized immediately.  The same holds
+    for ``remote``: it only records that the client already paid remotely.
 
     Invoices deliberately remain requests: issuing a PDF or provider invoice
     is not evidence that money arrived.
@@ -617,12 +618,12 @@ def record_staff_payment(
         # that the client paid, regardless of the submitted stage.
         stage=(
             "requested" if method == "invoice"
-            else "received" if method in ("cash", "kaspi")
+            else "received" if method in Payment.SETTLED_ON_RECORD
             else stage
         ),
         note=note,
     )
-    if payment.status == "received" and payment.method in ("cash", "kaspi"):
+    if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
         accountant_confirm_payment(payment, user)
         payment.refresh_from_db()
     return payment
@@ -656,7 +657,7 @@ def confirm_received_staff_payments(
 ) -> list[Payment]:
     """Finalize all providerless money received in one CRM operation."""
     for payment in payments:
-        if payment.status == "received" and payment.method in ("cash", "kaspi"):
+        if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
             accountant_confirm_payment(payment, user)
             payment.refresh_from_db()
     return payments

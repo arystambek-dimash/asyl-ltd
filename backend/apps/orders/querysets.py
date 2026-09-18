@@ -12,6 +12,7 @@ from decimal import Decimal
 from django.db.models import (
     Case,
     CharField,
+    Count,
     DecimalField,
     F,
     IntegerField,
@@ -24,7 +25,7 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Cast, Coalesce, Concat, Greatest, NullIf, Trim
+from django.db.models.functions import Cast, Coalesce, Concat, Greatest, NullIf, Trim, TruncDate
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 
@@ -282,6 +283,42 @@ def for_post_board(
         )
         | waiting_on(day)
     )
+
+
+def shipping_calendar_days(queryset: QuerySet[Order], first_day: date, last_day: date) -> list[dict]:
+    """Итоги отгрузки по дням месяца: сколько заказов ждёт погрузки и сколько уехало.
+
+    День заказа в очереди — плановый приезд, а без него день оформления;
+    у выехавшего — день фактической отгрузки. Одна и та же поездка попадает
+    в календарь один раз, поэтому счётчики дня не пересекаются.
+    """
+    # TruncDate считает день в часовом поясе проекта: Cast дал бы дату по UTC
+    # и ночные заказы уехали бы в соседний день календаря.
+    planned_day = Coalesce("arrival_date", TruncDate("created_at"))
+    waiting = (
+        queryset.filter(status__in=("confirmed", *BOARD_ACTIVE_STATUSES))
+        .annotate(day=planned_day)
+        .filter(day__gte=first_day, day__lte=last_day)
+        .values("day")
+        .annotate(orders=Count("id", distinct=True), bags=Sum("items__quantity"))
+    )
+    shipped = (
+        queryset.filter(status="shipped", shipment__shipped_at__date__gte=first_day,
+                        shipment__shipped_at__date__lte=last_day)
+        .annotate(day=TruncDate("shipment__shipped_at"))
+        .values("day")
+        .annotate(orders=Count("id", distinct=True), bags=Sum("items__quantity"))
+    )
+    days: dict[date, dict] = {}
+    for row in waiting:
+        day = days.setdefault(row["day"], {"waiting": 0, "waiting_bags": 0, "shipped": 0, "shipped_bags": 0})
+        day["waiting"] = row["orders"]
+        day["waiting_bags"] = int(row["bags"] or 0)
+    for row in shipped:
+        day = days.setdefault(row["day"], {"waiting": 0, "waiting_bags": 0, "shipped": 0, "shipped_bags": 0})
+        day["shipped"] = row["orders"]
+        day["shipped_bags"] = int(row["bags"] or 0)
+    return [{"day": day.isoformat(), **values} for day, values in sorted(days.items())]
 
 
 def post_board_params(params) -> dict:

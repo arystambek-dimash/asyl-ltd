@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,33 +80,53 @@ describe("LoaderPage", () => {
     });
   });
 
-  it("выбирает заказ и подтверждает отгрузку одной большой кнопкой, затем печатает накладную", async () => {
+  it("открывает заказ, подтверждает отгрузку кнопкой и печатает накладную", async () => {
     const user = userEvent.setup();
     mocks.post.mockResolvedValue({ data: order(624, { status: "shipped", truck_number: "403 BJN 13" }) });
     render(<LoaderPage />);
 
-    const confirm = screen.getByRole("button", { name: /Подтвердить отгрузку/ });
-    expect(confirm).toBeDisabled();
+    // В списке кнопки подтверждения нет — сначала открывается сам заказ.
+    expect(screen.queryByRole("button", { name: /Подтвердить отгрузку/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /№624 · ИП Мурат/ }));
 
-    await user.click(screen.getByRole("radio", { name: /№624/ }));
+    expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeDisabled();
     await user.type(screen.getByLabelText("Номер машины"), "403 bjn 13");
-    await user.click(screen.getByRole("button", { name: "Подтвердить отгрузку №624" }));
+    await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
 
     await waitFor(() =>
       expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/dispatch/", { truck_number: "403 BJN 13" }),
     );
-    const footer = screen.getByRole("contentinfo");
-    expect(await within(footer).findByText("Заказ №624 отгружен")).toBeInTheDocument();
-    await user.click(within(footer).getByRole("button", { name: /Печать накладной/ }));
+    expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Печать накладной/ }));
     expect(mocks.openWaybill).toHaveBeenCalledWith(624);
+
+    await user.click(screen.getByRole("button", { name: "К списку заказов" }));
+    expect(screen.queryByText("Отгрузка подтверждена")).not.toBeInTheDocument();
   });
 
-  it("без права подтверждения показывает очередь без кнопки", () => {
+  it("без права подтверждения показывает очередь и заказ без кнопки отгрузки", async () => {
+    const user = userEvent.setup();
     mocks.permissions = ["loader.view"];
     render(<LoaderPage />);
 
     expect(screen.getByText(/№624 · ИП Мурат/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /№624 · ИП Мурат/ }));
     expect(screen.queryByRole("button", { name: /Подтвердить отгрузку/ })).not.toBeInTheDocument();
+  });
+
+  it("группирует очередь по дням: просрочка отдельно от сегодняшних", async () => {
+    mocks.paged.mockImplementation((url: string | null) => {
+      if (url?.startsWith("/loader/queue/"))
+        return paged([
+          order(700, { arrival_date: "2000-01-01" }),
+          order(701, { arrival_date: new Date().toISOString().slice(0, 10) }),
+        ]);
+      return paged([]);
+    });
+    render(<LoaderPage />);
+
+    expect(screen.getByText("ПРОСРОЧЕНО")).toBeInTheDocument();
+    expect(screen.getByText("СЕГОДНЯ")).toBeInTheDocument();
   });
 
   it("история за период с печатью накладной", async () => {

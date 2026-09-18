@@ -253,7 +253,10 @@ class OrderItem(models.Model):
 
 
 class Payment(models.Model):
-    CASHIER_METHODS = ["cash", "kaspi", "invoice"]
+    CASHIER_METHODS = ["cash", "kaspi", "remote", "invoice"]
+    # Деньги уже у кассы: приём таким способом закрывается сразу, без очереди.
+    # «remote» — отметка о ранее полученной удалённой оплате: счёт не выставляется.
+    SETTLED_ON_RECORD = ("cash", "kaspi", "remote")
     # Цепочка подтверждения: запрошена → принята (менеджер/оператор) →
     # подтверждена бухгалтером-кассой (только тогда деньги учтены).
     STATUSES = ["requested", "received", "confirmed", "rejected"]

@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.http import FileResponse
 from io import BytesIO
 from collections import defaultdict
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import re
 from django.db.models import Count, Exists, F, Max, OuterRef, Q, Sum
@@ -36,6 +37,7 @@ from .apipay import (
 from .invoices import build_invoice_pdf, build_payment_receipt_pdf
 from .debt import DEBT_STATUS, order_remaining
 from .querysets import (
+    shipping_calendar_days,
     CASHIER_QUEUE_PAYMENT,
     awaiting_payment_orders,
     order_remaining_by_id,
@@ -780,6 +782,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "dashboard_operational": "orders.view",
         "repeat": "orders.create",
         "form_options": ("orders.create", "orders.edit"),
+        # Календарь отгрузки открыт тем же, кому открыта очередь поста.
+        "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
         "invoice_pdf": ("payments.create", "payments.view"),
     }
 
@@ -1026,6 +1030,34 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(
             OrderSerializer(order, context={"request": request}).data
         )
+
+    @action(detail=False, methods=["get"], url_path="shipping-calendar")
+    def shipping_calendar(self, request):
+        """Календарь отгрузки на месяц: по дням — сколько грузить и сколько уехало.
+
+        Экран грузчика показывает работу по датам, а не таблицу заказов,
+        поэтому сам список дня приходит обычной очередью поста (``post_board``).
+        """
+        month = request.query_params.get("month") or timezone.localdate().strftime("%Y-%m")
+        try:
+            first_day = datetime.strptime(f"{month}-01", "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValidationError({"detail": "Месяц указывается как ГГГГ-ММ", "code": "bad_month"}) from exc
+        next_month = date(
+            first_day.year + (first_day.month == 12),
+            1 if first_day.month == 12 else first_day.month + 1,
+            1,
+        )
+        last_day = next_month - timedelta(days=1)
+        qs = scope_by_client_department(
+            Order.objects.all(),
+            request.user,
+            client_path="client",
+        )
+        return Response({
+            "month": first_day.strftime("%Y-%m"),
+            "days": shipping_calendar_days(qs, first_day, last_day),
+        })
 
     @action(detail=False, methods=["get"], url_path="department-summary")
     def department_summary(self, request):

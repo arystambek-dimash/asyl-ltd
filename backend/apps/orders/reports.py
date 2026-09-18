@@ -30,7 +30,7 @@ from .debt import DEBT_STATUS, debt_orders, order_remaining
 from .models import Payment, PaymentRefund
 
 CASH_METHODS = ("cash",)
-CASHLESS_METHODS = ("card", "kaspi", "invoice")
+CASHLESS_METHODS = ("card", "kaspi", "invoice", "remote")
 MONEY_METHODS = CASH_METHODS + CASHLESS_METHODS
 
 REFUND_CASH_METHODS = ("cash",)

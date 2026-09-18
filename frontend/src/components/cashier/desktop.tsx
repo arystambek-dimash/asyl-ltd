@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import dynamic from "next/dynamic";
-import { RefreshCw, Search } from "lucide-react";
+import { BarChart3, RefreshCw, Search } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { PaymentStageBadge } from "@/components/payment-chain";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { LoadMore } from "@/components/ui/load-more";
+import { Modal } from "@/components/ui/modal";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
@@ -21,7 +22,7 @@ import { withBack } from "@/lib/navigation";
 import type { ClientDebt, Me } from "@/lib/types";
 import { formatCurrency, todayLocalIsoDate } from "@/lib/utils";
 import { ActionError } from "./action-error";
-import { CashFiltersPanel } from "./cash-filters-panel";
+import { CashFiltersModal } from "./cash-filters-modal";
 import { debtPaymentState, matchesDebtQuery } from "./debt-state";
 import { AwaitingPaymentRow } from "./awaiting-payment-row";
 import { DepartmentBadge } from "./department-badge";
@@ -341,6 +342,9 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
     departments,
   } = model;
   const money = formatCurrency;
+  // Сводка кассы — в окне по кнопке «Аналитика»: страница открывается на долгах.
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const showSummary = view === "overview" && perms.canDebtEntry;
   const overviewFilters = filtersByScreen.overview;
   const today = todayLocalIsoDate();
   const isToday = overviewFilters.dateFrom === today && overviewFilters.dateTo === today;
@@ -367,20 +371,33 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
           className="overflow-x-auto whitespace-nowrap"
           tabs={tabs}
           active={view}
-          onChange={(key) => onTab(key as CashView)}
+          onChange={(key) => {
+            // Окно сводки принадлежит «Общему»: на других вкладках его не показываем.
+            setSummaryOpen(false);
+            onTab(key as CashView);
+          }}
         />
 
-        {/* У транзакций свой поиск — фильтры кассы к ним не применяются.
-            Панель правит фильтры только текущей вкладки. */}
-        {filterScreen && (
-          <CashFiltersPanel
-            filters={filters}
-            stores={stores}
-            departments={departments}
-            showRemaining={filterScreen === "overview"}
-            onChange={patchFilters}
-            onReset={resetFilters}
-          />
+        {/* Фильтры и сводка не занимают экран: обе живут в окнах, как аналитика
+            в «Заказах». У транзакций свой поиск — фильтры кассы к ним не применяются. */}
+        {(filterScreen || showSummary) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {filterScreen && (
+              <CashFiltersModal
+                filters={filters}
+                stores={stores}
+                departments={departments}
+                showRemaining={filterScreen === "overview"}
+                onChange={patchFilters}
+                onReset={resetFilters}
+              />
+            )}
+            {showSummary && (
+              <Button size="sm" variant="outline" onClick={() => setSummaryOpen(true)}>
+                <BarChart3 className="size-4" /> Аналитика
+              </Button>
+            )}
+          </div>
         )}
 
         {view === "overview" && perms.canDebtEntry && (
@@ -389,82 +406,91 @@ export function CashierDesktop({ model, onTab }: { model: CashierModel; onTab: (
             {perms.canPayments && queueSummary.error && (
               <ErrorAlert message={queueSummary.error} onRetry={queueSummary.reload} />
             )}
-            <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {perms.canReports && (
+            <Modal
+              open={summaryOpen}
+              onClose={() => setSummaryOpen(false)}
+              title="Аналитика кассы"
+              description="Поступления, очередь оплат и дебиторка по текущим фильтрам."
+              className="max-w-5xl"
+              mobileFullscreen
+            >
+              <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {perms.canReports && (
+                  <SummaryCard
+                    title={
+                      isToday
+                        ? "Чистое поступление сегодня"
+                        : hasDates
+                          ? "Чистое поступление за период"
+                          : "Чистое поступление за всё время"
+                    }
+                    tone={income.total < 0 ? "destructive" : "success"}
+                    value={incomeReady ? money(income.total, income.currency) : "—"}
+                    rows={
+                      !incomeReady
+                        ? []
+                        : [
+                            { label: "Наличные, нетто", value: money(income.cash, income.currency) },
+                            { label: "Безналичные, нетто", value: money(income.cashless, income.currency) },
+                            ...income.otherCurrencies.map(([currency, value]) => ({
+                              label: "Также чистыми",
+                              value: money(value, currency),
+                            })),
+                            ...(income.refunded > 0
+                              ? [
+                                  { label: "Поступило до возвратов", value: money(income.gross, income.currency) },
+                                  { label: "Возвращено", value: money(income.refunded, income.currency) },
+                                ]
+                              : []),
+                            ...income.otherRefunds.flatMap(([currency, value]) => [
+                              {
+                                label: `Поступило до возвратов, ${currency}`,
+                                value: money(income.grossFor(currency), currency),
+                              },
+                              { label: `Возвращено, ${currency}`, value: money(value, currency) },
+                            ]),
+                          ]
+                    }
+                  />
+                )}
+                {perms.canPayments && (
+                  <SummaryCard
+                    title="Ожидает подтверждения"
+                    tone="primary"
+                    value={queueReady ? money(queueTotals.total, queueTotals.currency) : "—"}
+                    rows={
+                      !queueReady
+                        ? []
+                        : [
+                            ...queueTotals.other.map(([currency, value]) => ({
+                              label: "Также в очереди",
+                              value: money(value, currency),
+                            })),
+                            { label: "Оплат в очереди", value: String(queueTotals.count) },
+                            { label: "Из них наличными", value: money(queueTotals.cash, queueTotals.currency) },
+                          ]
+                    }
+                  />
+                )}
                 <SummaryCard
-                  title={
-                    isToday
-                      ? "Чистое поступление сегодня"
-                      : hasDates
-                        ? "Чистое поступление за период"
-                        : "Чистое поступление за всё время"
-                  }
-                  tone={income.total < 0 ? "destructive" : "success"}
-                  value={incomeReady ? money(income.total, income.currency) : "—"}
+                  title="Дебиторка"
+                  tone="destructive"
+                  value={debtsReady ? money(debtTotals.total, debtTotals.currency) : "—"}
                   rows={
-                    !incomeReady
+                    !debtsReady
                       ? []
                       : [
-                          { label: "Наличные, нетто", value: money(income.cash, income.currency) },
-                          { label: "Безналичные, нетто", value: money(income.cashless, income.currency) },
-                          ...income.otherCurrencies.map(([currency, value]) => ({
-                            label: "Также чистыми",
+                          ...debtTotals.other.map(([currency, value]) => ({
+                            label: "Также в долге",
                             value: money(value, currency),
                           })),
-                          ...(income.refunded > 0
-                            ? [
-                                { label: "Поступило до возвратов", value: money(income.gross, income.currency) },
-                                { label: "Возвращено", value: money(income.refunded, income.currency) },
-                              ]
-                            : []),
-                          ...income.otherRefunds.flatMap(([currency, value]) => [
-                            {
-                              label: `Поступило до возвратов, ${currency}`,
-                              value: money(income.grossFor(currency), currency),
-                            },
-                            { label: `Возвращено, ${currency}`, value: money(value, currency) },
-                          ]),
+                          { label: "Клиентов с долгом", value: String(debtTotals.clients) },
+                          { label: "С просрочкой", value: String(debtTotals.overdue) },
                         ]
                   }
                 />
-              )}
-              {perms.canPayments && (
-                <SummaryCard
-                  title="Ожидает подтверждения"
-                  tone="primary"
-                  value={queueReady ? money(queueTotals.total, queueTotals.currency) : "—"}
-                  rows={
-                    !queueReady
-                      ? []
-                      : [
-                          ...queueTotals.other.map(([currency, value]) => ({
-                            label: "Также в очереди",
-                            value: money(value, currency),
-                          })),
-                          { label: "Оплат в очереди", value: String(queueTotals.count) },
-                          { label: "Из них наличными", value: money(queueTotals.cash, queueTotals.currency) },
-                        ]
-                  }
-                />
-              )}
-              <SummaryCard
-                title="Дебиторка"
-                tone="destructive"
-                value={debtsReady ? money(debtTotals.total, debtTotals.currency) : "—"}
-                rows={
-                  !debtsReady
-                    ? []
-                    : [
-                        ...debtTotals.other.map(([currency, value]) => ({
-                          label: "Также в долге",
-                          value: money(value, currency),
-                        })),
-                        { label: "Клиентов с долгом", value: String(debtTotals.clients) },
-                        { label: "С просрочкой", value: String(debtTotals.overdue) },
-                      ]
-                }
-              />
-            </section>
+              </section>
+            </Modal>
 
             <DebtsSection
               rows={debtRows}

@@ -75,6 +75,23 @@ describe("OrderPaymentActions", () => {
     });
   });
 
+  it("records a remote payment as money already received, sending nothing to the client", async () => {
+    const user = userEvent.setup();
+    render(<OrderPaymentActions order={order} me={me} onChanged={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    await user.click(screen.getByRole("button", { name: /Удалённая оплата/ }));
+    expect(screen.queryByLabelText(/Телефон/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Принять" }));
+
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
+      amount: "707000",
+      method: "remote",
+      stage: "received",
+    });
+  });
+
   it("sends a Kaspi invoice to the client's phone without a PDF option", async () => {
     const user = userEvent.setup();
     render(<OrderPaymentActions order={order} me={me} onChanged={vi.fn()} />);

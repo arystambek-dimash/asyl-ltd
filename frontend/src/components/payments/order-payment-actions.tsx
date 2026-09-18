@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Banknote, HandCoins, QrCode, Send } from "lucide-react";
+import { Banknote, HandCoins, QrCode, Send, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,11 +13,14 @@ import type { Me, Order } from "@/lib/types";
 import { cn, formatCurrency } from "@/lib/utils";
 
 type Flow = "receive" | "remote";
-type ReceiveMethod = "cash" | "kaspi";
+type ReceiveMethod = "cash" | "kaspi" | "remote";
 
-const METHOD_OPTIONS: { key: ReceiveMethod; label: string; icon: typeof Banknote }[] = [
+/** «Удалённая оплата» — отметка о деньгах, полученных раньше и не через кассу:
+ * счёт она не выставляет и новую оплату не начинает, только закрывает долг. */
+const METHOD_OPTIONS: { key: ReceiveMethod; label: string; hint?: string; icon: typeof Banknote }[] = [
   { key: "cash", label: "Наличные", icon: Banknote },
   { key: "kaspi", label: "Kaspi QR", icon: QrCode },
+  { key: "remote", label: "Удалённая оплата", hint: "клиент оплатил раньше", icon: Smartphone },
 ];
 
 /** Сумма к оплате: положительная, с точностью до тиына и не больше доступного остатка. */
@@ -135,7 +138,7 @@ export function OrderPaymentActions({
         description={
           flow === "remote"
             ? "Счёт придёт клиенту в Kaspi на телефон. Долг уменьшится сам, когда клиент оплатит."
-            : "Деньги получены на месте — долг уменьшится сразу."
+            : "Деньги уже получены — долг уменьшится сразу. Ничего клиенту не отправляется."
         }
         className="max-w-sm"
       >
@@ -172,20 +175,25 @@ export function OrderPaymentActions({
             <div className="grid gap-2">
               <Label>Способ</Label>
               <div className="grid grid-cols-2 gap-2">
-                {METHOD_OPTIONS.map(({ key, label, icon: Icon }) => (
+                {METHOD_OPTIONS.map(({ key, label, hint, icon: Icon }) => (
                   <button
                     key={key}
                     type="button"
                     aria-pressed={method === key}
                     onClick={() => setMethod(key)}
                     className={cn(
-                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors",
+                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm font-medium transition-colors",
+                      hint && "col-span-2",
                       method === key
                         ? "border-[var(--foreground)] bg-[var(--muted)]"
                         : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/40",
                     )}
                   >
-                    <Icon className="size-4" /> {label}
+                    <Icon className="size-4 shrink-0" />
+                    <span>
+                      {label}
+                      {hint && <span className="ml-1 text-xs font-normal opacity-70">· {hint}</span>}
+                    </span>
                   </button>
                 ))}
               </div>

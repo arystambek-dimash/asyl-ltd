@@ -37,7 +37,7 @@ import { CameraShippingSessions } from "@/components/shipping/camera-shipping-se
 import { ShippingIdleSettings } from "@/components/shipping/shipping-idle-settings";
 import { RequirePerm } from "@/components/require-perm";
 import { CompletedOrdersSettingsModal } from "@/components/shipping/completed-orders-settings-modal";
-import { ShippingTable } from "@/components/shipping/shipping-table";
+import { ShippingCalendar } from "@/components/shipping/shipping-calendar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -54,7 +54,6 @@ import { cameraOwnersFor, indexFirstBy, type PlayableCamera } from "@/lib/shippi
 import { showSuccess } from "@/lib/toast";
 import { can } from "@/lib/can";
 import type {
-  AiCountingHistory,
   AiCountingSession,
   AlwaysOnCameraSettings,
   AlwaysOnDailyAnalytics,
@@ -82,7 +81,6 @@ import { useAuth } from "@/store/auth";
 const BOARD_POLL_MS = 10_000;
 const SESSION_POLL_MS = 3_000;
 // История подсчёта меняется только при завершении погрузки.
-const HISTORY_POLL_MS = 60_000;
 // Рамки тянем чаще остального: мешок пересекает кадр за секунды, и на общем
 // трёхсекундном опросе рамка заметно отставала от него.
 const DETECTIONS_POLL_MS = 250;
@@ -1453,11 +1451,6 @@ function MonoblockPageInner() {
     reload: reloadCameraSettings,
   } = useApi<MonoblockCameraSettings>(canViewSettings ? "/cameras/monoblock-settings/" : null);
   const {
-    data: histories,
-    error: historiesError,
-    reload: reloadHistories,
-  } = useApi<AiCountingHistory[]>(canView ? `/cameras/ai/history/?post_board=1${boardQuery}` : null);
-  const {
     data: shippingSettings,
     error: shippingSettingsError,
     reload: reloadShippingSettings,
@@ -1510,7 +1503,6 @@ function MonoblockPageInner() {
 
   useVisiblePolling(reloadOrders, BOARD_POLL_MS);
   useVisiblePolling(reloadSessions, SESSION_POLL_MS, canView);
-  useVisiblePolling(reloadHistories, HISTORY_POLL_MS, canView);
   useVisiblePolling(
     () =>
       Promise.all([
@@ -1525,7 +1517,6 @@ function MonoblockPageInner() {
     camerasError ||
     sessionsError ||
     cameraSettingsError ||
-    historiesError ||
     shippingSettingsError ||
     alwaysOnSettingsError ||
     alwaysOnAnalyticsError ||
@@ -1540,7 +1531,6 @@ function MonoblockPageInner() {
       reloadCameras(),
       reloadSessions(),
       reloadCameraSettings(),
-      reloadHistories(),
       reloadShippingSettings(),
       reloadShippingContinuousSettings(),
       reloadShippingContinuousAnalytics(),
@@ -1862,9 +1852,9 @@ function MonoblockPageInner() {
                 <Card role="region" aria-label="Заказы отгрузки" className="space-y-4 p-4 sm:p-5">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h2 className="text-lg font-semibold">Заказы отгрузки</h2>
+                      <h2 className="text-lg font-semibold">Календарь отгрузки</h2>
                       <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                        Очередь и погрузка. Отгружает грузчик на странице «Грузчик».
+                        Заказы по дням: что грузить и что уехало. Отгружает грузчик на странице «Грузчик».
                       </p>
                     </div>
                     {canManage && (
@@ -1895,18 +1885,15 @@ function MonoblockPageInner() {
                     <StatCard label="Выехали" value={counts.shipped} caption={shippedCaption} />
                   </div>
 
-                  <ShippingTable
-                    orders={orders}
-                    sessions={sessions ?? []}
-                    histories={histories ?? []}
-                    camerasBySrc={camerasBySrc}
-                    capabilities={{ canOpenOrder }}
-                    completedOrdersDays={completedDays}
-                    filter={boardFilter}
-                    transportType={activeTransportType}
-                    reloadOrders={reloadOrders}
-                    reloadSessions={reloadSessions}
-                    reloadHistories={reloadHistories}
+                  <ShippingCalendar
+                    orders={orders === null ? null : boardOrders}
+                    day={boardFilter.day}
+                    today={boardFilter.today}
+                    search={boardFilter.search}
+                    appliedSearch={boardFilter.appliedSearch}
+                    onDayChange={boardFilter.onDayChange}
+                    onSearchChange={boardFilter.onSearchChange}
+                    canOpenOrder={canOpenOrder}
                   />
                 </Card>
               </div>

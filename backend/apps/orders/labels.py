@@ -2,6 +2,7 @@ PAYMENT_METHOD_LABELS = {
     "invoice": "Счёт на оплату",
     "kaspi": "Kaspi",
     "cash": "Наличные",
+    "remote": "Удалённая оплата",
     "debt": "Долг",
     "card": "Карта",
 }
