@@ -1,11 +1,11 @@
 "use client";
-import { ArrowLeft, PackageCheck, Printer } from "lucide-react";
+import { ArrowLeft, PackageCheck, Printer, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { LoaderOrder } from "@/lib/loader";
 import { shortDate } from "@/lib/loader-groups";
 import { cn } from "@/lib/utils";
-import { bagsWord, itemsSummary, TransportNumber } from "./loader-order-card";
+import { bagsWord, itemsSummary, PaymentMark, TransportNumber } from "./loader-order-card";
 
 /** Крупная строка «70 мешков · 3 500 кг» — главное, что грузчик держит в голове. */
 function BagsHeadline({ order }: { order: LoaderOrder }) {
@@ -31,7 +31,6 @@ export function LoaderOrderScreen({
   canConfirm,
   busy,
   error,
-  needsNumber,
   number,
   onNumber,
   onBack,
@@ -45,8 +44,6 @@ export function LoaderOrderScreen({
   canConfirm: boolean;
   busy: boolean;
   error: string;
-  /** У грузовика без номера его вводит грузчик перед отгрузкой. */
-  needsNumber: boolean;
   number: string;
   onNumber: (value: string) => void;
   onBack: () => void;
@@ -72,19 +69,18 @@ export function LoaderOrderScreen({
 
       <div className="flex flex-col gap-5 rounded-2xl border-2 border-[var(--border)] bg-[var(--card)] p-5">
         <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]">Машина</span>
-          {needsNumber ? (
-            <Input
-              aria-label="Номер машины"
-              placeholder="403 BJN 13"
-              autoCapitalize="characters"
-              className="h-14 text-2xl font-bold tracking-wide"
-              value={number}
-              onChange={(event) => onNumber(event.target.value.toUpperCase())}
-            />
-          ) : (
-            <TransportNumber order={order} size="lg" />
-          )}
+          <span className="text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+            {order.transport_type === "train" ? "Вагон" : "Машина"}
+          </span>
+          {/* Номер вводит оператор перед отгрузкой: клиент его часто не указывает. */}
+          <Input
+            aria-label={order.transport_type === "train" ? "Номер вагона" : "Номер машины"}
+            placeholder={order.transport_type === "train" ? "8 цифр" : "403 BJN 13"}
+            autoCapitalize="characters"
+            className="h-14 text-2xl font-bold tracking-wide"
+            value={number}
+            onChange={(event) => onNumber(event.target.value.toUpperCase())}
+          />
         </div>
         <div className="border-t pt-4">
           <BagsHeadline order={order} />
@@ -92,6 +88,8 @@ export function LoaderOrderScreen({
           <div className="mt-1 text-sm text-[var(--muted-foreground)]">
             №{order.id} · {order.client_name}
           </div>
+          {/* Оплату показываем, но отгрузку не блокируем: возят и в долг. */}
+          <PaymentMark order={order} className="mt-3" />
         </div>
         {order.items.length > 1 && (
           <ul className="flex flex-col gap-1 border-t pt-3 text-sm">
@@ -115,11 +113,7 @@ export function LoaderOrderScreen({
 
       <div className="mt-auto flex flex-col gap-2">
         {canConfirm && (
-          <Button
-            className="h-16 w-full text-lg"
-            disabled={busy || (needsNumber && !number.trim())}
-            onClick={onConfirm}
-          >
+          <Button className="h-16 w-full text-lg" disabled={busy || !number.trim()} onClick={onConfirm}>
             <PackageCheck className="size-6" />
             {busy ? "Отгружаем…" : "Подтвердить отгрузку"}
           </Button>
@@ -135,12 +129,17 @@ export function LoaderOrderScreen({
 /** Экран после отгрузки: подтверждение крупно, накладная и возврат к списку. */
 export function LoaderShippedScreen({
   order,
+  busy,
   onPrint,
   onBack,
+  onUndo,
 }: {
   order: LoaderOrder;
+  busy: boolean;
   onPrint: () => void;
   onBack: () => void;
+  /** Нажал не тот заказ — отмена сразу здесь, пока грузчик у экрана. */
+  onUndo: () => void;
 }) {
   return (
     <div className="mx-auto flex min-h-[70vh] w-full max-w-lg flex-col items-center gap-6 rounded-2xl bg-[var(--success)] p-6 text-center text-white">
@@ -170,6 +169,11 @@ export function LoaderShippedScreen({
         >
           К списку заказов
         </Button>
+        {order.can_rollback !== false && (
+          <Button variant="ghost" className="h-12 w-full text-white hover:bg-white/10" disabled={busy} onClick={onUndo}>
+            <Undo2 className="size-4" /> {busy ? "Отменяем…" : "Отменить отгрузку"}
+          </Button>
+        )}
       </div>
     </div>
   );

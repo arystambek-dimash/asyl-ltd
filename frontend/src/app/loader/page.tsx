@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { PackageCheck, Printer, Search, Settings2 } from "lucide-react";
+import { PackageCheck, Printer, Search, Settings2, Undo2 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { LoaderOrderCard, bagsWord } from "@/components/loader/loader-order-card";
 import { LoaderOrderScreen, LoaderShippedScreen } from "@/components/loader/loader-order-screen";
@@ -40,6 +40,7 @@ function LoaderPageInner() {
   const [shipped, setShipped] = useState<LoaderOrder | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [undone, setUndone] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const queue = usePagedApi<LoaderOrder>(loaderUrl("queue", { day: queueDay, search: debouncedSearch }));
@@ -49,12 +50,13 @@ function LoaderPageInner() {
       : null,
   );
   const opened = queue.items.find((order) => order.id === openedId) ?? null;
-  const needsNumber = opened?.transport_type === "truck" && !opened.truck_number;
 
   function openOrder(order: LoaderOrder) {
     setShipped(null);
     setError("");
-    setTruckNumber("");
+    setUndone("");
+    // Номер подставляем из заказа, но последнее слово за оператором.
+    setTruckNumber(order.truck_number ?? "");
     setOpenedId(order.id);
   }
 
@@ -71,7 +73,7 @@ function LoaderPageInner() {
     setError("");
     try {
       const { data } = await api.post<LoaderOrder>(`/loader/orders/${opened.id}/dispatch/`, {
-        truck_number: needsNumber ? truckNumber : "",
+        truck_number: truckNumber.trim(),
       });
       setShipped(data);
       setOpenedId(null);
@@ -82,6 +84,23 @@ function LoaderPageInner() {
       setError(apiError(cause));
       // Заказ мог уехать с другого устройства — покажем актуальную очередь.
       void queue.reload();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Отмена ошибочной отгрузки: заказ возвращается в очередь, мешки — на склад. */
+  async function undo(order: LoaderOrder) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.post(`/loader/orders/${order.id}/rollback/`, {});
+      setShipped(null);
+      setUndone(`Отгрузка заказа №${order.id} отменена — он снова в очереди.`);
+      await Promise.all([queue.reload(), view === "history" ? history.reload() : Promise.resolve()]);
+    } catch (cause) {
+      setError(apiError(cause));
     } finally {
       setBusy(false);
     }
@@ -101,7 +120,13 @@ function LoaderPageInner() {
   if (shipped) {
     return (
       <AppShell title="Грузчик" section="Работа">
-        <LoaderShippedScreen order={shipped} onPrint={() => void print(shipped.id)} onBack={backToList} />
+        <LoaderShippedScreen
+          order={shipped}
+          busy={busy}
+          onPrint={() => void print(shipped.id)}
+          onBack={backToList}
+          onUndo={() => void undo(shipped)}
+        />
       </AppShell>
     );
   }
@@ -115,7 +140,6 @@ function LoaderPageInner() {
           canConfirm={canConfirm}
           busy={busy}
           error={error}
-          needsNumber={Boolean(needsNumber)}
           number={truckNumber}
           onNumber={setTruckNumber}
           onBack={backToList}
@@ -151,10 +175,18 @@ function LoaderPageInner() {
         )
       }
     >
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+      <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4">
         {error && (
           <p role="alert" className="rounded-xl bg-[var(--destructive)]/10 px-4 py-3 text-sm text-[var(--destructive)]">
             {error}
+          </p>
+        )}
+        {undone && (
+          <p
+            role="status"
+            className="rounded-xl border border-[var(--success)]/30 bg-[var(--success)]/10 px-4 py-3 text-sm text-[var(--success)]"
+          >
+            {undone}
           </p>
         )}
         <div className="relative">
@@ -224,7 +256,7 @@ function LoaderPageInner() {
         {view === "queue" ? (
           <QueueList queue={queue} today={today} onOpen={openOrder} filtered={Boolean(queueDay || debouncedSearch)} />
         ) : (
-          <HistoryList history={history} today={today} onPrint={print} />
+          <HistoryList history={history} today={today} busy={busy} onPrint={print} onUndo={undo} />
         )}
       </div>
 
@@ -262,7 +294,7 @@ function QueueList({
   return (
     <div className="flex flex-col gap-5">
       {groups.map((group) => (
-        <section key={group.day} className="flex flex-col gap-3">
+        <section key={group.day} className="flex min-w-0 flex-col gap-3">
           <div className="flex items-center gap-2">
             <span
               className={cn(
@@ -281,7 +313,7 @@ function QueueList({
               {group.orders.length} {pluralRu(group.orders.length, ["заказ", "заказа", "заказов"])}
             </span>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2">
             {group.orders.map((order) => (
               <LoaderOrderCard key={order.id} order={order} overdue={group.overdue} onOpen={onOpen} />
             ))}
@@ -302,11 +334,15 @@ function QueueList({
 function HistoryList({
   history,
   today,
+  busy,
   onPrint,
+  onUndo,
 }: {
   history: Paged;
   today: string;
+  busy: boolean;
   onPrint: (orderId: number) => void;
+  onUndo: (order: LoaderOrder) => void;
 }) {
   if (history.loading && history.items.length === 0) return <DataGate loading error="" onRetry={history.reload} />;
   if (history.error) return <DataGate loading={false} error={history.error} onRetry={history.reload} />;
@@ -325,16 +361,24 @@ function HistoryList({
       {history.items.map((order) => {
         const shippedOn = order.shipped_at ? order.shipped_at.slice(0, 10) : today;
         return (
-          <div key={order.id} className="flex flex-col gap-2">
+          <div key={order.id} className="flex min-w-0 flex-col gap-2">
             {shippedOn !== today && (
               <span className="text-xs font-medium text-[var(--muted-foreground)] tabular-nums">
                 {shortDate(shippedOn)}
               </span>
             )}
             <LoaderOrderCard order={order} />
-            <Button variant="outline" className="h-11" onClick={() => onPrint(order.id)}>
-              <Printer className="size-4" /> Накладная
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" className="h-11 flex-1" onClick={() => onPrint(order.id)}>
+                <Printer className="size-4" /> Накладная
+              </Button>
+              {/* Ошибочную отгрузку грузчик отменяет сам, пока она свежая. */}
+              {order.can_rollback && (
+                <Button variant="ghost" className="h-11" disabled={busy} onClick={() => onUndo(order)}>
+                  <Undo2 className="size-4" /> Отменить
+                </Button>
+              )}
+            </div>
           </div>
         );
       })}

@@ -54,6 +54,11 @@ class LoaderOrderSerializer(serializers.Serializer):
     total_kg = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
     shipped_at = serializers.SerializerMethodField()
+    can_rollback = serializers.SerializerMethodField()
+    # Грузчик должен видеть, оплачен ли заказ: клиент мог заплатить заранее.
+    payment_status = serializers.CharField()
+    paid_total = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
 
     def get_client_name(self, order):
         return order.client.company_name.strip() or order.client.name
@@ -68,9 +73,24 @@ class LoaderOrderSerializer(serializers.Serializer):
     def get_total_amount(self, order):
         return money_string(order.total_amount)
 
+    def get_paid_total(self, order):
+        return money_string(order.paid_total)
+
+    def get_remaining_amount(self, order):
+        return money_string(max(order.total_amount - order.paid_total, Decimal("0")))
+
     def get_shipped_at(self, order):
         shipment = getattr(order, "shipment", None)
         return shipment.shipped_at if shipment else None
+
+    def get_can_rollback(self, order):
+        """Может ли этот грузчик отменить свою отгрузку прямо сейчас."""
+        from .services import loader_rollback_blocker
+
+        request = self.context.get("request")
+        if request is None or order.status != "shipped":
+            return False
+        return not loader_rollback_blocker(order, request.user)
 
 
 class LoaderDispatchSerializer(serializers.Serializer):

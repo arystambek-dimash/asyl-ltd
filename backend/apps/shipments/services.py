@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
@@ -527,6 +528,35 @@ def rewind_loading(order, user, target_status="confirmed"):
         payload={"from": old, "to": target_status, "reset_bags": reset_bags},
     )
     return order
+
+
+# Сколько времени грузчик может сам отменить свою отгрузку: ошибку замечают
+# сразу, а спустя час заказ уже живёт в кассе и складе — там нужен откат по праву.
+LOADER_ROLLBACK_WINDOW = timedelta(hours=1)
+
+
+def loader_rollback_blocker(order, user) -> str:
+    """Почему грузчик не может отменить эту отгрузку; пустая строка — можно."""
+    from apps.eventlog.models import EventLog
+
+    if order.status != "shipped":
+        return "Отменить можно только отгруженный заказ"
+    shipment = getattr(order, "shipment", None)
+    if shipment is None or shipment.shipped_at is None:
+        return "У заказа нет отгрузки"
+    if timezone.now() - shipment.shipped_at > LOADER_ROLLBACK_WINDOW:
+        return "Прошло больше часа — отмену оформляет старший в «Заказах»"
+    if order.payments.exclude(status="rejected").exists():
+        return "По заказу уже есть оплата — сначала отмените её в кассе"
+    last = (
+        EventLog.objects.filter(event_type="shipment", order=order)
+        .order_by("-created_at", "-id")
+        .values_list("user_id", flat=True)
+        .first()
+    )
+    if last != getattr(user, "pk", None):
+        return "Отменить может только тот, кто отгрузил"
+    return ""
 
 
 @transaction.atomic

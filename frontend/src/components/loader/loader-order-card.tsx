@@ -1,10 +1,42 @@
 "use client";
-import { ChevronRight, TrainFront } from "lucide-react";
+import { ChevronRight, TrainFront, Wallet } from "lucide-react";
 import { PlateBadge } from "@/components/ui/license-plate-input";
 import type { LoaderOrder } from "@/lib/loader";
-import { cn, formatTime, pluralRu } from "@/lib/utils";
+import { cn, formatCurrency, formatTime, pluralRu } from "@/lib/utils";
 
 export const bagsWord = (count: number) => pluralRu(count, ["мешок", "мешка", "мешков"]);
+
+/** Оплата заказа одной плашкой: «Оплачен» или сколько ещё должен клиент. */
+export function PaymentMark({ order, className }: { order: LoaderOrder; className?: string }) {
+  if (order.payment_status === undefined) return null;
+  const remaining = Number(order.remaining_amount ?? 0);
+  const paid = order.payment_status === "settled" || remaining <= 0;
+  const partial = !paid && Number(order.paid_total ?? 0) > 0;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold",
+        paid
+          ? "bg-[var(--success)]/15 text-[var(--success)]"
+          : partial
+            ? "bg-[var(--warning)]/20 text-[var(--warning)]"
+            : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+        className,
+      )}
+    >
+      {paid ? (
+        <>
+          <Wallet className="size-3.5" /> Оплачен
+        </>
+      ) : (
+        <>
+          <Wallet className="size-3.5" />
+          {partial ? "Частично" : "Не оплачен"} · {formatCurrency(String(remaining), order.currency)}
+        </>
+      )}
+    </span>
+  );
+}
 
 /** Что грузить: товары заказа одной строкой. */
 export function itemsSummary(order: LoaderOrder): string {
@@ -54,9 +86,11 @@ export function LoaderOrderCard({
   const content = (
     <>
       <div className="flex items-start justify-between gap-3">
-        <TransportNumber order={order} />
+        <span className="min-w-0 truncate">
+          <TransportNumber order={order} />
+        </span>
         {order.shipped_at ? (
-          <span className="text-sm font-semibold tabular-nums">{formatTime(order.shipped_at)}</span>
+          <span className="shrink-0 text-sm font-semibold tabular-nums">{formatTime(order.shipped_at)}</span>
         ) : (
           onOpen && <ChevronRight className="size-5 shrink-0 text-[var(--muted-foreground)]" />
         )}
@@ -69,13 +103,16 @@ export function LoaderOrderCard({
         </span>
       </div>
       <div className="mt-1.5 truncate text-sm font-medium">{itemsSummary(order)}</div>
-      <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
-        №{order.id} · {order.client_name}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="min-w-0 truncate text-xs text-[var(--muted-foreground)]">
+          №{order.id} · {order.client_name}
+        </span>
+        <PaymentMark order={order} />
       </div>
     </>
   );
   const className = cn(
-    "block w-full rounded-2xl border-2 bg-[var(--card)] p-4 text-left shadow-card",
+    "block w-full min-w-0 overflow-hidden rounded-2xl border-2 bg-[var(--card)] p-4 text-left shadow-card",
     overdue ? "border-[var(--destructive)]" : "border-[var(--border)]",
   );
   if (!onOpen) return <div className={className}>{content}</div>;

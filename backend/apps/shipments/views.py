@@ -30,11 +30,13 @@ from .serializers import (
 from .services import (
     DISPATCHABLE_STATUSES,
     dispatch_order,
+    loader_rollback_blocker,
     finish_loading,
     record_arrival,
     record_count,
     record_shipment,
     rewind_loading,
+    rollback_shipment,
 )
 from .waybill import build_waybill_pdf
 
@@ -106,10 +108,14 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "history": "loader.view",
         "waybill": "loader.view",
         "confirm": "loader.confirm",
+        "rollback": "loader.confirm",
     }
 
     def get_queryset(self):
-        queryset = Order.objects.select_related("client__user", "shipment").prefetch_related("items__product")
+        # Оплаты нужны для статуса в очереди: без prefetch это запрос на строку.
+        queryset = Order.objects.select_related("client__user", "shipment").prefetch_related(
+            "items__product", "payments",
+        )
         return scope_by_client_department(queryset, self.request.user, client_path="client")
 
     def _page(self, queryset):
@@ -168,6 +174,22 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
                 status=exc.status if exc.status in (400, 409, 503) else status.HTTP_502_BAD_GATEWAY,
             )
         dispatch_order(order, request.user, truck_number=serializer.validated_data["truck_number"])
+        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+
+    @action(detail=True, methods=["post"], url_path="rollback")
+    def rollback(self, request, pk=None):
+        """Отменить свою отгрузку: ошибочно нажатую кнопку правит сам грузчик."""
+        order = self.get_object()
+        blocker = loader_rollback_blocker(order, request.user)
+        if blocker:
+            raise ValidationError({"detail": blocker, "code": "rollback_not_allowed"})
+        reason = " ".join(str(request.data.get("reason") or "").split())
+        rollback_shipment(
+            order,
+            request.user,
+            target_status="confirmed",
+            reason=reason or "Ошибочная отгрузка: отмена грузчиком",
+        )
         return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
 
     @action(detail=True, methods=["get"], url_path="waybill")

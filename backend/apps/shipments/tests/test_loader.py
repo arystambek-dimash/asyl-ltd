@@ -50,6 +50,10 @@ def test_queue_shows_orders_waiting_for_shipment(auth_client, loader, product):
     assert rows[0]["bags"] == 2
     assert rows[0]["total_kg"] == "100.00"
     assert rows[0]["total_amount"] == "20000.00"
+    # Оплата видна сразу: клиент мог заплатить заранее, грузчик это знает.
+    assert rows[0]["payment_status"] == "unpaid"
+    assert rows[0]["paid_total"] == "0.00"
+    assert rows[0]["remaining_amount"] == "20000.00"
     assert shipped.pk not in [row["id"] for row in rows]
 
 
@@ -178,3 +182,46 @@ def test_dispatch_keeps_order_when_camera_pc_is_unreachable(auth_client, loader,
     order.refresh_from_db()
     assert order.status == "loading"
     assert _bags(product) == 100
+
+
+def test_loader_undoes_own_fresh_dispatch(auth_client, loader, product):
+    order = _order(product, quantity=3)
+    api = auth_client(loader)
+    api.post(f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "403 BJN 13"}, format="json")
+    before = _bags(product)
+
+    history = api.get("/api/loader/history/").data
+    assert [row["can_rollback"] for row in history] == [True]
+
+    response = api.post(f"/api/loader/orders/{order.pk}/rollback/", {}, format="json")
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    assert order.status == "confirmed"
+    # Мешки вернулись на склад, а заказ снова ждёт отгрузки.
+    assert _bags(product) == before + 3
+    assert [row["id"] for row in api.get("/api/loader/queue/").data] == [order.pk]
+    assert EventLog.objects.filter(order=order, event_type="shipment_rollback").exists()
+
+
+def test_loader_cannot_undo_an_old_or_foreign_dispatch(auth_client, loader, user_with_perms, product):
+    order = _order(product)
+    api = auth_client(loader)
+    api.post(f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "403 BJN 13"}, format="json")
+
+    # Чужая отгрузка: другой грузчик её не отменяет.
+    other = user_with_perms("loader-2", codes=["loader.view", "loader.confirm"])
+    foreign = auth_client(other).post(f"/api/loader/orders/{order.pk}/rollback/", {}, format="json")
+    assert foreign.status_code == 400
+    assert foreign.data["code"] == "rollback_not_allowed"
+    assert auth_client(other).get("/api/loader/history/").data[0]["can_rollback"] is False
+
+    # Своя, но старше часа: дальше откат оформляет старший в «Заказах».
+    shipment = Shipment.objects.get(order=order)
+    shipment.shipped_at = timezone.now() - timedelta(hours=2)
+    shipment.save(update_fields=["shipped_at"])
+    late = api.post(f"/api/loader/orders/{order.pk}/rollback/", {}, format="json")
+    assert late.status_code == 400
+    assert "часа" in late.data["detail"]
+    order.refresh_from_db()
+    assert order.status == "shipped"

@@ -19,6 +19,7 @@ urlpatterns = [
     path("loader/queue/", LoaderViewSet.as_view({"get": "queue"})),
     path("loader/history/", LoaderViewSet.as_view({"get": "history"})),
     path("loader/orders/<int:pk>/dispatch/", LoaderViewSet.as_view({"post": "confirm"})),
+    path("loader/orders/<int:pk>/rollback/", LoaderViewSet.as_view({"post": "rollback"})),
     path("loader/orders/<int:pk>/waybill/", LoaderViewSet.as_view({"get": "waybill"})),
     path("loader/waybill-settings/", WaybillSettingsView.as_view()),
 ]

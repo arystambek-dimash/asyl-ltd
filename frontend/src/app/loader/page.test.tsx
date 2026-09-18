@@ -89,6 +89,7 @@ describe("LoaderPage", () => {
     expect(screen.queryByRole("button", { name: /Подтвердить отгрузку/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /№624 · ИП Мурат/ }));
 
+    // Номер всегда вводит оператор: пустое поле не даёт отгрузить.
     expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeDisabled();
     await user.type(screen.getByLabelText("Номер машины"), "403 bjn 13");
     await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
@@ -112,6 +113,77 @@ describe("LoaderPage", () => {
     expect(screen.getByText(/№624 · ИП Мурат/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /№624 · ИП Мурат/ }));
     expect(screen.queryByRole("button", { name: /Подтвердить отгрузку/ })).not.toBeInTheDocument();
+  });
+
+  it("подставляет номер из заказа и даёт оператору его исправить", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation((url: string | null) =>
+      url?.startsWith("/loader/queue/") ? paged([order(624, { truck_number: "111 AAA 01" })]) : paged([]),
+    );
+    mocks.post.mockResolvedValue({ data: order(624, { status: "shipped" }) });
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("button", { name: /№624/ }));
+    const field = screen.getByLabelText("Номер машины");
+    expect(field).toHaveValue("111 AAA 01");
+    await user.clear(field);
+    await user.type(field, "403 bjn 13");
+    await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
+
+    expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/dispatch/", { truck_number: "403 BJN 13" });
+  });
+
+  it("отменяет ошибочную отгрузку сразу после неё и из истории", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation((url: string | null) => {
+      if (url?.startsWith("/loader/queue/")) return paged([order(624, { truck_number: "111 AAA 01" })]);
+      if (url?.startsWith("/loader/history/"))
+        return paged([order(620, { status: "shipped", shipped_at: "2026-09-18T11:31:00+05:00", can_rollback: true })]);
+      return paged([]);
+    });
+    mocks.post.mockResolvedValue({ data: order(624, { status: "shipped", can_rollback: true }) });
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("button", { name: /№624/ }));
+    await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
+    await user.click(await screen.findByRole("button", { name: /Отменить отгрузку/ }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/rollback/", {}));
+    expect(await screen.findByText(/Отгрузка заказа №624 отменена/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /История/ }));
+    await user.click(screen.getByRole("button", { name: /Отменить$/ }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/loader/orders/620/rollback/", {}));
+  });
+
+  it("показывает оплату заказа, но отгрузить даёт и в долг", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation((url: string | null) =>
+      url?.startsWith("/loader/queue/")
+        ? paged([
+            order(700, {
+              truck_number: "111 AAA 01",
+              payment_status: "settled",
+              paid_total: "20000.00",
+              remaining_amount: "0.00",
+            }),
+            order(701, {
+              truck_number: "222 BBB 02",
+              payment_status: "unpaid",
+              paid_total: "0.00",
+              remaining_amount: "20000.00",
+            }),
+          ])
+        : paged([]),
+    );
+    render(<LoaderPage />);
+
+    expect(screen.getByText("Оплачен")).toBeInTheDocument();
+    expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /№701/ }));
+    expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeEnabled();
   });
 
   it("группирует очередь по дням: просрочка отдельно от сегодняшних", async () => {

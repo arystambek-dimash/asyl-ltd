@@ -24,6 +24,12 @@ export interface LoaderOrder {
   total_kg: string;
   total_amount: string;
   shipped_at: string | null;
+  /** Оплата заказа: грузчик видит, платил ли клиент заранее. */
+  payment_status?: string;
+  paid_total?: string;
+  remaining_amount?: string;
+  /** Грузчик может сам отменить эту отгрузку (своя и не старше часа). */
+  can_rollback?: boolean;
 }
 
 export interface WaybillSigner {
