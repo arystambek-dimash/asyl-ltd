@@ -1212,7 +1212,7 @@ function OrdersPageInner() {
         eyebrow="Работа · Заказ"
         title={templateOrder ? `Новый заказ по шаблону #${templateOrder.id}` : "Новый заказ"}
         description="Создайте с нуля или подставьте старый заказ, проверьте данные и только потом сохраните."
-        className="max-w-4xl"
+        className="max-w-5xl"
         mobileFullscreen
       >
         {open && (
@@ -1241,7 +1241,7 @@ function OrdersPageInner() {
         eyebrow={editing ? `Работа · Заказ #${editing.id}` : "Работа · Заказ"}
         title="Изменить заказ"
         description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
-        className="max-w-4xl"
+        className="max-w-5xl"
         mobileFullscreen
       >
         {editing && (

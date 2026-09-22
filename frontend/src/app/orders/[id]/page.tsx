@@ -781,7 +781,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
         eyebrow={`Работа · Заказ #${order.id}`}
         title="Изменить заказ"
         description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
-        className="max-w-2xl"
+        className="max-w-5xl"
       >
         {editOpen && (
           <OrderForm

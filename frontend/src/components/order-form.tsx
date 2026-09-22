@@ -2,22 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  AlertTriangle,
-  Building2,
-  CalendarClock,
-  Check,
-  Info,
-  PackageOpen,
-  Plus,
-  RefreshCw,
-  Search,
-  ShieldCheck,
-  Store as StoreIcon,
-  Trash2,
-  Truck,
-  UserRound,
-} from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Info, Plus, RefreshCw, Search, Trash2, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -83,24 +68,24 @@ function productBagsAtWarehouse(product: OrderProductOption, warehouse: string) 
 }
 
 function SectionTitle({
-  icon: Icon,
+  step,
   title,
   caption,
   aside,
 }: {
-  icon: React.ElementType;
+  step: number;
   title: string;
   caption?: string;
   aside?: React.ReactNode;
 }) {
   return (
     <div className="flex items-start justify-between gap-3">
-      <div className="flex items-center gap-2.5">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
-          <Icon className="size-4" />
+      <div className="flex items-center gap-3">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+          {step}
         </span>
         <div>
-          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+          <h3 className="text-base font-semibold text-slate-900">{title}</h3>
           {caption && <p className="text-xs text-slate-500">{caption}</p>}
         </div>
       </div>
@@ -249,6 +234,7 @@ export function OrderForm({
         },
       ]
     : warehouses;
+  const selectedWarehouse = warehouseOptions.find((item) => String(item.id) === warehouse);
   const productsHaveWarehouseScope = products.some(
     (item) => item.stock_by_warehouse !== undefined || item.warehouse !== undefined,
   );
@@ -368,8 +354,21 @@ export function OrderForm({
     (shippedCorrection && editReason.trim().length < 5) ||
     !!fixationError;
 
+  const orderSummaryRows = [
+    { label: "Клиент", value: selectedClient?.name ?? "—" },
+    { label: "Отдел", value: assignedDepartment?.name ?? selectedDepartment?.name ?? "—" },
+    ...(selectedStore ? [{ label: "Магазин", value: selectedStore.name }] : []),
+    { label: "Склад", value: selectedWarehouse?.name ?? source?.warehouse_name ?? "Основной" },
+    {
+      label: "Транспорт",
+      value:
+        transport === "train" ? `Вагон${wagonNumber ? ` ${wagonNumber}` : ""}` : `Машина${truck ? ` ${truck}` : ""}`,
+    },
+    ...(arrival ? [{ label: "Прибытие", value: arrival }] : []),
+  ];
+
   return (
-    <form onSubmit={submit} className="flex flex-col gap-6">
+    <form onSubmit={submit} className="flex flex-col gap-5">
       {(!referenceDataReady || formOptionsError) && (
         <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
           <DataGate
@@ -381,66 +380,59 @@ export function OrderForm({
       )}
 
       {referenceDataReady && (
-        <>
-          {/* ── Клиент, отдел, магазин ───────────────────────────────────── */}
-          <section className="space-y-3">
-            <SectionTitle
-              icon={UserRound}
-              title="Клиент"
-              caption={editing ? "Клиент и валюта закреплены за заказом." : "Найдите по имени, компании или телефону."}
-              aside={
-                assignedDepartment && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-                    <ShieldCheck className="size-3.5" />
-                    <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
-                    {assignedDepartment.name} · {clientDepartment ? "отдел клиента" : "ваш отдел"}
+        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
+          {/* ── Основная колонка: клиент → состав → дополнительно ─────────── */}
+          <div className="min-w-0 space-y-8">
+            <section className="space-y-4">
+              <SectionTitle
+                step={1}
+                title="Клиент"
+                caption={editing ? "Клиент и валюта закреплены за заказом." : "Кому оформляем заказ."}
+              />
+
+              {selectedClient && !clientPickerVisible && (
+                <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
+                    {selectedClient.name.slice(0, 1).toUpperCase()}
                   </span>
-                )
-              }
-            />
-
-            {selectedClient && !clientPickerVisible && (
-              <div className="flex items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50/70 p-3">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-sm font-black text-white">
-                  {selectedClient.name.slice(0, 1).toUpperCase()}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-bold text-slate-900">{selectedClient.name}</div>
-                  <div className="truncate text-xs text-slate-500">
-                    {[selectedClient.company_name, selectedClient.phone].filter(Boolean).join(" · ") ||
-                      "Без дополнительных данных"}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-slate-900">{selectedClient.name}</div>
+                    <div className="truncate text-xs text-slate-500">
+                      {[selectedClient.company_name, selectedClient.phone].filter(Boolean).join(" · ") ||
+                        "Без дополнительных данных"}
+                    </div>
                   </div>
+                  {assignedDepartment && (
+                    <span className="hidden items-center gap-1.5 rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600 sm:inline-flex">
+                      <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
+                      {assignedDepartment.name}
+                      <span className="font-normal text-slate-400">
+                        · {clientDepartment ? "отдел клиента" : "ваш отдел"}
+                      </span>
+                    </span>
+                  )}
+                  {!editing && (
+                    <Button type="button" variant="outline" size="sm" onClick={() => setClientPickerOpen(true)}>
+                      Изменить
+                    </Button>
+                  )}
                 </div>
-                <span className="rounded-lg bg-white px-2 py-1 text-xs font-bold text-slate-600 shadow-sm">
-                  {selectedClient.currency}
-                </span>
-                {!editing && (
-                  <button
-                    type="button"
-                    onClick={() => setClientPickerOpen(true)}
-                    className="text-xs font-semibold text-blue-700 hover:underline"
-                  >
-                    Изменить
-                  </button>
-                )}
-              </div>
-            )}
+              )}
 
-            {clientPickerVisible && (
-              <div className="space-y-2">
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    value={clientSearch}
-                    onChange={(event) => setClientSearch(event.target.value)}
-                    placeholder="Поиск клиента…"
-                    className="h-11 rounded-xl bg-white pl-10"
-                    autoFocus={!client}
-                    aria-label="Поиск клиента"
-                  />
-                </div>
-                <div className="max-h-56 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-1.5">
-                  <div className="grid gap-0.5 sm:grid-cols-2">
+              {clientPickerVisible && (
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                  <div className="relative border-b border-slate-100">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      value={clientSearch}
+                      onChange={(event) => setClientSearch(event.target.value)}
+                      placeholder="Имя, компания или телефон…"
+                      className="h-12 w-full bg-transparent pl-10 pr-4 text-sm outline-none placeholder:text-slate-400"
+                      autoFocus={!client}
+                      aria-label="Поиск клиента"
+                    />
+                  </div>
+                  <div className="max-h-64 overflow-y-auto p-1.5">
                     {filteredClients.map((item) => {
                       const selected = String(item.id) === client;
                       return (
@@ -449,477 +441,493 @@ export function OrderForm({
                           type="button"
                           onClick={() => chooseClient(item)}
                           className={cn(
-                            "flex min-w-0 items-center gap-3 rounded-xl px-3 py-2 text-left transition",
-                            selected ? "bg-blue-50 ring-1 ring-blue-200" : "hover:bg-slate-50",
+                            "flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-2 text-left transition",
+                            selected ? "bg-slate-100" : "hover:bg-slate-50",
                           )}
                         >
-                          <span
-                            className={cn(
-                              "flex size-8 shrink-0 items-center justify-center rounded-lg text-xs font-black",
-                              selected ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-500",
-                            )}
-                          >
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600">
                             {item.name.slice(0, 1).toUpperCase()}
                           </span>
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-semibold text-slate-800">{item.name}</span>
-                            <span className="block truncate text-[11px] text-slate-400">
-                              {item.company_name || item.phone || "—"}
+                            <span className="block truncate text-sm font-medium text-slate-900">{item.name}</span>
+                            <span className="block truncate text-xs text-slate-500">
+                              {[item.company_name, item.phone].filter(Boolean).join(" · ") || "—"}
                             </span>
                           </span>
-                          {selected && <Check className="size-4 shrink-0 text-blue-600" />}
+                          {item.department_name && (
+                            <span className="hidden shrink-0 text-[11px] text-slate-400 sm:block">
+                              {item.department_name}
+                            </span>
+                          )}
+                          {selected && <Check className="size-4 shrink-0 text-slate-900" />}
                         </button>
                       );
                     })}
+                    {!filteredClients.length && (
+                      <div className="flex min-h-24 flex-col items-center justify-center text-center text-slate-400">
+                        <span className="text-sm font-medium">Ничего не найдено</span>
+                        <span className="mt-0.5 text-xs">Проверьте имя или номер телефона.</span>
+                      </div>
+                    )}
                   </div>
-                  {!filteredClients.length && (
-                    <div className="flex min-h-24 flex-col items-center justify-center text-center text-slate-400">
-                      <Search className="mb-2 size-5" />
-                      <span className="text-sm font-semibold">Ничего не найдено</span>
-                      <span className="mt-0.5 text-xs">Проверьте имя или номер телефона.</span>
+                </div>
+              )}
+
+              {(!assignedDepartment || (client && clientStores.length > 0)) && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {!assignedDepartment && (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="order-department">Отдел продаж</Label>
+                      <Select
+                        id="order-department"
+                        value={dept}
+                        disabled={departmentLocked}
+                        onChange={(event) => setDept(event.target.value)}
+                        className="h-10 rounded-lg bg-white"
+                      >
+                        <option value="">Выберите отдел</option>
+                        {departments.map((department) => (
+                          <option
+                            key={department.code}
+                            value={department.code}
+                            disabled={departmentLocked && department.code !== editing?.department}
+                          >
+                            {department.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  )}
+                  {client && clientStores.length > 0 && (
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="order-store">Магазин</Label>
+                      <Select
+                        id="order-store"
+                        value={store}
+                        onChange={(event) => setStore(event.target.value)}
+                        className="h-10 rounded-lg bg-white"
+                      >
+                        <option value="">Без магазина — заказ на клиента</option>
+                        {clientStores.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                            {item.address ? ` · ${item.address}` : ""}
+                          </option>
+                        ))}
+                      </Select>
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+              )}
+            </section>
 
-            {!assignedDepartment && (
-              <div className="grid gap-1.5">
-                <Label>Отдел продаж</Label>
-                <div className="flex flex-wrap gap-1.5">
-                  {departments.map((department) => (
-                    <button
-                      key={department.code}
-                      type="button"
-                      disabled={departmentLocked && department.code !== editing?.department}
-                      onClick={() => setDept(department.code)}
-                      className={cn(
-                        "flex min-h-9 items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
-                        dept === department.code
-                          ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
-                      )}
-                    >
-                      <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: department.color }} />
-                      {department.name}
-                    </button>
-                  ))}
+            <section className="space-y-4">
+              <SectionTitle
+                step={2}
+                title="Состав заказа"
+                caption={
+                  compositionLocked
+                    ? "Во время активной погрузки состав зафиксирован."
+                    : client
+                      ? `Цены подставляются из личного прайса клиента в ${currency}.`
+                      : "Сначала выберите клиента — цены подставятся из его прайса."
+                }
+                aside={
+                  client && clientPricesLoading && !loadedClientPrices ? (
+                    <span role="status" className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                      <RefreshCw className="size-3.5 animate-spin" /> Прайс…
+                    </span>
+                  ) : undefined
+                }
+              />
+              {client && clientPricesError && (
+                <div
+                  role="alert"
+                  className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                >
+                  <AlertTriangle className="size-3.5 shrink-0 text-amber-600" />
+                  <span>
+                    {loadedClientPrices
+                      ? "Не удалось обновить личный прайс. Загруженные и введённые цены сохранены."
+                      : "Личный прайс не загрузился. Цены можно ввести вручную."}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="ml-auto h-7 border-amber-300 bg-white px-2 text-xs text-amber-900 hover:bg-amber-100"
+                    onClick={() => void reloadClientPrices()}
+                  >
+                    <RefreshCw className="size-3" /> Повторить
+                  </Button>
                 </div>
-              </div>
-            )}
-
-            {client && clientStores.length > 0 && (
-              <div className="grid gap-1.5">
-                <Label>Магазин</Label>
-                <div className="flex flex-wrap gap-1.5">
+              )}
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="hidden grid-cols-[minmax(0,1fr)_96px_128px_112px_36px] gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:grid">
+                  <span>Товар</span>
+                  <span>Мешков</span>
+                  <span>Цена, {currencySymbol(currency)}</span>
+                  <span className="text-right">Сумма</span>
+                  <span />
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {rows.map((row, index) => {
+                    const currentProduct = products.find((item) => String(item.id) === row.product);
+                    const selectableProducts =
+                      editing && currentProduct && !warehouseProducts.some((item) => item.id === currentProduct.id)
+                        ? [currentProduct, ...warehouseProducts]
+                        : warehouseProducts;
+                    const lineTotal = Number(row.price || 0) * Number(row.quantity || 0);
+                    return (
+                      <div
+                        key={row.id}
+                        className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_36px] gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_96px_128px_112px_36px] sm:gap-3 sm:items-center"
+                      >
+                        <Select
+                          value={row.product}
+                          className="col-span-3 h-10 rounded-lg sm:col-span-1"
+                          aria-label={`Товар, позиция ${index + 1}`}
+                          disabled={compositionLocked}
+                          onChange={(event) => {
+                            const product = event.target.value;
+                            updateRow(index, { product, price: clientPrices[product] ?? "" });
+                          }}
+                        >
+                          <option value="">Выберите товар</option>
+                          {selectableProducts.map((product) => {
+                            const bags = productBagsAtWarehouse(product, warehouse);
+                            const unavailable = bags <= 0 && !allowOutOfStock;
+                            return (
+                              <option key={product.id} value={product.id} disabled={unavailable}>
+                                {product.label}
+                                {bags > 0
+                                  ? ` · ${bags} меш.`
+                                  : allowOutOfStock
+                                    ? " — нет остатка, но доступен"
+                                    : " — нет в наличии"}
+                              </option>
+                            );
+                          })}
+                        </Select>
+                        <Input
+                          type="number"
+                          min="1"
+                          inputMode="numeric"
+                          placeholder="Мешков"
+                          className="h-10 rounded-lg"
+                          value={row.quantity}
+                          aria-label={`Количество мешков, позиция ${index + 1}`}
+                          disabled={compositionLocked}
+                          onChange={(event) => updateRow(index, { quantity: event.target.value })}
+                        />
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          inputMode="decimal"
+                          className="h-10 rounded-lg"
+                          aria-label={`Цена, позиция ${index + 1}`}
+                          placeholder={`Цена, ${currencySymbol(currency)}`}
+                          value={row.price}
+                          disabled={compositionLocked}
+                          onChange={(event) => updateRow(index, { price: event.target.value })}
+                        />
+                        <div className="col-span-2 self-center text-sm font-semibold tabular-nums text-slate-900 sm:col-span-1 sm:text-right">
+                          {lineTotal > 0 ? (
+                            formatCurrency(String(lineTotal), currency)
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="justify-self-end text-slate-400 hover:text-red-600"
+                          title="Удалить позицию"
+                          aria-label={`Удалить позицию ${index + 1}`}
+                          disabled={compositionLocked}
+                          onClick={() =>
+                            setRows((current) =>
+                              current.length > 1
+                                ? current.filter((_, itemIndex) => itemIndex !== index)
+                                : [{ id: nextRowId.current++, product: "", quantity: "", price: "" }],
+                            )
+                          }
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/60 px-4 py-2.5">
                   <button
                     type="button"
-                    onClick={() => setStore("")}
-                    className={cn(
-                      "flex min-h-9 items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition",
-                      !store
-                        ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                        : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
-                    )}
+                    disabled={compositionLocked}
+                    onClick={addRow}
+                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-700 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Building2 className="size-4" /> Без магазина
+                    <Plus className="size-4" /> Добавить позицию
                   </button>
-                  {clientStores.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      title={item.address || undefined}
-                      onClick={() => setStore(String(item.id))}
-                      className={cn(
-                        "flex min-h-9 max-w-full items-center gap-2 rounded-xl border px-3 text-sm font-semibold transition",
-                        store === String(item.id)
-                          ? "border-slate-900 bg-slate-900 text-white shadow-sm"
-                          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
-                      )}
-                    >
-                      <StoreIcon className="size-4 shrink-0" />
-                      <span className="truncate">{item.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* ── Доставка ────────────────────────────────────────────────── */}
-          <section className="space-y-3 border-t border-slate-200 pt-5">
-            <SectionTitle icon={Truck} title="Доставка" caption="Склад, валюта и транспорт." />
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {warehouseOptions.length > 0 && (
-                <div className="grid gap-1.5">
-                  <Label htmlFor="order-warehouse">Склад отгрузки</Label>
-                  <Select
-                    id="order-warehouse"
-                    value={warehouse}
-                    disabled={Boolean(
-                      editing && ["confirmed", "arrived", "loading", "loaded", "shipped"].includes(editing.status),
-                    )}
-                    onChange={(event) => {
-                      const nextWarehouse = event.target.value;
-                      setWarehouse(nextWarehouse);
-                      if (!productsHaveWarehouseScope) return;
-                      setRows((current) =>
-                        current.map((row) => {
-                          const selected = products.find((item) => String(item.id) === row.product);
-                          if (!selected || productIsAssignedToWarehouse(selected, nextWarehouse)) return row;
-                          return { ...row, product: "", price: "" };
-                        }),
-                      );
-                    }}
-                    className="h-10 rounded-xl bg-white"
-                  >
-                    {warehouseOptions.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
-                        {item.is_default ? " · основной" : ""}
-                        {!item.is_active ? " · отключён" : ""}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              )}
-              <div className="grid gap-1.5">
-                <Label>Валюта</Label>
-                <Segmented
-                  ariaLabel="Валюта заказа"
-                  value={currency}
-                  disabled={!!editing}
-                  onChange={setCurrency}
-                  options={[
-                    { value: "KZT", label: "₸ Тенге" },
-                    { value: "USD", label: "$ Доллары" },
-                  ]}
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label>Транспорт</Label>
-                <Segmented
-                  ariaLabel="Транспорт"
-                  value={transport}
-                  disabled={physicalFieldsLocked}
-                  onChange={setTransport}
-                  options={[
-                    { value: "truck", label: "🚚 Трак" },
-                    { value: "train", label: "🚃 Вагон" },
-                  ]}
-                />
-              </div>
-              {transport === "truck" ? (
-                <div className="grid gap-1.5">
-                  <Label id="order-truck-label">Номер машины</Label>
-                  <LicensePlateInput
-                    labelledBy="order-truck-label"
-                    value={truck}
-                    onChange={setTruck}
-                    disabled={physicalFieldsLocked}
-                  />
-                </div>
-              ) : (
-                <div className="grid gap-1.5">
-                  <Label htmlFor="order-wagon-number">Номер вагона</Label>
-                  <Input
-                    id="order-wagon-number"
-                    inputMode="numeric"
-                    maxLength={8}
-                    placeholder="8 цифр, можно позже"
-                    value={wagonNumber}
-                    onChange={(event) => setWagonNumber(event.target.value)}
-                    disabled={physicalFieldsLocked}
-                    aria-invalid={wagonNumberInvalid || undefined}
-                    className="h-10 rounded-xl tabular-nums"
-                  />
-                </div>
-              )}
-              <div className="grid gap-1.5">
-                <Label htmlFor="order-arrival">Плановая дата прибытия</Label>
-                <Input
-                  id="order-arrival"
-                  type="date"
-                  value={arrival}
-                  onChange={(event) => setArrival(event.target.value)}
-                  className="h-10 rounded-xl"
-                />
-              </div>
-            </div>
-          </section>
-
-          {/* ── Позиции ─────────────────────────────────────────────────── */}
-          <section className="space-y-3 border-t border-slate-200 pt-5">
-            <SectionTitle
-              icon={PackageOpen}
-              title="Позиции"
-              caption={
-                compositionLocked
-                  ? "Во время активной погрузки состав зафиксирован."
-                  : client
-                    ? `Цена подставляется из личного прайса клиента в ${currency}.`
-                    : "Сначала выберите клиента — цены подставятся из его прайса."
-              }
-              aside={
-                client && clientPricesLoading && !loadedClientPrices ? (
-                  <span role="status" className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-                    <RefreshCw className="size-3.5 animate-spin" /> Прайс…
+                  <span className="text-xs text-slate-500">
+                    {selectedBags} меш. ·{" "}
+                    <b className="font-semibold tabular-nums text-slate-900">
+                      {formatCurrency(String(total), currency)}
+                    </b>
                   </span>
-                ) : undefined
-              }
-            />
-            {client && clientPricesError && (
-              <div
-                role="alert"
-                className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
-              >
-                <AlertTriangle className="size-3.5 shrink-0 text-amber-600" />
-                <span>
-                  {loadedClientPrices
-                    ? "Не удалось обновить личный прайс. Загруженные и введённые цены сохранены."
-                    : "Личный прайс не загрузился. Цены можно ввести вручную."}
-                </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto h-7 border-amber-300 bg-white px-2 text-xs text-amber-900 hover:bg-amber-100"
-                  onClick={() => void reloadClientPrices()}
-                >
-                  <RefreshCw className="size-3" /> Повторить
-                </Button>
+                </div>
               </div>
-            )}
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-              <div className="hidden grid-cols-[minmax(0,1fr)_100px_140px_36px] gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 sm:grid">
-                <span>Товар</span>
-                <span>Мешков</span>
-                <span>Цена, {currencySymbol(currency)}</span>
-                <span />
-              </div>
-              <div className="divide-y divide-slate-100">
-                {rows.map((row, index) => {
-                  const currentProduct = products.find((item) => String(item.id) === row.product);
-                  const selectableProducts =
-                    editing && currentProduct && !warehouseProducts.some((item) => item.id === currentProduct.id)
-                      ? [currentProduct, ...warehouseProducts]
-                      : warehouseProducts;
-                  const lineTotal = Number(row.price || 0) * Number(row.quantity || 0);
-                  return (
-                    <div
-                      key={row.id}
-                      className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_36px] gap-2 px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_100px_140px_36px] sm:items-center"
-                    >
-                      <Select
-                        value={row.product}
-                        className="col-span-3 h-10 rounded-xl sm:col-span-1"
-                        aria-label={`Товар, позиция ${index + 1}`}
-                        disabled={compositionLocked}
-                        onChange={(event) => {
-                          const product = event.target.value;
-                          updateRow(index, { product, price: clientPrices[product] ?? "" });
-                        }}
-                      >
-                        <option value="">Выберите товар</option>
-                        {selectableProducts.map((product) => {
-                          const bags = productBagsAtWarehouse(product, warehouse);
-                          const unavailable = bags <= 0 && !allowOutOfStock;
-                          return (
-                            <option key={product.id} value={product.id} disabled={unavailable}>
-                              {product.label}
-                              {bags > 0
-                                ? ` · ${bags} меш.`
-                                : allowOutOfStock
-                                  ? " — нет остатка, но доступен"
-                                  : " — нет в наличии"}
-                            </option>
-                          );
-                        })}
-                      </Select>
-                      <Input
-                        type="number"
-                        min="1"
-                        inputMode="numeric"
-                        placeholder="Мешков"
-                        className="h-10 rounded-xl"
-                        value={row.quantity}
-                        aria-label={`Количество мешков, позиция ${index + 1}`}
-                        disabled={compositionLocked}
-                        onChange={(event) => updateRow(index, { quantity: event.target.value })}
-                      />
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        inputMode="decimal"
-                        className="h-10 rounded-xl"
-                        aria-label={`Цена, позиция ${index + 1}`}
-                        placeholder={`Цена, ${currencySymbol(currency)}`}
-                        value={row.price}
-                        disabled={compositionLocked}
-                        onChange={(event) => updateRow(index, { price: event.target.value })}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        title="Удалить позицию"
-                        aria-label={`Удалить позицию ${index + 1}`}
-                        disabled={compositionLocked}
-                        onClick={() =>
-                          setRows((current) =>
-                            current.length > 1
-                              ? current.filter((_, itemIndex) => itemIndex !== index)
-                              : [{ id: nextRowId.current++, product: "", quantity: "", price: "" }],
-                          )
-                        }
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                      {lineTotal > 0 && (
-                        <div className="col-span-3 -mt-1 text-right text-[11px] tabular-nums text-slate-400 sm:col-span-4">
-                          = {formatCurrency(String(lineTotal), currency)}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <button
-                type="button"
-                disabled={compositionLocked}
-                onClick={addRow}
-                className="flex w-full items-center justify-center gap-2 border-t border-dashed border-slate-200 bg-slate-50/60 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Plus className="size-4" /> Добавить позицию
-              </button>
-            </div>
-          </section>
+            </section>
 
-          {/* ── Задним числом ───────────────────────────────────────────── */}
-          {canBackdate && (
-            <section className="border-t border-slate-200 pt-5">
-              <div
-                className={cn(
-                  "rounded-2xl border transition",
-                  backdateOn ? "border-amber-200 bg-amber-50/40" : "border-slate-200 bg-white",
-                )}
-              >
-                <label className="flex cursor-pointer items-center gap-3 px-4 py-3">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-                    <CalendarClock className="size-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-bold text-slate-900">Задним числом</span>
-                    <span className="block text-xs text-slate-500">
-                      Указать дату заказа и сразу зафиксировать статус и оплату.
-                    </span>
-                  </span>
-                  <span
-                    aria-hidden="true"
+            {(canBackdate || shippedCorrection || editing || template) && (
+              <section className="space-y-4">
+                <SectionTitle step={3} title="Дополнительно" caption="Необязательно." />
+
+                {canBackdate && (
+                  <div
                     className={cn(
-                      "relative h-6 w-11 shrink-0 rounded-full transition",
-                      backdateOn ? "bg-amber-500" : "bg-slate-300",
+                      "rounded-xl border transition",
+                      backdateOn ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-white",
                     )}
                   >
-                    <span
-                      className={cn(
-                        "absolute top-0.5 size-5 rounded-full bg-white shadow transition",
-                        backdateOn ? "left-[22px]" : "left-0.5",
-                      )}
-                    />
-                  </span>
-                  <input
-                    type="checkbox"
-                    className="sr-only"
-                    aria-label="Задним числом"
-                    checked={backdateOn}
-                    onChange={(event) => {
-                      setBackdateOn(event.target.checked);
-                      setError("");
-                    }}
-                  />
-                </label>
-                {backdateOn && (
-                  <div className="border-t border-amber-200/70 px-4 py-4">
-                    <FixationFields draft={fixation} onChange={setFixation} canPay={canPay} idPrefix="order-backdate" />
+                    <label className="flex cursor-pointer items-center gap-3 px-4 py-3">
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+                        <CalendarClock className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-slate-900">Оформить задним числом</span>
+                        <span className="block text-xs text-slate-500">
+                          Указать дату заказа и сразу зафиксировать статус и оплату.
+                        </span>
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "relative h-6 w-11 shrink-0 rounded-full transition",
+                          backdateOn ? "bg-amber-500" : "bg-slate-300",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-0.5 size-5 rounded-full bg-white shadow transition",
+                            backdateOn ? "left-[22px]" : "left-0.5",
+                          )}
+                        />
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="sr-only"
+                        aria-label="Задним числом"
+                        checked={backdateOn}
+                        onChange={(event) => {
+                          setBackdateOn(event.target.checked);
+                          setError("");
+                        }}
+                      />
+                    </label>
+                    {backdateOn && (
+                      <div className="border-t border-amber-200/70 px-4 py-4">
+                        <FixationFields
+                          draft={fixation}
+                          onChange={setFixation}
+                          canPay={canPay}
+                          idPrefix="order-backdate"
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
+
+                {shippedCorrection && (
+                  <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                    <Label htmlFor="order-edit-reason">Причина корректировки отгруженного заказа</Label>
+                    <textarea
+                      id="order-edit-reason"
+                      value={editReason}
+                      onChange={(event) => setEditReason(event.target.value)}
+                      placeholder="Например: исправление фактически отгруженного количества"
+                      rows={3}
+                      required
+                      minLength={5}
+                      className="w-full resize-y rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:ring-4 focus:ring-amber-500/10"
+                    />
+                    <p className="text-xs text-amber-800">
+                      Изменение состава автоматически скорректирует склад и сохранится в журнале.
+                    </p>
+                  </div>
+                )}
+
+                {(editing || template) && (
+                  <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+                    <Info className="mt-0.5 size-3.5 shrink-0 text-slate-400" />
+                    {editing
+                      ? compositionLocked
+                        ? "Заказ открыт для исправления, но состав защищён до завершения текущей погрузки."
+                        : "Заказ можно исправить на любом этапе. Физические и финансовые изменения попадут в журнал."
+                      : `Данные взяты из заказа #${template!.id}, цены обновлены из текущего прайса клиента. Проверьте всё перед созданием.`}
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+
+          {/* ── Боковая колонка: доставка и итог ────────────────────────── */}
+          <aside className="space-y-4 lg:sticky lg:top-0">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-4 flex items-center gap-2">
+                <Truck className="size-4 text-slate-500" />
+                <h3 className="text-sm font-semibold text-slate-900">Доставка</h3>
               </div>
-            </section>
-          )}
-
-          {shippedCorrection && (
-            <section className="space-y-2 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
-              <Label htmlFor="order-edit-reason">Причина корректировки отгруженного заказа</Label>
-              <textarea
-                id="order-edit-reason"
-                value={editReason}
-                onChange={(event) => setEditReason(event.target.value)}
-                placeholder="Например: исправление фактически отгруженного количества"
-                rows={3}
-                required
-                minLength={5}
-                className="w-full resize-y rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:ring-4 focus:ring-amber-500/10"
-              />
-              <p className="text-xs text-amber-800">
-                Изменение состава автоматически скорректирует склад и сохранится в журнале.
-              </p>
-            </section>
-          )}
-
-          {(editing || template) && (
-            <div className="flex items-start gap-2 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2.5 text-xs text-blue-700">
-              <Info className="mt-0.5 size-3.5 shrink-0" />
-              {editing
-                ? compositionLocked
-                  ? "Заказ открыт для исправления, но состав защищён до завершения текущей погрузки."
-                  : "Заказ можно исправить на любом этапе. Физические и финансовые изменения попадут в журнал."
-                : `Данные взяты из заказа #${template!.id}, цены обновлены из текущего прайса клиента. Проверьте всё перед созданием.`}
+              <div className="space-y-4">
+                {warehouseOptions.length > 0 && (
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="order-warehouse">Склад отгрузки</Label>
+                    <Select
+                      id="order-warehouse"
+                      value={warehouse}
+                      disabled={Boolean(
+                        editing && ["confirmed", "arrived", "loading", "loaded", "shipped"].includes(editing.status),
+                      )}
+                      onChange={(event) => {
+                        const nextWarehouse = event.target.value;
+                        setWarehouse(nextWarehouse);
+                        if (!productsHaveWarehouseScope) return;
+                        setRows((current) =>
+                          current.map((row) => {
+                            const selected = products.find((item) => String(item.id) === row.product);
+                            if (!selected || productIsAssignedToWarehouse(selected, nextWarehouse)) return row;
+                            return { ...row, product: "", price: "" };
+                          }),
+                        );
+                      }}
+                      className="h-10 rounded-lg bg-white"
+                    >
+                      {warehouseOptions.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                          {item.is_default ? " · основной" : ""}
+                          {!item.is_active ? " · отключён" : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
+                <div className="grid gap-1.5">
+                  <Label>Валюта</Label>
+                  <Segmented
+                    ariaLabel="Валюта заказа"
+                    value={currency}
+                    disabled={!!editing}
+                    onChange={setCurrency}
+                    options={[
+                      { value: "KZT", label: "₸ Тенге" },
+                      { value: "USD", label: "$ Доллары" },
+                    ]}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label>Транспорт</Label>
+                  <Segmented
+                    ariaLabel="Транспорт"
+                    value={transport}
+                    disabled={physicalFieldsLocked}
+                    onChange={setTransport}
+                    options={[
+                      { value: "truck", label: "Трак" },
+                      { value: "train", label: "Вагон" },
+                    ]}
+                  />
+                </div>
+                {transport === "truck" ? (
+                  <div className="grid gap-1.5">
+                    <Label id="order-truck-label">Номер машины</Label>
+                    <LicensePlateInput
+                      labelledBy="order-truck-label"
+                      value={truck}
+                      onChange={setTruck}
+                      disabled={physicalFieldsLocked}
+                    />
+                    <p className="text-[11px] text-slate-500">Можно указать позже, при въезде.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="order-wagon-number">Номер вагона</Label>
+                    <Input
+                      id="order-wagon-number"
+                      inputMode="numeric"
+                      maxLength={8}
+                      placeholder="8 цифр"
+                      value={wagonNumber}
+                      onChange={(event) => setWagonNumber(event.target.value)}
+                      disabled={physicalFieldsLocked}
+                      aria-invalid={wagonNumberInvalid || undefined}
+                      className="h-10 rounded-lg tabular-nums"
+                    />
+                    <p className="text-[11px] text-slate-500">Можно указать позже, до начала погрузки.</p>
+                  </div>
+                )}
+                <div className="grid gap-1.5">
+                  <Label htmlFor="order-arrival">Плановая дата прибытия</Label>
+                  <Input
+                    id="order-arrival"
+                    type="date"
+                    value={arrival}
+                    onChange={(event) => setArrival(event.target.value)}
+                    className="h-10 rounded-lg"
+                  />
+                </div>
+              </div>
             </div>
-          )}
-        </>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Итог</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-slate-900">
+                {formatCurrency(String(total), currency)}
+              </div>
+              <div className="text-xs text-slate-500">
+                {validRows.length} {validRows.length === 1 ? "позиция" : "позиций"} · {selectedBags} меш.
+              </div>
+              <dl className="mt-3 space-y-1.5 border-t border-slate-200 pt-3 text-xs">
+                {orderSummaryRows.map((row) => (
+                  <div key={row.label} className="flex items-baseline justify-between gap-3">
+                    <dt className="shrink-0 text-slate-500">{row.label}</dt>
+                    <dd className="truncate text-right font-medium text-slate-800">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          </aside>
+        </div>
       )}
 
       {error && (
         <p
           role="alert"
-          className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]"
+          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]"
         >
           {error}
         </p>
       )}
 
-      <div className="sticky -bottom-5 z-10 flex items-center justify-between gap-3 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
-        <div className="min-w-0">
-          <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Итог</div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-lg font-black tabular-nums text-slate-900">
-              {formatCurrency(String(total), currency)}
-            </span>
-            <span className="text-xs text-slate-500">
-              {selectedBags} меш.
-              {selectedClient ? ` · ${selectedClient.name}` : ""}
-              {selectedStore ? ` · ${selectedStore.name}` : ""}
-              {selectedDepartment && !assignedDepartment ? ` · ${selectedDepartment.name}` : ""}
-            </span>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
-            Отмена
-          </Button>
-          <Button type="submit" disabled={submitDisabled}>
-            {busy
-              ? "Сохранение…"
-              : editing
-                ? "Сохранить изменения"
-                : backdating
-                  ? "Создать задним числом"
-                  : "Создать заказ"}
-            {!busy && <Check className="size-4" />}
-          </Button>
-        </div>
+      <div className="sticky -bottom-5 z-10 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
+        <span className="mr-auto text-sm text-slate-500 lg:hidden">
+          <b className="font-semibold tabular-nums text-slate-900">{formatCurrency(String(total), currency)}</b> ·{" "}
+          {selectedBags} меш.
+        </span>
+        <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
+          Отмена
+        </Button>
+        <Button type="submit" disabled={submitDisabled}>
+          {busy
+            ? "Сохранение…"
+            : editing
+              ? "Сохранить изменения"
+              : backdating
+                ? "Создать задним числом"
+                : "Создать заказ"}
+          {!busy && <Check className="size-4" />}
+        </Button>
       </div>
     </form>
   );
