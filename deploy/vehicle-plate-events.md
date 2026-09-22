@@ -745,6 +745,62 @@ supplies identity. Rules that decide where a parked weight goes:
   «заезд восстановлен из неопознанного взвешивания»). Without tare memory or
   with several fitting weighings the historical tare is used as before
   (`saved_tare_missing` when there is none).
+- **Exit with a plate whose visit is open under a misread front plate**
+  (`_orphan_visit`, looked up together with `_parked_entry`): the front
+  camera invented a spelling (253ZOU81 for 532OUB13, E065CUA for 065CUA13)
+  that no exit can ever name, so the visit would stay open for good while
+  the real exit took a tare from history. When this plate has a
+  `VehicleTareMemory`, exactly one open visit entered within the last 12 h
+  fits — the core of its plate (region and the old form's leading letter
+  dropped, see `_plate_core`) shares at least `ORPHAN_PLATE_OVERLAP` (4)
+  characters with the core of the read one (multiset overlap:
+  253ZOU↔532OUB = 5, 065CUA↔065CUA = 6; 132XYZ↔123ABC = 3 and
+  237AAX↔853UVA = 2 do not merge, the shared region never counts), nothing
+  was ever completed under that spelling (a misreading, not a neighbour), its
+  entry weight is within 300 kg of the remembered tare and the exit leaves it
+  at least 1000 kg heavier — the visit is renamed through
+  `services.set_passage_number` (the phantom's tare memory goes, event «рейс
+  был открыт под номером … — номер исправлен по памяти тары и выезду») and
+  the exit closes it. Zero or several fitting visits: `_parked_entry` /
+  historical tare as before. When both a phantom visit and a parked unread
+  entry fit the truck, neither is taken: the exit completes from the
+  historical tare and both stay for the operator.
+- **Reconcile on a timer** (`reconcile_stale_visits`, called from
+  `weighing_identity.process_once` at most once per
+  `RECONCILE_INTERVAL_SECONDS` = 300 s, i.e. on every monitor start and then
+  every five minutes): trucks that never come back leave visits open for
+  good, and an open visit parks every later weighing of its plate. Under the
+  lane lock every open passage (`at_silo`, entry weight set, no exit weight,
+  non-empty plate) whose entry is older than 12 h ends the way a re-entry
+  would end it: exactly one loaded rear weighing in `(entry, entry + 12 h)`
+  that reads as this plate or that nobody read (check ended, or no check at
+  all on a weighing older than the 24 h the identity worker looks back)
+  closes it (event «выезд восстановлен по сроку (рейс старше 12 ч)»); no
+  candidate at all, no candidate still being checked and the entry older
+  than 24 h (`2 × WEIGHING_AI_ENTRY_MAX_HOURS`) cancels it with `exit_note`
+  «Выезд не зафиксирован: рейс закрыт автоматически по сроку» (status event
+  «рейс закрыт без выезда по сроку — выезд не был зафиксирован за 24 ч»);
+  anything else (several candidates, one whose check has not ended, a visit
+  between 12 h and 24 h without one) is left to the next run or the
+  operator. Two limits keep the timer from guessing:
+  - the window ends at the plate's own parked re-entry when there is one
+    (the earliest open front weighing after the entry read as this plate or
+    within two edits of it): a truck that came back and left again parks its
+    re-entry as `previous_exit_missing` and its second exit as
+    `earlier_entry_pending` behind it; that exit is the re-entry's, so the
+    old visit is not closed with it — it waits (under 24 h) or is cancelled
+    (over 24 h), after which the re-entry books the next visit and the exit
+    closes that one;
+  - the one candidate is taken only when it fits no other open visit (any
+    `at_silo` passage with an entry weight and no exit weight that entered
+    within 12 h before the weighing, is at least 1000 kg lighter, and whose
+    plate the weighing reads as within two edits, or that nobody read at
+    all); otherwise the visit is left. Candidates are gathered for every
+    stale visit before any is settled, so a visit that had a candidate is
+    never cancelled by age because this run booked that candidate elsewhere.
+  The result is `{"closed", "cancelled", "left"}`; one visit's failure
+  (`ValueError`, `APIException`, `IntegrityError`) is logged and the others
+  are still processed.
 
 The collector (`weighbridge/collector.py`) no longer folds every Camera-PC
 refusal into `recognition_unavailable`: the answer's `status` becomes

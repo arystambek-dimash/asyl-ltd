@@ -34,7 +34,7 @@ from .writer import OutboxWriter
 # The CRM applies its own model-side bounds again on import.
 DIAGNOSTIC_STRINGS = (("status", 300), ("error", 300), ("error_code", 300))
 DIAGNOSTIC_COUNTERS = ("fresh_frames_seen", "frames_scanned", "detected_frames", "ocr_candidates",
-                       "accepted_reads", "ambiguous_frames", "confirmation_votes")
+                       "accepted_reads", "ambiguous_frames", "confirmation_votes", "zoom_frames", "zoom_detected_frames")
 DIAGNOSTIC_FLOATS = (("best_detector_confidence", 1), ("confirmation_window_seconds", 1e6))
 READ_STRINGS = ("variant", "raw_text", "number")
 READ_FLOATS = (("confidence", 1), ("detector_confidence", 1), ("bbox_w", 100_000), ("bbox_h", 100_000))

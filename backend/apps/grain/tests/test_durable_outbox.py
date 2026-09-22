@@ -702,6 +702,28 @@ def test_import_of_no_match_without_a_detected_plate_explains_the_detector_miss(
 
 
 @pytest.mark.django_db(transaction=True)
+def test_import_of_no_match_keeps_the_zoom_counters_and_says_the_zoom_found_nothing_either(tmp_path, settings):
+    from apps.cameras import ai
+    _identity_settings(settings, tmp_path)
+    refusal = ai.AiError(422, "not confirmed", _no_match_payload(votes={}, last_reads=[], detected_frames=0, ocr_candidates=0))
+    stored = _collector_ocr(tmp_path / str(uuid4()), refusal, photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+    # The Camera-PC also searched every frame in zoomed tiles and found no plate
+    # there either; a collector that forwards those counters lets the CRM say so.
+    stored["recognition_diagnostics"].update({"zoom_frames": 12, "zoom_detected_frames": 0, "zoom_tiles": 4})
+    capture = outbox_importer.import_event(stored)
+    assert capture.error_code == "collector_plate_unresolved"
+    assert capture.error_detail == "Камера не нашла табличку: 0 из 20 кадров, зум по тайлам тоже пуст"
+    assert capture.ai_payload_json["zoom_frames"] == 12 and capture.ai_payload_json["zoom_detected_frames"] == 0
+    assert "zoom_tiles" not in capture.ai_payload_json  # only the two counters are kept, not an arbitrary key
+    # A refusal that never zoomed keeps the plain wording.
+    stored = _collector_ocr(tmp_path / str(uuid4()), refusal, photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+    stored["recognition_diagnostics"].update({"zoom_frames": 0, "zoom_detected_frames": -1})
+    capture = outbox_importer.import_event(stored)
+    assert capture.error_detail == "Камера не нашла табличку: 0 из 20 кадров"
+    assert capture.ai_payload_json["zoom_frames"] == 0 and "zoom_detected_frames" not in capture.ai_payload_json
+
+
+@pytest.mark.django_db(transaction=True)
 def test_import_of_a_camera_failure_keeps_its_status_without_a_no_match_code(tmp_path, settings):
     from apps.cameras import ai
     payload = {"status": "camera_unavailable", "error": "rtsp offline", "orientation": {"label": "rear", "confidence": 0.9}}

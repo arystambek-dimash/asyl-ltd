@@ -6,7 +6,9 @@ reuse is an audited deterministic lookup of the latest measured entry. A lease a
 
 import base64
 import json
+import logging
 import re
+import time
 from datetime import timedelta
 
 import http.client
@@ -29,9 +31,14 @@ from .models import (
     VehicleTareMemory,
 )
 
+log = logging.getLogger(__name__)
+
 MAX_CANDIDATES = 6
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_ATTEMPTS = 3
+# Visits open longer than any trip are settled ahead of a claim, once per interval.
+RECONCILE_INTERVAL_SECONDS = 300
+_next_reconcile_at = 0.0
 
 
 def enabled():
@@ -840,7 +847,26 @@ def _near_plate_collision(number):
     ).exclude(number=number).exists()
 
 
+def _reconcile_stale_visits_due():
+    """Settle stale visits once per RECONCILE_INTERVAL_SECONDS before the next claim.
+
+    A database or network failure propagates (the monitor loop logs it and
+    degrades); a ValueError is logged here so a broken visit never stalls
+    identity processing.
+    """
+    global _next_reconcile_at
+    if time.monotonic() < _next_reconcile_at:
+        return
+    _next_reconcile_at = time.monotonic() + RECONCILE_INTERVAL_SECONDS
+    from .automatic_routing import reconcile_stale_visits
+    try:
+        reconcile_stale_visits()
+    except ValueError:
+        log.exception("Stale passage visits were not reconciled")
+
+
 def process_once():
+    _reconcile_stale_visits_due()
     claim = _claim(automatic=True)
     if claim is None:
         return

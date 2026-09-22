@@ -2614,6 +2614,12 @@ def assign_unassigned_weighing(
 ) -> UnassignedWeighing:
     """Attach a parked weight to the passage the operator points at."""
 
+    # Lane -> weighing -> visit: the lock order of automatic booking and of
+    # the timer reconcile. Locking the weighing first could deadlock against
+    # a reconcile that already holds the lane and comes for this weighing.
+    PassageScaleAutomationState.objects.select_for_update().get_or_create(
+        scale_number=scale.TRUCK_SCALE_KEY,
+    )
     item = UnassignedWeighing.objects.select_for_update().get(pk=item.pk)
     if item.status != UnassignedWeighing.OPEN:
         raise _error("Это взвешивание уже обработано", "unassigned_weighing_resolved")

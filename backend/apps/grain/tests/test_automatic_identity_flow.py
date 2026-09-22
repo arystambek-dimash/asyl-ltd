@@ -1,4 +1,5 @@
 """Production single-frame fallback and fully automatic measured-tare routing."""
+import logging
 from datetime import timedelta
 from unittest.mock import patch
 from uuid import uuid4
@@ -17,11 +18,13 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture(autouse=True)
-def config(settings, tmp_path):
+def config(settings, tmp_path, monkeypatch):
     settings.MEDIA_ROOT = tmp_path
     settings.OPENAI_API_KEY = "test-key"
     settings.WEIGHING_AI_ENABLED = True
     settings.WEIGHING_AI_MAX_DAILY_REQUESTS = 100
+    # As on a monitor start: the first pass reconciles stale visits, later passes once per interval.
+    monkeypatch.setattr(identity, "_next_reconcile_at", 0.0, raising=False)
 
 
 def event(*, number="", orientation="", weight=4000, minutes=30, photo=True, capture=None):
@@ -965,3 +968,439 @@ def test_reentry_leaves_the_misread_visit_alone_while_its_candidate_exit_is_unch
     assert phantom.status == st.AT_SILO and phantom.tare_weight_kg is None
     assert pending.status == "open"
     assert again.status == "assigned" and again.wagon.number == "065CUA13" and again.wagon.gross_weight_kg == 5340
+
+
+# ── Reconcile on a timer ─────────────────────────────────────────────────────
+
+
+def _age_visit(visit, hours):
+    """Move the visit's entry ``hours`` back, past the day the identity claim looks back."""
+    entered = timezone.now() - timedelta(hours=hours)
+    Wagon.objects.filter(pk=visit.pk).update(arrived_at=entered, silo_arrived_at=entered, unloading_started_at=entered)
+    UnassignedWeighing.objects.filter(wagon=visit).update(stable_weight_at=entered)
+    WeighingRecord.objects.filter(wagon=visit).update(created_at=entered)
+    visit.refresh_from_db()
+    return visit
+
+
+def _stale_visit(number, weight, hours):
+    """An open visit that entered ``hours`` ago, beyond the day the claim looks back when needed."""
+    visit = _open_visit(number, weight, min(hours, 23) * 60)
+    return _age_visit(visit, hours) if hours > 23 else visit
+
+
+def test_reconcile_closes_a_stale_visit_with_the_single_unread_loaded_exit_in_its_window():
+    # The truck never came back, so no re-entry could reveal its missed exit;
+    # the timer closes the visit with the one loaded weighing nobody read.
+    first = _stale_visit("065CUA13", 5340, 13)
+    unread = event(number="", orientation="rear", weight=10860, minutes=10 * 60)
+    process_gpt("", "rear")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 1, "cancelled": 0, "left": 0}
+    first.refresh_from_db()
+    unread.refresh_from_db()
+    assert first.status == st.COMPLETED and first.tare_weight_kg == 10860 and first.net_weight_kg == 5520
+    assert unread.status == "assigned" and unread.action == "exit" and unread.wagon_id == first.pk
+    assert unread.identity_check.status == "matched" and unread.identity_check.reason == "automatic_exit"
+    recovered = EventLog.objects.get(event_type="grain_automatic_binding", payload__unassigned_id=unread.pk)
+    assert "выезд восстановлен по сроку" in recovered.message and "рейс старше 12 ч" in recovered.message
+    assert "не прочитан" in recovered.message and recovered.payload["auto"] is True
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 0}
+
+
+def test_reconcile_cancels_a_visit_open_twice_the_longest_trip_without_any_exit():
+    first = _stale_visit("065CUA13", 5340, 25)
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 1, "left": 0}
+    first.refresh_from_db()
+    assert first.status == st.CANCELLED and first.tare_weight_kg is None
+    assert first.exit_note == "Выезд не зафиксирован: рейс закрыт автоматически по сроку"
+    closed = EventLog.objects.get(event_type="grain_status", payload__new_status=st.CANCELLED, payload__wagon_id=first.pk)
+    assert closed.payload["auto"] is True
+    assert "рейс закрыт без выезда по сроку" in closed.message and "за 24 ч" in closed.message
+    assert not Wagon.objects.filter(status__in=st.ON_SITE_STATUSES).exists()
+    # The plate is free again: its next entry opens a new visit.
+    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    again.refresh_from_db()
+    assert again.wagon is not None and again.wagon.pk != first.pk and again.wagon.gross_weight_kg == 5320
+
+
+def test_reconcile_leaves_a_visit_younger_than_twice_the_longest_trip_without_a_candidate():
+    first = _stale_visit("065CUA13", 5340, 13)
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 1}
+    first.refresh_from_db()
+    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.exit_note == ""
+
+
+def test_reconcile_leaves_a_stale_visit_with_two_unread_exits_in_its_window():
+    first = _stale_visit("065CUA13", 5340, 25)
+    for minutes in (20 * 60, 18 * 60):
+        event(number="", orientation="rear", weight=10800, minutes=minutes)
+        process_gpt("", "rear")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 1}
+    first.refresh_from_db()
+    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.exit_note == ""
+    assert UnassignedWeighing.objects.filter(orientation="rear", status="open").count() == 2
+
+
+def test_reconcile_leaves_a_stale_visit_while_an_unread_exit_in_its_window_has_no_verdict():
+    first = _stale_visit("065CUA13", 5340, 25)
+    pending = _pending_unread(10860, 20 * 60)
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 1}
+    first.refresh_from_db()
+    pending.refresh_from_db()
+    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.exit_note == ""
+    assert pending.status == "open"
+
+
+def test_reconcile_skips_a_visit_without_a_plate():
+    entered = timezone.now() - timedelta(hours=25)
+    blank = Wagon.objects.create(
+        number="", direction=Wagon.PASSAGE, workflow="simple", cargo_name="Test", status=st.AT_SILO,
+        gross_weight_kg=5340, arrived_at=entered, silo_arrived_at=entered,
+    )
+    unread = event(number="", orientation="rear", weight=10860, minutes=20 * 60)
+    process_gpt("", "rear")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 0}
+    blank.refresh_from_db()
+    unread.refresh_from_db()
+    assert blank.status == st.AT_SILO and blank.tare_weight_kg is None
+    assert unread.status == "open"
+
+
+def test_reconcile_goes_on_with_the_next_visit_when_one_fails(caplog):
+    # Each visit has the one unread loaded exit of its own window; the first
+    # visit's booking breaks, the second is still closed and the failure is logged.
+    first = _stale_visit("065CUA13", 5340, 25)
+    second = _stale_visit("123ABC13", 4000, 14)
+    for weight, minutes in ((10860, 20 * 60), (8500, 10 * 60)):
+        event(number="", orientation="rear", weight=weight, minutes=minutes)
+        process_gpt("", "rear")
+    real = automatic_routing._recover_exit
+
+    def failing(wagon, departure, number, **kwargs):
+        if wagon.pk == first.pk:
+            raise ValueError("booking_conflict")
+        return real(wagon, departure, number, **kwargs)
+
+    with patch.object(automatic_routing, "_recover_exit", side_effect=failing), \
+            caplog.at_level(logging.ERROR, logger="apps.grain.automatic_routing"):
+        assert automatic_routing.reconcile_stale_visits() == {"closed": 1, "cancelled": 0, "left": 1}
+    assert any("065CUA13" in record.getMessage() for record in caplog.records)
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.status == st.AT_SILO and first.tare_weight_kg is None
+    assert second.status == st.COMPLETED and second.tare_weight_kg == 8500 and second.net_weight_kg == 4500
+
+
+def test_process_once_reconciles_stale_visits_at_most_once_per_interval():
+    calls = []
+    identity._next_reconcile_at = 0.0
+    with patch.object(automatic_routing, "reconcile_stale_visits", side_effect=lambda: calls.append(1) or {}), \
+            patch.object(identity, "time") as clock:
+        clock.monotonic.return_value = 1000.0
+        identity.process_once()
+        identity.process_once()
+        assert len(calls) == 1
+        clock.monotonic.return_value = 1000.0 + identity.RECONCILE_INTERVAL_SECONDS - 1
+        identity.process_once()
+        assert len(calls) == 1
+        clock.monotonic.return_value = 1000.0 + identity.RECONCILE_INTERVAL_SECONDS
+        identity.process_once()
+        assert len(calls) == 2
+    assert identity.RECONCILE_INTERVAL_SECONDS == 300
+
+
+def test_process_once_keeps_booking_when_the_reconcile_fails():
+    item = event(number="123ABC13", orientation="front")
+    identity._next_reconcile_at = 0.0
+    with patch.object(automatic_routing, "reconcile_stale_visits", side_effect=ValueError("too_many_entry_records")):
+        identity.process_once()
+    item.refresh_from_db()
+    assert item.status == "assigned" and item.wagon.gross_weight_kg == 4000
+
+
+def _reentry_after_a_missed_exit(number, hours):
+    """The production shape of a missed exit: the visit is open, the truck came back
+    10 h ago (parked as ``previous_exit_missing``) and left again 9 h ago under
+    its own plate (parked as ``earlier_entry_pending`` behind that re-entry)."""
+    first = _stale_visit(number, 5340, hours)
+    again = event(number=number, orientation="front", weight=5320, minutes=10 * 60)
+    process_gpt(number, "front")
+    again.refresh_from_db()
+    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
+    departure = event(number=number, orientation="rear", weight=10380, minutes=9 * 60)
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    departure.refresh_from_db()
+    assert departure.status == "open" and departure.identity_check.reason == "earlier_entry_pending"
+    return first, again, departure
+
+
+def test_reconcile_does_not_close_a_visit_with_an_exit_parked_after_its_plates_re_entry():
+    # The exit 9 h ago belongs to the re-entry 10 h ago, not to the visit that
+    # entered 13 h ago: the timer looks for that visit's exit only up to the
+    # re-entry. With nothing there and the visit younger than 24 h it waits.
+    first, again, departure = _reentry_after_a_missed_exit("065CUA13", 13)
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 1}
+    first.refresh_from_db()
+    again.refresh_from_db()
+    departure.refresh_from_db()
+    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.exit_note == ""
+    assert again.status == "open" and departure.status == "open"
+    assert Wagon.objects.filter(number="065CUA13").count() == 1
+
+
+def test_reconcile_cancels_the_visit_before_its_plates_re_entry_and_the_re_entry_then_takes_the_exit():
+    first, again, departure = _reentry_after_a_missed_exit("065CUA13", 13)
+    _age_visit(first, 25)
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 1, "left": 0}
+    first.refresh_from_db()
+    departure.refresh_from_db()
+    assert first.status == st.CANCELLED and first.tare_weight_kg is None
+    assert first.exit_note == "Выезд не зафиксирован: рейс закрыт автоматически по сроку"
+    assert departure.status == "open"
+    # The plate is free: the parked re-entry opens the next visit and the exit closes it.
+    WeighingIdentityCheck.objects.filter(weighing__in=[again, departure]).update(next_attempt_at=timezone.now()-timedelta(seconds=1))
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+        identity.process_once()
+    request.assert_not_called()
+    again.refresh_from_db()
+    departure.refresh_from_db()
+    second = again.wagon
+    assert second is not None and second.pk != first.pk and second.gross_weight_kg == 5320
+    assert departure.wagon_id == second.pk and second.status == st.COMPLETED and second.net_weight_kg == 5060
+    assert UnassignedWeighing.objects.filter(status="open").count() == 0
+
+
+def test_reconcile_neither_closes_nor_cancels_two_stale_visits_that_share_the_only_unread_exit():
+    # One loaded weighing nobody read fits both trucks; between two trucks the
+    # timer does not choose, and neither visit is cancelled by age while it
+    # has a candidate.
+    heavy = _stale_visit("065CUA13", 5000, 26)
+    heavier = _stale_visit("123ABC13", 9000, 25)
+    unread = event(number="", orientation="rear", weight=12000, minutes=20 * 60)
+    process_gpt("", "rear")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 2}
+    heavy.refresh_from_db()
+    heavier.refresh_from_db()
+    unread.refresh_from_db()
+    assert heavy.status == st.AT_SILO and heavy.tare_weight_kg is None and heavy.exit_note == ""
+    assert heavier.status == st.AT_SILO and heavier.tare_weight_kg is None and heavier.exit_note == ""
+    assert unread.status == "open"
+
+
+def test_reconcile_leaves_a_stale_visit_whose_only_candidate_also_fits_a_younger_open_visit():
+    stale = _stale_visit("065CUA13", 5340, 13)
+    young = _open_visit("123ABC13", 4000, 6 * 60)
+    unread = event(number="", orientation="rear", weight=10860, minutes=3 * 60)
+    process_gpt("", "rear")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 0, "left": 1}
+    stale.refresh_from_db()
+    young.refresh_from_db()
+    unread.refresh_from_db()
+    assert stale.status == st.AT_SILO and stale.tare_weight_kg is None
+    assert young.status == st.AT_SILO and young.tare_weight_kg is None
+    assert unread.status == "open"
+
+
+def test_reconcile_takes_an_unchecked_exit_older_than_the_identity_window_as_unread():
+    # The identity worker only claims weighings of the last 24 h: a parked
+    # exit older than that without any check will never be read, so it is not
+    # "still being checked" but unread for good.
+    first = _stale_visit("065CUA13", 5340, 30)
+    unread = event(number="", orientation="rear", weight=10860, minutes=28 * 60)
+    assert not WeighingIdentityCheck.objects.filter(weighing=unread).exists()
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 1, "cancelled": 0, "left": 0}
+    first.refresh_from_db()
+    unread.refresh_from_db()
+    assert first.status == st.COMPLETED and first.tare_weight_kg == 10860 and first.net_weight_kg == 5520
+    assert unread.status == "assigned" and unread.action == "exit" and unread.wagon_id == first.pk
+    # The audit marker exists even though no check row did before.
+    assert unread.identity_check.status == "matched" and unread.identity_check.reason == "automatic_exit"
+
+
+def test_reconcile_decides_exclusivity_before_any_visit_of_the_run_is_cancelled():
+    # A's exit window ends at A's own re-entry, so the unread exit after it is
+    # not A's candidate and A is cancelled by age. That exit still fits A at
+    # the time the run is planned, so B may not take it just because A was
+    # cancelled a moment earlier in the same run.
+    first = _stale_visit("065CUA13", 5000, 26)
+    again = event(number="065CUA13", orientation="front", weight=5000, minutes=22 * 60)
+    process_gpt("065CUA13", "front")
+    again.refresh_from_db()
+    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
+    other = _stale_visit("123ABC13", 5000, 25)
+    unread = event(number="", orientation="rear", weight=12000, minutes=20 * 60)
+    process_gpt("", "rear")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 0, "cancelled": 1, "left": 1}
+    first.refresh_from_db()
+    other.refresh_from_db()
+    unread.refresh_from_db()
+    assert first.status == st.CANCELLED
+    assert other.status == st.AT_SILO and other.tare_weight_kg is None and other.exit_note == ""
+    assert unread.status == "open"
+
+
+def test_reconcile_keeps_a_loaded_weighing_of_unknown_direction_as_the_exit_candidate():
+    # The plate was read on a loaded weighing whose direction stayed unknown:
+    # a truck coming back is empty, so this is the visit's exit, not a re-entry
+    # that would cut the window short.
+    first = _stale_visit("065CUA13", 5340, 13)
+    loaded = event(number="065CUA13", orientation="", weight=10860, minutes=10 * 60)
+    WeighingIdentityCheck.objects.create(weighing=loaded, status="review", reason="orientation_unknown")
+    assert automatic_routing.reconcile_stale_visits() == {"closed": 1, "cancelled": 0, "left": 0}
+    first.refresh_from_db()
+    loaded.refresh_from_db()
+    assert first.status == st.COMPLETED and first.tare_weight_kg == 10860
+    assert loaded.status == "assigned" and loaded.action == "exit" and loaded.wagon_id == first.pk
+
+
+def test_manual_binding_takes_the_lane_lock_before_the_weighing():
+    # The operator's binding shares the lane -> weighing -> visit lock order
+    # of automatic booking and the timer, so it never deadlocks against them.
+    from apps.grain import services
+    from apps.grain.models import PassageScaleAutomationState
+    visit = Wagon.objects.create(number="123ABC13", direction=Wagon.PASSAGE, workflow="simple", cargo_name="Test", status=st.ARRIVED)
+    item = event(number="123ABC13", orientation="front", weight=4000, minutes=5)
+    PassageScaleAutomationState.objects.all().delete()
+    services.assign_unassigned_weighing(item, visit, None)
+    assert PassageScaleAutomationState.objects.filter(scale_number="truck").exists()
+    item.refresh_from_db()
+    assert item.status == "assigned" and item.action == "entry" and item.wagon.gross_weight_kg == 4000
+
+
+# ── An exit that names the truck a misread front plate opened a visit for ────
+
+
+def test_plate_overlap_counts_the_characters_the_plate_cores_share():
+    # The region is left out: two strangers from one region would share it.
+    assert automatic_routing._plate_overlap("253ZOU81", "532OUB13") == 5
+    assert automatic_routing._plate_overlap("E065CUA", "065CUA13") == 6
+    assert automatic_routing._plate_overlap("132XYZ13", "123ABC13") == 3
+    assert automatic_routing._plate_overlap("237AAX01", "853UVA13") == 2
+    assert automatic_routing.ORPHAN_PLATE_OVERLAP == 4
+
+
+def test_exit_with_a_plate_merges_the_orphan_visit_opened_under_a_misread_front_plate():
+    # The front camera read 253ZOU81 for 532OUB13 (six characters in common);
+    # nothing ever left under that spelling, the visit's empty weight is what
+    # 532OUB13 weighs empty, and the exit reads fine. The visit is this truck's.
+    _remember_history("532OUB13", 5680, minutes=180)
+    phantom = _open_visit("253ZOU81", 5600, 20)
+    departure = event(number="532OUB13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("532OUB13", "rear")
+    departure.refresh_from_db()
+    phantom.refresh_from_db()
+    assert departure.wagon_id == phantom.pk and phantom.number == "532OUB13"
+    assert phantom.status == st.COMPLETED and phantom.gross_weight_kg == 5600 and phantom.net_weight_kg == 5860
+    assert not phantom.weighings.filter(source="historical").exists()
+    renamed = EventLog.objects.get(event_type="grain_number", payload__wagon_id=phantom.pk)
+    assert renamed.payload["previous_number"] == "253ZOU81" and renamed.payload["number"] == "532OUB13"
+    merged = EventLog.objects.get(event_type="grain_automatic_binding", message__contains="рейс был открыт под номером")
+    assert "253ZOU81" in merged.message and "532OUB13" in merged.message and merged.payload["wagon_id"] == phantom.pk
+    assert not Wagon.objects.filter(number="253ZOU81").exists()
+    assert not VehicleTareMemory.objects.filter(number="253ZOU81").exists()
+    assert VehicleTareMemory.objects.get(number="532OUB13").record.weight_kg == 5600
+    assert not Wagon.objects.filter(status__in=st.ON_SITE_STATUSES).exists()
+    assert UnassignedWeighing.objects.filter(status="open").count() == 0
+
+
+def test_exit_with_a_plate_does_not_merge_a_visit_whose_plate_shares_too_few_characters():
+    _remember_history("853UVA13", 5600, minutes=180)
+    other = _open_visit("237AAX01", 5600, 20)
+    departure = event(number="853UVA13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("853UVA13", "rear")
+    departure.refresh_from_db()
+    other.refresh_from_db()
+    assert other.status == st.AT_SILO and other.number == "237AAX01" and other.tare_weight_kg is None
+    assert departure.wagon_id != other.pk and departure.wagon.status == st.COMPLETED
+    assert departure.wagon.weighings.get(kind="gross").source == "historical"
+
+
+def test_exit_with_a_plate_does_not_merge_when_two_orphan_visits_fit():
+    _remember_history("532OUB13", 5680, minutes=180)
+    first = _open_visit("253ZOU81", 5600, 30)
+    second = _open_visit("235ZOU18", 5640, 20)
+    departure = event(number="532OUB13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("532OUB13", "rear")
+    departure.refresh_from_db()
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.status == st.AT_SILO and first.number == "253ZOU81"
+    assert second.status == st.AT_SILO and second.number == "235ZOU18"
+    assert departure.wagon.status == st.COMPLETED and departure.wagon.weighings.get(kind="gross").source == "historical"
+    assert Wagon.objects.filter(status__in=st.ON_SITE_STATUSES).count() == 2
+
+
+def test_exit_with_a_plate_does_not_merge_a_visit_whose_plate_has_completed_trips_of_its_own():
+    # 253ZOU81 has left the site under that spelling before: it is a real
+    # plate of another truck, not a misreading of 532OUB13.
+    _remember_history("253ZOU81", 5600, minutes=240)
+    _remember_history("532OUB13", 5680, minutes=180)
+    real = _open_visit("253ZOU81", 5600, 20)
+    departure = event(number="532OUB13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("532OUB13", "rear")
+    departure.refresh_from_db()
+    real.refresh_from_db()
+    assert real.status == st.AT_SILO and real.number == "253ZOU81" and real.tare_weight_kg is None
+    assert departure.wagon_id != real.pk and departure.wagon.weighings.get(kind="gross").source == "historical"
+    assert Wagon.objects.filter(status__in=st.ON_SITE_STATUSES).count() == 1
+
+
+def _exit_leaves_the_visit_alone(visit, departure, *, net):
+    departure.refresh_from_db()
+    visit.refresh_from_db()
+    assert visit.status == st.AT_SILO and visit.tare_weight_kg is None
+    assert departure.wagon_id != visit.pk and departure.wagon.status == st.COMPLETED
+    assert departure.wagon.weighings.get(kind="gross").source == "historical" and departure.wagon.net_weight_kg == net
+    assert Wagon.objects.filter(status__in=st.ON_SITE_STATUSES).count() == 1
+
+
+def test_exit_with_a_plate_does_not_merge_a_visit_from_the_same_region_sharing_only_digits():
+    # 132XYZ13 and 123ABC13 share the region and three digits: the region
+    # says nothing about the truck, and three characters are a stranger.
+    _remember_history("123ABC13", 5680, minutes=180)
+    other = _open_visit("132XYZ13", 5600, 20)
+    departure = event(number="123ABC13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("123ABC13", "rear")
+    _exit_leaves_the_visit_alone(other, departure, net=5780)
+    other.refresh_from_db()
+    assert other.number == "132XYZ13"
+
+
+def test_exit_with_a_plate_does_not_merge_a_visit_whose_entry_weight_is_not_this_trucks_tare():
+    _remember_history("532OUB13", 5680, minutes=180)
+    other = _open_visit("253ZOU81", 6100, 20)  # 420 kg from what 532OUB13 weighs empty
+    departure = event(number="532OUB13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("532OUB13", "rear")
+    _exit_leaves_the_visit_alone(other, departure, net=5780)
+
+
+def test_exit_with_a_plate_does_not_merge_a_visit_it_would_leave_barely_heavier():
+    _remember_history("532OUB13", 5680, minutes=180)
+    other = _open_visit("253ZOU81", 5600, 20)
+    departure = event(number="532OUB13", orientation="rear", weight=6400, minutes=1)  # 800 kg over the entry: not loaded
+    process_gpt("532OUB13", "rear")
+    _exit_leaves_the_visit_alone(other, departure, net=720)
+
+
+def test_exit_with_a_plate_takes_neither_the_orphan_visit_nor_the_parked_entry_when_both_fit():
+    # A visit under a misread plate and an unread front weighing both weigh
+    # what this truck weighs empty: two stories for one exit. Neither is
+    # told; the exit completes from history and the operator sees both.
+    _remember_history("532OUB13", 5680, minutes=180)
+    entry = _unread_front(5650, 40)
+    phantom = _open_visit("253ZOU81", 5600, 20)
+    departure = event(number="532OUB13", orientation="rear", weight=11460, minutes=1)
+    process_gpt("532OUB13", "rear")
+    _exit_leaves_the_visit_alone(phantom, departure, net=5780)
+    phantom.refresh_from_db()
+    entry.refresh_from_db()
+    assert phantom.number == "253ZOU81"
+    assert entry.status == "open" and entry.wagon_id is None
+    assert not Wagon.objects.filter(number="532OUB13", status__in=st.ON_SITE_STATUSES).exists()
+    assert Wagon.objects.filter(number="532OUB13").count() == 2  # the remembered trip and the one completed from history

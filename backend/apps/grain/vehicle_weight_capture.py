@@ -500,6 +500,10 @@ def _safe_ai_payload(payload: Mapping | None) -> dict:
         "ocr_candidates",
         "accepted_reads",
         "confirmation_votes",
+        # The Camera-PC's second look at zoomed tiles of the frames that held
+        # no plate, and how many of those looks found one.
+        "zoom_frames",
+        "zoom_detected_frames",
     ):
         value = payload.get(field)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:

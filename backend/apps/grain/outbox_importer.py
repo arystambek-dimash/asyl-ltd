@@ -139,7 +139,12 @@ def _failure_detail(diagnostics, error):
             needed = diagnostics.get("confirmation_votes")
             return f"Номер не подтверждён: {_tally(votes)}" + (f" (нужно {needed})" if needed else "")
         if detected == 0:
-            return "Камера не нашла табличку" + (f": 0 из {scanned} кадров" if scanned else "")
+            detail = "Камера не нашла табличку" + (f": 0 из {scanned} кадров" if scanned else "")
+            # The Camera-PC looked again at zoomed tiles of those frames (a
+            # zoomed hit counts as a detected frame, so here it found nothing).
+            if diagnostics.get("zoom_frames"):
+                detail += ", зум по тайлам тоже пуст"
+            return detail
         if detected:
             return f"Номер не прочитан: табличка в {detected} из {scanned or '?'} кадров"
     status = f"Камера: {diagnostics.get('status') or error}"
