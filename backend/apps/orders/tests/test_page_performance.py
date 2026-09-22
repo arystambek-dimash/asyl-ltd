@@ -143,7 +143,14 @@ def test_order_search_sort_and_pagination_cover_the_complete_selection(perf_user
     url = "/api/orders/?ordering=-id&page_size=3&page=1"
     page = api.get(url).json()
     assert page["count"] == 8
-    assert page["results"][0]["id"] == oldest.pk  # active first, globally
+    # Явная сортировка строгая: по id вниз, без «активные в начало».
+    newest = Order.objects.order_by("-pk").first()
+    assert page["results"][0]["id"] == newest.pk
+    created_desc = api.get("/api/orders/", {"ordering": "-created", "page": 1, "page_size": 50}).json()
+    ids = [row["id"] for row in created_desc["results"]]
+    assert ids == sorted(ids, reverse=True)
+    created_asc = api.get("/api/orders/", {"ordering": "created", "page": 1, "page_size": 50}).json()
+    assert [row["id"] for row in created_asc["results"]] == sorted(ids)
     other = api.get(page["next"]).json()
     assert not {r["id"] for r in page["results"]} & {r["id"] for r in other["results"]}
     search = api.get(

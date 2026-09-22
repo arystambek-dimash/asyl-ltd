@@ -24,6 +24,7 @@ import { OrderPriceCorrectionModal } from "@/components/order-price-correction-m
 import { OrderStatusSelect } from "@/components/order-status-select";
 import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
+import { OrderFixationModal, canFixateOrder } from "@/components/order-fixation-modal";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import { ArchiveDock } from "@/components/orders/archive-dock";
 import { OrderPurgeDialog } from "@/components/orders/order-purge-dialog";
@@ -54,6 +55,7 @@ import {
   Archive,
   BarChart3,
   Building2,
+  CalendarClock,
   CalendarDays,
   ChevronDown,
   ChevronLeft,
@@ -518,48 +520,38 @@ function OrderTemplatePicker({
     .join(", ");
 
   return (
-    <section className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/90 via-white to-emerald-50/60 p-3.5 sm:p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
-            <CopyPlus className="size-5" />
-          </span>
-          <div>
-            <h3 className="text-sm font-bold text-slate-900">Повторить старый заказ</h3>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Выберите шаблон — данные заполнятся, но заказ сохранится только после вашей проверки.
-            </p>
+    <section className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50/70 px-3.5 py-3 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white">
+          <CopyPlus className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-900">Повторить старый заказ</div>
+          <div className="truncate text-xs text-slate-500">
+            {selected
+              ? `${selected.client_name} · ${itemsSummary || "Без позиций"}${
+                  selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""
+                } · ${formatMoney(selected.total_amount)} ${currencySymbol(selected.currency)}`
+              : "Данные заполнятся из шаблона, заказ сохранится после вашей проверки."}
           </div>
         </div>
-        <select
-          aria-label="Шаблон заказа"
-          value={selected ? String(selected.id) : ""}
-          onChange={(event) => {
-            const value = Number(event.target.value);
-            onSelect(sorted.find((order) => order.id === value) ?? null);
-          }}
-          className="h-10 min-w-56 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-        >
-          <option value="">Новый заказ с нуля</option>
-          {sorted.map((order) => (
-            <option key={order.id} value={order.id}>
-              #{order.id} · {order.client_name ?? `Клиент ${order.client}`} · {formatDateTime(order.created_at)}
-            </option>
-          ))}
-        </select>
       </div>
-      {selected && (
-        <div className="mt-3 grid gap-2 border-t border-blue-100 pt-3 text-xs sm:grid-cols-[auto_1fr_auto] sm:items-center">
-          <span className="w-fit rounded-lg bg-blue-600 px-2.5 py-1 font-black text-white">Шаблон #{selected.id}</span>
-          <span className="truncate font-medium text-slate-700">
-            {selected.client_name} · {itemsSummary || "Без позиций"}
-            {selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""}
-          </span>
-          <span className="font-bold tabular-nums text-slate-900">
-            {formatMoney(selected.total_amount)} {currencySymbol(selected.currency)}
-          </span>
-        </div>
-      )}
+      <select
+        aria-label="Шаблон заказа"
+        value={selected ? String(selected.id) : ""}
+        onChange={(event) => {
+          const value = Number(event.target.value);
+          onSelect(sorted.find((order) => order.id === value) ?? null);
+        }}
+        className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 sm:w-64"
+      >
+        <option value="">Новый заказ с нуля</option>
+        {sorted.map((order) => (
+          <option key={order.id} value={order.id}>
+            #{order.id} · {order.client_name ?? `Клиент ${order.client}`} · {formatDateTime(order.created_at)}
+          </option>
+        ))}
+      </select>
     </section>
   );
 }
@@ -640,6 +632,7 @@ function OrdersPageInner() {
   const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
   const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
   const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
+  const [fixatingOrder, setFixatingOrder] = useState<Order | null>(null);
   const [rollbackTarget, setRollbackTarget] = useState<"pending" | "confirmed" | "cancelled">("confirmed");
   const { data: trashPreview, reload: reloadTrashPreview } = useApi<{ count: number; results: Order[] }>(
     canEdit && view === "orders" ? "/orders/trash-preview/" : null,
@@ -742,6 +735,16 @@ function OrdersPageInner() {
             label: "Корректировать стоимость",
             icon: CircleDollarSign,
             onSelect: () => setCorrectingPrice(o),
+          },
+        ]
+      : []),
+    ...(canEdit && canFixateOrder(o)
+      ? [
+          {
+            key: "fixate",
+            label: "Зафиксировать статус и оплату",
+            icon: CalendarClock,
+            onSelect: () => setFixatingOrder(o),
           },
         ]
       : []),
@@ -1193,6 +1196,13 @@ function OrdersPageInner() {
         onClose={() => setRollbackOrder(null)}
         onChanged={async () => {
           await Promise.all([reload(), reloadSummary(), reloadTrashPreview()]);
+        }}
+      />
+      <OrderFixationModal
+        order={fixatingOrder}
+        onClose={() => setFixatingOrder(null)}
+        onChanged={async () => {
+          await Promise.all([reload(), reloadSummary()]);
         }}
       />
 

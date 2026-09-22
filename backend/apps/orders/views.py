@@ -773,6 +773,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         # «Оплаты» кассы: принять оплату или перевести в долг отгруженный заказ.
         "awaiting_payment": ("payments.confirm", "payments.create"),
         "to_debt": ("payments.confirm", "payments.create"),
+        "fixate": "orders.edit",
         "cashier_log": "payments.confirm",
         "train": "loader.confirm",
         "loading_camera": "loader.confirm",
@@ -1245,6 +1246,17 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         page = self.paginate_queryset(qs)
         data = self.get_serializer(page if page is not None else qs, many=True).data
         return self.get_paginated_response(data) if page is not None else Response(data)
+
+    @action(detail=True, methods=["post"], url_path="fixate")
+    def fixate(self, request, pk=None):
+        """Зафиксировать статус и оплату существующего заказа задним числом."""
+        from .fixation import OrderFixationSerializer, fixate_order
+
+        params = OrderFixationSerializer(data=request.data)
+        params.is_valid(raise_exception=True)
+        order = fixate_order(self.get_object(), request.user, **params.validated_data)
+        order = self.get_queryset().get(pk=order.pk)
+        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="to-debt")
     def to_debt(self, request, pk=None):

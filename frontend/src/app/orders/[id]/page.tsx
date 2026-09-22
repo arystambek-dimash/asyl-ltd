@@ -44,9 +44,11 @@ import { OrderForm } from "@/components/order-form";
 import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { Modal } from "@/components/ui/modal";
 import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
+import { OrderFixationModal, canFixateOrder } from "@/components/order-fixation-modal";
 import {
   ArrowLeft,
   Archive,
+  CalendarClock,
   CalendarDays,
   CircleHelp,
   CircleDollarSign,
@@ -78,6 +80,7 @@ const EVENT_LABELS: Record<string, string> = {
   loading: "Погрузка",
   shipment: "Заказ отгружен",
   shipment_rollback: "Откат отгрузки",
+  order_backdated: "Зафиксировано задним числом",
   order_repeat: "Повтор заказа",
   order_price_correction: "Стоимость скорректирована",
   debt_override: "Долг подтверждён",
@@ -144,6 +147,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const canViewStatus = can(me, "orders.view");
   const [newStatus, setNewStatus] = useState("");
   const [rollbackOpen, setRollbackOpen] = useState(false);
+  const [fixationOpen, setFixationOpen] = useState(false);
   const {
     data: departments,
     loading: departmentsLoading,
@@ -264,6 +268,16 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 : []),
               ...(canEditOrder
                 ? [{ key: "edit", label: "Изменить заказ", icon: Pencil, onSelect: () => setEditOpen(true) }]
+                : []),
+              ...(canEditStatus && canFixateOrder(order)
+                ? [
+                    {
+                      key: "fixate",
+                      label: "Зафиксировать статус и оплату",
+                      icon: CalendarClock,
+                      onSelect: () => setFixationOpen(true),
+                    },
+                  ]
                 : []),
               ...(canCorrectPrice
                 ? [
@@ -843,6 +857,13 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
         onChanged={async () => {
           setNewStatus("");
           await reload();
+        }}
+      />
+      <OrderFixationModal
+        order={fixationOpen ? order : null}
+        onClose={() => setFixationOpen(false)}
+        onChanged={async () => {
+          await Promise.all([reload(), events.reload()]);
         }}
       />
     </AppShell>

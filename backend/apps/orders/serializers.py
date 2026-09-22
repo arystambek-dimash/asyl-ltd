@@ -10,6 +10,7 @@ from apps.common.money import money_string
 from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
 
+from .fixation import OrderFixationSerializer, assert_can_fixate, fixate_order
 from .labels import payment_method_label
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .services import set_order_department, set_transport_type, set_truck_number
@@ -397,6 +398,9 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     template_order = serializers.PrimaryKeyRelatedField(
         queryset=Order.objects.all(), write_only=True, required=False,
     )
+    # Заказ задним числом: дата, статус и оплата проставляются одной
+    # транзакцией с созданием (см. orders/fixation.py).
+    backdate = OrderFixationSerializer(write_only=True, required=False)
 
     class Meta:
         model = Order
@@ -445,6 +449,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "loading_camera",
             "repeated_from",
             "template_order",
+            "backdate",
             "edit_reason",
             "deleted_at",
             "deleted_by_name",
@@ -623,6 +628,19 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                     "code": "template_on_update",
                 }
             )
+        if attrs.get("backdate") is not None:
+            if self.instance is not None:
+                raise serializers.ValidationError(
+                    {
+                        "detail": "Задним числом создаётся только новый заказ; "
+                                  "существующему статус и оплату фиксируют отдельным действием",
+                        "code": "backdate_on_update",
+                    }
+                )
+            if not self.initial_data.get("prices"):
+                raise serializers.ValidationError(
+                    {"backdate": "Для заказа задним числом укажите цены по всем позициям"}
+                )
         store = attrs.get("store")
         client = attrs.get("client") or getattr(self.instance, "client", None)
         if self.instance is None and client and client.department_id:
@@ -662,13 +680,20 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         # optional write-only transport field on ordinary order creation.
         validated_data.pop("edit_reason", None)
         template_order = validated_data.pop("template_order", None)
+        backdate = validated_data.pop("backdate", None)
+        user = self.context["request"].user
+        if backdate is not None:
+            # Права проверяем до записи: отказ откатывает всю транзакцию.
+            assert_can_fixate(user, paid=backdate.get("paid", False))
         warehouse = resolve_warehouse(validated_data.get("warehouse"))
         validated_data["warehouse"] = warehouse
-        ensure_products_available(
-            (item["product"] for item in items),
-            warehouse=warehouse,
-        )
-        user = self.context["request"].user
+        # Исторический заказ склад не списывает, поэтому и остаток на сегодня
+        # для него не важен — товара могло уже не остаться.
+        if backdate is None:
+            ensure_products_available(
+                (item["product"] for item in items),
+                warehouse=warehouse,
+            )
         validated_data["created_by"] = user
         validated_data.setdefault("currency", validated_data["client"].currency)
 
@@ -721,6 +746,8 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                     "mode": "reviewed_template",
                 },
             )
+        if backdate is not None:
+            order = fixate_order(order, user, set_created=True, **backdate)
         return order
 
     @transaction.atomic

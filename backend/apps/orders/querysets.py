@@ -10,12 +10,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.db.models import (
-    Case,
     CharField,
     Count,
     DecimalField,
     F,
-    IntegerField,
     OuterRef,
     Prefetch,
     Q,
@@ -23,7 +21,6 @@ from django.db.models import (
     Subquery,
     Sum,
     Value,
-    When,
 )
 from django.db.models.functions import Cast, Coalesce, Concat, Greatest, NullIf, Trim, TruncDate
 from rest_framework.exceptions import ValidationError
@@ -178,13 +175,6 @@ def order_page_sort(queryset: QuerySet[Order], ordering: str) -> QuerySet[Order]
         raise ValidationError(
             {"detail": "Неизвестная сортировка заказов", "code": "bad_ordering"}
         )
-    queryset = queryset.alias(
-        done_rank=Case(
-            When(status="shipped", then=Value(1)),
-            default=Value(0),
-            output_field=IntegerField(),
-        )
-    )
     if key == "amount":
         queryset = with_order_amounts(queryset, select=False)
     if key == "client":
@@ -203,8 +193,10 @@ def order_page_sort(queryset: QuerySet[Order], ordering: str) -> QuerySet[Order]
                 F("client__user__username"),
             )
         )
+    # Явная сортировка — строго по выбранной колонке: без скрытого
+    # «отгруженные в конец», иначе порядок по дате выглядит вперемешку.
     direction = "-" if descending else ""
-    fields = ["done_rank"]
+    fields: list[str] = []
     if key == "amount":
         fields.append(direction + "currency")
     fields.extend([direction + columns[key], direction + "id"])

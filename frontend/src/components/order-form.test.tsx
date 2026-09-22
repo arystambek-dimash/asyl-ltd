@@ -11,8 +11,9 @@ const postMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/use-api", () => ({ useApi: useApiMock }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: pushMock }) }));
+const meMock = vi.hoisted(() => ({ current: { sales_department: null, permissions: [] as string[] } }));
 vi.mock("@/store/auth", () => ({
-  useAuth: () => ({ me: { sales_department: null } }),
+  useAuth: () => ({ me: meMock.current }),
 }));
 vi.mock("@/lib/api", () => ({
   api: { patch: patchMock, post: postMock },
@@ -60,6 +61,7 @@ describe("OrderForm reference data resilience", () => {
     postMock.mockReset();
     patchMock.mockResolvedValue({ data: {} });
     postMock.mockResolvedValue({ data: { id: 1 } });
+    meMock.current = { sales_department: null, permissions: [] };
   });
 
   it("shows a lookup error and blocks progression until all required data is available", async () => {
@@ -79,7 +81,7 @@ describe("OrderForm reference data resilience", () => {
     render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
 
     expect(screen.getByRole("alert")).toHaveTextContent("Доступ запрещён");
-    expect(screen.getByRole("button", { name: /Продолжить/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Создать заказ/ })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: /Повторить/ }));
     expect(reloadFormOptions).toHaveBeenCalledOnce();
@@ -118,9 +120,6 @@ describe("OrderForm reference data resilience", () => {
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-
     const price = screen.getByRole("spinbutton", { name: "Цена, позиция 1" });
     expect(price).toHaveValue(17.5);
     expect(screen.getByRole("alert")).toHaveTextContent("Цены можно ввести вручную");
@@ -133,7 +132,7 @@ describe("OrderForm reference data resilience", () => {
     expect(reloadClientPrices).toHaveBeenCalledOnce();
   });
 
-  it("does not create an order while advancing or going back to change currency", async () => {
+  it("does not create an order while changing currency and repricing", async () => {
     const template = {
       id: 12,
       client: client.id,
@@ -160,18 +159,9 @@ describe("OrderForm reference data resilience", () => {
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    const currencyStepContinue = screen.getByRole("button", { name: /Продолжить/ });
-    await user.click(currencyStepContinue);
-
+    await user.click(screen.getByRole("radio", { name: /Доллары/ }));
     expect(postMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /Создать заказ/ })).not.toBe(currencyStepContinue);
-    await user.click(screen.getByRole("button", { name: /Назад/ }));
-    await user.click(screen.getByRole("button", { name: /USD.*Доллары/ }));
-    expect(postMock).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    expect(postMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("spinbutton", { name: "Цена, позиция 1" })).toHaveValue(4.25));
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
 
     expect(postMock).toHaveBeenCalledOnce();
@@ -230,10 +220,7 @@ describe("OrderForm reference data resilience", () => {
 
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
-
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.selectOptions(screen.getByLabelText("Склад отгрузки"), "22");
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
 
     expect(screen.getByRole("option", { name: "Мука 50 кг · 7 меш." })).toBeInTheDocument();
     expect(screen.queryByText("Цех 2")).not.toBeInTheDocument();
@@ -276,9 +263,7 @@ describe("OrderForm reference data resilience", () => {
       return apiState(null);
     });
 
-    const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
 
     const selector = screen.getByLabelText("Склад отгрузки");
     expect(selector).toBeDisabled();
@@ -312,12 +297,9 @@ describe("OrderForm reference data resilience", () => {
       return apiState(null);
     });
 
-    const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
 
     await waitFor(() => expect(screen.getByLabelText("Склад отгрузки")).toHaveValue("11"));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     expect(screen.getByLabelText("Товар, позиция 1")).toHaveValue("");
   });
 
@@ -349,10 +331,8 @@ describe("OrderForm reference data resilience", () => {
 
     const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
 
-    expect(screen.getByRole("option", { name: /доступно для исправления/ })).toBeEnabled();
+    expect(screen.getByRole("option", { name: /нет остатка, но доступен/ })).toBeEnabled();
     const save = screen.getByRole("button", { name: /Сохранить изменения/ });
     expect(save).toBeDisabled();
     await user.type(screen.getByLabelText("Причина корректировки отгруженного заказа"), "Исправили факт");
@@ -392,8 +372,6 @@ describe("OrderForm reference data resilience", () => {
 
     const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
 
     expect(screen.getByLabelText("Товар, позиция 1")).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
@@ -432,11 +410,9 @@ describe("OrderForm reference data resilience", () => {
   it("creates a wagon order with its complete number from a template", async () => {
     const user = userEvent.setup();
     render(<OrderForm template={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
     await user.clear(screen.getByLabelText("Номер вагона"));
     await user.type(screen.getByLabelText("Номер вагона"), "00012345");
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
     expect(postMock).toHaveBeenCalledWith(
       "/orders/",
@@ -447,11 +423,9 @@ describe("OrderForm reference data resilience", () => {
   it("keeps a wagon number on edit and preserves drafts when switching transport", async () => {
     const user = userEvent.setup();
     render(<OrderForm editing={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    await user.click(screen.getByRole("button", { name: /Трак/ }));
-    await user.click(screen.getByRole("button", { name: /Железная дорога/ }));
+    await user.click(screen.getByRole("radio", { name: /Трак/ }));
+    await user.click(screen.getByRole("radio", { name: /Вагон/ }));
     expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(patchMock).toHaveBeenCalledWith(
       "/orders/22/",
@@ -462,13 +436,11 @@ describe("OrderForm reference data resilience", () => {
   it("explains an incomplete wagon number and permits leaving it unknown", async () => {
     const user = userEvent.setup();
     render(<OrderForm editing={numberOrder({ truck_number: "" })} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.type(screen.getByLabelText("Номер вагона"), "123");
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(screen.getByText(/Номер вагона должен содержать 8 цифр/)).toBeInTheDocument();
     expect(patchMock).not.toHaveBeenCalled();
     await user.clear(screen.getByLabelText("Номер вагона"));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(patchMock).toHaveBeenCalledWith("/orders/22/", expect.objectContaining({ truck_number: "" }));
   });
@@ -476,10 +448,8 @@ describe("OrderForm reference data resilience", () => {
   it("keeps the loaded wagon number disabled and out of an unrelated patch", async () => {
     const user = userEvent.setup();
     render(<OrderForm editing={numberOrder({ status: "loading" })} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     expect(screen.getByLabelText("Номер вагона")).toBeDisabled();
     expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(patchMock.mock.calls[0][1]).not.toHaveProperty("truck_number");
   });
@@ -487,10 +457,8 @@ describe("OrderForm reference data resilience", () => {
   it("allows editing an unrelated field while preserving a legacy wagon number", async () => {
     const user = userEvent.setup();
     render(<OrderForm editing={numberOrder({ truck_number: "1234567" })} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     expect(screen.getByLabelText("Номер вагона")).toHaveValue("1234567");
     await user.type(screen.getByLabelText("Плановая дата прибытия"), "2026-09-08");
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(patchMock).toHaveBeenCalledWith(
       "/orders/22/",
@@ -501,8 +469,7 @@ describe("OrderForm reference data resilience", () => {
   it("requires a valid new wagon number when copying a legacy template", async () => {
     const user = userEvent.setup();
     render(<OrderForm template={numberOrder({ truck_number: "1234567" })} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
     expect(screen.getByText(/Номер вагона должен содержать 8 цифр/)).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
   });
@@ -530,14 +497,64 @@ describe("OrderForm reference data resilience", () => {
     useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
-    expect(screen.getByText("отдел клиента")).toBeInTheDocument();
+    expect(screen.getByText(/отдел клиента/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Другой отдел" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
-    await user.click(screen.getByRole("button", { name: /Продолжить/ }));
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
     expect(postMock).toHaveBeenCalledWith(
       "/orders/",
       expect.objectContaining({ client: client.id, department: department.code }),
     );
+  });
+
+  it("hides the backdate block without orders.edit and sends it when enabled", async () => {
+    meMock.current = { sales_department: null, permissions: ["orders.edit", "payments.create"] };
+    const user = userEvent.setup();
+    render(
+      <OrderForm
+        template={numberOrder({ transport_type: "truck", truck_number: "" })}
+        onCancel={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Задним числом" }));
+    const date = screen.getByLabelText("Дата");
+    await user.clear(date);
+    await user.type(date, "2026-09-10");
+    await user.click(screen.getByRole("radio", { name: /Отгружено/ }));
+    await user.click(screen.getByRole("checkbox", { name: /Оплачен полностью/ }));
+    await user.click(screen.getByRole("radio", { name: "Kaspi" }));
+    await user.click(screen.getByRole("button", { name: /Создать задним числом/ }));
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({
+        backdate: { date: "2026-09-10", status: "shipped", paid: true, payment_method: "kaspi" },
+      }),
+    );
+  });
+
+  it("does not offer backdating without the edit permission", () => {
+    render(<OrderForm template={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.queryByRole("checkbox", { name: "Задним числом" })).not.toBeInTheDocument();
+  });
+
+  it("rejects a backdate in the future before sending", async () => {
+    meMock.current = { sales_department: null, permissions: ["orders.edit"] };
+    const user = userEvent.setup();
+    render(
+      <OrderForm
+        template={numberOrder({ transport_type: "truck", truck_number: "" })}
+        onCancel={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "Задним числом" }));
+    const date = screen.getByLabelText("Дата");
+    await user.clear(date);
+    await user.type(date, "2099-01-01");
+    expect(screen.getByRole("button", { name: /Создать задним числом/ })).toBeDisabled();
+    expect(screen.queryByRole("checkbox", { name: /Оплачен полностью/ })).not.toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
   });
 });
