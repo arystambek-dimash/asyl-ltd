@@ -5,7 +5,9 @@ No database migrations, model imports, Redis locks or web server are involved.
 """
 
 import fcntl
+import math
 import os
+import re
 import signal
 import sqlite3
 import threading
@@ -25,6 +27,89 @@ from apps.grain import scale
 from apps.cameras import ai
 from .outbox import Lane, Outbox, is_busy
 from .writer import OutboxWriter
+
+# A Camera-PC refusal (422 no_match, 503 camera_unavailable, ...) still says why:
+# how many frames held a plate, the vote tally and the last OCR reads. Only this
+# bounded subset travels with the event; frames or base64 never enter the outbox.
+# The CRM applies its own model-side bounds again on import.
+DIAGNOSTIC_STRINGS = (("status", 300), ("error", 300), ("error_code", 300))
+DIAGNOSTIC_COUNTERS = ("fresh_frames_seen", "frames_scanned", "detected_frames", "ocr_candidates",
+                       "accepted_reads", "ambiguous_frames", "confirmation_votes")
+DIAGNOSTIC_FLOATS = (("best_detector_confidence", 1), ("confirmation_window_seconds", 1e6))
+READ_STRINGS = ("variant", "raw_text", "number")
+READ_FLOATS = (("confidence", 1), ("detector_confidence", 1), ("bbox_w", 100_000), ("bbox_h", 100_000))
+# The CRM keeps the same eight (vehicle_weight_capture.MAX_NO_MATCH_VOTES), so a
+# competing number is never cut on import behind a lone plate's back.
+MAX_DIAGNOSTIC_VOTES = 8
+MAX_DIAGNOSTIC_READS = 8
+MAX_READ_TEXT = 30
+
+
+def _counter(value):
+    return value if type(value) is int and value >= 0 else None
+
+
+def _bounded(value, upper):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and 0 <= number <= upper else None
+
+
+def _diagnostics(payload):
+    """Plain dict/list subset of a failure answer; no Django models in this container."""
+    if not isinstance(payload, dict):
+        return {}
+    safe = {}
+    for field, limit in DIAGNOSTIC_STRINGS:
+        if isinstance(payload.get(field), str):
+            safe[field] = payload[field][:limit]
+    for field in DIAGNOSTIC_COUNTERS:
+        if _counter(payload.get(field)) is not None:
+            safe[field] = payload[field]
+    for field, upper in DIAGNOSTIC_FLOATS:
+        number = _bounded(payload.get(field), upper)
+        if number is not None:
+            safe[field] = number
+    votes = payload.get("votes")
+    if isinstance(votes, dict):
+        valid = [
+            (number, count) for number, count in votes.items()
+            if isinstance(number, str) and 1 <= len(number) <= MAX_READ_TEXT and _counter(count) is not None
+        ]
+        if valid:
+            safe["votes"] = dict(valid[:MAX_DIAGNOSTIC_VOTES])
+        if len(valid) > MAX_DIAGNOSTIC_VOTES:
+            # A competitor may sit past the cut: the CRM must not single out a plate.
+            safe["votes_truncated"] = True
+    reads = payload.get("last_reads")
+    if isinstance(reads, list):
+        kept = []
+        for read in reads[:MAX_DIAGNOSTIC_READS]:
+            if not isinstance(read, dict):
+                continue
+            item = {}
+            if _counter(read.get("frame")) is not None:
+                item["frame"] = read["frame"]
+            for field in READ_STRINGS:
+                if isinstance(read.get(field), str):
+                    item[field] = read[field][:MAX_READ_TEXT]
+            for field, upper in READ_FLOATS:
+                number = _bounded(read.get(field), upper)
+                if number is not None:
+                    item[field] = number
+            if item:
+                kept.append(item)
+        if kept:
+            safe["last_reads"] = kept
+    return safe
+
+
+def _recognition_error(payload):
+    """The Camera-PC status as the event's error code: no_match, camera_unavailable, ..."""
+    status = payload.get("status") if isinstance(payload, dict) else None
+    code = re.sub(r"[^a-z_]", "", status.lower())[:64] if isinstance(status, str) else ""
+    return code or "recognition_unavailable"
 
 
 class Collector:
@@ -96,6 +181,7 @@ class Collector:
 
     def recognize(self, event):
         payload = None
+        diagnostics = None
         error = "recognition_not_started"
         orientation = ""
         frame_bound = False
@@ -110,17 +196,21 @@ class Collector:
                     frame_bound = True
                     error = ""
         except ai.AiError as exc:
+            error = "recognition_unavailable"
             if self.same_episode(event["id"]):
                 orientation, _ = ai.vehicle_orientation(exc.payload)
                 # The camera replied to this UUID before the truck departed.
-                # Its immutable frame can be downloaded later even if OCR failed.
+                # Its immutable frame can be downloaded later even if OCR failed,
+                # and its refusal (no plate found vs two votes of three) is the
+                # CRM's evidence; a late refusal is as untrusted as a late plate.
                 frame_bound = True
-            error = "recognition_unavailable"
+                error = _recognition_error(exc.payload)
+                diagnostics = _diagnostics(exc.payload)
         except (ai.AiUnavailable, ValueError):
             error = "recognition_unavailable"
         self.enqueue_write("finish", event["id"], "ocr", updates={
             "recognition": payload, "orientation": orientation, "recognition_error": error,
-            "recognition_frame_bound": frame_bound,
+            "recognition_diagnostics": diagnostics, "recognition_frame_bound": frame_bound,
             "recognition_finished_at": datetime.now(timezone.utc).isoformat(),
         })
 

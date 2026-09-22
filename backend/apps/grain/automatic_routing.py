@@ -3,16 +3,17 @@
 The model supplies identity only. Weights, timestamps and tare references always
 come from committed physical measurements; every write shares the lane mutex.
 """
+import re
 from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from . import historical_tare, services, statuses as st
-from .models import PassageScaleAutomationState, UnassignedWeighing, Wagon, WeighingIdentityCheck
+from .models import PassageScaleAutomationState, UnassignedWeighing, VehicleTareMemory, Wagon, WeighingIdentityCheck
 
 # A truck re-weighed at the gate within this window is still the same visit
 # (it turned around before loading). Later than that it has had time to load
@@ -21,6 +22,18 @@ REENTRY_GAP = timedelta(minutes=30)
 # Rear plates are read with doubled letters or one swapped digit; up to this
 # many edits still identifies the standing truck's own missed exit.
 NEAR_PLATE_EDITS = 2
+# An unread front weighing is this truck's entry only when it weighs what the
+# truck weighed empty the last time its plate was read.
+TARE_TOLERANCE_KG = 300
+
+
+def _max_trip():
+    """No visit lasts longer. A truck still open after this left unseen."""
+    return timedelta(hours=settings.WEIGHING_AI_ENTRY_MAX_HOURS)
+
+
+def _local(at):
+    return timezone.localtime(at).strftime("%d.%m %H:%M")
 
 
 def _earlier_entry_pending(item, number):
@@ -30,8 +43,12 @@ def _earlier_entry_pending(item, number):
         stable_weight_at__gte=timezone.now()-timedelta(hours=24),
         camera=item.camera, scale_number=item.scale_number,
         orientation__in=["front", "", "unknown"],
-    ).filter(Q(vehicle_number="") | Q(vehicle_number=number)).select_related("identity_check").order_by("stable_weight_at")
+    ).select_related("identity_check").order_by("stable_weight_at")
     for entry in earlier[:100]:
+        # A rear plate one or two characters off still names the truck whose
+        # own entry is waiting; an exact comparison would close an older visit.
+        if entry.vehicle_number and _plate_distance(number, entry.vehicle_number) > NEAR_PLATE_EDITS:
+            continue
         check = getattr(entry, "identity_check", None)
         if check and check.status in {"review", "matched"} and check.reason != "previous_exit_missing":
             continue
@@ -91,6 +108,34 @@ def _similar_open_visits(number):
     return [visit for visit in visits if _plate_distance(number, visit.number) <= NEAR_PLATE_EDITS]
 
 
+def _plate_core(number):
+    """The plate without the part a camera drops or invents.
+
+    The two-digit region of a KZ plate (123ABC13 -> 123ABC) and the leading
+    letter of the older form (E065CUA -> 065CUA): a front camera that keeps
+    the core but loses the region opens the visit under E065CUA, and the
+    same truck re-enters as 065CUA13. Any other layout is kept as it is.
+    """
+    if re.fullmatch(r"[0-9]{3}[A-Z]{2,3}[0-9]{2}", number):
+        return number[:-2]
+    if re.fullmatch(r"[A-Z][0-9]{3}[A-Z]{3}", number):
+        return number[1:]
+    return number
+
+
+def _misspelled_open_visits(number):
+    """On-site visits that may be this truck under a misread spelling, locked for booking.
+
+    One edit away, or the same plate core. Two edits are a neighbour: 261BBF13
+    and 411BBF13, 684BFE13 and 682BFA13 are on site together.
+    """
+    core = _plate_core(number)
+    visits = Wagon.objects.select_for_update().filter(
+        direction=Wagon.PASSAGE, status__in=st.ON_SITE_STATUSES,
+    ).exclude(number="").exclude(number=number)
+    return [visit for visit in visits if _plate_distance(number, visit.number) <= 1 or _plate_core(visit.number) == core]
+
+
 def _open_visit(number):
     """The newest open visit of this plate.
 
@@ -106,29 +151,94 @@ def _open_visit(number):
     )
 
 
-def _unseen_departure(item, wagon, number):
+def _verdict_final(row):
+    """The identity check of a parked weighing ended; no plate will still turn up on it.
+
+    A check that is pending, retrying (frame not delivered, model backoff,
+    daily budget) or missing may yet read one: until it ends, a weighing
+    without a plate is neither unread nor somebody else's.
+    """
+    check = getattr(row, "identity_check", None)
+    return check is not None and check.status == "review"
+
+
+def _weak_plate_row(row):
+    """The camera voted for this plate short of confirmation (two votes of three).
+
+    While the weighing is still parked no check has confirmed it, so it is no
+    reading: no stronger than the raw model text, and a pending check on it
+    is a pending check on a plate-less weighing.
+    """
+    capture = row.capture if row.capture_id else None
+    return capture is not None and (capture.ai_payload_json or {}).get("weak_plate") is True
+
+
+def _read_plates(row):
+    """Every plate anyone read on a parked weighing: OCR/verified and the raw model text.
+
+    The raw reading may be in no valid format (region cut off, emblem kept), so
+    it never books anything; it still tells a different truck from a plate
+    nobody managed to read at all. A weak camera plate is left out (see
+    ``_weak_plate_row``).
+    """
+    check = getattr(row, "identity_check", None)
+    plates = {row.vehicle_number} if row.vehicle_number and not _weak_plate_row(row) else set()
+    verdict = check.evidence.get("verdict", {}) if check else {}
+    reading = verdict.get("exit", {}) if isinstance(verdict, dict) else {}
+    raw = re.sub(r"[^A-Z0-9]", "", str(reading.get("plate") or "").upper()) if isinstance(reading, dict) else ""
+    if raw:
+        plates.add(raw)
+    return plates
+
+
+def _near_plate(number, plates):
+    return any(_plate_distance(number, plate) <= NEAR_PLATE_EDITS for plate in plates)
+
+
+def _unseen_departure(item, wagon, number, *, unread_allowed=True):
     """Did the standing truck leave unseen before this second front weighing?
 
-    Returns ``("exit", weighing)`` when exactly one heavier rear weighing parked
-    between the visit's entry and this one reads as this plate within
-    NEAR_PLATE_EDITS: that is the missed exit. ``("unknown", None)`` when the
-    truck stood longer than REENTRY_GAP without such a candidate: it left, but
-    its exit needs the operator. ``("", None)`` for a quick re-weigh at the gate.
+    Returns ``("exit", weighing)`` when exactly one loaded rear weighing parked
+    between the visit's entry and this one is that truck: it reads as this
+    plate within NEAR_PLATE_EDITS, or (``unread_allowed``) nobody read a plate
+    on it at all (the rear camera finds no tag on almost half of the exits).
+    A truck that turned around at the gate within REENTRY_GAP cannot have
+    loaded, so an unread weighing counts only after that, and only once its
+    own check ended: while one still waits for its frame or the model, nothing
+    is decided. ``("abandoned", None)`` when the truck stood longer than any
+    trip lasts and there is no candidate at all: the visit is stale and ends
+    without an exit. ``("unknown", None)`` when it stood longer than
+    REENTRY_GAP and the candidates do not name it (several, or one still
+    unchecked): it left, but its exit needs the operator. ``("", None)`` for a
+    quick re-weigh at the gate.
     """
     entry_at = services._passage_entry_at(wagon)
+    stood = item.stable_weight_at - entry_at
     parked = UnassignedWeighing.objects.filter(
         status=UnassignedWeighing.OPEN, scale_number=item.scale_number,
         orientation__in=["rear", "", "unknown"],
-        stable_weight_at__gt=entry_at, stable_weight_at__lt=item.stable_weight_at,
-        weight_kg__gt=wagon.gross_weight_kg,
-    ).exclude(pk=item.pk).order_by("stable_weight_at")
-    matches = [
-        row for row in parked[:100]
-        if row.vehicle_number and _plate_distance(number, row.vehicle_number) <= NEAR_PLATE_EDITS
-    ]
-    if len(matches) == 1:
+        stable_weight_at__gt=entry_at, stable_weight_at__lt=min(item.stable_weight_at, entry_at + _max_trip()),
+        weight_kg__gte=wagon.gross_weight_kg + MIN_LOADED_GAIN_KG,
+    ).exclude(pk=item.pk).select_related("identity_check", "capture").order_by("stable_weight_at")
+    matches, unsettled = [], False
+    for row in parked[:100]:
+        plates = _read_plates(row)
+        if plates:
+            if _near_plate(number, plates):
+                matches.append(row)
+        elif not _verdict_final(row):
+            # Its frame may still yield a plate — this one, or another truck's.
+            unsettled = True
+        elif unread_allowed and stood >= REENTRY_GAP:
+            matches.append(row)
+    if len(matches) == 1 and not unsettled:
         return "exit", matches[0]
-    if item.stable_weight_at - entry_at >= REENTRY_GAP:
+    if len(matches) > 1:
+        # Two candidates name nobody: ambiguity, not a visit nobody closed.
+        return "unknown", None
+    if stood >= _max_trip() and not matches and not unsettled:
+        return "abandoned", None
+    if stood >= REENTRY_GAP:
         return "unknown", None
     return "", None
 
@@ -141,12 +251,119 @@ def _recover_exit(wagon, departure, number):
     )
     if departure.capture_id:
         departure.capture.__class__.objects.filter(pk=departure.capture_id).update(wagon_id=wagon.pk, action="exit")
+    opened = f" (рейс был открыт под номером {wagon.number})" if wagon.number != number else ""
+    read = (
+        f"на выезде номер прочитан как {departure.vehicle_number}" if departure.vehicle_number
+        else "номер на выезде не прочитан"
+    )
     services._log(
         wagon, "automatic_binding",
-        f"Вывоз {number}: выезд восстановлен по повторному заезду, на выезде номер прочитан как {departure.vehicle_number}",
+        f"Вывоз {number}: выезд восстановлен по повторному заезду{opened}, {read}",
         None, auto=True, unassigned_id=departure.pk, orientation="rear",
         weight_kg=departure.weight_kg, occurred_at=departure.stable_weight_at.isoformat(),
     )
+
+
+def _abandon_visit(wagon, item, number):
+    """End the visit whose exit was never seen: its truck is back at the gate."""
+    under = f" под номером {number}" if wagon.number != number else ""
+    services._set_status(
+        wagon, st.CANCELLED, None,
+        f"Вывоз {wagon.number}: рейс закрыт без выезда — машина снова заехала {_local(item.stable_weight_at)}{under}, "
+        "выезд не был зафиксирован",
+        auto=True, unassigned_id=item.pk,
+    )
+    wagon.exit_note = "Выезд не зафиксирован: рейс закрыт автоматически при новом заезде"
+    wagon.save(update_fields=["exit_note"])
+
+
+def _settle_similar_visit(item, number):
+    """A visit opened under a misread spelling of this plate ends when the truck re-enters.
+
+    Its exit could never name it (the rear reading has no open visit under the
+    real plate), so it would stay open forever. Real neighbours share the site,
+    so only strong evidence names the one such visit as this truck: one edit or
+    the same plate core, the same empty weight within TARE_TOLERANCE_KG, and an
+    exit that was read as this plate (an unread exit may be anybody's). The
+    time limit closes only a same-core spelling; a one-edit neighbour that
+    stood too long is left to the operator. When neither an exit nor the time
+    limit settles it, the new visit still opens under the plate read now.
+    """
+    similar = _misspelled_open_visits(number)
+    if len(similar) != 1:
+        return
+    visit = similar[0]
+    entry_at = services._passage_entry_at(visit)
+    if (
+        visit.status != st.AT_SILO or visit.gross_weight_kg is None or visit.tare_weight_kg is not None
+        or entry_at is None or item.stable_weight_at <= entry_at
+        or abs(item.weight_kg - visit.gross_weight_kg) > TARE_TOLERANCE_KG
+    ):
+        return
+    verdict, departure = _unseen_departure(item, visit, number, unread_allowed=False)
+    if verdict == "exit":
+        _recover_exit(visit, departure, number)
+    elif verdict == "abandoned" and _plate_core(visit.number) == _plate_core(number):
+        # Only the same plate under another layout is this truck for certain;
+        # a one-edit neighbour that stood too long is left to the operator.
+        _abandon_visit(visit, item, number)
+
+
+def _parked_entry(item, number):
+    """The unread front weighing that was this truck's entry, when exactly one fits.
+
+    The front camera missed the plate; the empty weight sits in the review
+    queue while the exit reads fine. A tare copied from history at the moment
+    of leaving would hide that real entry, so it is looked for first. Only the
+    remembered empty weight of this plate tells its weighing from any other
+    truck's: with no memory nothing is recognised.
+    """
+    memory = VehicleTareMemory.objects.filter(number=number).select_related("record").first()
+    if memory is None:
+        return None
+    lower = item.stable_weight_at - _max_trip()
+    upper = item.stable_weight_at - timedelta(seconds=settings.VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS)
+    parked = UnassignedWeighing.objects.filter(
+        status=UnassignedWeighing.OPEN, scale_number=item.scale_number, camera=item.camera,
+        orientation__in=["front", "", "unknown"],
+        stable_weight_at__gte=lower, stable_weight_at__lte=upper,
+        weight_kg__lte=item.weight_kg - MIN_LOADED_GAIN_KG,
+    ).exclude(pk=item.pk).select_related("identity_check", "capture").order_by("stable_weight_at")
+    # Nobody read a plate, or what was read is this plate (a weak camera plate,
+    # the model's raw text in a broken layout); a different plate rules the
+    # weighing out, and so does a check that has not ended yet.
+    fitting = []
+    for row in parked[:100]:
+        if not _verdict_final(row) or abs(row.weight_kg - memory.record.weight_kg) > TARE_TOLERANCE_KG:
+            continue
+        plates = _read_plates(row)
+        if not plates or _near_plate(number, plates):
+            fitting.append(row)
+    return fitting[0] if len(fitting) == 1 else None
+
+
+def _recover_entry(entry, number):
+    """Open the visit from the unread front weighing that was this truck's entry."""
+    wagon = Wagon.objects.create(
+        direction=Wagon.PASSAGE, workflow="simple", number=number,
+        status=st.ARRIVED, arrived_at=entry.stable_weight_at,
+        number_source="camera", number_camera_source=entry.camera,
+        cargo_name=settings.VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME,
+    )
+    entry = services.assign_unassigned_weighing(entry, wagon, None)
+    wagon = entry.wagon  # booked: at the silo with its entry weight, not the row created a moment ago
+    WeighingIdentityCheck.objects.filter(weighing=entry).update(
+        status="matched", reason="automatic_entry", lease_until=None,
+    )
+    if entry.capture_id:
+        entry.capture.__class__.objects.filter(pk=entry.capture_id).update(wagon_id=wagon.pk, action="entry")
+    services._log(
+        wagon, "automatic_binding",
+        f"Вывоз {number}: заезд восстановлен из неопознанного взвешивания {entry.weight_kg} кг ({_local(entry.stable_weight_at)})",
+        None, auto=True, unassigned_id=entry.pk, orientation="front",
+        weight_kg=entry.weight_kg, occurred_at=entry.stable_weight_at.isoformat(),
+    )
+    return wagon
 
 
 @transaction.atomic
@@ -177,11 +394,17 @@ def book(item, number, orientation):
             if verdict == "exit":
                 _recover_exit(wagon, departure, number)
                 wagon = None
+            elif verdict == "abandoned":
+                # Closed before the new visit is created: one open visit per plate.
+                _abandon_visit(wagon, item, number)
+                wagon = None
             elif verdict == "unknown":
                 # The open visit keeps its own entry; this weighing waits in the
                 # review queue until the operator attaches that visit's exit,
                 # then books itself as the next visit (see _earlier_entry_pending).
                 raise ValueError("previous_exit_missing")
+        elif wagon is None:
+            _settle_similar_visit(item, number)
         if wagon is None:
             # Direct creation intentionally avoids the manual-action lane fence.
             wagon = Wagon.objects.create(
@@ -236,15 +459,20 @@ def book(item, number, orientation):
             # the real visit still open under the right one.
             raise ValueError("similar_visit_open")
         else:
-            source = historical_tare.latest_before(item, number)
-            if source is None:
-                raise ValueError("saved_tare_missing")
-            if item.weight_kg <= source.weight_kg:
-                raise ValueError("exit_weight_not_greater")
-            item = historical_tare.complete(
-                item, None, reference_record=source.pk, number=number,
-                reason="Автоматический выезд: последняя подтверждённая тара по госномеру", automatic=True,
-            )
+            entry = _parked_entry(item, number)
+            if entry is not None:
+                wagon = _recover_entry(entry, number)
+                item = services.assign_unassigned_weighing(item, wagon, None)
+            else:
+                source = historical_tare.latest_before(item, number)
+                if source is None:
+                    raise ValueError("saved_tare_missing")
+                if item.weight_kg <= source.weight_kg:
+                    raise ValueError("exit_weight_not_greater")
+                item = historical_tare.complete(
+                    item, None, reference_record=source.pk, number=number,
+                    reason="Автоматический выезд: последняя подтверждённая тара по госномеру", automatic=True,
+                )
     if item.capture_id:
         item.capture.__class__.objects.filter(pk=item.capture_id).update(wagon_id=item.wagon_id, action=item.action)
     services._log(

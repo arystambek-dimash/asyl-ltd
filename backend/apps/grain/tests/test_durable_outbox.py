@@ -473,3 +473,382 @@ def test_outbox_writer_retains_fifo_order_across_a_busy_database(tmp_path):
     assert calls == [first["id"], first["id"], second["id"]]
     assert box.counts()["total"] == 2
     writer.shutdown()
+
+
+# --- Диагностика отказов ПК камер: сборщик сохраняет, импортёр читает ---
+
+def _no_match_payload(**overrides):
+    payload = {
+        "status": "no_match", "retryable": False, "error": "vehicle number was not confirmed inside the ROI",
+        "error_code": "plate_not_confirmed", "fresh_frames_seen": 24, "frames_scanned": 20, "detected_frames": 2,
+        "ocr_candidates": 2, "accepted_reads": 2, "ambiguous_frames": 0, "confirmation_votes": 3,
+        "best_detector_confidence": 0.29, "confirmation_window_seconds": 8.0, "votes": {"402BJG13": 2},
+        "last_reads": [
+            {"frame": 7, "variant": "plain", "raw_text": "402 BJG 13", "number": "402BJG13", "confidence": 0.81,
+             "detector_confidence": 0.29, "bbox_w": 120, "bbox_h": 40, "crop_jpeg_base64": "/9j/AAAA"},
+            {"frame": 11, "variant": "clahe", "raw_text": "402BJG13", "number": "402BJG13", "confidence": 0.77,
+             "detector_confidence": 0.26, "bbox_w": 118, "bbox_h": 39},
+        ],
+        "frames": ["/9j/base64frame"], "orientation": {"label": "rear", "confidence": 0.97},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _collector_ocr(tmp_path, side_effect, *, photo=None, minutes=0, weight=4200):
+    import time
+    from datetime import timedelta
+    box, value = Outbox(tmp_path), event()
+    value["weight_kg"] = weight
+    value["stable_weight_at"] = (timezone.now() - timedelta(minutes=minutes)).isoformat()
+    box.put(value)
+    collector = Collector(box)
+    collector.current = value["id"]
+    collector.last_good = time.monotonic()
+    with patch("apps.cameras.ai.recognize_vehicle_from_camera", side_effect=side_effect):
+        collector.recognize(value)
+    collector.close()
+    box.finish(value["id"], "photo", photo=photo)
+    stored = box.next()
+    box.ack(value["id"])
+    return stored
+
+
+def test_collector_keeps_no_match_diagnostics_without_frames(tmp_path):
+    import json
+    from apps.cameras import ai
+    stored = _collector_ocr(tmp_path, ai.AiError(422, "not confirmed", _no_match_payload()))
+    assert stored["recognition"] is None
+    assert stored["recognition_error"] == "no_match"
+    assert stored["orientation"] == "rear" and stored["recognition_frame_bound"] is True
+    diagnostics = stored["recognition_diagnostics"]
+    assert diagnostics["status"] == "no_match" and diagnostics["error_code"] == "plate_not_confirmed"
+    assert diagnostics["votes"] == {"402BJG13": 2}
+    assert (diagnostics["detected_frames"], diagnostics["frames_scanned"], diagnostics["confirmation_votes"]) == (2, 20, 3)
+    assert diagnostics["best_detector_confidence"] == 0.29 and diagnostics["confirmation_window_seconds"] == 8.0
+    assert [read["frame"] for read in diagnostics["last_reads"]] == [7, 11]
+    assert set(diagnostics["last_reads"][0]) == {
+        "frame", "variant", "raw_text", "number", "confidence", "detector_confidence", "bbox_w", "bbox_h",
+    }
+    assert not {"frames", "orientation", "retryable"} & set(diagnostics)
+    assert "base64" not in json.dumps(diagnostics)
+
+
+def test_collector_bounds_oversized_diagnostics(tmp_path):
+    from apps.cameras import ai
+    from apps.grain import vehicle_weight_capture
+    from weighbridge import collector
+    # One vote ceiling on both sides: what the collector keeps, the CRM keeps whole.
+    assert collector.MAX_DIAGNOSTIC_VOTES == vehicle_weight_capture.MAX_NO_MATCH_VOTES == 8
+    payload = _no_match_payload(
+        votes={f"{n:03d}ABC13": 1 for n in range(15)},
+        last_reads=[{"frame": n, "raw_text": "x" * 100, "confidence": 2.5, "bbox_w": -1} for n in range(12)],
+        error="e" * 500, detected_frames=-3, confirmation_votes=True, best_detector_confidence="0.5",
+    )
+    diagnostics = _collector_ocr(tmp_path, ai.AiError(422, "not confirmed", payload))["recognition_diagnostics"]
+    assert len(diagnostics["votes"]) == 8 and len(diagnostics["last_reads"]) == 8
+    assert diagnostics["last_reads"][0] == {"frame": 0, "raw_text": "x" * 30}
+    assert len(diagnostics["error"]) == 300
+    assert "detected_frames" not in diagnostics and "confirmation_votes" not in diagnostics
+    assert "best_detector_confidence" not in diagnostics
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("camera_unavailable", "camera_unavailable"), ("stale_weight_trigger", "stale_weight_trigger"),
+    ("Failed", "failed"), ("<html>", "html"), ("", "recognition_unavailable"), (None, "recognition_unavailable"),
+    (500, "recognition_unavailable"), ("a" * 100, "a" * 64),
+])
+def test_collector_reports_the_camera_status_as_the_recognition_error(tmp_path, status, expected):
+    from apps.cameras import ai
+    payload = {"status": status, "error": "camera offline", "orientation": {"label": "front", "confidence": 0.9}}
+    stored = _collector_ocr(tmp_path, ai.AiError(503, "camera offline", payload))
+    assert stored["recognition_error"] == expected
+    assert stored["orientation"] == "front" and stored["recognition_frame_bound"] is True
+    assert stored["recognition_diagnostics"]["error"] == "camera offline"
+    assert stored["recognition_diagnostics"].get("status") == (status if isinstance(status, str) else None)
+
+
+def test_collector_drops_a_refusal_that_arrives_after_the_truck_left(tmp_path):
+    import time
+    from apps.cameras import ai
+    box, value = Outbox(tmp_path), event()
+    box.put(value)
+    collector = Collector(box)
+    collector.current, collector.last_good = value["id"], time.monotonic()
+
+    def late(*args, **kwargs):
+        collector.current = str(uuid4())
+        raise ai.AiError(422, "not confirmed", _no_match_payload())
+
+    with patch("apps.cameras.ai.recognize_vehicle_from_camera", side_effect=late):
+        collector.recognize(value)
+    collector.close()
+    box.finish(value["id"], "photo")
+    stored = box.next()
+    assert stored["recognition_error"] == "recognition_unavailable" and stored["recognition_frame_bound"] is False
+    assert stored["orientation"] == "" and stored["recognition_diagnostics"] is None
+
+
+def test_collector_outage_keeps_the_old_error_without_diagnostics(tmp_path):
+    from apps.cameras import ai
+    stored = _collector_ocr(tmp_path, ai.AiUnavailable("timed out"))
+    assert stored["recognition"] is None and stored["recognition_error"] == "recognition_unavailable"
+    assert stored["recognition_frame_bound"] is False and stored["orientation"] == ""
+    assert not stored.get("recognition_diagnostics")
+
+
+def _identity_settings(settings, tmp_path):
+    settings.MEDIA_ROOT = tmp_path / "media"
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.WEIGHING_AI_ENABLED = True
+    settings.OPENAI_API_KEY = "test-key"
+    settings.WEIGHING_AI_MAX_DAILY_REQUESTS = 100
+
+
+def _import_failure(tmp_path, settings, failure, *, minutes=1, weight=8500):
+    """Import one collector event whose camera answer failed; also return the status recorded before apply."""
+    from apps.grain import passage_scale_automation as automation
+    _identity_settings(settings, tmp_path)
+    stored = _collector_ocr(tmp_path / str(uuid4()), failure, photo=b"\xff\xd8\xff\xe0frame", minutes=minutes, weight=weight)
+    staged, apply = {}, automation._apply_recognized_capture
+
+    def observed_apply(capture_id):
+        staged["response_status"] = AutomaticPassageCapture.objects.get(pk=capture_id).response_status
+        return apply(capture_id)
+
+    with patch.object(automation, "_apply_recognized_capture", side_effect=observed_apply):
+        return outbox_importer.import_event(stored), staged["response_status"]
+
+
+def _import_no_match(tmp_path, settings, *, minutes=1, weight=8500, **overrides):
+    from apps.cameras import ai
+    failure = ai.AiError(422, "not confirmed", _no_match_payload(**overrides))
+    return _import_failure(tmp_path, settings, failure, minutes=minutes, weight=weight)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_no_match_keeps_diagnostics_and_the_single_weak_plate(tmp_path, settings):
+    from apps.grain import services
+    capture, staged = _import_no_match(tmp_path, settings)
+    assert capture.status == "completed" and capture.action == services.AUTO_ACTION_UNASSIGNED
+    assert capture.plate_unresolved and capture.error_code == "collector_plate_unresolved"
+    assert capture.error_detail == "Номер не подтверждён: 2 голоса за 402BJG13 (нужно 3)"
+    assert staged == 422 and capture.response_status == 200  # 200 = applied, as every finished capture
+    assert capture.vehicle_number == "402BJG13" and capture.confirmation_votes == 2
+    assert capture.ai_payload_json["weak_plate"] is True
+    assert capture.ai_payload_json["votes"] == {"402BJG13": 2}
+    assert capture.ai_payload_json["last_reads"][0]["number"] == "402BJG13"
+    assert "frames" not in capture.ai_payload_json
+    item = UnassignedWeighing.objects.get()
+    assert item.vehicle_number == "402BJG13" and item.orientation == "rear"
+    assert item.reason == "identity_verification_required" and item.capture_id == capture.pk
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_no_match_with_competing_plates_keeps_no_number(tmp_path, settings):
+    capture, _ = _import_no_match(tmp_path, settings, votes={"402BJG13": 2, "402BJG18": 1})
+    assert capture.vehicle_number == "" and capture.confirmation_votes is None
+    assert "weak_plate" not in capture.ai_payload_json
+    assert capture.ai_payload_json["votes"] == {"402BJG13": 2, "402BJG18": 1}
+    assert capture.error_detail == "Номер не подтверждён: 2 голоса за 402BJG13, 1 голос за 402BJG18 (нужно 3)"
+    assert UnassignedWeighing.objects.get().vehicle_number == ""
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_no_match_with_a_single_vote_or_a_malformed_plate_keeps_no_number(tmp_path, settings):
+    capture, _ = _import_no_match(tmp_path, settings, votes={"402BJG13": 1})
+    assert capture.vehicle_number == "" and "weak_plate" not in capture.ai_payload_json
+    capture, _ = _import_no_match(tmp_path, settings, votes={"MERCEDES": 2})
+    assert capture.vehicle_number == "" and "weak_plate" not in capture.ai_payload_json
+    assert capture.error_detail == "Номер не подтверждён: 2 голоса за MERCEDES (нужно 3)"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_no_match_with_an_impossible_vote_count_keeps_no_number(tmp_path, settings):
+    # 40 000 votes fit the JSON tally but not the capture's smallint column:
+    # the event still imports, and the tally alone names nobody.
+    capture, staged = _import_no_match(tmp_path, settings, votes={"402BJG13": 40000})
+    assert capture.status == "completed" and capture.error_code == "collector_plate_unresolved" and staged == 422
+    assert capture.vehicle_number == "" and capture.confirmation_votes is None
+    assert "weak_plate" not in capture.ai_payload_json
+    assert capture.ai_payload_json["votes"] == {"402BJG13": 40000}
+    assert capture.error_detail == "Номер не подтверждён: 40000 голосов за 402BJG13 (нужно 3)"
+    assert UnassignedWeighing.objects.get().vehicle_number == ""
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_does_not_trust_a_weak_plate_whose_competitor_was_trimmed(tmp_path, settings):
+    from apps.cameras import ai
+    _identity_settings(settings, tmp_path)
+    stored = _collector_ocr(tmp_path / str(uuid4()), ai.AiError(422, "not confirmed", _no_match_payload()),
+                            photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+    # A longer tally than the CRM keeps (an older collector, a chattier Camera-PC):
+    # the competing number is the ninth entry and would be cut on import.
+    stored["recognition_diagnostics"]["votes"] = {"402BJG13": 2, **{f"{n:03d}ABC13": 0 for n in range(7)}, "402BJG18": 1}
+    capture = outbox_importer.import_event(stored)
+    assert capture.status == "completed" and capture.error_code == "collector_plate_unresolved"
+    assert capture.vehicle_number == "" and capture.confirmation_votes is None
+    assert "weak_plate" not in capture.ai_payload_json
+    assert len(capture.ai_payload_json["votes"]) == 8 and "402BJG18" not in capture.ai_payload_json["votes"]
+    assert UnassignedWeighing.objects.get().vehicle_number == ""
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_no_match_without_a_detected_plate_explains_the_detector_miss(tmp_path, settings):
+    capture, staged = _import_no_match(tmp_path, settings, votes={}, last_reads=[], detected_frames=0, ocr_candidates=0)
+    assert capture.vehicle_number == "" and staged == 422
+    assert capture.error_detail == "Камера не нашла табличку: 0 из 20 кадров"
+    assert capture.ai_payload_json["detected_frames"] == 0 and "votes" not in capture.ai_payload_json
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_a_camera_failure_keeps_its_status_without_a_no_match_code(tmp_path, settings):
+    from apps.cameras import ai
+    payload = {"status": "camera_unavailable", "error": "rtsp offline", "orientation": {"label": "rear", "confidence": 0.9}}
+    capture, staged = _import_failure(tmp_path, settings, ai.AiError(503, "rtsp offline", payload))
+    assert capture.error_code == "collector_plate_unresolved" and capture.error_detail == "Камера: camera_unavailable"
+    assert staged is None and capture.vehicle_number == "" and capture.orientation == "rear"
+    assert capture.ai_payload_json == {"status": "camera_unavailable", "error": "rtsp offline"}
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_a_stale_trigger_names_the_status_not_a_detector_miss(tmp_path, settings):
+    from apps.cameras import ai
+    # Zero detected frames on a refusal that never looked for a plate is not a detector miss.
+    payload = {"status": "stale_weight_trigger", "error": "weight trigger is stale", "detected_frames": 0,
+               "frames_scanned": 20, "orientation": {"label": "rear", "confidence": 0.9}}
+    capture, staged = _import_failure(tmp_path, settings, ai.AiError(409, "stale trigger", payload))
+    assert capture.error_code == "collector_plate_unresolved" and capture.error_detail == "Камера: stale_weight_trigger"
+    assert staged is None and capture.vehicle_number == ""
+    assert capture.ai_payload_json["detected_frames"] == 0 and capture.ai_payload_json["frames_scanned"] == 20
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_an_old_event_without_diagnostics_is_unchanged(tmp_path, settings):
+    from apps.cameras import ai
+    capture, staged = _import_failure(tmp_path, settings, ai.AiUnavailable("timed out"))
+    assert capture.error_code == "collector_plate_unresolved"
+    assert capture.error_detail == "Вес сохранён сборщиком; номер требует проверки."
+    assert capture.ai_payload_json == {} and staged is None and capture.vehicle_number == ""
+
+
+def _recognized_event(number, *, weight, minutes, orientation="front"):
+    from datetime import timedelta
+    value = event()
+    value["weight_kg"] = weight
+    value["stable_weight_at"] = (timezone.now() - timedelta(minutes=minutes)).isoformat()
+    value["photo"] = b"\xff\xd8\xff\xe0front frame"
+    value["recognition"] = {
+        "vehicle_number": number, "source": "main", "recognized_at": value["stable_weight_at"],
+        "stable_weight_at": value["stable_weight_at"], "orientation": {"label": orientation, "confidence": 0.99},
+        "confirmation": {"votes": 3, "detector_confidence": 0.95, "ocr_confidence": 0.96},
+    }
+    return value
+
+
+@pytest.mark.django_db(transaction=True)
+def test_weak_rear_plate_of_a_truck_on_site_books_the_exit_without_gpt(tmp_path, settings):
+    from apps.grain import statuses as st, weighing_identity as identity
+    from apps.grain.models import Wagon
+    _identity_settings(settings, tmp_path)
+    entry = outbox_importer.import_event(_recognized_event("402BJG13", weight=4200, minutes=60))
+    identity.process_once()
+    visit = Wagon.objects.get(number="402BJG13")
+    assert visit.status == st.AT_SILO and visit.gross_weight_kg == 4200
+    capture, _ = _import_no_match(tmp_path, settings)
+    assert capture.vehicle_number == "402BJG13"
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    departure = UnassignedWeighing.objects.get(capture=capture)
+    assert departure.status == "assigned" and departure.action == "exit" and departure.wagon_id == visit.pk
+    assert departure.identity_check.status == "matched"
+    assert departure.identity_check.evidence["identity_source"] == "ocr"
+    assert departure.identity_check.evidence["original_number"] == "402BJG13"
+    visit.refresh_from_db()
+    assert visit.status == st.COMPLETED and visit.tare_weight_kg == 8500 and visit.net_weight_kg == 4300
+    assert UnassignedWeighing.objects.get(capture=entry).wagon_id == visit.pk
+
+
+@pytest.mark.django_db(transaction=True)
+def test_weak_rear_plate_without_a_truck_on_site_still_reads_the_frame(tmp_path, settings):
+    from apps.grain import weighing_identity as identity
+    capture, _ = _import_no_match(tmp_path, settings)
+    verdict = {"exit": {"plate": "", "plate_clear": False, "orientation": "rear"}, "entries": []}
+    with patch.object(identity, "request_verification", return_value=(verdict, "response-test")) as request:
+        identity.process_once()
+    assert request.call_count == 1
+    departure = UnassignedWeighing.objects.get(capture=capture)
+    assert departure.status == "open" and departure.identity_check.reason == "plate_unreadable"
+    assert departure.identity_check.evidence["original_number"] == "402BJG13"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_weak_front_plate_always_reads_the_frame_before_opening_a_visit(tmp_path, settings):
+    from apps.grain import statuses as st, weighing_identity as identity
+    from apps.grain.models import Wagon
+    capture, _ = _import_no_match(tmp_path, settings, weight=4200, orientation={"label": "front", "confidence": 0.95})
+    assert capture.vehicle_number == "402BJG13" and capture.orientation == "front"
+    verdict = {"exit": {"plate": "402BJG13", "plate_clear": True, "orientation": "front"}, "entries": []}
+    with patch.object(identity, "request_verification", return_value=(verdict, "response-test")) as request:
+        identity.process_once()
+    assert request.call_count == 1
+    arrival = UnassignedWeighing.objects.get(capture=capture)
+    assert arrival.status == "assigned" and arrival.action == "entry"
+    assert arrival.identity_check.evidence["identity_source"] == "gpt"
+    assert Wagon.objects.get(number="402BJG13").status == st.AT_SILO
+
+
+@pytest.mark.django_db(transaction=True)
+def test_weak_rear_plate_booking_is_flagged_in_the_journal(tmp_path, settings):
+    from apps.eventlog.models import EventLog
+    from apps.grain import weighing_identity as identity
+    _identity_settings(settings, tmp_path)
+    entry = outbox_importer.import_event(_recognized_event("402BJG13", weight=4200, minutes=60))
+    identity.process_once()
+    arrival = EventLog.objects.get(event_type="grain_identity_verified")
+    assert arrival.payload["weak_plate"] is False
+    capture, _ = _import_no_match(tmp_path, settings)
+    with patch.object(identity, "request_verification") as request:
+        identity.process_once()
+    request.assert_not_called()
+    departure = UnassignedWeighing.objects.get(capture=capture)
+    assert departure.status == "assigned" and departure.action == "exit"
+    booked = EventLog.objects.get(event_type="grain_identity_verified", payload__check_id=departure.identity_check.pk)
+    assert booked.payload["weak_plate"] is True and booked.payload["source"] == "ocr"
+    assert booked.payload["verified_number"] == "402BJG13" and booked.payload["weight_kg"] == 8500
+    assert EventLog.objects.get(event_type="grain_identity_verified", payload__weight_kg=4200).payload["check_id"] \
+        == UnassignedWeighing.objects.get(capture=entry).identity_check.pk
+
+
+@pytest.mark.django_db(transaction=True)
+def test_import_of_an_interrupted_search_names_its_status_and_trusts_no_weak_plate(tmp_path, settings):
+    from apps.cameras import ai
+    # Two votes gathered before the search was cut short never saw the whole
+    # window: the status leads, the tally is context, no plate is taken.
+    payload = _no_match_payload(status="interrupted", error="shared inference timed out")
+    capture, staged = _import_failure(tmp_path, settings, ai.AiError(503, "shared inference timed out", payload))
+    assert capture.error_code == "collector_plate_unresolved"
+    assert capture.error_detail == "Камера: interrupted; голоса: 2 голоса за 402BJG13"
+    assert staged is None and capture.vehicle_number == "" and capture.confirmation_votes is None
+    assert "weak_plate" not in capture.ai_payload_json and capture.ai_payload_json["votes"] == {"402BJG13": 2}
+    assert UnassignedWeighing.objects.get().vehicle_number == ""
+
+
+@pytest.mark.django_db(transaction=True)
+def test_collector_marks_a_tally_it_had_to_cut_and_the_importer_trusts_no_weak_plate(tmp_path, settings):
+    from apps.cameras import ai
+    from weighbridge import collector as collector_module
+    _identity_settings(settings, tmp_path)
+    # Ten readings, the competitor last: the collector keeps eight but says so.
+    votes = {"402BJG13": 2, **{f"{n:03d}ABC13": 0 for n in range(8)}, "402BJG18": 1}
+    stored = _collector_ocr(tmp_path / str(uuid4()), ai.AiError(422, "not confirmed", _no_match_payload(votes=votes)),
+                            photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+    diagnostics = stored["recognition_diagnostics"]
+    assert len(diagnostics["votes"]) == collector_module.MAX_DIAGNOSTIC_VOTES and diagnostics["votes_truncated"] is True
+    capture = outbox_importer.import_event(stored)
+    assert capture.vehicle_number == "" and capture.confirmation_votes is None
+    assert "weak_plate" not in capture.ai_payload_json and capture.ai_payload_json["votes_truncated"] is True
+    # A malformed entry never hides a competitor: filtering happens before the cut.
+    kept = collector_module._diagnostics(_no_match_payload(votes={"402BJG13": 2, "BAD": True, "402BJG18": 1}))
+    assert kept["votes"] == {"402BJG13": 2, "402BJG18": 1} and "votes_truncated" not in kept

@@ -488,7 +488,7 @@ def _safe_ai_payload(payload: Mapping | None) -> dict:
         value = payload.get(field)
         if isinstance(value, str):
             safe[field] = value[:limit]
-    for field in ("ok", "retryable"):
+    for field in ("ok", "retryable", "votes_truncated"):
         value = payload.get(field)
         if isinstance(value, bool):
             safe[field] = value

@@ -703,6 +703,63 @@ shows dataset counts and the last training report. Deleting the trained file
 on the PC returns to the shipped base model. `VEHICLE_ORIENTATION_DATASET_ENABLED=0`
 stops the export.
 
+## Automatic routing of parked weighings (since 2026-09-22)
+
+Every collector weight is parked as an `UnassignedWeighing`
+(`reason=identity_verification_required`) and booked by
+`apps/grain/automatic_routing.py::book(item, plate, orientation)` once the
+plate is known (Camera-PC OCR, or one single-frame `gpt-5-mini` read when OCR
+gave nothing bookable). Only deterministic code writes weights; the model
+supplies identity. Rules that decide where a parked weight goes:
+
+- **Re-entry while the plate's visit is still open** (`_unseen_departure`):
+  the previous exit was missed. Candidates are the loaded rear weighings parked
+  between that entry and the re-entry, no later than `entry + 12 h`
+  (`WEIGHING_AI_ENTRY_MAX_HOURS`, the longest trip) and at least
+  `MIN_LOADED_GAIN_KG` (1000) heavier than the entry. A candidate fits when it
+  was read (OCR / raw model text, weak camera votes excluded) within two edits
+  of the plate, or when nobody read a plate on it at all and its identity check
+  has ended (`review`); a plate-less candidate whose check is still pending
+  freezes the decision. Exactly one candidate closes the old visit and the
+  re-entry opens the next one. Two or more: the re-entry parks as
+  `previous_exit_missing` (retried every 30 s, the operator binds the exit).
+  None and the visit is older than 12 h: the old visit is `cancelled` with
+  `exit_note` «Выезд не зафиксирован: рейс закрыт автоматически при новом
+  заезде» and the new one opens. None and 30 min – 12 h: `previous_exit_missing`.
+  Under 30 min without a candidate: the same visit, re-weighed at the gate.
+- **Re-entry under the right plate while a visit is open under a misread
+  spelling** (`_settle_similar_visit`): one edit away or the same plate core
+  (`E065CUA` ↔ `065CUA13`, region or leading letter dropped), exactly one such
+  visit, and the empty weight within `TARE_TOLERANCE_KG` (300) of that visit's
+  entry. It is closed only by an exit read as this plate (unread exits may be a
+  neighbour's: 261BBF13 and 411BBF13 share the site), or cancelled after 12 h
+  when the spelling has the same core. The entry under the correct plate is
+  created in any case.
+- **Exit read one or two edits off a parked entry of the same truck**
+  (`_earlier_entry_pending`): waits (`earlier_entry_pending`) instead of
+  closing an older visit.
+- **Exit with a plate and no open visit** (`_parked_entry`): before reusing the
+  remembered tare, the single unread front weighing of the last 12 h whose
+  check has ended, that nobody read as another truck and whose weight is within
+  300 kg of this plate's `VehicleTareMemory` becomes the real entry (event
+  «заезд восстановлен из неопознанного взвешивания»). Without tare memory or
+  with several fitting weighings the historical tare is used as before
+  (`saved_tare_missing` when there is none).
+
+The collector (`weighbridge/collector.py`) no longer folds every Camera-PC
+refusal into `recognition_unavailable`: the answer's `status` becomes
+`recognition_error` (`no_match`, `camera_unavailable`, …) and a bounded
+`recognition_diagnostics` (counters, `votes`, `last_reads`, no frames) travels
+with the event. The importer stores it in `AutomaticPassageCapture.ai_payload_json`
+and writes a readable `error_detail` («Камера не нашла табличку: 0 из 19
+кадров», «Номер не подтверждён: 2 голоса за 402BJG13 (нужно 3)»). A finished
+`no_match` whose whole tally names one plate with two or more votes is kept as
+a *weak plate* (`ai_payload_json.weak_plate`): a rear weak plate of a truck on
+site leaving plausibly heavier books without a model call (event payload
+`weak_plate: true`), a front weak plate is always checked on the frame. The
+collector part reaches production only through
+`activate-weighbridge.yml` with `upgrade=true` on an empty scale.
+
 ## Late bag events after a posted shift
 
 A Camera-PC restart-gap backfill can deliver bag events whose shift is already

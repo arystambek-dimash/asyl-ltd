@@ -813,13 +813,19 @@ def _finish_single(check, item, reading, response_id="", *, final=True, source="
             "check_id": locked.pk, "wagon_id": booked.wagon_id, "source": source,
             "original_number": item.vehicle_number, "verified_number": plate, "model_number": model_number,
             "orientation": orientation, "model": locked.model if source == "gpt" else "",
-            "response_id": response_id, "weight_kg": item.weight_kg,
+            "response_id": response_id, "weight_kg": item.weight_kg, "weak_plate": _weak_plate(item),
         })
     return True
 
 
 def _on_site(number):
     return Wagon.objects.filter(direction=Wagon.PASSAGE, number=number, status__in=st.ON_SITE_STATUSES).exists()
+
+
+def _weak_plate(item):
+    """The camera voted for this plate short of confirmation (see outbox_importer)."""
+    capture = item.capture if item.capture_id else None
+    return capture is not None and (capture.ai_payload_json or {}).get("weak_plate") is True
 
 
 def _near_plate_collision(number):
@@ -852,9 +858,12 @@ def process_once():
     # on site and leaves plausibly heavier books on its own; the frame is read
     # only when OCR gives nothing to book, or one changed character would name
     # another known truck (a rear verdict can also misclassify a front cab).
+    # A weak plate (two votes of three) follows the same rear rule; at the
+    # front it never opens a visit without the frame.
     needs_vision = enabled() and (
         _near_plate_collision(item.vehicle_number)
         or (item.orientation == "rear" and not trusted_exit(item))
+        or (item.orientation != "rear" and _weak_plate(item))
     )
     if not needs_vision and _finish_single(check, item, reading, final=False, source="ocr"):
         return

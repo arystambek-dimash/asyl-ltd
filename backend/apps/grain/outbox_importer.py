@@ -14,9 +14,11 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from apps.cameras import ai as camera_ai
 from weighbridge.outbox import Outbox, is_busy
-from . import passage_scale_automation as automation, weighing_photos
+from . import passage_scale_automation as automation, services, weighing_photos
 from .models import AutomaticPassageCapture as Capture, PassageScaleAutomationState as Lane, WeighingPhotoDelivery
+from .vehicle_weight_capture import _safe_ai_payload
 
 log = logging.getLogger(__name__)
 
@@ -101,6 +103,77 @@ def recover_collector_photos(box, *, limit=20):
     return repaired
 
 
+def _votes_word(count):
+    if count % 10 == 1 and count % 100 != 11:
+        return "голос"
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return "голоса"
+    return "голосов"
+
+
+def _weak_plate(votes):
+    """The one plate the camera voted for short of confirmation, as ``(number, votes)``.
+
+    Two different readings in one window mean the frames disagree, one reading
+    with a single vote is a lone OCR guess: neither may name the truck. A tally
+    past the Camera-PC's own ceiling is no count ``confirmation_votes`` can hold.
+    """
+    voted = [(number, count) for number, count in votes.items() if count > 0]
+    if (len(voted) != 1 or not 2 <= voted[0][1] <= camera_ai.MAX_VEHICLE_CONFIRMATION_VOTES
+            or not services.KZ_VEHICLE_PLATE_RE.fullmatch(voted[0][0])):
+        return "", None
+    return voted[0]
+
+
+def _tally(votes):
+    ranked = sorted(votes.items(), key=lambda pair: (-pair[1], pair[0]))
+    return ", ".join(f"{count} {_votes_word(count)} за {number}" for number, count in ranked)
+
+
+def _failure_detail(diagnostics, error):
+    votes = diagnostics.get("votes") or {}
+    detected, scanned = diagnostics.get("detected_frames"), diagnostics.get("frames_scanned")
+    if error == "no_match":
+        # Only a refusal that searched the whole window can say how the search went.
+        if votes:
+            needed = diagnostics.get("confirmation_votes")
+            return f"Номер не подтверждён: {_tally(votes)}" + (f" (нужно {needed})" if needed else "")
+        if detected == 0:
+            return "Камера не нашла табличку" + (f": 0 из {scanned} кадров" if scanned else "")
+        if detected:
+            return f"Номер не прочитан: табличка в {detected} из {scanned or '?'} кадров"
+    status = f"Камера: {diagnostics.get('status') or error}"
+    # A search cut short (timeout, lost trigger) names its status first; its
+    # partial tally is context for the operator, never a plate to trust.
+    return f"{status}; голоса: {_tally(votes)}" if votes else status
+
+
+def _store_diagnostics(capture, diagnostics, error, *, now):
+    """Keep the Camera-PC refusal on the capture so the CRM can read it, not just "no plate".
+
+    A single plate short of confirmation (two votes of three) is retained as a
+    weak number: the identity worker books it only for a truck already on site.
+    """
+    safe = _safe_ai_payload(diagnostics)
+    raw_votes = diagnostics.get("votes")
+    # A tally cut down by the collector or on import may have lost a competing
+    # number, and a search cut short never saw the whole window: only a whole
+    # tally of a finished no_match search can single out one plate.
+    trimmed = (
+        safe.get("votes_truncated") is True
+        or (isinstance(raw_votes, dict) and len(raw_votes) > len(safe.get("votes") or {}))
+    )
+    number, votes = _weak_plate(safe.get("votes") or {}) if error == "no_match" and not trimmed else ("", None)
+    if number:
+        safe["weak_plate"] = True
+    automation._mark_plate_unresolved(capture, now=now, code="collector_plate_unresolved", detail=_failure_detail(safe, error))
+    capture.ai_payload_json = safe
+    capture.vehicle_number = number
+    capture.confirmation_votes = votes
+    capture.response_status = 422 if error == "no_match" else None
+    capture.save(update_fields=["ai_payload_json", "vehicle_number", "confirmation_votes", "response_status", "updated_at"])
+
+
 @transaction.atomic
 def import_event(event):
     if event.get("version") != 1:
@@ -133,6 +206,8 @@ def import_event(event):
         except (automation._CaptureRejected, KeyError, ValueError, TypeError):
             capture.refresh_from_db()
             automation._mark_plate_unresolved(capture, now=timezone.now(), code="collector_recognition_invalid", detail="Вес сохранён сборщиком; номер требует проверки.")
+    elif isinstance(event.get("recognition_diagnostics"), dict) and event["recognition_diagnostics"]:
+        _store_diagnostics(capture, event["recognition_diagnostics"], event.get("recognition_error") or "", now=timezone.now())
     else:
         automation._mark_plate_unresolved(capture, now=timezone.now(), code="collector_plate_unresolved", detail="Вес сохранён сборщиком; номер требует проверки.")
     capture = automation._apply_recognized_capture(capture.pk)
