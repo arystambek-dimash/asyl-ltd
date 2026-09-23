@@ -20,6 +20,7 @@ from .views import (
     AlwaysOnDetectionsView,
     AlwaysOnProductionView,
     AlwaysOnStockRetryView,
+    AlwaysOnUnknownColorView,
     CameraAiRecordingVideoView,
     CameraAiRecordingView,
     CameraAiResetView,
@@ -27,6 +28,7 @@ from .views import (
     CameraAiSessionListView,
     CameraAiView,
     CameraAuthView,
+    CameraCountingLineFrameView,
     CameraCountingLineView,
     CameraHealthView,
     CameraListView,
@@ -96,6 +98,10 @@ urlpatterns = [
         AlwaysOnStockRetryView.as_view(),
     ),
     path(
+        "cameras/always-on-production/unknown-colors/",
+        AlwaysOnUnknownColorView.as_view(),
+    ),
+    path(
         "cameras/always-on-analytics/<str:cam>/subtract/",
         AlwaysOnAnalyticsSubtractView.as_view(),
     ),
@@ -120,6 +126,7 @@ urlpatterns = [
         CameraAiRecordingVideoView.as_view(),
     ),
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
+    path("cameras/<str:cam>/counting-line/frame", CameraCountingLineFrameView.as_view()),
     path(
         "cameras/vehicle-plate-runtime/",
         VehiclePlateRuntimeView.as_view(),

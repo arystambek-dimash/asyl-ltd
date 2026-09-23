@@ -76,7 +76,9 @@ def test_page_batches_journal_io_and_checks_each_shift_once(count):
     assert AlwaysOnImportedEvent.objects.count() == count
     assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == count
     assert AlwaysOnProductionRun.objects.get(camera="cam3").model_bags == count
-    assert len(journal) <= 2
+    # existing-id read, bulk insert and one bounded, indexed lookup for bags
+    # the unknown-colour resolver may still settle (color_resolution).
+    assert len(journal) <= 3
     assert len(shifts) <= 1
 
 

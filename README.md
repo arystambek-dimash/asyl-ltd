@@ -539,7 +539,8 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
   сотрудник → `/dashboard`).
 - **UI-кит** (`components/ui`): Button/Input/Select/Modal/ConfirmDialog,
   Table + SortableHeader, Badge/StatusBadge/PaymentStageBadge, KPI-карточки,
-  LicensePlateInput (госномер), DataState (loading/error/empty), Tabs.
+  PlateInput (госномер одним полем: флаг страны, маски тягача и прицепа),
+  DataState (loading/error/empty), Tabs.
   Тема light/dark/system. Паттерны дизайна — Stripe/Linear/UniFi.
 - **Камеры**: `CameraWall`, `CameraStream` (WebRTC от go2rtc),
   `useAiCounter` — поллинг статуса AI и управление сессией.

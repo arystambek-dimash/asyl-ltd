@@ -49,12 +49,15 @@ def _make_unpriced_order(user):
     return order
 
 
-def _make_portal_order(client, store):
+def _make_portal_order(client, store, truck_set_by=None):
     _seq[0] += 1
     n = _seq[0]
     product = Product.objects.create(
         name=f"Portal{n}", color="Green", weight_kg="50", price="100.00")
-    order = Order.objects.create(client=client, store=store, status="pending")
+    # Номер задал сотрудник: признак transport_locked читает владельца номера.
+    order = Order.objects.create(
+        client=client, store=store, status="pending",
+        truck_number="403BJN13" if truck_set_by else "", truck_number_set_by=truck_set_by)
     OrderItem.objects.create(order=order, product=product, quantity=1)
     Payment.objects.create(order=order, amount="10", status="requested")
     return order
@@ -138,14 +141,14 @@ def test_store_debt_detail_query_count_is_constant(boss):
     assert large == small, f"store debt detail: {small} → {large} запросов (N+1)"
 
 
-def test_portal_orders_query_count_is_constant(client_user):
+def test_portal_orders_query_count_is_constant(client_user, boss):
     client = Client.objects.create_with_user(
         first_name="Portal", last_name="Client", phone="x", user=client_user)
     store = Store.objects.create(client=client, name="Portal store")
-    for _ in range(2):
-        _make_portal_order(client, store)
+    for index in range(2):
+        _make_portal_order(client, store, truck_set_by=boss if index % 2 else None)
     small = _count_queries(client_user, "/api/portal/orders/")
-    for _ in range(6):
-        _make_portal_order(client, store)
+    for index in range(6):
+        _make_portal_order(client, store, truck_set_by=boss if index % 2 else None)
     large = _count_queries(client_user, "/api/portal/orders/")
     assert large == small, f"portal orders: {small} → {large} запросов (N+1)"

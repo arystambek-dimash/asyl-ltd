@@ -46,7 +46,7 @@ def test_assigned_employee_cannot_mutate_foreign_shipment_but_global_employee_ca
 ):
     department_a = Department.objects.create(code="shipment-a", name="Отдел A")
     department_b = Department.objects.create(code="shipment-b", name="Отдел B")
-    permissions = ["loader.confirm"]
+    permissions = ["loader.confirm", "loader.trucks"]
     assigned = _employee(
         user_with_perms,
         "shipment-assigned-a",

@@ -117,7 +117,7 @@ def ai_key(monkeypatch):
 
 @pytest.fixture
 def loader(user_with_perms):
-    return user_with_perms("loader", codes=["monoblock.view", "loader.confirm"])
+    return user_with_perms("loader", codes=["monoblock.view", "loader.confirm", "loader.trucks", "loader.wagons"])
 
 
 @pytest.fixture
@@ -865,7 +865,12 @@ def test_get_saved_counting_line_preserves_upstream_body_and_status(
         response = api_client.get("/api/cameras/cam2/counting-line")
 
     assert response.status_code == 200
-    assert response.data == LINE_CONFIG
+    # An older camera PC has no verification lines: say so explicitly.
+    assert response.data == {
+        **LINE_CONFIG,
+        "verification_lines": [],
+        "verification_lines_supported": False,
+    }
     request.assert_called_once_with("GET", "/cameras/cam2/line")
 
 
@@ -891,7 +896,11 @@ def test_superuser_puts_valid_counting_line(api_client, superuser):
         )
 
     assert response.status_code == 200
-    assert response.data == upstream
+    assert response.data == {
+        **upstream,
+        "verification_lines": [],
+        "verification_lines_supported": False,
+    }
     request.assert_called_once_with("PUT", "/cameras/cam2/line", body)
     assert cache.get(ai.ALWAYS_ON_CACHE_KEY) is None
     assert cache.get(ai.DETECTIONS_CACHE_KEY) is None
@@ -1037,7 +1046,7 @@ def test_saved_but_not_live_503_is_returned_once_without_field_loss(
         "line": LINE_CONFIG["line"],
         "line_spec": LINE_CONFIG["line_spec"],
         "direction": "any",
-        "detail": "saved, live processor update pending",
+        "error": "saved, live processor update pending",
     }
     inventory = [{"src": "cam2", "line_config": None}]
     cache.set(services.CACHE_KEY, inventory, services.CACHE_TTL)
@@ -1051,7 +1060,13 @@ def test_saved_but_not_live_503_is_returned_once_without_field_loss(
         )
 
     assert response.status_code == 503
-    assert response.data == upstream
+    assert response.data == {
+        **upstream,
+        "code": "saved_not_applied",
+        "detail": ai.SAVED_NOT_APPLIED_DETAIL,
+        "verification_lines": [],
+        "verification_lines_supported": False,
+    }
     request.assert_called_once()
     assert cache.get(ai.ALWAYS_ON_CACHE_KEY) is None
     assert cache.get(ai.DETECTIONS_CACHE_KEY) is None
@@ -1813,7 +1828,7 @@ def test_authoritative_final_rejects_wrong_identity_or_invalid_payload(
 def test_only_starter_or_admin_can_stop_session(
     api_client, loader, user_with_perms, loading_order,
 ):
-    other_loader = user_with_perms("other-loader", codes=["monoblock.view", "loader.confirm"])
+    other_loader = user_with_perms("other-loader", codes=["monoblock.view", "loader.confirm", "loader.trucks"])
     session = AiCountingSession.objects.create(
         order=loading_order, camera="cam2", status=AiCountingSession.ACTIVE,
         started_by=loader,
@@ -1830,7 +1845,8 @@ def test_only_starter_or_admin_can_stop_session(
     assert session.status == AiCountingSession.ACTIVE
 
     admin = user_with_perms(
-        "session-admin", codes=["monoblock.view", "loader.confirm", "sys_permissions.manage"]
+        "session-admin",
+        codes=["monoblock.view", "loader.confirm", "loader.trucks", "sys_permissions.manage"],
     )
     api_client.force_authenticate(admin)
     with patch.object(
@@ -1852,7 +1868,7 @@ def test_only_starter_or_admin_can_stop_session(
 def test_only_starter_or_admin_can_recover_session(
     api_client, loader, user_with_perms, loading_order,
 ):
-    other_loader = user_with_perms("other-recovery", codes=["monoblock.view", "loader.confirm"])
+    other_loader = user_with_perms("other-recovery", codes=["monoblock.view", "loader.confirm", "loader.trucks"])
     AiCountingSession.objects.create(
         order=loading_order,
         camera="cam2",

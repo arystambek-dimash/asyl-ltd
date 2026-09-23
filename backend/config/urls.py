@@ -43,4 +43,5 @@ urlpatterns = [
     path("api/", include("apps.cameras.urls")),
     path("api/", include("apps.tasks.urls")),
     path("api/", include("apps.grain.urls")),
+    path("api/", include("apps.bots.urls")),
 ]

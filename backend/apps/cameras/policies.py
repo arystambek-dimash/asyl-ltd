@@ -3,6 +3,7 @@
 from rest_framework.exceptions import APIException, ValidationError
 
 from apps.orders.models import Order
+from apps.shipments.access import allowed_transports
 
 from .models import AiCountingSession, ContinuousCameraRole, ShippingAnalyticsBootstrap
 
@@ -128,18 +129,22 @@ def session_started_by_name(session) -> str:
 
 
 def can_control_session(session, user) -> bool:
-    """Whether a user may reset/stop a session they did not start."""
-    return bool(
-        user
-        and user.is_authenticated
-        and (
-            user.is_superuser
-            or user.has_perm_code("sys_permissions.manage")
-            or session.started_by_id == user.pk
-            or (
-                session.automatically_started
-                and not user.is_client
-                and user.has_perm_code("loader.confirm")
-            )
-        )
+    """Whether a user may reset/stop a session they did not start.
+
+    Грузчик управляет подсчётом только в своей области («Фуры | Вагоны») —
+    по транспорту заказа сессии. Область проверяется и у администратора:
+    сервисы подсчёта (``counting.start/stop/reset``) требуют её у всех, и
+    «Стоп» без неё был бы кнопкой с отказом. Суперпользователю открыты все
+    области. Вызывающие в цикле берут сессии с ``select_related("order")``.
+    """
+    if not (user and user.is_authenticated):
+        return False
+    if session.order.transport_type not in allowed_transports(user):
+        return False
+    if user.is_superuser or user.has_perm_code("sys_permissions.manage"):
+        return True
+    return session.started_by_id == user.pk or (
+        session.automatically_started
+        and not user.is_client
+        and user.has_perm_code("loader.confirm")
     )

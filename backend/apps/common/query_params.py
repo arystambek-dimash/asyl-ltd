@@ -6,6 +6,8 @@ from decimal import Decimal, InvalidOperation
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError
 
+from apps.common.plates import plate_search_variants
+
 
 def parse_iso_date(raw: str | None) -> date | None:
     """Parse an optional ISO date while preserving the public API error contract."""
@@ -87,15 +89,16 @@ def parse_search_param(raw: str | None, max_length: int = 60) -> str:
 
 
 def plate_search_q(field: str, search: str) -> Q:
-    """Совпадение номера машины, набранного с пробелами или дефисами.
+    """Совпадение номера машины в любой записи.
 
-    Номера хранятся слитно (465BDS13), а оператор вводит «465 BDS 13» или
-    «465-BDS-13» — поэтому ``field`` сверяется ещё и с уплотнённым запросом.
+    Номера хранятся слитно (465BDS13, 07KG695ADT), а оператор вводит
+    «465 BDS 13», «465-bds-13», кириллицей или киргизский номер без «KG» —
+    поэтому ``field`` сверяется ещё и с нормализованными вариантами запроса.
     """
     condition = Q(**{f"{field}__icontains": search})
-    compact = "".join(search.replace("-", " ").split())
-    if compact and compact != search:
-        condition |= Q(**{f"{field}__icontains": compact})
+    for variant in plate_search_variants(search):
+        if variant != search:
+            condition |= Q(**{f"{field}__icontains": variant})
     return condition
 
 

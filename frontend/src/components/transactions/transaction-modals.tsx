@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/modal";
 import { paymentStage } from "@/lib/constants";
 import type { Payment } from "@/lib/types";
 import { currencySymbol, formatMoney } from "@/lib/utils";
+import { PaymentRefundModal } from "./payment-refund-modal";
 import { QrCodeImage } from "./qr-code-image";
 import { QrRefundModal } from "./qr-refund-modal";
 import { TransactionActions, transactionActions, type TransactionActionHandlers } from "./transaction-actions";
@@ -90,52 +91,14 @@ export function TransactionModals({
 
   return (
     <>
-      <Modal
-        open={!!t.refundFor}
-        onClose={() => !t.busy && t.setRefundFor(null)}
-        eyebrow={t.refundFor?.provider ? "ApiPay · Возврат" : "Касса · Возврат"}
-        title="Вернуть оплату"
-        description={
-          t.refundFor?.provider?.channel === "qr"
-            ? "Kaspi вернёт оплату по QR только после подтверждения покупателем: на экране появится QR для него, а если его нет рядом — отправьте ссылку."
-            : t.refundFor?.provider
-              ? "Возврат будет отправлен через ApiPay. Деньги учтутся после подтверждения платёжного сервиса."
-              : "Возврат будет сразу проведён как выдача денег из кассы и уменьшит оплаченную сумму заказа."
-        }
-        footer={
-          <>
-            <Button variant="outline" onClick={() => t.setRefundFor(null)}>
-              Отмена
-            </Button>
-            <Button disabled={t.busy || !t.amount || !t.reason.trim()} onClick={() => void t.refund()}>
-              {t.busy ? "Отправка…" : t.refundFor?.provider?.channel === "qr" ? "Показать QR" : "Оформить возврат"}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          {t.error && <p className="text-sm text-[var(--destructive)]">{t.error}</p>}
-          <div>
-            <label className="mb-1.5 block text-sm">Сумма возврата</label>
-            <Input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={t.amount}
-              onChange={(e) => t.setAmount(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-sm">Причина</label>
-            <Input
-              maxLength={500}
-              placeholder="Например: возврат товара"
-              value={t.reason}
-              onChange={(e) => t.setReason(e.target.value)}
-            />
-          </div>
-        </div>
-      </Modal>
+      {t.refundFor && (
+        <PaymentRefundModal
+          key={t.refundFor.id}
+          payment={t.refundFor}
+          onClose={() => t.setRefundFor(null)}
+          onRefunded={t.refunded}
+        />
+      )}
 
       <Modal
         open={!!t.statusFor}

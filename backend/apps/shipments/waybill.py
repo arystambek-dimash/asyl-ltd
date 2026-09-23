@@ -2,7 +2,8 @@
 
 Повторяет бумажный бланк мельницы: шапка с точкой, номер (= номер заказа),
 дата и время, машина, покупатель, таблица товара с ценами и итог, подписи
-из ``WaybillSettings``.
+из ``WaybillSettings``. Отгрузка по отчёту о вагонах — вместо номера машины
+станция назначения и таблица вагонов.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from apps.orders.invoices import _register_fonts
 from apps.orders.models import Order
+from apps.orders.transport import order_wagons, transport_number_text
 
 from .models import WaybillSettings
 
@@ -43,6 +45,41 @@ def _kg(value: Decimal) -> str:
 
 def _local_time(moment) -> str:
     return f"{timezone.localtime(moment):%H:%M}" if moment else ""
+
+
+_GRID_STYLE = TableStyle([
+    ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
+    ("LEFTPADDING", (0, 0), (-1, -1), 2), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+    ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+])
+
+
+def _wagons_table(wagons, width, *, head, cell, number, center) -> Table:
+    """Вагоны отгрузки по отчёту: номер, товар, мешки и вес — с итогом."""
+    rows = [[
+        Paragraph("№<br/>п/п", head), Paragraph("№ вагона", head), Paragraph("Наименование продукции", head),
+        Paragraph("Кол-во в мешках", head), Paragraph("Вес, кг", head),
+    ]]
+    for index, wagon in enumerate(wagons, 1):
+        rows.append([
+            Paragraph(str(index), center), Paragraph(_text(wagon.number), cell),
+            Paragraph(_text(wagon.product_label), cell), Paragraph(str(wagon.bags), number),
+            Paragraph(_kg(wagon.weight_kg), number),
+        ])
+    rows.append([
+        "", Paragraph(f"Вагонов: {len(wagons)}", cell), "",
+        Paragraph(str(sum(wagon.bags for wagon in wagons)), number),
+        Paragraph(_kg(sum((wagon.weight_kg for wagon in wagons), Decimal("0"))), number),
+    ])
+    table = Table(
+        rows, colWidths=[width * share for share in (0.06, 0.2, 0.42, 0.14, 0.18)], repeatRows=1,
+    )
+    # Строки плотнее товарных: партия в 12 вагонов с подписями — на одном листе A5.
+    table.setStyle(_GRID_STYLE)
+    table.setStyle(TableStyle([("TOPPADDING", (0, 1), (-1, -1), 1), ("BOTTOMPADDING", (0, 1), (-1, -1), 1)]))
+    return table
 
 
 def build_waybill_pdf(order: Order) -> bytes:
@@ -73,24 +110,30 @@ def build_waybill_pdf(order: Order) -> bytes:
         [[Paragraph("Накладная на отпуск товаров", title), Paragraph(_text(settings.point_name), right)]],
         colWidths=[width * 0.62, width * 0.38],
     )
-    buyer = order.client.company_name.strip() or order.client.name
-    transport_label = "№ Вагона:" if order.transport_type == "train" else "№ Автомашины:"
-    transport_value = order.truck_number or ("—" if order.transport_type == "truck" else "вагон")
-    details = Table(
+    buyer = order.client.display_name
+    wagons = order_wagons(order)
+    if wagons:
+        transport_line = f"Вагоны: {len(wagons)} — список ниже"
+    else:
+        transport_label = "№ Вагона:" if order.transport_type == "train" else "№ Автомашины:"
+        transport_value = transport_number_text(order) or ("—" if order.transport_type == "truck" else "вагон")
+        transport_line = f"{transport_label} {_text(transport_value)}"
+    detail_rows = [
+        [Paragraph(f"№ {order.pk}", ParagraphStyle("WaybillNumberTitle", parent=bold, fontSize=11, leading=14)), "", ""],
         [
-            [Paragraph(f"№ {order.pk}", ParagraphStyle("WaybillNumberTitle", parent=bold, fontSize=11, leading=14)), "", ""],
-            [
-                Paragraph(f"Дата: {issued_on:%d.%m.%Y}", base),
-                Paragraph(f"Время входа: {_local_time(shipment.arrived_at if shipment else None)}", base),
-                Paragraph(f"выхода: {_local_time(shipped_at)}", base),
-            ],
-            [Paragraph(f"{transport_label} {_text(transport_value)}", base), "", ""],
-            [Paragraph(f"Покупатель: {_text(buyer)}", base), "", ""],
+            Paragraph(f"Дата: {issued_on:%d.%m.%Y}", base),
+            Paragraph(f"Время входа: {_local_time(shipment.arrived_at if shipment else None)}", base),
+            Paragraph(f"выхода: {_local_time(shipped_at)}", base),
         ],
-        colWidths=[width * 0.36, width * 0.36, width * 0.28],
-    )
+        [Paragraph(transport_line, base), "", ""],
+    ]
+    if order.transport_type == "train" and order.rail_station:
+        detail_rows.append([Paragraph(f"Станция назначения: {_text(order.rail_station)}", base), "", ""])
+    detail_rows.append([Paragraph(f"Покупатель: {_text(buyer)}", base), "", ""])
+    details = Table(detail_rows, colWidths=[width * 0.36, width * 0.36, width * 0.28])
     details.setStyle(TableStyle([
-        ("SPAN", (0, 0), (-1, 0)), ("SPAN", (0, 2), (-1, 2)), ("SPAN", (0, 3), (-1, 3)),
+        ("SPAN", (0, 0), (-1, 0)),
+        *(("SPAN", (0, row), (-1, row)) for row in range(2, len(detail_rows))),
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1.5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
     ]))
@@ -130,13 +173,7 @@ def build_waybill_pdf(order: Order) -> bytes:
         colWidths=[width * share for share in (0.06, 0.28, 0.12, 0.12, 0.14, 0.11, 0.17)],
         repeatRows=1,
     )
-    table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F2F2")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 2), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-        ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-    ]))
+    table.setStyle(_GRID_STYLE)
 
     signer_rows = [
         [Paragraph(f"{_text(signer.get('role', ''))}:", base), "", Paragraph(_text(signer.get("name", "")), base)]
@@ -151,7 +188,9 @@ def build_waybill_pdf(order: Order) -> bytes:
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
     ]))
 
-    story = [header, Spacer(1, 2 * mm), details, Spacer(1, 3 * mm), table, Spacer(1, 4 * mm),
-             signatures, Spacer(1, 3 * mm), Paragraph("М.П.", right)]
+    story = [header, Spacer(1, 2 * mm), details, Spacer(1, 3 * mm), table]
+    if wagons:
+        story += [Spacer(1, 3 * mm), _wagons_table(wagons, width, head=head, cell=cell, number=number, center=center)]
+    story += [Spacer(1, 4 * mm), signatures, Spacer(1, 3 * mm), Paragraph("М.П.", right)]
     doc.build(story)
     return buffer.getvalue()

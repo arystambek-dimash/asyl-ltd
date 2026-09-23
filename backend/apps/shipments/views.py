@@ -4,6 +4,7 @@ from typing import ClassVar
 from django.db.models import F
 from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -11,13 +12,25 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.bots.parsing import parse_rail_report
+from apps.bots.preview import preview_report, resolution_options
+from apps.bots.rail import (
+    apply_rail_report,
+    rail_report_texts,
+    remember_report_client,
+    remember_report_product,
+)
+from apps.bots.serializers import RailClientNameSerializer, RailProductCodeSerializer, RailReportSerializer
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.query_params import parse_date_range, parse_search_param
 from apps.orders.models import Order
 from apps.orders.querysets import filter_order_search
+from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
+from apps.orders.transport import suggestion_pairs
 from apps.sales.access import scope_by_client_department
 
+from .access import allowed_transports, assert_can_ship, requested_transport
 from .models import WaybillSettings
 from .serializers import (
     ArrivalSerializer,
@@ -28,8 +41,7 @@ from .serializers import (
     WaybillSettingsSerializer,
 )
 from .services import (
-    DISPATCHABLE_STATUSES,
-    dispatch_order,
+    loader_dispatch,
     loader_rollback_blocker,
     finish_loading,
     record_arrival,
@@ -88,7 +100,10 @@ class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=True, methods=["post"], url_path="rewind-loading")
     def rewind_loading(self, request, pk=None):
-        order = rewind_loading(self.get_object(), request.user)
+        order = self.get_object()
+        # Сервис общий с административной сменой статуса — область проверяет пост.
+        assert_can_ship(request.user, order)
+        order = rewind_loading(order, request.user)
         # Клиенту достаточно нового статуса; список доски сразу перечитывается.
         return Response({"id": order.pk, "status": order.status})
 
@@ -109,20 +124,52 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "waybill": "loader.view",
         "confirm": "loader.confirm",
         "rollback": "loader.confirm",
+        # «Вставить отчёт» во вкладке «Вагоны»: смотреть и разбирать может
+        # грузчик вагонов, провести — с правами отгрузки (и заказов для нового).
+        "rail_preview": "loader.view",
+        "rail_options": "loader.view",
+        "rail_product_code": "loader.view",
+        "rail_client_name": "loader.view",
+        "rail_apply": "loader.confirm",
     }
 
     def get_queryset(self):
-        # Оплаты нужны для статуса в очереди: без prefetch это запрос на строку.
-        queryset = Order.objects.select_related("client__user", "shipment").prefetch_related(
-            "items__product", "payments",
-        )
+        # Оплаты нужны для статуса в очереди, владелец номера — для
+        # transport_locked: без них это запрос на строку.
+        # Заказ чужой области («Фуры | Вагоны») грузчику не виден вовсе:
+        # отгрузка, откат и накладная по нему — 404.
+        queryset = Order.objects.filter(
+            transport_type__in=allowed_transports(self.request.user),
+        ).select_related(
+            "client__user", "shipment", "truck_number_set_by",
+        ).prefetch_related("items__product", "payments", "shipment__wagons")
         return scope_by_client_department(queryset, self.request.user, client_path="client")
+
+    def _tab(self, queryset):
+        """Вкладка «Фуры | Вагоны»: ``?transport=truck|train``, без него — все области."""
+        transport = requested_transport(self.request.user, self.request.query_params.get("transport"))
+        return queryset if transport is None else queryset.filter(transport_type=transport)
+
+    def _rows(self, rows):
+        # Подсказки номеров и отчёты о вагонах — запросами на страницу, не на строку.
+        context = {
+            **self.get_serializer_context(),
+            "transport_pairs": suggestion_pairs(rows),
+            "rail_report_texts": rail_report_texts(rows),
+        }
+        return self.get_serializer(rows, many=True, context=context).data
 
     def _page(self, queryset):
         page = self.paginate_queryset(queryset)
-        if page is not None:
-            return self.get_paginated_response(self.get_serializer(page, many=True).data)
-        return Response(self.get_serializer(queryset, many=True).data)
+        data = self._rows(page if page is not None else list(queryset))
+        return self.get_paginated_response(data) if page is not None else Response(data)
+
+    def _row(self, pk):
+        """Строка после действия — как в очереди, с подсказками номеров.
+
+        Экран применяет ответ к строке, а не перечитывает список.
+        """
+        return Response(self._rows([self.get_queryset().get(pk=pk)])[0])
 
     @action(detail=False, methods=["get"], url_path="queue")
     def queue(self, request):
@@ -133,7 +180,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         сегодняшнюю работу. Без параметров — вся очередь.
         """
         today = timezone.localdate()
-        queryset = self.get_queryset().filter(status__in=DISPATCHABLE_STATUSES).annotate(
+        queryset = self._tab(self.get_queryset()).filter(status__in=AWAITING_SHIPMENT_STATUSES).annotate(
             planned_on=Coalesce("arrival_date", TruncDate("created_at")),
         )
         if request.query_params.get("overdue") == "1":
@@ -152,7 +199,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         """Отгруженные за период по времени выезда; по умолчанию — сегодня."""
         date_from, date_to = parse_date_range(request.query_params)
         today = timezone.localdate()
-        queryset = self.get_queryset().filter(
+        queryset = self._tab(self.get_queryset()).filter(
             status="shipped",
             shipment__shipped_at__date__gte=date_from or today,
             shipment__shipped_at__date__lte=date_to or date_from or today,
@@ -163,14 +210,17 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     @action(detail=True, methods=["post"], url_path="dispatch")
     def confirm(self, request, pk=None):
         # Local import avoids a shipments -> cameras -> shipments import cycle.
-        from apps.cameras import ai, counting
+        from apps.cameras import ai
 
         serializer = LoaderDispatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        truck = serializer.validated_data.get("truck_number", "")
+        # None — прицеп не передан, «» — стереть (правила — в dispatch_order).
+        trailer = serializer.validated_data.get("trailer_number")
         order = self.get_object()
         try:
-            # Кнопок погрузки в Моноблоке нет: открытый AI-подсчёт закрывает сама отгрузка.
-            counting.close_session_for_dispatch(order, request.user)
+            # Область и номер проверяются до закрытия AI-подсчёта, а не после него.
+            loader_dispatch(order, request.user, truck_number=truck, trailer_number=trailer)
         except ai.AiUnavailable:
             return Response(
                 {"detail": "AI-сервис камер недоступен — повторите отгрузку", "code": "ai_unavailable"},
@@ -181,8 +231,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
                 {"detail": exc.detail, "code": "ai_error"},
                 status=exc.status if exc.status in (400, 409, 503) else status.HTTP_502_BAD_GATEWAY,
             )
-        dispatch_order(order, request.user, truck_number=serializer.validated_data["truck_number"])
-        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+        return self._row(pk)
 
     @action(detail=True, methods=["post"], url_path="rollback")
     def rollback(self, request, pk=None):
@@ -198,7 +247,55 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
             target_status="confirmed",
             reason=reason or "Ошибочная отгрузка: отмена грузчиком",
         )
-        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+        return self._row(pk)
+
+    def _rail_input(self, serializer_class):
+        """Отчёт из запроса и заказ «Отгрузить по отчёту» (своей области и отдела)."""
+        # Отчёт о вагонах — вкладка «Вагоны»: без этой области — 403, а не пустой разбор.
+        requested_transport(self.request.user, "train")
+        serializer = serializer_class(data=self.request.data, context=self.get_serializer_context())
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        order_id = data.get("order")
+        order = get_object_or_404(self.get_queryset(), pk=order_id) if order_id is not None else None
+        return data, parse_rail_report(data["text"]), order
+
+    def _rail_preview(self, report, order):
+        return Response(preview_report(report, self.request.user, order=order))
+
+    @action(detail=False, methods=["post"], url_path="rail-report/preview")
+    def rail_preview(self, request):
+        """Предпросмотр отчёта о вагонах: что будет проведено и что мешает. Ничего не пишет."""
+        _, report, order = self._rail_input(RailReportSerializer)
+        return self._rail_preview(report, order)
+
+    @action(detail=False, methods=["get"], url_path="rail-report/options")
+    def rail_options(self, request):
+        """Товары и клиенты для разрешения неизвестного — только то, что человеку можно запомнить."""
+        requested_transport(request.user, "train")
+        return Response(resolution_options(request.user))
+
+    @action(detail=False, methods=["post"], url_path="rail-report/product-codes")
+    def rail_product_code(self, request):
+        """Запомнить код товара из отчёта и вернуть свежий предпросмотр."""
+        data, report, order = self._rail_input(RailProductCodeSerializer)
+        remember_report_product(data["code"], data["product"], request.user)
+        return self._rail_preview(report, order)
+
+    @action(detail=False, methods=["post"], url_path="rail-report/client-names")
+    def rail_client_name(self, request):
+        """Запомнить клиента и валюту под названием из отчёта и вернуть свежий предпросмотр."""
+        data, report, order = self._rail_input(RailClientNameSerializer)
+        remember_report_client(data["client_name"], data["client"], data["currency"], request.user)
+        return self._rail_preview(report, order)
+
+    @action(detail=False, methods=["post"], url_path="rail-report/apply")
+    def rail_apply(self, request):
+        """«Провести»: новый отчёт — заказ, подтверждение и отгрузка вагонов; с ``order`` —
+        отгрузка этого заказа. Ответ — строка истории: экран применяет её, а не перечитывает."""
+        _, report, order = self._rail_input(RailReportSerializer)
+        order = apply_rail_report(report, request.user, order=order)
+        return self._row(order.pk)
 
     @action(detail=True, methods=["get"], url_path="waybill")
     def waybill(self, request, pk=None):

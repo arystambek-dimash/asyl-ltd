@@ -92,6 +92,8 @@ beforeEach(() => {
       return { data: rows };
     }
     if (url.pathname === "/orders/awaiting-payment/") return { data: { results: [], count: 0, next: null } };
+    if (url.pathname === "/orders/awaiting-shipment/") return { data: { results: [], count: 0, next: null } };
+    if (url.pathname === "/orders/to-refund/") return { data: { results: [], count: 0, next: null } };
     if (url.pathname === "/clients/debts/")
       return {
         data: mocks.paid
@@ -229,6 +231,9 @@ it("takes payment for a shipped order or moves it to debt from «Ждут опл
               id: 632,
               client_name: "Покупатель",
               status: "shipped",
+              payment_open: true,
+              payment_open_methods: ["cash", "kaspi", "remote", "invoice"],
+              payment_request_open: true,
               currency: "KZT",
               department: "field",
               department_name: "Нью-Сити",
@@ -279,4 +284,178 @@ it("desktop tab click mirrors the view into the URL and deep links open the tab"
   await openSummary(user);
   expect(await screen.findByText("Дебиторка")).toBeInTheDocument();
   expect(screen.queryByRole("tab", { name: "Журнал" })).not.toBeInTheDocument();
+});
+
+/** Подтверждённый, ещё не отгруженный заказ: сервер открыл предоплату деньгами у кассы. */
+const toShipOrder = {
+  id: 700,
+  client_name: "Предоплата",
+  status: "confirmed",
+  payment_open: true,
+  payment_open_methods: ["cash", "kaspi", "remote"],
+  payment_request_open: false,
+  currency: "KZT",
+  department: "main",
+  department_name: "Мельница",
+  total_amount: "500",
+  paid_total: "0",
+  remaining_amount: "500",
+  overpaid_amount: "0.00",
+  pending_payments: [],
+  payments: [],
+  items: [],
+  created_at: "2026-09-22T10:00:00",
+};
+
+it("takes a prepayment for an order awaiting shipment from «К отгрузке»", async () => {
+  const user = userEvent.setup();
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/awaiting-shipment/")
+      return { data: { results: [toShipOrder], count: 1, next: null } };
+    return baseGet(raw);
+  });
+  render(<CashierPage />);
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
+  await user.click(await screen.findByRole("tab", { name: "К отгрузке, 1" }));
+
+  expect(await screen.findByRole("link", { name: "Заказ #700" })).toBeInTheDocument();
+  expect(screen.getByText("Ожидает загрузки")).toBeInTheDocument();
+  // Счёт на телефон и «В долг» — только после отгрузки.
+  expect(screen.queryByRole("button", { name: /Отправить удалённый счёт/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "В долг" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+  await user.click(screen.getByRole("button", { name: /Удалённая оплата/ }));
+  await user.click(screen.getByRole("button", { name: "Принять" }));
+  await waitFor(() =>
+    expect(mocks.post).toHaveBeenCalledWith("/orders/700/payments/", {
+      amount: "500",
+      method: "remote",
+      stage: "received",
+    }),
+  );
+  const urls = mocks.get.mock.calls.map(([url]) => String(url));
+  expect(urls).toContain("/orders/awaiting-shipment/?page=1&page_size=50");
+});
+
+it("returns an overpayment to the client from «К возврату»", async () => {
+  const user = userEvent.setup();
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/to-refund/")
+      return {
+        data: {
+          results: [
+            {
+              ...toShipOrder,
+              id: 701,
+              total_amount: "300",
+              paid_total: "500",
+              remaining_amount: "0",
+              overpaid_amount: "200.00",
+              payments: [
+                {
+                  id: 91,
+                  order: 701,
+                  currency: "KZT",
+                  amount: "500.00",
+                  method: "cash",
+                  status: "confirmed",
+                  paid_at: "2026-09-22T10:00:00",
+                  recorded_by: null,
+                  available_for_refund: "500.00",
+                },
+              ],
+            },
+          ],
+          count: 1,
+          next: null,
+        },
+      };
+    return baseGet(raw);
+  });
+  render(<CashierPage />);
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
+  await user.click(await screen.findByRole("tab", { name: "К возврату, 1" }));
+
+  expect(await screen.findByRole("link", { name: "Заказ #701" })).toBeInTheDocument();
+  expect(screen.getByText("200 ₸")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /Вернуть переплату/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Вернуть оплату" });
+  await user.type(within(dialog).getByLabelText("Причина"), "Уменьшили заказ");
+  await user.click(within(dialog).getByRole("button", { name: "Оформить возврат" }));
+  await waitFor(() =>
+    expect(mocks.post).toHaveBeenCalledWith("/payment-transactions/91/refund/", {
+      amount: "200",
+      reason: "Уменьшили заказ",
+      mode: "auto",
+    }),
+  );
+});
+
+it("keeps the Kaspi QR refund window open after the order leaves «К возврату»", async () => {
+  const user = userEvent.setup();
+  const qrRefund = {
+    id: 5,
+    status: "awaiting_customer",
+    amount: "200.00",
+    refunded_amount: null,
+    client_name: null,
+    customer_url: "https://pay.example/refund/5",
+    link_expires_at: null,
+    operations: [],
+    receipt_url: null,
+    error_code: null,
+    error_message: null,
+    created_at: "2026-09-23T10:00:00",
+  };
+  let refundStarted = false;
+  const overpaid = {
+    ...toShipOrder,
+    id: 702,
+    total_amount: "300",
+    paid_total: "500",
+    remaining_amount: "0",
+    overpaid_amount: "200.00",
+    payments: [
+      {
+        id: 92,
+        order: 702,
+        currency: "KZT",
+        amount: "500.00",
+        method: "kaspi",
+        status: "confirmed",
+        paid_at: "2026-09-22T10:00:00",
+        recorded_by: null,
+        available_for_refund: "500.00",
+        provider: { channel: "qr" },
+      },
+    ],
+  };
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/payment-transactions/92/qr-refund/") return { data: qrRefund };
+    // Начатый возврат резервирует деньги — заказ уходит из «К возврату».
+    if (url.pathname === "/orders/to-refund/" && !refundStarted)
+      return { data: { results: [overpaid], count: 1, next: null } };
+    return baseGet(raw);
+  });
+  mocks.post.mockImplementation(async () => {
+    refundStarted = true;
+    return { data: { method: "apipay_qr", qr_refund: qrRefund } };
+  });
+  render(<CashierPage />);
+  await user.click(screen.getByRole("tab", { name: /^Оплаты/ }));
+  await user.click(await screen.findByRole("tab", { name: "К возврату, 1" }));
+  await user.click(await screen.findByRole("button", { name: /Вернуть переплату/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Вернуть оплату" });
+  await user.type(within(dialog).getByLabelText("Причина"), "Уменьшили заказ");
+  await user.click(within(dialog).getByRole("button", { name: "Показать QR" }));
+
+  expect(await screen.findByRole("dialog", { name: "Возврат по QR" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Заказ #702" })).not.toBeInTheDocument());
+  expect(screen.getByRole("dialog", { name: "Возврат по QR" })).toBeInTheDocument();
 });

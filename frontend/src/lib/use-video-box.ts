@@ -9,6 +9,17 @@ export interface VideoBox {
   height: number;
 }
 
+/** A still frame (``<img data-video-box-source>``) can stand in for live video. */
+const STILL_FRAME_SELECTOR = "img[data-video-box-source]";
+// ``load`` refits the layer whenever a refreshed still frame arrives.
+const MEDIA_EVENTS = ["loadedmetadata", "resize", "load"] as const;
+
+function mediaSize(media: HTMLVideoElement | HTMLImageElement): [number, number] {
+  return media instanceof HTMLVideoElement
+    ? [media.videoWidth, media.videoHeight]
+    : [media.naturalWidth, media.naturalHeight];
+}
+
 /**
  * Measure the pixels occupied by a centered video inside an overlay's parent.
  * The video and overlay are siblings, so both bbox and line layers share the
@@ -22,7 +33,7 @@ export function useVideoBox(container: HTMLElement | null): VideoBox | null {
     const parent = container.parentElement;
     if (!parent) return;
 
-    let video: HTMLVideoElement | null = null;
+    let video: HTMLVideoElement | HTMLImageElement | null = null;
     const clearBox = () => setBox((current) => (current === null ? current : null));
     const commitBox = (next: VideoBox) =>
       setBox((current) =>
@@ -36,7 +47,7 @@ export function useVideoBox(container: HTMLElement | null): VideoBox | null {
       );
     const measure = () => {
       if (!video) return clearBox();
-      const { videoWidth, videoHeight } = video;
+      const [videoWidth, videoHeight] = mediaSize(video);
       const { clientWidth, clientHeight } = parent;
       if (!videoWidth || !videoHeight || !clientWidth || !clientHeight) return clearBox();
 
@@ -55,17 +66,19 @@ export function useVideoBox(container: HTMLElement | null): VideoBox | null {
       });
     };
 
+    const unbind = () => {
+      for (const event of MEDIA_EVENTS) video?.removeEventListener(event, measure);
+    };
+
     const bindVideo = () => {
-      const next = parent.querySelector("video");
+      const next = parent.querySelector("video") ?? parent.querySelector<HTMLImageElement>(STILL_FRAME_SELECTOR);
       if (next === video) {
         measure();
         return;
       }
-      video?.removeEventListener("loadedmetadata", measure);
-      video?.removeEventListener("resize", measure);
+      unbind();
       video = next;
-      video?.addEventListener("loadedmetadata", measure);
-      video?.addEventListener("resize", measure);
+      for (const event of MEDIA_EVENTS) video?.addEventListener(event, measure);
       measure();
     };
 
@@ -78,8 +91,7 @@ export function useVideoBox(container: HTMLElement | null): VideoBox | null {
     mutationObserver.observe(parent, { childList: true, subtree: true });
 
     return () => {
-      video?.removeEventListener("loadedmetadata", measure);
-      video?.removeEventListener("resize", measure);
+      unbind();
       resizeObserver?.disconnect();
       mutationObserver.disconnect();
     };

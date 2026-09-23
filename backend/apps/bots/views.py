@@ -1,0 +1,189 @@
+"""Журнал WhatsApp-бота: состояние номера, сообщения, разбор и настройки.
+
+Разбор сообщения — тот же экран, что «Вставить отчёт» у грузчика
+(:mod:`apps.bots.preview`): предпросмотр, словари и «Провести» — от имени
+человека, с его правами и отделом.
+"""
+from typing import ClassVar
+
+from django.conf import settings
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.common.pagination import OptInPageNumberPagination
+from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
+from apps.common.query_params import parse_search_param
+from apps.eventlog.services import log_event
+from apps.orders.models import Order
+from apps.sales.access import scope_by_client_department
+
+from .models import BotMessage, WhatsAppBotSettings
+from .parsing import parse_rail_report
+from .preview import preview_report, resolution_options
+from .rail import RAIL_TRANSPORT, remember_report_client, remember_report_product
+from .serializers import (
+    BotMessageSerializer,
+    RailClientNameSerializer,
+    RailProductCodeSerializer,
+    RailReportSerializer,
+    WhatsAppBotSettingsSerializer,
+)
+from .whatsapp import EVENT_TYPE, apply_message, ignore_message, report_options, status_counts
+
+# Вкладки журнала → статусы сообщений.
+STATUS_FILTERS = {
+    "review": BotMessage.REVIEW_STATUSES,
+    "applied": (BotMessage.APPLIED,),
+    "ignored": (BotMessage.IGNORED,),
+}
+
+
+# Короткое число — номер заказа или сообщения; длинное (номер вагона) ищется в тексте.
+_SHORT_NUMBER_DIGITS = 7
+
+
+def _search_q(search: str) -> Q:
+    digits = search.lstrip("№#").strip()
+    if digits.isdigit() and len(digits) <= _SHORT_NUMBER_DIGITS:
+        return Q(order_id=int(digits)) | Q(pk=int(digits))
+    return Q(text__icontains=search) | Q(sender_name__icontains=search) | Q(chat_name__icontains=search)
+
+
+def _status_payload(request) -> dict:
+    row = WhatsAppBotSettings.load()
+    user = request.user
+    return {
+        # WHATSAPP_BOT_ENABLED на сервере; выключен — процесс бота простаивает.
+        "server_enabled": settings.WHATSAPP_BOT_ENABLED,
+        "runtime_status": row.runtime_status,
+        "runtime_error": row.runtime_error,
+        "polled_at": row.polled_at,
+        "instance_state": row.instance_state,
+        "instance_state_at": row.instance_state_at,
+        "counts": status_counts(),
+        "settings": WhatsAppBotSettingsSerializer(row).data,
+        "can_manage": user.has_perm_code("bots.manage"),
+        "can_configure": user.has_perm_code("sys_permissions.manage"),
+    }
+
+
+class WhatsAppBotStatusView(PermAPIViewMixin, APIView):
+    """Шапка журнала: состояние номера и процесса, счётчики вкладок, настройки."""
+
+    required_perms: ClassVar[dict] = {"get": "bots.view"}
+
+    def get(self, request):
+        return Response(_status_payload(request))
+
+
+class WhatsAppBotSettingsView(PermAPIViewMixin, APIView):
+    """Настройки бота меняет администратор (как настройки камер и накладной)."""
+
+    required_perms: ClassVar[dict] = {"put": "sys_permissions.manage", "patch": "sys_permissions.manage"}
+
+    def put(self, request):
+        row = WhatsAppBotSettings.load()
+        serializer = WhatsAppBotSettingsSerializer(row, data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        log_event(
+            EVENT_TYPE,
+            "Настройки WhatsApp-бота: " + ("проводит отчёты" if row.enabled else "выключен"),
+            user=request.user,
+            payload={key: serializer.data[key] for key in (
+                "enabled", "allowed_chat_ids", "allowed_sender_ids", "show_amounts_in_reply",
+                "duplicate_window_days", "price_tolerance_pct")},
+        )
+        # Экран применяет ответ, а не перечитывает опрашиваемую шапку.
+        return Response(_status_payload(request))
+
+    patch = put
+
+
+class BotMessageViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """Сообщения бота: вкладки «На проверке / Проведено / Пропущено / Все» и разбор."""
+
+    serializer_class = BotMessageSerializer
+    pagination_class = OptInPageNumberPagination
+    required_perms: ClassVar[dict[str, str]] = {
+        "list": "bots.view",
+        "retrieve": "bots.view",
+        "preview": "bots.view",
+        "rail_options": "bots.view",
+        "product_codes": "bots.manage",
+        "client_names": "bots.manage",
+        "apply": "bots.manage",
+        "ignore": "bots.manage",
+    }
+
+    def get_queryset(self):
+        queryset = BotMessage.objects.select_related("resolved_by")
+        if self.action != "list":
+            return queryset
+        statuses = STATUS_FILTERS.get(self.request.query_params.get("status") or "review")
+        if statuses is not None:
+            queryset = queryset.filter(status__in=statuses)
+        search = parse_search_param(self.request.query_params.get("search"))
+        if search:
+            queryset = queryset.filter(_search_q(search))
+        return queryset.order_by("-received_at", "-pk")
+
+    def _input(self, serializer_class):
+        """Текст отчёта (исправленный человеком или как пришёл) и заказ «Отгрузить по отчёту»."""
+        serializer = serializer_class(data=self.request.data, context=self.get_serializer_context())
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        order = None
+        if data.get("order") is not None:
+            orders = scope_by_client_department(
+                Order.objects.filter(transport_type=RAIL_TRANSPORT), self.request.user, client_path="client")
+            order = get_object_or_404(orders, pk=data["order"])
+        return data, parse_rail_report(data["text"]), order
+
+    def _preview(self, report, order):
+        options = report_options(WhatsAppBotSettings.load())
+        return Response(preview_report(report, self.request.user, order=order, **options))
+
+    @action(detail=True, methods=["post"], url_path="preview")
+    def preview(self, request, pk=None):
+        """Предпросмотр от имени человека: что проведётся и что мешает. Ничего не пишет."""
+        self.get_object()
+        _, report, order = self._input(RailReportSerializer)
+        return self._preview(report, order)
+
+    # Не «options»: так называется обработчик HTTP OPTIONS у DRF.
+    @action(detail=True, methods=["get"], url_path="options")
+    def rail_options(self, request, pk=None):
+        self.get_object()
+        return Response(resolution_options(request.user))
+
+    @action(detail=True, methods=["post"], url_path="product-codes")
+    def product_codes(self, request, pk=None):
+        self.get_object()
+        data, report, order = self._input(RailProductCodeSerializer)
+        remember_report_product(data["code"], data["product"], request.user)
+        return self._preview(report, order)
+
+    @action(detail=True, methods=["post"], url_path="client-names")
+    def client_names(self, request, pk=None):
+        self.get_object()
+        data, report, order = self._input(RailClientNameSerializer)
+        remember_report_client(data["client_name"], data["client"], data["currency"], request.user)
+        return self._preview(report, order)
+
+    @action(detail=True, methods=["post"], url_path="apply")
+    def apply(self, request, pk=None):
+        """«Провести» от имени человека. Ответ — строка журнала: экран применяет её."""
+        message = self.get_object()
+        data, _, order = self._input(RailReportSerializer)
+        message = apply_message(message, request.user, text=data["text"], order=order)
+        return Response(self.get_serializer(message).data)
+
+    @action(detail=True, methods=["post"], url_path="ignore")
+    def ignore(self, request, pk=None):
+        message = ignore_message(self.get_object(), request.user)
+        return Response(self.get_serializer(message).data)

@@ -13,6 +13,7 @@ import { useApi } from "@/lib/use-api";
 import { withBack } from "@/lib/navigation";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { formatCurrency } from "@/lib/utils";
+import { orderTransportText } from "@/lib/wagons";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
@@ -131,7 +132,7 @@ function StoreDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
                       {PAYMENT_STATUS_LABELS[o.payment_status ?? "unpaid"] ?? o.payment_status}
                     </Badge>
                   </CardTitle>
-                  <span className="text-sm tabular-nums text-[var(--muted-foreground)]">{o.truck_number || ""}</span>
+                  <span className="text-sm tabular-nums text-[var(--muted-foreground)]">{orderTransportText(o)}</span>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
                   <div className="grid grid-cols-3 gap-2 text-sm">

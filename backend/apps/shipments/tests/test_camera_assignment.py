@@ -47,7 +47,7 @@ def test_unrelated_integrity_error_is_not_mapped_to_camera_busy():
 
 
 @pytest.mark.django_db
-def test_camera_assignment_rechecks_status_after_lock(manager):
+def test_camera_assignment_rechecks_status_after_lock(operator):
     client = Client.objects.create_with_user(
         first_name="Camera", last_name="Race", phone="camera-race",
     )
@@ -55,7 +55,7 @@ def test_camera_assignment_rechecks_status_after_lock(manager):
     Order.objects.filter(pk=stale_order.pk).update(status="loaded")
 
     with pytest.raises(ValidationError) as caught:
-        services.set_loading_camera(stale_order, "cam3", manager)
+        services.set_loading_camera(stale_order, "cam3", operator)
 
     assert caught.value.detail["code"] == "invalid_status"
     stale_order.refresh_from_db()
@@ -64,7 +64,7 @@ def test_camera_assignment_rechecks_status_after_lock(manager):
 
 
 @pytest.mark.django_db
-def test_manual_camera_assignment_cannot_overtake_ai_reservation(manager):
+def test_manual_camera_assignment_cannot_overtake_ai_reservation(operator):
     client = Client.objects.create_with_user(
         first_name="Reserved", last_name="Camera", phone="reserved-camera",
     )
@@ -74,11 +74,11 @@ def test_manual_camera_assignment_cannot_overtake_ai_reservation(manager):
         order=reserved_order,
         camera="cam3",
         status=AiCountingSession.STARTING,
-        started_by=manager,
+        started_by=operator,
     )
 
     with pytest.raises(ValidationError) as caught:
-        services.set_loading_camera(target_order, "cam3", manager)
+        services.set_loading_camera(target_order, "cam3", operator)
 
     assert caught.value.detail["code"] == "camera_busy"
     target_order.refresh_from_db()

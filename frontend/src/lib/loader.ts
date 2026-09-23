@@ -1,6 +1,9 @@
 import { api } from "@/lib/api";
+import type { TransportPair } from "@/lib/plates";
+import type { ShipmentWagon } from "@/lib/types";
 import { downloadBlob } from "@/lib/download";
-import { toLocalIsoDate } from "@/lib/utils";
+import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
+import { formatMoney, toLocalIsoDate } from "@/lib/utils";
 
 export interface LoaderOrderItem {
   label: string;
@@ -15,10 +18,17 @@ export interface LoaderOrder {
   status: string;
   transport_type: "truck" | "train";
   truck_number: string;
+  trailer_number?: string;
+  /** Прошлые пары клиента — чипы «как в прошлый раз». */
+  transport_suggestions?: TransportPair[];
+  /** Пару указал клиент: грузчик её не меняет. */
+  transport_locked?: boolean;
   currency: "KZT" | "USD";
   arrival_date: string | null;
   created_at: string;
   client_name: string;
+  /** Страна клиента — страна номера по умолчанию. */
+  client_country?: string;
   items: LoaderOrderItem[];
   bags: number;
   total_kg: string;
@@ -30,6 +40,10 @@ export interface LoaderOrder {
   remaining_amount?: string;
   /** Грузчик может сам отменить эту отгрузку (своя и не старше часа). */
   can_rollback?: boolean;
+  /** Отгрузка по отчёту о вагонах: станция, вагоны и отчёт в формате владельца. */
+  rail_station?: string;
+  wagons?: ShipmentWagon[];
+  rail_report_text?: string;
 }
 
 export interface WaybillSigner {
@@ -40,6 +54,21 @@ export interface WaybillSigner {
 export interface WaybillSettings {
   point_name: string;
   signers: WaybillSigner[];
+}
+
+/** Вес груза: у фуры — килограммы, у вагона — тонны (1360 мешков по 50 кг = 68 т). */
+export function loadWeight(order: Pick<LoaderOrder, "transport_type" | "total_kg">): string {
+  const kg = Number(order.total_kg);
+  return order.transport_type === "train" ? `${formatMoney(kg / 1000)} т` : `${kg} кг`;
+}
+
+/** Последняя вкладка «Фуры | Вагоны» — своя у каждого на общем планшете. */
+export function readStoredLoaderTransport(userId: number): string | null {
+  return readStoredChoice(userChoiceKey("loader:transport", userId));
+}
+
+export function storeLoaderTransport(transport: LoaderOrder["transport_type"], userId: number) {
+  storeChoice(userChoiceKey("loader:transport", userId), transport);
 }
 
 export function shiftIsoDate(iso: string, days: number): string {

@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import signal
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 from django.conf import settings
@@ -21,6 +17,7 @@ from apps.grain import passage_scale_automation, passage_monitor, weighing_photo
 from apps.grain import weighing_identity
 from apps.grain import outbox_importer
 from apps.grain import wagon_arch
+from apps.common.heartbeat import write_heartbeat as _write_heartbeat
 
 log = logging.getLogger(__name__)
 
@@ -31,36 +28,6 @@ def _background_call(function):
         return function()
     finally:
         close_old_connections()
-
-
-def _write_heartbeat(path_value: str, status: str, *, now: float | None = None) -> None:
-    """Atomically publish loop liveness without writing PostgreSQL every second."""
-
-    path = Path(path_value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(
-        {"status": status, "updated_at": time.time() if now is None else now},
-        separators=(",", ":"),
-    ).encode("utf-8")
-    temporary_name = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            prefix=f".{path.name}.",
-            dir=path.parent,
-            delete=False,
-        ) as temporary:
-            temporary.write(payload)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_name = temporary.name
-        os.replace(temporary_name, path)
-    finally:
-        if temporary_name:
-            try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
-                pass
 
 
 class Command(BaseCommand):

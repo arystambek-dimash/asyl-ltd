@@ -10,12 +10,20 @@ from apps.common.money import money_string
 from apps.sales.access import scope_by_client_department
 from apps.sales.models import Department
 
+from .debt import order_overpaid
 from .fixation import OrderFixationSerializer, assert_can_fixate, fixate_order
 from .labels import payment_method_label
 from .models import Order, OrderItem, Payment, StatusChangeRequest
-from .services import set_order_department, set_transport_type, set_truck_number
-from .statuses import public_status_label
-from .transport import validate_transport_number
+from .services import set_order_department, set_transport_type
+from .statuses import AWAITING_SHIPMENT_STATUSES, is_payment_open, public_status_label
+from .transport import (
+    clean_transport_pair,
+    order_wagons,
+    set_order_transport,
+    transport_locked,
+    transport_suggestions,
+    transport_warning,
+)
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -341,7 +349,39 @@ class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
         return obj.order.department
 
 
-class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
+def _final_transport(instance, data) -> tuple[str, str]:
+    """Пара номеров после правки заказа, проверенная по правилам транспорта.
+
+    Непереданный номер остаётся прежним; при переходе на вагон прицеп
+    снимается (см. ``set_transport_type``). Неизменённый исторический номер
+    не перепроверяется.
+    """
+    transport = data.get("transport_type", instance.transport_type)
+    return clean_transport_pair(
+        transport,
+        data.get("truck_number", instance.truck_number),
+        data.get("trailer_number", "" if transport == "train" else instance.trailer_number),
+        current=(instance.transport_type, instance.truck_number, instance.trailer_number),
+    )
+
+
+class ShipmentWagonSerializer(serializers.Serializer):
+    """Вагон отгрузки по отчёту: номер, товар, мешки и вес."""
+
+    number = serializers.CharField()
+    product_label = serializers.CharField()
+    bags = serializers.IntegerField()
+    weight_kg = serializers.DecimalField(max_digits=10, decimal_places=2)
+
+
+class OrderWagonsMixin:
+    """Вагоны вагонного заказа — везде, где виден его номер (``shipment__wagons`` предзагружены)."""
+
+    def get_wagons(self, order):
+        return ShipmentWagonSerializer(order_wagons(order), many=True).data
+
+
+class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelSerializer):
     client_department = serializers.CharField(
         source="client.department.code", read_only=True, default=""
     )
@@ -367,6 +407,14 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     total_amount = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
     paid_total = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
     remaining_amount = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
+    # Окно оплаты для сотрудника считает сервер (statuses.is_payment_open):
+    # фронт не повторяет правило статусов и показывает только открытые способы.
+    payment_open = serializers.SerializerMethodField()
+    payment_open_methods = serializers.SerializerMethodField()
+    # «kaspi» в способах — свой терминал; Kaspi QR и счёт на телефон — запрос
+    # денег (method=None), он открывается отдельно: только после отгрузки.
+    payment_request_open = serializers.SerializerMethodField()
+    overpaid_amount = serializers.SerializerMethodField()
     is_fully_paid = serializers.BooleanField(read_only=True)
     is_debt = serializers.BooleanField(read_only=True)
     client_name = serializers.CharField(source="client.name", read_only=True)
@@ -387,6 +435,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     payments = serializers.SerializerMethodField()
     pending_payments = serializers.SerializerMethodField()
     shipped_at = serializers.SerializerMethodField()
+    wagons = serializers.SerializerMethodField()
     department = serializers.CharField(required=False, allow_blank=True)
     department_name = serializers.SerializerMethodField()
     department_color = serializers.SerializerMethodField()
@@ -427,12 +476,19 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "payment_method",
             "transport_type",
             "truck_number",
+            "trailer_number",
+            "rail_station",
+            "wagons",
             "arrival_date",
             "notes",
             "items",
             "total_amount",
             "paid_total",
             "remaining_amount",
+            "payment_open",
+            "payment_open_methods",
+            "payment_request_open",
+            "overpaid_amount",
             "is_fully_paid",
             "is_debt",
             "debt_override",
@@ -459,9 +515,12 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "repeated_from",
             "deleted_at",
             "rejection_reason",
+            # Станцию и вагоны пишет отгрузка по отчёту о вагонах.
+            "rail_station",
         ]
         extra_kwargs = {
             "truck_number": {"required": False},
+            "trailer_number": {"required": False},
             "arrival_date": {"required": False, "allow_null": True},
             "store": {"required": False, "allow_null": True},
             "warehouse": {"required": False, "allow_null": True},
@@ -538,6 +597,21 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         per = first.product_weight_kg if first else Decimal("0")
         return str(per)
 
+    def get_payment_open_methods(self, obj):
+        return [
+            method for method in Payment.CASHIER_METHODS
+            if is_payment_open(obj.status, method=method)
+        ]
+
+    def get_payment_open(self, obj):
+        return bool(self.get_payment_open_methods(obj))
+
+    def get_payment_request_open(self, obj):
+        return is_payment_open(obj.status, method=None)
+
+    def get_overpaid_amount(self, obj):
+        return money_string(order_overpaid(obj))
+
     def get_debt_override_by_name(self, obj):
         u = obj.debt_override_by
         return u.username if u else None
@@ -601,14 +675,15 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         return code
 
     def validate(self, attrs):
-        current_number = getattr(self.instance, "truck_number", "")
-        current_transport = getattr(self.instance, "transport_type", "truck")
-        number = attrs.get("truck_number", current_number)
-        transport = attrs.get("transport_type", current_transport)
-        # Historical identifiers may predate the rail format. Unrelated edits
-        # may preserve that exact pair; new or changed identifiers must be valid.
-        if self.instance is None or (number, transport) != (current_number, current_transport):
-            validate_transport_number(number, transport)
+        if self.instance is None:
+            attrs["truck_number"], attrs["trailer_number"] = clean_transport_pair(
+                attrs.get("transport_type", "truck"),
+                attrs.get("truck_number", ""),
+                attrs.get("trailer_number", ""),
+            )
+        else:
+            # Ранняя проверка итоговой пары; под блокировкой её повторяет update().
+            _final_transport(self.instance, attrs)
         if "prices" in self.initial_data and not isinstance(self.initial_data["prices"], dict):
             raise serializers.ValidationError({"prices": "Ожидается объект цен по идентификаторам товаров"})
         items = attrs.get("items")
@@ -695,6 +770,8 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 warehouse=warehouse,
             )
         validated_data["created_by"] = user
+        if validated_data.get("truck_number") or validated_data.get("trailer_number"):
+            validated_data["truck_number_set_by"] = user
         validated_data.setdefault("currency", validated_data["client"].currency)
 
         employee = getattr(user, "employee", None)
@@ -761,10 +838,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         instance = lock_live_order(instance, user)
         # Recheck the final pair against the locked row: another edit may have
         # changed the transport after serializer validation.
-        number = validated_data.get("truck_number", instance.truck_number)
-        transport = validated_data.get("transport_type", instance.transport_type)
-        if (number, transport) != (instance.truck_number, instance.transport_type):
-            validate_transport_number(number, transport)
+        _final_transport(instance, validated_data)
         warehouse_supplied = "warehouse" in validated_data
         requested_warehouse = validated_data.pop("warehouse", None)
         if warehouse_supplied:
@@ -782,9 +856,7 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 require_active=False,
             )
             if requested_warehouse.pk != current_warehouse.pk:
-                if instance.status in (
-                    "confirmed", "arrived", "loading", "loaded", "shipped"
-                ):
+                if instance.status in (*AWAITING_SHIPMENT_STATUSES, "shipped"):
                     raise serializers.ValidationError({
                         "detail": "Склад отгрузки нельзя изменить после подтверждения заказа",
                         "code": "warehouse_locked",
@@ -856,9 +928,13 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
         if new_transport is not None and new_transport != instance.transport_type:
             set_transport_type(instance, new_transport, user)
             instance.refresh_from_db()
-        new_truck = validated_data.pop("truck_number", None)
-        if new_truck is not None and new_truck != instance.truck_number:
-            set_truck_number(instance, new_truck, user)
+        if "truck_number" in validated_data or "trailer_number" in validated_data:
+            set_order_transport(
+                instance,
+                user,
+                truck=validated_data.pop("truck_number", None),
+                trailer=validated_data.pop("trailer_number", None),
+            )
             instance.refresh_from_db()
         new_department = validated_data.pop("department", None)
         if new_department is not None and new_department != instance.department:
@@ -875,3 +951,83 @@ class OrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             )
             instance.refresh_from_db()
         return super().update(instance, validated_data)
+
+
+class TransportNumbersSerializer(serializers.Serializer):
+    """Номера тягача и прицепа на входе. Непереданный номер не меняется."""
+
+    truck_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    trailer_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+
+
+class ConfirmOrderSerializer(TransportNumbersSerializer):
+    """Подтверждение заявки: отдел, цены, «сколько есть» и номер транспорта.
+
+    Цены уходят в сервис как есть — их ошибки и коды задаёт ``_apply_prices``.
+    Количество — от 1 мешка; больше запрошенного и чужую позицию отсекает
+    сервис. Пустой номер — «не передан»: подтверждение номер не стирает.
+    """
+
+    department = serializers.CharField(error_messages={
+        key: "Перед подтверждением выберите отдел продаж" for key in ("required", "blank", "null")
+    })
+    prices = serializers.DictField(required=False)
+    quantities = serializers.DictField(child=serializers.IntegerField(min_value=1), required=False)
+
+    def validate(self, attrs):
+        for field in ("truck_number", "trailer_number"):
+            if not attrs.get(field):
+                attrs.pop(field, None)
+        return attrs
+
+
+class TransportSuggestionsMixin:
+    """Чипы «как в прошлый раз»: пары клиента, посчитанные один раз на страницу.
+
+    Вьюха кладёт их в context (``transport_pairs``, см.
+    ``orders.transport.suggestion_pairs``); без них подсказок нет.
+    """
+
+    def get_transport_suggestions(self, order):
+        return transport_suggestions(order, self.context.get("transport_pairs") or {})
+
+
+class OrderTransportRowSerializer(TransportSuggestionsMixin, serializers.ModelSerializer):
+    """Строка быстрого ввода «Фуры»: без позиций, оплат и истории заказа."""
+
+    client_name = serializers.SerializerMethodField()
+    client_country = serializers.CharField(source="client.country", read_only=True)
+    planned_on = serializers.DateField(read_only=True)
+    bags = serializers.IntegerField(read_only=True)
+    transport_locked = serializers.SerializerMethodField()
+    transport_suggestions = serializers.SerializerMethodField()
+    plate_warning = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "client",
+            "client_name",
+            "client_country",
+            "status",
+            "arrival_date",
+            "created_at",
+            "planned_on",
+            "bags",
+            "truck_number",
+            "trailer_number",
+            "transport_locked",
+            "transport_suggestions",
+            "plate_warning",
+        ]
+        read_only_fields = fields
+
+    def get_client_name(self, order):
+        return order.client.display_name
+
+    def get_transport_locked(self, order):
+        return transport_locked(order, self.context["request"].user)
+
+    def get_plate_warning(self, order):
+        return transport_warning(order)

@@ -28,6 +28,7 @@ def build_order_form_options(user) -> dict:
         "company_name",
         "phone",
         "currency",
+        "country",
         "department_id",
         "department__code",
         "department__name",
@@ -90,6 +91,8 @@ def build_order_form_options(user) -> dict:
                 "company_name": client.company_name,
                 "phone": client.phone,
                 "currency": client.currency,
+                # Страна номера машины по умолчанию (поле «Тягач» в форме).
+                "country": client.country,
                 "department_code": client.department.code if client.department_id else "",
                 "department_name": client.department.name if client.department_id else "",
             }

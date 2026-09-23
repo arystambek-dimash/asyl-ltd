@@ -74,6 +74,7 @@ COUNTING_LINE_CONFIG_FIELDS = (
     "line",
     "line_spec",
     "direction",
+    "verification_lines",
     "updated_at",
 )
 

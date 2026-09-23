@@ -183,6 +183,16 @@ class AlwaysOnProductMappingsSerializer(serializers.Serializer):
         return rows
 
 
+class AlwaysOnUnknownColorSerializer(serializers.Serializer):
+    """«Указать цвет» for bags left without a colour in one AI 24/7 shift."""
+
+    camera = serializers.CharField(max_length=32)
+    business_day = serializers.DateField()
+    color = serializers.CharField(max_length=32)
+    bags = serializers.IntegerField(min_value=1, max_value=100_000)
+    reason = serializers.CharField(max_length=500)
+
+
 class ShippingBoardSettingsSerializer(serializers.Serializer):
     completed_orders_days = serializers.JSONField(required=False, allow_null=True)
 

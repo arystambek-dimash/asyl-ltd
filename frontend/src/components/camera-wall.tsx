@@ -18,14 +18,20 @@ import { can } from "@/lib/can";
 import {
   CameraLineEditor,
   defaultCountingLine,
-  validCountingLine,
   type LineDirection,
   type NormalizedLine,
+  type VerificationLine,
 } from "@/components/camera-line-editor";
 import { CameraStream, ensureCameraStreamToken } from "@/components/camera-stream";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import {
+  countingLineSaveBody,
+  lineSetupError,
+  normalizeVerificationLines,
+  verificationLinesSupported,
+} from "@/lib/camera-counting-line";
 import { useAuth } from "@/store/auth";
 
 const CAMERA_REFRESH_MS = 30 * 1000;
@@ -39,23 +45,39 @@ export interface CameraCountingLine {
   line_spec?: string | null;
   direction: LineDirection;
   updated_at?: string | null;
+  /** Линии проверки мешков: классифицируют, но не считают. */
+  verification_lines?: VerificationLine[] | null;
+  /** false — AI-сервис старый и не хранит линии проверки. */
+  verification_lines_supported?: boolean;
+  /** Только в ответе на «Обновить статус»: работает ли камера с этими линиями. */
+  line_applied?: "applied" | "not_applied" | "not_running";
 }
 
 interface CameraCountingLineSave extends CameraCountingLine {
   saved?: boolean;
   applied_to_processor?: boolean;
   detail?: string;
+  code?: string;
 }
+
+const SAVED_NOT_APPLIED = "Сохранено, но не применено к камере — обновите статус";
+const STILL_NOT_APPLIED = "Камера всё ещё работает со старыми линиями. Сохраните ещё раз.";
 
 function countingLineSignature(config: CameraCountingLine | null | undefined) {
   const line = config?.line;
+  const checks = normalizeVerificationLines(config?.verification_lines).map((item) =>
+    [item.id, item.name, item.line.x1, item.line.y1, item.line.x2, item.line.y2].join(":"),
+  );
   return [
     config?.updated_at ?? "",
     config?.direction ?? "any",
+    // An AI-service upgrade changes only this: the editor must follow it.
+    verificationLinesSupported(config),
     line?.x1 ?? "",
     line?.y1 ?? "",
     line?.x2 ?? "",
     line?.y2 ?? "",
+    ...checks,
   ].join("|");
 }
 
@@ -206,12 +228,17 @@ export function CameraWall() {
   const [linePendingRemote, setLinePendingRemote] = useState<CameraCountingLine | null>(null);
   const [lineDraft, setLineDraft] = useState<NormalizedLine>(defaultCountingLine());
   const [lineDirection, setLineDirection] = useState<LineDirection>("any");
+  const [verificationDraft, setVerificationDraft] = useState<VerificationLine[]>([]);
+  const [verificationSupported, setVerificationSupported] = useState(false);
   const [lineAuthoritative, setLineAuthoritative] = useState(false);
   const [loadingLine, setLoadingLine] = useState(false);
   const [savingLine, setSavingLine] = useState(false);
   const [lineError, setLineError] = useState("");
   const [lineNotice, setLineNotice] = useState("");
+  // Saved on the AI service, but not (verifiably) live on the camera yet.
+  const [lineWarning, setLineWarning] = useState("");
   const lineCameraSource = lineCamera?.src ?? null;
+  const lineSetupProblem = lineSetupError(lineDraft, verificationDraft);
 
   const updateCameraLine = useCallback((src: string, config: CameraCountingLine) => {
     setCameras((current) =>
@@ -223,6 +250,8 @@ export function CameraWall() {
     (src: string, config: CameraCountingLine) => {
       setLineDraft(config.line ? { ...config.line } : defaultCountingLine());
       setLineDirection(config.direction ?? "any");
+      setVerificationDraft(normalizeVerificationLines(config.verification_lines));
+      setVerificationSupported(verificationLinesSupported(config));
       setLineAuthoritative(true);
       lineDirty.current = false;
       lineServerSignature.current = countingLineSignature(config);
@@ -232,32 +261,71 @@ export function CameraWall() {
     [updateCameraLine],
   );
 
+  /**
+   * Read the authoritative saved lines; null when superseded or failed.
+   * ``checkApplied`` also asks whether the running camera uses them.
+   */
+  async function loadLineConfig(src: string, checkApplied = false) {
+    const requestId = ++lineRequestId.current;
+    setLoadingLine(true);
+    try {
+      const response = await api.get<CameraCountingLine>(`/cameras/${encodeURIComponent(src)}/counting-line`, {
+        timeout: 10_000,
+        ...(checkApplied ? { params: { applied: 1 } } : {}),
+      });
+      if (lineRequestId.current !== requestId) return null;
+      acceptLineConfig(src, response.data);
+      return response.data;
+    } catch (cause) {
+      if (lineRequestId.current === requestId) setLineError(apiError(cause));
+      return null;
+    } finally {
+      if (lineRequestId.current === requestId) setLoadingLine(false);
+    }
+  }
+
   async function configureLine(camera: CameraFeed & { src: string }) {
     if (!canConfigureLine || !/^cam[1-9]\d*$/.test(camera.src)) return;
-    const requestId = ++lineRequestId.current;
     const current = camera.line_config;
     setLineCamera(camera);
     setLineDraft(current?.line ? { ...current.line } : defaultCountingLine());
     setLineDirection(current?.direction ?? "any");
+    setVerificationDraft(normalizeVerificationLines(current?.verification_lines));
+    setVerificationSupported(verificationLinesSupported(current));
     setLineAuthoritative(false);
     lineDirty.current = false;
     lineServerSignature.current = countingLineSignature(current);
     setLinePendingRemote(null);
     setLineError("");
     setLineNotice("");
-    setLoadingLine(true);
-    try {
-      const response = await api.get<CameraCountingLine>(`/cameras/${encodeURIComponent(camera.src)}/counting-line`, {
-        timeout: 10_000,
-      });
-      if (lineRequestId.current !== requestId) return;
-      const config = response.data;
-      acceptLineConfig(camera.src, config);
-    } catch (cause) {
-      if (lineRequestId.current === requestId) setLineError(apiError(cause));
-    } finally {
-      if (lineRequestId.current === requestId) setLoadingLine(false);
+    setLineWarning("");
+    await loadLineConfig(camera.src);
+  }
+
+  /** The saved file alone proves nothing: ask the running camera. */
+  async function refreshLineStatus() {
+    if (!lineCamera) return;
+    setLineError("");
+    setLineNotice("");
+    const config = await loadLineConfig(lineCamera.src, true);
+    if (!config) return;
+    if (config.line_applied === "applied" || config.line_applied === "not_running") {
+      setLineWarning("");
+      setLineNotice(
+        config.line_applied === "applied"
+          ? "Линии применены к камере."
+          : "Модель на камере не запущена — линии применятся при следующем запуске.",
+      );
+    } else {
+      setLineWarning(STILL_NOT_APPLIED);
     }
+  }
+
+  function editLineDraft() {
+    lineDirty.current = true;
+    setLineNotice("");
+    setLineError("");
+    setLineWarning("");
   }
 
   // An editor can stay open while another administrator calibrates the same
@@ -331,6 +399,7 @@ export function CameraWall() {
     setLineAuthoritative(false);
     setLineError("");
     setLineNotice("");
+    setLineWarning("");
   }
 
   function savedConfig(payload?: Partial<CameraCountingLine>): CameraCountingLine {
@@ -341,35 +410,47 @@ export function CameraWall() {
       line_spec: payload?.line_spec ?? null,
       direction: payload?.direction ?? lineDirection,
       updated_at: payload?.updated_at ?? new Date().toISOString(),
+      verification_lines: payload?.verification_lines ?? (verificationSupported ? verificationDraft : []),
+      verification_lines_supported: payload?.verification_lines_supported ?? verificationSupported,
     };
   }
 
   async function saveCountingLine() {
-    if (!lineCamera || !lineAuthoritative || linePendingRemote || !canConfigureLine || !validCountingLine(lineDraft))
-      return;
+    if (!lineCamera || !lineAuthoritative || linePendingRemote || !canConfigureLine || lineSetupProblem) return;
     lineRequestId.current += 1; // an older sync GET may not roll this save back
+    const sentVerification = verificationSupported ? verificationDraft : null;
+    const several = !!sentVerification?.length;
     setSavingLine(true);
     setLineError("");
     setLineNotice("");
+    setLineWarning("");
     try {
       const response = await api.put<CameraCountingLineSave>(
         `/cameras/${encodeURIComponent(lineCamera.src)}/counting-line`,
-        { line: lineDraft, direction: lineDirection },
+        countingLineSaveBody(lineDraft, lineDirection, sentVerification),
         { timeout: 12_000 },
       );
-      const config = savedConfig(response.data);
-      acceptLineConfig(lineCamera.src, config);
-      setLineNotice(
-        response.data.applied_to_processor === false
-          ? "Линия сохранена. Она применится при следующем запуске модели."
-          : "Линия сохранена и готова к подсчёту.",
-      );
+      acceptLineConfig(lineCamera.src, savedConfig(response.data));
+      if (several && response.data.verification_lines_supported === false) {
+        setLineWarning("Основная линия сохранена, но AI-сервис не сохранил линии проверки. Обновите AI-сервис.");
+      } else {
+        const pending = response.data.applied_to_processor === false;
+        setLineNotice(
+          several
+            ? pending
+              ? "Линии сохранены. Они применятся при следующем запуске модели."
+              : "Линии сохранены и готовы к подсчёту."
+            : pending
+              ? "Линия сохранена. Она применится при следующем запуске модели."
+              : "Линия сохранена и готова к подсчёту.",
+        );
+      }
     } catch (cause) {
       const payload = (cause as AxiosError<CameraCountingLineSave>).response?.data;
       if (payload?.saved) {
-        const config = savedConfig(payload);
-        acceptLineConfig(lineCamera.src, config);
-        setLineNotice("Линия сохранена. Работающая модель получит её после перезапуска.");
+        // The PUT reply is the saved state; the processor has not confirmed it.
+        acceptLineConfig(lineCamera.src, savedConfig(payload));
+        setLineWarning(SAVED_NOT_APPLIED);
       } else {
         setLineError(apiError(cause));
       }
@@ -710,9 +791,9 @@ export function CameraWall() {
         open={!!lineCamera}
         onClose={closeLineEditor}
         eyebrow="Только для суперпользователя"
-        title="Линия подсчёта"
+        title="Линии подсчёта и проверки"
         description={
-          lineCamera ? `${lineCamera.zone} · проведите линию непосредственно на живом изображении.` : undefined
+          lineCamera ? `${lineCamera.zone} · проведите линии на живом видео или на снимке кадра.` : undefined
         }
         className="max-w-4xl"
         footer={
@@ -725,9 +806,7 @@ export function CameraWall() {
               Закрыть
             </Button>
             <Button
-              disabled={
-                loadingLine || savingLine || !lineAuthoritative || !!linePendingRemote || !validCountingLine(lineDraft)
-              }
+              disabled={loadingLine || savingLine || !lineAuthoritative || !!linePendingRemote || !!lineSetupProblem}
               onClick={() => void saveCountingLine()}
               className="min-w-36 bg-sky-600 text-white hover:bg-sky-700"
             >
@@ -737,7 +816,7 @@ export function CameraWall() {
                 </>
               ) : (
                 <>
-                  <Check className="size-4" /> Сохранить линию
+                  <Check className="size-4" /> Сохранить линии
                 </>
               )}
             </Button>
@@ -747,22 +826,25 @@ export function CameraWall() {
         {lineCamera && (
           <div className="space-y-4">
             <CameraLineEditor
+              key={lineCamera.src}
               src={lineCamera.src}
               line={lineDraft}
               direction={lineDirection}
               ready={tokenReady}
               disabled={loadingLine || savingLine || !lineAuthoritative}
+              verificationLines={verificationDraft}
+              verificationSupported={verificationSupported}
               onLineChange={(line) => {
-                lineDirty.current = true;
+                editLineDraft();
                 setLineDraft(line);
-                setLineNotice("");
-                setLineError("");
               }}
               onDirectionChange={(direction) => {
-                lineDirty.current = true;
+                editLineDraft();
                 setLineDirection(direction);
-                setLineNotice("");
-                setLineError("");
+              }}
+              onVerificationLinesChange={(lines) => {
+                editLineDraft();
+                setVerificationDraft(lines);
               }}
             />
             {loadingLine && (
@@ -770,9 +852,9 @@ export function CameraWall() {
                 <LoaderCircle className="size-4 animate-spin" /> Загружаем сохранённую линию…
               </div>
             )}
-            {!validCountingLine(lineDraft) && !loadingLine && (
+            {lineSetupProblem && !loadingLine && (
               <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Линия слишком короткая. Протяните её между двумя разными точками.
+                {lineSetupProblem}
               </p>
             )}
             {linePendingRemote && (
@@ -807,6 +889,20 @@ export function CameraWall() {
                     Оставить мой вариант
                   </Button>
                 </div>
+              </div>
+            )}
+            {lineWarning && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <span className="font-medium">{lineWarning}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={loadingLine}
+                  onClick={() => void refreshLineStatus()}
+                >
+                  Обновить статус
+                </Button>
               </div>
             )}
             {lineNotice && (

@@ -216,7 +216,11 @@ export function ShippingCalendar({
             {list.map((order) => (
               <li key={order.id} className="flex flex-col gap-2 rounded-xl border bg-[var(--card)] p-3.5 shadow-card">
                 <div className="flex items-start justify-between gap-2">
-                  <TransportNumberBadge value={order.truck_number ?? ""} transportType={order.transport_type} />
+                  <TransportNumberBadge
+                    value={order.truck_number ?? ""}
+                    transportType={order.transport_type}
+                    trailer={order.trailer_number}
+                  />
                   <Badge tone={ORDER_STATUS_TONE[order.status] ?? "muted"} dot>
                     {ORDER_STATUS_LABELS[order.status] ?? order.status}
                   </Badge>

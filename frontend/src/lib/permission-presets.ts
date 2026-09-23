@@ -13,6 +13,7 @@ export const SECTION_ORDER = [
   "catalog",
   "tasks",
   "events",
+  "bots",
   "employees",
   "sys_permissions",
 ];
@@ -72,7 +73,17 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
       "warehouse.view",
     ],
   },
-  { key: "loader", label: "Грузчик", codes: ["loader.view", "loader.confirm", "monoblock.view"] },
+  // Фуры и вагоны грузят разные люди: область — отдельное право (loader.trucks / loader.wagons).
+  {
+    key: "loader_trucks",
+    label: "Грузчик: фуры",
+    codes: ["loader.view", "loader.confirm", "loader.trucks", "monoblock.view"],
+  },
+  {
+    key: "loader_wagons",
+    label: "Грузчик: вагоны",
+    codes: ["loader.view", "loader.confirm", "loader.wagons", "monoblock.view"],
+  },
   { key: "weigher", label: "Весовщик", codes: ["grain.view", "grain.arrive", "grain.weigh", "grain.correct_weighing"] },
   {
     key: "storekeeper",

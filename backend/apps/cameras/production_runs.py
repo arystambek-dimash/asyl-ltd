@@ -16,12 +16,17 @@ from .models import (
     ANALYTICS_SCOPE_AI247,
     AlwaysOnProductionCorrection,
     AlwaysOnProductionRun,
+    AlwaysOnStockBatch,
     ContinuousCameraRole,
 )
 
 log = logging.getLogger(__name__)
 CLOSE_TIME = time(hour=19)
 RUN_GAP = timedelta(minutes=5)
+# A posted/empty shift is immutable: stock was received (or nothing was due).
+TERMINAL_BATCH_STATUSES = frozenset(
+    {AlwaysOnStockBatch.POSTED, AlwaysOnStockBatch.EMPTY}
+)
 
 
 def _default_timezone():
@@ -291,7 +296,21 @@ def effective_ended_at(row: AlwaysOnProductionRun, now: datetime) -> datetime | 
     return None
 
 
-def _day_totals(camera: str, business_day: date) -> dict[str, dict[str, int]]:
+def _day_totals(camera: str, business_day: date) -> dict[str, dict]:
+    """Per-colour production of one shift: the single posting/preview source.
+
+    ``detected`` is the camera's run ledger, ``resolved`` moves bags the camera
+    left as ``unknown`` to the colour CRM resolved for them (neighbours, votes
+    or an operator), ``correction`` is the audited manual subtraction.
+    ``provisional`` is the part of ``resolved`` made by neighbour/vote
+    decisions, which can still change until posting: ``net - provisional`` is
+    what a correction may subtract without a later decision driving the
+    colour below zero.
+    """
+
+    # color_resolution imports this module for shift boundaries.
+    from .color_resolution import business_day_transfers
+
     detected = {
         row["color"]: int(row["bags"] or 0)
         for row in AlwaysOnProductionRun.objects.filter(
@@ -310,11 +329,25 @@ def _day_totals(camera: str, business_day: date) -> dict[str, dict[str, int]]:
         .values("color")
         .annotate(bags=Sum("delta"))
     }
-    return {
-        color: {
+    transfers = business_day_transfers(
+        camera,
+        business_day,
+        available={
+            color: detected.get(color, 0) + corrections.get(color, 0)
+            for color in detected
+        },
+    )
+    result: dict[str, dict] = {}
+    for color in sorted(set(detected) | set(corrections) | set(transfers.delta)):
+        counts = {
             "detected_bags": detected.get(color, 0),
+            "resolved_bags": transfers.delta.get(color, 0),
             "correction_bags": corrections.get(color, 0),
-            "net_bags": detected.get(color, 0) + corrections.get(color, 0),
         }
-        for color in sorted(set(detected) | set(corrections))
-    }
+        result[color] = {
+            **counts,
+            "net_bags": sum(counts.values()),
+            "provisional_bags": transfers.automatic.get(color, 0),
+            "inferred": transfers.inferred.get(color, {}),
+        }
+    return result

@@ -1,14 +1,12 @@
 "use client";
-import Link from "next/link";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { withBack } from "@/lib/navigation";
 import type { Me, Order } from "@/lib/types";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
-import { OrderDepartmentBadge } from "./department-badge";
+import { CashierOrderRow, paidOfTotal } from "./order-row";
 import type { CashierQueue } from "./use-cashier-queue";
 
 function remainingOf(order: Order): string {
@@ -42,55 +40,31 @@ export function AwaitingPaymentRow({
 }) {
   const [askDebt, setAskDebt] = useState(false);
   const reason = awaitingReason(order);
-  const remaining = formatCurrency(remainingOf(order), order.currency);
-  const partlyPaid = Number(order.paid_total) > 0;
+  const remaining = remainingOf(order);
 
   return (
-    <li className="flex flex-col gap-3 px-4 py-3.5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[17px] font-bold tabular-nums">{remaining}</div>
-          <div className="mt-0.5 text-[13px] text-[var(--muted-foreground)]">
-            {canOpenOrder ? (
-              <Link
-                href={withBack(`/orders/${order.id}`, "/accounting?view=confirm")}
-                className="underline-offset-2 hover:underline"
-              >
-                Заказ #{order.id}
-              </Link>
-            ) : (
-              <span>Заказ #{order.id}</span>
-            )}
-            {" · "}
-            {order.client_name}
-            {order.shipped_at ? ` · отгружен ${formatDateTime(order.shipped_at)}` : ""}
-            {partlyPaid
-              ? ` · оплачено ${formatCurrency(order.paid_total, order.currency)} из ${formatCurrency(order.total_amount, order.currency)}`
-              : ""}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          <Badge tone={reason.inProgress ? "primary" : "warning"}>{reason.label}</Badge>
-          <OrderDepartmentBadge order={order} />
-        </div>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <OrderPaymentActions order={order} me={me} onChanged={() => void q.reload()} />
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={q.busy || reason.inProgress}
-          title={reason.inProgress ? "Сначала подтвердите или отклоните оплату в процессе" : undefined}
-          onClick={() => setAskDebt(true)}
-        >
-          В долг
-        </Button>
-      </div>
+    <CashierOrderRow
+      order={order}
+      amount={remaining}
+      details={[order.shipped_at && `отгружен ${formatDateTime(order.shipped_at)}`, paidOfTotal(order)]}
+      badge={<Badge tone={reason.inProgress ? "primary" : "warning"}>{reason.label}</Badge>}
+      canOpenOrder={canOpenOrder}
+    >
+      <OrderPaymentActions order={order} me={me} onChanged={() => void q.reload()} />
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={q.busy || reason.inProgress}
+        title={reason.inProgress ? "Сначала подтвердите или отклоните оплату в процессе" : undefined}
+        onClick={() => setAskDebt(true)}
+      >
+        В долг
+      </Button>
       <ConfirmDialog
         open={askDebt}
         onClose={() => setAskDebt(false)}
         title={`Оставить заказ #${order.id} в долг?`}
-        description={`${order.client_name ?? "Клиент"}: остаток ${remaining} уже в «Долгах клиентов». Касса согласует долг — заказ уйдёт из «Ждут оплаты».`}
+        description={`${order.client_name ?? "Клиент"}: остаток ${formatCurrency(remaining, order.currency)} уже в «Долгах клиентов». Касса согласует долг — заказ уйдёт из «Ждут оплаты».`}
         confirmLabel="В долг"
         confirmVariant="default"
         busy={q.busy}
@@ -99,6 +73,6 @@ export function AwaitingPaymentRow({
           if (await q.moveToDebt(order)) setAskDebt(false);
         }}
       />
-    </li>
+    </CashierOrderRow>
   );
 }

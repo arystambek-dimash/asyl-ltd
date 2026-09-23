@@ -47,9 +47,10 @@ export function availableCents(order: Order): number {
   return Math.max(0, moneyCents(remainingOf(order)) - moneyCents(pendingSum(order)));
 }
 
-/** Магазин, чьё закрытое окно оплаты блокирует заказ; null — оплата открыта. */
+/** Магазин, чьё закрытое окно оплаты блокирует заказ; null — оплата открыта.
+ * Окно — график погашения долга: предоплату до отгрузки магазин вносит в любой день. */
 export function blockingStore(order: Order, stores: readonly DebtStore[]): DebtStore | null {
-  if (order.store == null) return null;
+  if (order.store == null || order.status !== "shipped") return null;
   const store = stores.find((row) => row.id === order.store);
   if (!store || store.payment_schedule_type === "none" || store.window_open) return null;
   return store;

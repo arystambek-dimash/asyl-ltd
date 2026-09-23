@@ -1,4 +1,5 @@
 import type { FixationDraft } from "@/components/orders/fixation-fields";
+import type { PayNowDraft } from "@/components/orders/pay-now";
 import type { Order } from "@/lib/types";
 
 /**
@@ -15,11 +16,18 @@ export interface OrderDraft {
   warehouse: string;
   transport: "truck" | "train";
   truck: string;
+  /** Прицеп (тягач + прицеп); в черновиках до прицепа поля нет. */
+  trailer?: string;
   wagonNumber: string;
   arrival: string;
   rows: { id: number; product: string; quantity: string; price: string }[];
   backdateOn: boolean;
   fixation: FixationDraft;
+  /**
+   * «Оплата сразу»; в черновиках до неё поля нет. Восстанавливается выключенной
+   * (см. loadOrderDraft), способ и сумма остаются.
+   */
+  payNow?: PayNowDraft;
 }
 
 const KEY = "asyl_order_draft_v1";
@@ -34,7 +42,10 @@ export function loadOrderDraft(userId: number | undefined): OrderDraft | null {
   try {
     const raw = localStorage.getItem(key);
     const draft = raw ? (JSON.parse(raw) as OrderDraft) : null;
-    return draft && Array.isArray(draft.rows) && draft.fixation ? draft : null;
+    if (!draft || !Array.isArray(draft.rows) || !draft.fixation) return null;
+    // «Оплата сразу» возвращается выключенной: деньги не должны записаться по
+    // черновику, который не перепроверили. Способ и сумма остаются подсказкой.
+    return draft.payNow ? { ...draft, payNow: { ...draft.payNow, on: false } } : draft;
   } catch {
     return null;
   }
@@ -60,12 +71,16 @@ export function clearOrderDraft(userId: number | undefined) {
   }
 }
 
-/** Есть ли в черновике что-то, введённое руками (склад и отдел подставляются сами). */
+/**
+ * Есть ли в черновике что-то, введённое руками (склад и отдел подставляются сами).
+ * «Оплата сразу» не в счёт: восстанавливается она всё равно выключенной.
+ */
 export function orderDraftHasContent(draft: OrderDraft) {
   return Boolean(
     draft.template ||
     draft.client ||
     draft.truck ||
+    draft.trailer ||
     draft.wagonNumber ||
     draft.arrival ||
     draft.backdateOn ||

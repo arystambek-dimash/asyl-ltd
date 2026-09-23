@@ -1,11 +1,10 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Banknote, HandCoins, QrCode, Send, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
-import { paymentOpen } from "@/components/payment-chain";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { availableCents, moneyCents } from "@/lib/debt-orders";
@@ -13,15 +12,92 @@ import type { Me, Order } from "@/lib/types";
 import { cn, formatCurrency } from "@/lib/utils";
 
 type Flow = "receive" | "remote";
-type ReceiveMethod = "cash" | "kaspi" | "remote";
+export type ReceiveMethod = "cash" | "kaspi" | "remote";
 
-/** «Удалённая оплата» — отметка о деньгах, полученных раньше и не через кассу:
- * счёт она не выставляет и новую оплату не начинает, только закрывает долг. */
-const METHOD_OPTIONS: { key: ReceiveMethod; label: string; hint?: string; icon: typeof Banknote }[] = [
+/** Способы «Принять оплату» — деньги уже у кассы, поэтому ими берут и предоплату.
+ * «Удалённая оплата» — отметка о деньгах, полученных раньше и не через кассу:
+ * счёт она не выставляет и новую оплату не начинает, только закрывает остаток.
+ * До отгрузки `kaspi` зовётся «Kaspi-терминал»: это свой терминал кассы, а
+ * Kaspi QR через ApiPay откроется только после отгрузки. */
+const RECEIVE_METHOD_OPTIONS: {
+  key: ReceiveMethod;
+  label: string;
+  prepaymentLabel?: string;
+  hint?: string;
+  icon: typeof Banknote;
+}[] = [
   { key: "cash", label: "Наличные", icon: Banknote },
-  { key: "kaspi", label: "Kaspi QR", icon: QrCode },
+  { key: "kaspi", label: "Kaspi QR", prepaymentLabel: "Kaspi-терминал", icon: QrCode },
   { key: "remote", label: "Удалённая оплата", hint: "клиент оплатил раньше", icon: Smartphone },
 ];
+
+/**
+ * Способы приёма в валюте заказа из открытых сервером (`payment_open_methods`):
+ * Kaspi и удалённая оплата — только в тенге. Без `open` — все способы приёма
+ * (новый заказ в форме ещё не сохранён, его подтверждение открывает их все).
+ */
+export function receiveMethods(currency: string, open?: readonly string[]): ReceiveMethod[] {
+  return RECEIVE_METHOD_OPTIONS.map(({ key }) => key).filter(
+    (key) => (currency === "KZT" || key === "cash") && (!open || open.includes(key)),
+  );
+}
+
+/** «Принять оплату»: деньги уже у кассы, оплата закрывается сразу (и как предоплата до отгрузки). */
+export function receivePayment(orderId: number, { amount, method }: { amount: string; method: ReceiveMethod }) {
+  return api.post(`/orders/${orderId}/payments/`, { amount, method, stage: "received" });
+}
+
+/** Выбор способа приёма денег: одна кнопка на способ, как в окне «Принять оплату». */
+export function ReceiveMethodPicker({
+  methods,
+  value,
+  onChange,
+  prepayment = false,
+}: {
+  methods: readonly ReceiveMethod[];
+  value: ReceiveMethod;
+  onChange: (method: ReceiveMethod) => void;
+  /** Заказ ещё не отгружен — деньги принимаются как предоплата. */
+  prepayment?: boolean;
+}) {
+  const options = RECEIVE_METHOD_OPTIONS.filter(({ key }) => methods.includes(key)).map((option) => ({
+    ...option,
+    label: (prepayment && option.prepaymentLabel) || option.label,
+  }));
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {options.map(({ key, label, hint, icon: Icon }) => (
+        <button
+          key={key}
+          type="button"
+          aria-pressed={value === key}
+          onClick={() => onChange(key)}
+          className={cn(
+            "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm font-medium transition-colors",
+            hint && "col-span-2",
+            value === key
+              ? "border-[var(--foreground)] bg-[var(--muted)]"
+              : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/40",
+          )}
+        >
+          <Icon className="size-4 shrink-0" />
+          <span>
+            {label}
+            {hint && <span className="ml-1 text-xs font-normal opacity-70">· {hint}</span>}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Открыть «Принять оплату» сразу — например, когда форма заказа не смогла провести оплату. */
+export interface PaymentAutoOpen {
+  method: string;
+  amount: string;
+  /** Почему окно открылось само: показывается в нём как ошибка. */
+  notice: string;
+}
 
 /** Сумма к оплате: положительная, с точностью до тиына и не больше доступного остатка. */
 export function paymentAmountProblem(amount: string, maxCents: number): string {
@@ -34,9 +110,13 @@ export function paymentAmountProblem(amount: string, maxCents: number): string {
 
 /**
  * Единственное место приёма денег по заказу в CRM: «Принять оплату» — деньги
- * получены на месте (наличные или Kaspi QR), долг уменьшается сразу;
+ * получены на месте (наличные или Kaspi на кассе), долг уменьшается сразу;
  * «Отправить удалённый счёт» — счёт Kaspi клиенту на телефон, долг уменьшится,
  * когда клиент оплатит.
+ *
+ * Когда и какими способами можно принять деньги, решает сервер (`payment_open`,
+ * `payment_open_methods`, `payment_request_open`): до отгрузки — только
+ * предоплата деньгами у кассы, счёт на телефон — после отгрузки.
  */
 export function OrderPaymentActions({
   order,
@@ -45,6 +125,8 @@ export function OrderPaymentActions({
   clientPhone,
   blockedReason,
   className,
+  autoOpen,
+  onAutoOpened,
 }: {
   order: Order;
   me: Me | null;
@@ -55,6 +137,10 @@ export function OrderPaymentActions({
   /** Почему оплата сейчас закрыта (например, окно оплаты магазина). */
   blockedReason?: string | null;
   className?: string;
+  /** Открыть окно приёма сразу с этими способом и суммой (один раз). */
+  autoOpen?: PaymentAutoOpen | null;
+  /** Окно открылось по `autoOpen` — страница может убрать признак из адреса. */
+  onAutoOpened?: () => void;
 }) {
   const [flow, setFlow] = useState<Flow | null>(null);
   const [amount, setAmount] = useState("");
@@ -64,9 +150,24 @@ export function OrderPaymentActions({
   const [error, setError] = useState("");
 
   const maxCents = availableCents(order);
-  if (!can(me, "payments.create") || !paymentOpen(order) || maxCents <= 0) return null;
+  const methods = receiveMethods(order.currency, order.payment_open_methods ?? []);
+  const visible = can(me, "payments.create") && Boolean(order.payment_open) && maxCents > 0 && methods.length > 0;
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (!autoOpen || !visible || autoOpened.current) return;
+    autoOpened.current = true;
+    setFlow("receive");
+    setAmount(autoOpen.amount || String(maxCents / 100));
+    setMethod(methods.find((key) => key === autoOpen.method) ?? methods[0]);
+    setPhone("");
+    setError(autoOpen.notice);
+    onAutoOpened?.();
+  }, [autoOpen, visible, maxCents, methods, onAutoOpened]);
+  if (!visible) return null;
 
-  const kzt = order.currency === "KZT";
+  const remoteInvoice = order.currency === "KZT" && Boolean(order.payment_request_open);
+  // До отгрузки долга ещё нет: принятые деньги — предоплата, о долге в текстах не говорим.
+  const prepayment = order.status !== "shipped";
   const available = formatCurrency(String(maxCents / 100), order.currency);
   const amountProblem = paymentAmountProblem(amount, maxCents);
   const phoneOk = [10, 11].includes(phone.replace(/\D/g, "").length);
@@ -75,7 +176,7 @@ export function OrderPaymentActions({
   function open(next: Flow) {
     setFlow(next);
     setAmount(String(maxCents / 100));
-    setMethod("cash");
+    setMethod(methods[0]);
     setPhone(order.client_phone || clientPhone || "");
     setError("");
   }
@@ -88,8 +189,12 @@ export function OrderPaymentActions({
     try {
       const sum = formatCurrency(amount, order.currency);
       if (flow === "receive") {
-        await api.post(`/orders/${order.id}/payments/`, { amount, method, stage: "received" });
-        onChanged(`Оплата ${sum} по заказу #${order.id} принята — долг уменьшен.`);
+        await receivePayment(order.id, { amount, method });
+        onChanged(
+          prepayment
+            ? `Предоплата ${sum} по заказу #${order.id} принята.`
+            : `Оплата ${sum} по заказу #${order.id} принята — долг уменьшен.`,
+        );
       } else {
         await api.post(`/orders/${order.id}/payments/`, {
           amount,
@@ -117,7 +222,7 @@ export function OrderPaymentActions({
         <Button size="sm" disabled={blocked} title={blockedReason ?? undefined} onClick={() => open("receive")}>
           <HandCoins className="size-4" /> Принять оплату
         </Button>
-        {kzt && (
+        {remoteInvoice && (
           <Button
             size="sm"
             variant="outline"
@@ -138,7 +243,9 @@ export function OrderPaymentActions({
         description={
           flow === "remote"
             ? "Счёт придёт клиенту в Kaspi на телефон. Долг уменьшится сам, когда клиент оплатит."
-            : "Деньги уже получены — долг уменьшится сразу. Ничего клиенту не отправляется."
+            : prepayment
+              ? "Деньги уже получены — это предоплата до отгрузки. Ничего клиенту не отправляется."
+              : "Деньги уже получены — долг уменьшится сразу. Ничего клиенту не отправляется."
         }
         className="max-w-sm"
       >
@@ -171,32 +278,10 @@ export function OrderPaymentActions({
             {amount && amountProblem && <p className="text-xs text-[var(--destructive)]">{amountProblem}</p>}
           </div>
 
-          {flow === "receive" && kzt && (
+          {flow === "receive" && methods.length > 1 && (
             <div className="grid gap-2">
               <Label>Способ</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {METHOD_OPTIONS.map(({ key, label, hint, icon: Icon }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    aria-pressed={method === key}
-                    onClick={() => setMethod(key)}
-                    className={cn(
-                      "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm font-medium transition-colors",
-                      hint && "col-span-2",
-                      method === key
-                        ? "border-[var(--foreground)] bg-[var(--muted)]"
-                        : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/40",
-                    )}
-                  >
-                    <Icon className="size-4 shrink-0" />
-                    <span>
-                      {label}
-                      {hint && <span className="ml-1 text-xs font-normal opacity-70">· {hint}</span>}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              <ReceiveMethodPicker methods={methods} value={method} onChange={setMethod} prepayment={prepayment} />
             </div>
           )}
 

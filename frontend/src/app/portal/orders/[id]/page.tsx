@@ -6,26 +6,38 @@ import type { PortalPaymentPart } from "@/components/portal/portal-payment-parts
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { PlateInput } from "@/components/ui/plate-input";
+import { formatTransportNumber } from "@/components/ui/transport-number";
+import { WagonList } from "@/components/ui/wagon-list";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatusBadge } from "@/components/status-badge";
-import { Badge } from "@/components/ui/badge";
+import { OrderPaymentBadge } from "@/components/payments/order-payment-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { DataGate } from "@/components/ui/data-state";
-import { FileText } from "lucide-react";
+import { FileText, Lock } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { apiError } from "@/lib/api";
 import { formatPortalMoney } from "@/lib/utils";
-import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { clientStep, downloadReceipt, payOrder, releasePortalPayment, setTruck } from "@/lib/portal-actions";
+import {
+  EMPTY_TRANSPORT_PAIR,
+  isValidWagonNumber,
+  sameTransportPair,
+  transportBody,
+  transportPairOf,
+  type TransportPair,
+} from "@/lib/plates";
 import type { PortalOrder } from "@/lib/types";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data: order, loading, error: loadError, reload } = useApi<PortalOrder>(`/portal/orders/${id}/`);
+  const { data: order, loading, error: loadError, reload, setData } = useApi<PortalOrder>(`/portal/orders/${id}/`);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [truck, setTruckVal] = useState("");
+  // null — номер не правили: в полях сохранённая пара заказа.
+  const [draft, setDraft] = useState<TransportPair | null>(null);
   const [releasePart, setReleasePart] = useState<PortalPaymentPart | null>(null);
   const [releaseError, setReleaseError] = useState("");
 
@@ -48,6 +60,26 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
   async function pay(method: PortalPayMethod, amount: string, phone?: string) {
     await run(() => payOrder(Number(id), method, { amount, phone_number: method === "invoice" ? phone : undefined }));
+  }
+
+  const saved = order ? transportPairOf(order) : EMPTY_TRANSPORT_PAIR;
+  const numbers = draft ?? saved;
+  const train = order?.transport_type === "train";
+  const wagonInvalid = train && !isValidWagonNumber(numbers.truck_number);
+
+  async function saveTransport() {
+    if (!order) return;
+    setBusy(true);
+    setError("");
+    try {
+      // Ответ PATCH — заказ целиком: применяем его, а не перечитываем (экран опрашивается).
+      setData(await setTruck(order.id, transportBody(order.transport_type, numbers)));
+      setDraft(null);
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function confirmRelease() {
@@ -102,11 +134,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             <CardTitle>Заказ #{order.id}</CardTitle>
             <div className="flex items-center gap-2">
               <StatusBadge status={order.status} />
-              {order.status === "shipped" && order.payment_status && (
-                <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
-                  {PAYMENT_STATUS_LABELS[order.payment_status] ?? order.payment_status}
-                </Badge>
-              )}
+              <OrderPaymentBadge order={order} dot />
             </div>
           </CardHeader>
           <CardContent>
@@ -129,6 +157,10 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 ))}
               </TBody>
             </Table>
+            {/* Вагоны отгрузки по отчёту — клиенту только для чтения. */}
+            {order.wagons && order.wagons.length > 0 && (
+              <WagonList wagons={order.wagons} station={order.rail_station} className="mt-4" />
+            )}
             <div className="mt-4 flex justify-between border-t pt-3 text-sm">
               <span className="text-[var(--muted-foreground)]">Итого</span>
               <span
@@ -179,47 +211,74 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
         {step === "truck" && (
           <Card>
             <CardHeader>
-              <CardTitle>{order.transport_type === "train" ? "Номер вагона" : "Отправка КАМАЗа"}</CardTitle>
+              <CardTitle>{train ? "Номер вагона" : "Номер машины"}</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              <p className="text-sm text-[var(--muted-foreground)]">
-                Можно указать {order.transport_type === "train" ? "номер вагона из 8 цифр" : "номер КАМАЗа"} заранее —
-                тогда он попадёт в документы. Если номера пока нет, ничего вводить не нужно: оператор укажет его при
-                отгрузке.
-              </p>
-              {order.truck_number && (
-                <p className="text-sm">
-                  Текущий номер: <b>{order.truck_number}</b>
+              {order.transport_locked ? (
+                <p className="flex flex-wrap items-center gap-1.5 text-sm">
+                  <Lock className="size-4 text-[var(--muted-foreground)]" /> Номер указал менеджер:{" "}
+                  <b className="tabular-nums">
+                    {formatTransportNumber(order.truck_number, order.transport_type, order.trailer_number)}
+                  </b>
                 </p>
+              ) : (
+                <>
+                  <p className="text-sm text-[var(--muted-foreground)]">
+                    Можно указать {train ? "номер вагона из 8 цифр" : "номер машины и прицепа"} заранее — тогда он
+                    попадёт в документы. Если номера пока нет, ничего вводить не нужно: оператор укажет его при
+                    отгрузке.
+                  </p>
+                  {train ? (
+                    <Input
+                      placeholder="8 цифр"
+                      aria-label="Номер вагона"
+                      inputMode="numeric"
+                      maxLength={8}
+                      value={numbers.truck_number}
+                      onChange={(e) => setDraft({ ...numbers, truck_number: e.target.value })}
+                    />
+                  ) : (
+                    <>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="portal-truck">Тягач</Label>
+                        <PlateInput
+                          id="portal-truck"
+                          warning
+                          defaultCountry={order.client_country}
+                          value={numbers.truck_number}
+                          onChange={(truck_number) => setDraft({ ...numbers, truck_number })}
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="portal-trailer">Прицеп (необязательно)</Label>
+                        <PlateInput
+                          id="portal-trailer"
+                          kind="trailer"
+                          defaultCountry={order.client_country}
+                          value={numbers.trailer_number}
+                          onChange={(trailer_number) => setDraft({ ...numbers, trailer_number })}
+                        />
+                      </div>
+                    </>
+                  )}
+                  <Button
+                    className="self-start"
+                    disabled={busy || !numbers.truck_number.trim() || wagonInvalid || sameTransportPair(numbers, saved)}
+                    onClick={() => void saveTransport()}
+                  >
+                    Сохранить
+                  </Button>
+                </>
               )}
-              <div className="flex gap-2">
-                <Input
-                  placeholder={order.transport_type === "train" ? "Номер вагона · 8 цифр" : "Номер КАМАЗа"}
-                  aria-label={order.transport_type === "train" ? "Номер вагона" : "Номер КАМАЗа"}
-                  inputMode={order.transport_type === "train" ? "numeric" : undefined}
-                  maxLength={order.transport_type === "train" ? 8 : undefined}
-                  value={truck}
-                  onChange={(e) => setTruckVal(e.target.value)}
-                />
-                <Button
-                  disabled={busy || !truck || (order.transport_type === "train" && !/^[0-9]{8}$/.test(truck))}
-                  onClick={() => run(() => setTruck(order.id, truck))}
-                >
-                  Сохранить
-                </Button>
-              </div>
             </CardContent>
           </Card>
         )}
 
+        {/* Машина уже на территории (заехала, грузится, отгружена): номер клиенту не
+            показываем совсем — решение владельца; сервер его и не отдаёт. */}
         {(step === "shipping" || step === "done") && (
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-6 text-center text-sm text-[var(--muted-foreground)]">
-              {order.truck_number && (
-                <p>
-                  {order.transport_type === "train" ? "Вагон" : "КАМАЗ"}: <b>{order.truck_number}</b>
-                </p>
-              )}
               <p>{step === "done" ? "Заказ отгружен и оплачен." : "Заказ в обработке на складе."}</p>
               {step === "done" && order.receipt_available && (
                 <Button variant="outline" disabled={busy} onClick={() => run(() => downloadReceipt(order.id))}>

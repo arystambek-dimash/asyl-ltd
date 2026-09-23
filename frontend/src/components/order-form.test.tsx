@@ -418,6 +418,55 @@ describe("OrderForm reference data resilience", () => {
       "/orders/",
       expect.objectContaining({ transport_type: "train", truck_number: "00012345" }),
     );
+    // У вагона прицепа нет.
+    expect(postMock.mock.calls[0][1]).not.toHaveProperty("trailer_number");
+  });
+
+  it("sends the truck and the trailer and hints the plate country of the client", async () => {
+    const template = numberOrder({ transport_type: "truck", truck_number: "" });
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({
+          clients: [{ ...client, country: "Кыргызстан" }],
+          products: [product],
+          stores: [],
+          departments: [department],
+        }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState({ "2": "17.50" })],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    const user = userEvent.setup();
+    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+    expect(screen.getByLabelText("Страна тягача")).toHaveValue("KG");
+    await user.type(screen.getByLabelText("Тягач"), "07kg695adt");
+    await user.type(screen.getByLabelText("Прицеп (необязательно)"), "07 kg 837 pb");
+    expect(screen.getByLabelText("Тягач")).toHaveValue("07 KG 695 ADT");
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({ transport_type: "truck", truck_number: "07KG695ADT", trailer_number: "07KG837PB" }),
+    );
+  });
+
+  it("keeps a legacy truck number untouched on an unrelated edit", async () => {
+    const user = userEvent.setup();
+    render(
+      <OrderForm
+        editing={numberOrder({ transport_type: "truck", truck_number: "самовывоз", trailer_number: "" })}
+        onCancel={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Тягач")).toHaveValue("самовывоз");
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+    expect(patchMock).toHaveBeenCalledWith(
+      "/orders/22/",
+      expect.objectContaining({ transport_type: "truck", truck_number: "самовывоз", trailer_number: "" }),
+    );
   });
 
   it("keeps a wagon number on edit and preserves drafts when switching transport", async () => {
@@ -534,6 +583,103 @@ describe("OrderForm reference data resilience", () => {
     );
   });
 
+  describe("«Оплата сразу»", () => {
+    const cashierManager = {
+      sales_department: null,
+      permissions: ["payments.create", "orders.confirm", "orders.edit"],
+    };
+    const truckTemplate = () => numberOrder({ transport_type: "truck", truck_number: "" });
+    const confirmedOrder = {
+      id: 30,
+      status: "confirmed",
+      payment_open: true,
+      payment_open_methods: ["cash", "kaspi", "remote"],
+    };
+
+    it("creates the order and takes the prepayment with the receive-payment body", async () => {
+      meMock.current = cashierManager;
+      postMock.mockImplementation(async (url: string) => ({ data: url === "/orders/" ? confirmedOrder : {} }));
+      const user = userEvent.setup();
+      render(<OrderForm template={truckTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+      await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
+      // Сумма по умолчанию — итог заказа: 3 × 17,50.
+      expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(52.5);
+      await user.click(screen.getByRole("button", { name: /Kaspi-терминал/ }));
+      await user.click(screen.getByRole("button", { name: /Создать и принять оплату/ }));
+
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/orders/30"));
+      expect(postMock).toHaveBeenNthCalledWith(
+        1,
+        "/orders/",
+        expect.not.objectContaining({ backdate: expect.anything() }),
+      );
+      expect(postMock).toHaveBeenNthCalledWith(2, "/orders/30/payments/", {
+        amount: "52.5",
+        method: "kaspi",
+        stage: "received",
+      });
+    });
+
+    it("keeps the amount on the order total until the cashier edits it", async () => {
+      meMock.current = cashierManager;
+      const user = userEvent.setup();
+      render(<OrderForm template={truckTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+      await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
+      const quantity = screen.getByRole("spinbutton", { name: "Количество мешков, позиция 1" });
+      await user.clear(quantity);
+      await user.type(quantity, "4");
+      expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(70);
+
+      await user.clear(screen.getByLabelText("Сумма оплаты"));
+      await user.type(screen.getByLabelText("Сумма оплаты"), "20");
+      await user.clear(quantity);
+      await user.type(quantity, "5");
+      expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(20);
+
+      await user.clear(screen.getByLabelText("Сумма оплаты"));
+      await user.type(screen.getByLabelText("Сумма оплаты"), "1000");
+      expect(screen.getByText("Сумма больше остатка к оплате.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Создать и принять оплату/ })).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: "Весь итог" }));
+      expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(87.5);
+    });
+
+    it("opens the order with a payment retry when the server rejects the prepayment", async () => {
+      meMock.current = cashierManager;
+      postMock.mockImplementation(async (url: string) => {
+        if (url === "/orders/") return { data: confirmedOrder };
+        throw { response: { status: 400, data: { detail: "Сумма больше остатка" } } };
+      });
+      const user = userEvent.setup();
+      render(<OrderForm template={truckTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+      await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
+      await user.click(screen.getByRole("button", { name: /Создать и принять оплату/ }));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/orders/30?pay=cash&amount=52.5"));
+    });
+
+    it("is offered only to staff who confirm orders and take payments, and not with a backdate", async () => {
+      meMock.current = { sales_department: null, permissions: ["payments.create", "orders.edit"] };
+      const { unmount } = render(<OrderForm template={truckTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
+      expect(screen.queryByRole("checkbox", { name: "Оплата сразу" })).not.toBeInTheDocument();
+      unmount();
+
+      meMock.current = cashierManager;
+      const user = userEvent.setup();
+      render(<OrderForm template={truckTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
+      await user.click(screen.getByRole("checkbox", { name: "Задним числом" }));
+      expect(screen.queryByRole("checkbox", { name: "Оплата сразу" })).not.toBeInTheDocument();
+    });
+
+    it("is not offered while editing an order", () => {
+      meMock.current = cashierManager;
+      render(<OrderForm editing={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
+      expect(screen.queryByRole("checkbox", { name: "Оплата сразу" })).not.toBeInTheDocument();
+    });
+  });
+
   it("does not offer backdating without the edit permission", () => {
     render(<OrderForm template={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
     expect(screen.queryByRole("checkbox", { name: "Задним числом" })).not.toBeInTheDocument();
@@ -594,5 +740,65 @@ describe("OrderForm draft", () => {
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
     await waitFor(() => expect(postMock).toHaveBeenCalledOnce());
     expect(localStorage.getItem("asyl_order_draft_v1:5")).toBeNull();
+  });
+
+  it("restores the trailer, brings «Оплата сразу» back switched off and clears the draft before taking the prepayment", async () => {
+    meMock.current = {
+      id: 5,
+      sales_department: null,
+      permissions: ["payments.create", "orders.confirm"],
+    } as typeof meMock.current;
+    const draftKey = "asyl_order_draft_v1:5";
+    let draftWhenPaying: string | null | undefined;
+    postMock.mockImplementation(async (url: string) => {
+      if (url === "/orders/") {
+        return {
+          data: { id: 30, status: "confirmed", payment_open: true, payment_open_methods: ["cash", "kaspi", "remote"] },
+        };
+      }
+      draftWhenPaying = localStorage.getItem(draftKey);
+      return { data: {} };
+    });
+    const user = userEvent.setup();
+    const first = render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Тестовый клиент/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Товар, позиция 1" }), "2");
+    await user.type(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }), "4");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Отдел продаж" }), "sales");
+    await user.type(screen.getByLabelText("Тягач"), "07kg695adt");
+    await user.type(screen.getByLabelText("Прицеп (необязательно)"), "07 kg 837 pb");
+    await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
+    await user.click(screen.getByRole("button", { name: /Kaspi-терминал/ }));
+    await user.clear(screen.getByLabelText("Сумма оплаты"));
+    await user.type(screen.getByLabelText("Сумма оплаты"), "25");
+    first.unmount();
+
+    render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByLabelText("Прицеп (необязательно)")).toHaveValue("07 KG 837 PB");
+    // После восстановления «Оплата сразу» выключена: деньги не запишутся по черновику сами.
+    expect(screen.getByRole("checkbox", { name: "Оплата сразу" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: /Создать заказ/ })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Создать и принять оплату/ })).not.toBeInTheDocument();
+
+    // Включают снова руками — способ и сумма черновика на месте.
+    await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
+    expect(screen.getByRole("button", { name: /Kaspi-терминал/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(25);
+
+    await user.click(screen.getByRole("button", { name: /Создать и принять оплату/ }));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/orders/30"));
+    expect(postMock).toHaveBeenNthCalledWith(
+      1,
+      "/orders/",
+      expect.objectContaining({ truck_number: "07KG695ADT", trailer_number: "07KG837PB" }),
+    );
+    expect(postMock).toHaveBeenNthCalledWith(2, "/orders/30/payments/", {
+      amount: "25",
+      method: "kaspi",
+      stage: "received",
+    });
+    // Заказ уже создан — черновик удалён до приёма оплаты, повтор идёт с карточки заказа.
+    expect(draftWhenPaying).toBeNull();
+    expect(localStorage.getItem(draftKey)).toBeNull();
   });
 });

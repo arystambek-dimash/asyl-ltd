@@ -73,6 +73,16 @@ class Order(models.Model):
     # затем settlement_intent хранит debt либо instant.
     payment_method = models.CharField(max_length=10, default="debt")
     truck_number = models.CharField(max_length=30, blank=True, default="")
+    # Полуприцеп фуры. Пара «тягач + прицеп» пишется только через
+    # orders/transport.set_order_transport; у вагона прицепа нет.
+    trailer_number = models.CharField(
+        max_length=30, blank=True, default="", db_default=""
+    )
+    # Станция назначения вагонов (из отчёта об отгрузке: «Ст. Раустан»).
+    # Номера вагонов — в shipments.ShipmentWagon.
+    rail_station = models.CharField(
+        max_length=120, blank=True, default="", db_default=""
+    )
     truck_number_set_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="truck_numbers_set",

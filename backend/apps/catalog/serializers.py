@@ -12,12 +12,18 @@ class ProductSerializer(serializers.ModelSerializer):
     cv_class = serializers.CharField(read_only=True)
     available_bags = serializers.SerializerMethodField()
     photo_url = serializers.SerializerMethodField()
+    # Коды товара в отчётах о вагонах («Д1с») — словарь бота и «Вставить отчёт».
+    aliases = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = ["id", "name", "color", "color_label", "weight_kg",
                   "is_active", "ask_truck_weight",
-                  "label", "cv_class", "available_bags", "photo_url"]
+                  "label", "cv_class", "available_bags", "photo_url", "aliases"]
+
+    def get_aliases(self, obj):
+        # Код — как его пишет отчёт («Д1с»), а не ключ сравнения.
+        return [{"id": alias.pk, "code": alias.display_code} for alias in obj.aliases.all()]
 
     def get_photo_url(self, obj):
         return product_photo_url(obj)

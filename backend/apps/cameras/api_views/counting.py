@@ -2,6 +2,8 @@
 
 from typing import ClassVar
 
+from django.http import HttpResponse
+from django.http.response import HttpResponseBase
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
@@ -92,8 +94,7 @@ def _ai_proxy_response(fn):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     try:
-        upstream_status, payload = fn()
-        return Response(payload, status=upstream_status)
+        result = fn()
     except ai.AiUnavailable:
         return Response(
             {"detail": "AI-сервис камер недоступен", "code": "ai_unavailable"},
@@ -104,6 +105,10 @@ def _ai_proxy_response(fn):
             {"detail": exc.detail, "code": "ai_error"},
             status=exc.status if exc.status in (400, 401, 404, 503) else 502,
         )
+    if isinstance(result, HttpResponseBase):
+        return result
+    upstream_status, payload = result
+    return Response(payload, status=upstream_status)
 
 
 def _order_id(request) -> int | None:
@@ -173,7 +178,18 @@ class CameraCountingLineView(APIView):
     permission_classes: ClassVar[list[type]] = [IsSuperUser]
 
     def get(self, request, cam: str):
-        return _ai_proxy_response(lambda: ai.counting_line(cam))
+        # «Обновить статус» after a saved-but-not-applied PUT asks the running
+        # processor too; the 3-second background poll does not.
+        check_applied = request.query_params.get("applied") == "1"
+
+        def read():
+            upstream_status, payload = ai.counting_line(cam)
+            result = ai.line_config_payload(upstream_status, payload)
+            if check_applied and upstream_status < 400:
+                result["line_applied"] = ai.counting_line_application(cam, payload)
+            return upstream_status, result
+
+        return _ai_proxy_response(read)
 
     def put(self, request, cam: str):
         # save_counting_line performs one PUT only. A 503 with saved=true is
@@ -186,9 +202,26 @@ class CameraCountingLineView(APIView):
                 # value, while fresh processor polls reveal what is applied.
                 services.update_cached_counting_line(cam, payload)
                 ai.invalidate_counting_line_caches()
-            return upstream_status, payload
+            return upstream_status, ai.line_config_payload(upstream_status, payload)
 
         return _ai_proxy_response(save)
+
+
+class CameraCountingLineFrameView(APIView):
+    """Still frame for the line editor when live video does not connect."""
+
+    permission_classes: ClassVar[list[type]] = [IsSuperUser]
+
+    def get(self, request, cam: str):
+        def frame():
+            response = HttpResponse(
+                ai.counting_line_frame(cam),
+                content_type="image/jpeg",
+            )
+            response["Cache-Control"] = "no-store"
+            return response
+
+        return _ai_proxy_response(frame)
 
 
 class CameraAiView(APIView):

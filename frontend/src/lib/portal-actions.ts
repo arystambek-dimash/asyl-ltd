@@ -25,8 +25,9 @@ export const payOrder = (
 export const releasePortalPayment = (orderId: number, paymentId: number) =>
   api.post<PortalOrder>(`/portal/orders/${orderId}/payments/${paymentId}/release/`).then((r) => r.data);
 
-export const setTruck = (id: number, truck_number: string) =>
-  api.patch<PortalOrder>(`/portal/orders/${id}/truck/`, { truck_number }).then((r) => r.data);
+/** Номер тягача и прицепа (у вагона — только номер). Ответ — заказ целиком: экран применяет его сразу. */
+export const setTruck = (id: number, numbers: { truck_number: string; trailer_number?: string }) =>
+  api.patch<PortalOrder>(`/portal/orders/${id}/truck/`, numbers).then((r) => r.data);
 
 export async function downloadReceipt(id: number) {
   const response = await api.get<Blob>(`/portal/orders/${id}/receipt/`, {
@@ -43,7 +44,7 @@ type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" | "done"
 export function clientStep(status: string, paymentStatus?: string, hasPendingPayment = false): ClientStep {
   if (status === "pending" || status === "draft") return "pending";
   if (status === "rejected" || status === "cancelled") return "rejected";
-  // Подтверждён → ввод КАМАЗа → склад → отгрузка → оплата.
+  // Подтверждён → ввод номера машины → склад → отгрузка → оплата.
   if (status === "confirmed") return "truck";
   // A late QR can settle the order while a replacement invoice is still
   // externally payable. Keep the payment controls visible until that extra

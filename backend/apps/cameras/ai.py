@@ -20,6 +20,10 @@ TIMEOUT = settings.AI_SERVICE_TIMEOUT
 GO2RTC_API = settings.GO2RTC_API_URL
 MAX_JSON_RESPONSE_BYTES = 512 * 1024
 MAX_ERROR_JSON_RESPONSE_BYTES = 64 * 1024
+# A full /events page: with bag verification on, every event carries one
+# evidence sample per crossed line (~4.4 KB at eight lines, ~2.2 MB a page).
+# A page that cannot be read would be requested again forever.
+EVENT_PAGE_MAX_BYTES = 8 * 1024 * 1024
 WAGON_PLATE_TIMEOUT = 15
 WAGON_PLATE_MAX_BYTES = 12 * 1024 * 1024
 VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
@@ -133,6 +137,7 @@ def _request(
     raw_body: bytes | None = None,
     content_type: str | None = None,
     extra_headers: Mapping[str, str] | None = None,
+    max_response_bytes: int = MAX_JSON_RESPONSE_BYTES,
 ) -> tuple[int, dict]:
     request_headers = {
         "X-Api-Key": AI_KEY,
@@ -173,7 +178,7 @@ def _request(
         is_error = status >= 400
         payload = _read_json_object(
             response,
-            MAX_ERROR_JSON_RESPONSE_BYTES if is_error else MAX_JSON_RESPONSE_BYTES,
+            MAX_ERROR_JSON_RESPONSE_BYTES if is_error else max_response_bytes,
             error_status=status if is_error else None,
         )
         return status, payload
@@ -188,17 +193,16 @@ def _call(
     none_on_404: bool = False,
     *,
     timeout_seconds: float | None = None,
+    max_response_bytes: int | None = None,
 ) -> dict | None:
-    if timeout_seconds is None:
-        # Preserve the historical call shape for normal requests and tests.
-        status, payload = _request(method, path, body)
-    else:
-        status, payload = _request(
-            method,
-            path,
-            body,
-            timeout_seconds=timeout_seconds,
-        )
+    # Pass only the overrides actually used: the historical call shape stays
+    # stable for normal requests and tests.
+    options: dict = {}
+    if timeout_seconds is not None:
+        options["timeout_seconds"] = timeout_seconds
+    if max_response_bytes is not None:
+        options["max_response_bytes"] = max_response_bytes
+    status, payload = _request(method, path, body, **options)
     if status == 404 and none_on_404:
         return None
     if status >= 400:
@@ -227,17 +231,22 @@ def camera_id(cam: str) -> str:
     return camera
 
 
-def validate_counting_line(payload) -> dict:
-    """Validate a counting-line PUT body without weakening the AI contract."""
-    if not isinstance(payload, Mapping):
-        raise AiError(400, "Тело запроса должно быть объектом")
+LINE_COORDINATES = ("x1", "y1", "x2", "y2")
+# Mirrors cv-service ``normalize_verification_lines`` so the operator gets a
+# readable Russian 400 from CRM instead of the camera PC's English one.
+MAX_VERIFICATION_LINES = 8
+VERIFICATION_LINE_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
+VERIFICATION_LINE_KEYS = frozenset({"id", "name", "line", "line_spec"})
+VERIFICATION_LINE_NAME_MAX = 80
+SAVED_NOT_APPLIED_DETAIL = "Сохранено, но не применено к камере — обновите статус"
 
-    line = payload.get("line")
+
+def _line_coordinates(line) -> list[float]:
+    """Four finite normalized coordinates of a non-degenerate segment."""
     if isinstance(line, Mapping):
-        names = ("x1", "y1", "x2", "y2")
-        if any(name not in line for name in names):
+        if any(name not in line for name in LINE_COORDINATES):
             raise AiError(400, "Укажите координаты x1, y1, x2, y2")
-        coordinates = [line[name] for name in names]
+        coordinates = [line[name] for name in LINE_COORDINATES]
     elif (
         isinstance(line, Sequence)
         and not isinstance(line, (str, bytes, bytearray))
@@ -261,6 +270,89 @@ def validate_counting_line(payload) -> dict:
         values.append(value)
     if values[:2] == values[2:]:
         raise AiError(400, "Начальная и конечная точки линии не должны совпадать")
+    return values
+
+
+def _segment_key(values: list[float]) -> tuple[float, ...]:
+    # The camera PC compares segments after ``format(value, ".8g")``.
+    return tuple(float(format(value, ".8g")) for value in values)
+
+
+def _verification_line(item, *, ids: set[str], segments: set) -> dict:
+    if not isinstance(item, Mapping) or set(item) - VERIFICATION_LINE_KEYS:
+        raise AiError(
+            400, "Линия проверки должна содержать id, line и необязательное name"
+        )
+    identifier = item.get("id")
+    if not isinstance(identifier, str) or not VERIFICATION_LINE_ID_RE.fullmatch(
+        identifier
+    ):
+        raise AiError(
+            400,
+            "ID линии проверки: от 1 до 40 латинских букв, цифр, «_» или «-»",
+        )
+    if identifier == "count" or identifier in ids:
+        raise AiError(
+            400,
+            "ID линий проверки должны быть уникальными; «count» зарезервирован",
+        )
+    name = item.get("name", identifier)
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or len(name) > VERIFICATION_LINE_NAME_MAX
+    ):
+        raise AiError(400, "Название линии проверки: от 1 до 80 символов")
+    name = name.strip()
+
+    raw_line = item["line"] if "line" in item else item.get("line_spec")
+    try:
+        if isinstance(raw_line, str):
+            try:
+                raw_line = [float(part) for part in raw_line.split(",")]
+            except ValueError as exc:
+                raise AiError(400, "Линия должна содержать четыре координаты") from exc
+        values = _line_coordinates(raw_line)
+    except AiError as exc:
+        detail = exc.detail[:1].lower() + exc.detail[1:]
+        raise AiError(400, f"Линия проверки «{name}»: {detail}") from exc
+
+    key = _segment_key(values)
+    if key in segments or key[2:] + key[:2] in segments:
+        raise AiError(
+            400,
+            f"Линия проверки «{name}» совпадает с линией подсчёта "
+            "или другой линией проверки",
+        )
+    ids.add(identifier)
+    segments.add(key)
+    return {"id": identifier, "name": name, "line": dict(zip(LINE_COORDINATES, values))}
+
+
+def validate_verification_lines(value, *, count_line: list[float]) -> list[dict]:
+    """Validate sampling lines exactly like the camera PC; ``[]`` disables them."""
+    if not isinstance(value, list) or len(value) > MAX_VERIFICATION_LINES:
+        raise AiError(
+            400,
+            "Линии проверки: передайте список не более чем из "
+            f"{MAX_VERIFICATION_LINES} линий ([] — выключить проверку)",
+        )
+    ids: set[str] = set()
+    segments = {_segment_key(count_line)}
+    return [_verification_line(item, ids=ids, segments=segments) for item in value]
+
+
+def validate_counting_line(payload) -> dict:
+    """Validate a counting-line PUT body without weakening the AI contract.
+
+    ``verification_lines`` is forwarded only when the client sent it: an
+    absent field keeps the camera PC's lines, ``[]`` switches them off.
+    """
+    if not isinstance(payload, Mapping):
+        raise AiError(400, "Тело запроса должно быть объектом")
+
+    line = payload.get("line")
+    count_line = _line_coordinates(line)
 
     direction = payload.get("direction")
     if direction not in LINE_DIRECTIONS:
@@ -268,7 +360,85 @@ def validate_counting_line(payload) -> dict:
             400,
             "direction должен быть any, up, down, positive или negative",
         )
-    return {"line": line, "direction": direction}
+    body = {"line": line, "direction": direction}
+    if "verification_lines" in payload:
+        body["verification_lines"] = validate_verification_lines(
+            payload["verification_lines"], count_line=count_line
+        )
+    return body
+
+
+def line_config_payload(status: int, payload: dict) -> dict:
+    """Public shape of a line GET/PUT reply, stable across camera-PC versions.
+
+    An older camera PC neither stores nor returns ``verification_lines``; the
+    editor needs to know that instead of silently dropping the operator's
+    lines. A 503 with ``saved: true`` is a partial success, not a failure.
+    """
+    if status >= 400 and payload.get("saved") is not True:
+        return payload
+    lines = payload.get("verification_lines")
+    supported = isinstance(lines, list)
+    result = {
+        **payload,
+        "verification_lines": lines if supported else [],
+        "verification_lines_supported": supported,
+    }
+    if status >= 400:
+        result.update(code="saved_not_applied", detail=SAVED_NOT_APPLIED_DETAIL)
+    return result
+
+
+def _comparable_line(value) -> tuple[float, ...] | None:
+    """A line object or ``line_spec`` string as the camera PC compares it."""
+    if isinstance(value, str):
+        try:
+            value = [float(part) for part in value.split(",")]
+        except ValueError:
+            return None
+    try:
+        return _segment_key(_line_coordinates(value))
+    except AiError:
+        return None
+
+
+def _comparable_checks(lines) -> list[tuple] | None:
+    if not isinstance(lines, list) or not all(isinstance(item, Mapping) for item in lines):
+        return None
+    return [
+        (
+            item.get("id"),
+            item.get("name"),
+            _comparable_line(item.get("line_spec", item.get("line"))),
+        )
+        for item in lines
+    ]
+
+
+def counting_line_application(cam: str, saved: Mapping) -> str:
+    """Whether the running processor already uses the saved line settings.
+
+    The line file only says what was saved; the processor status says what
+    counts right now. ``not_running``: there is nothing to confirm — the
+    camera PC loads the saved file when the model starts.
+    """
+    processor = status(cam)
+    if not isinstance(processor, Mapping) or processor.get("processor_alive") is False:
+        return "not_running"
+    saved_line = _comparable_line(saved.get("line_spec", saved.get("line")))
+    if (
+        saved_line is None
+        or _comparable_line(processor.get("line")) != saved_line
+        or processor.get("direction") != saved.get("direction")
+    ):
+        return "not_applied"
+    verification = processor.get("verification")
+    # An older processor reports no verification block: judge the main line.
+    if isinstance(verification, Mapping) and isinstance(saved.get("verification_lines"), list):
+        running = _comparable_checks(verification.get("lines"))
+        if running != _comparable_checks(saved["verification_lines"]):
+            return "not_applied"
+    return "applied"
 
 
 def _path(cam: str) -> str:
@@ -655,17 +825,30 @@ def fetch_vehicle_recognition_frame(cam: str, request_id: UUID | str) -> bytes |
     if str(parsed) != raw_request_id:
         raise ValueError("request_id must be a canonical UUID")
 
+    try:
+        return _fetch_jpeg(
+            f"/cameras/{camera}/vehicle-recognition/{raw_request_id}/frame",
+            timeout=VEHICLE_FRAME_TIMEOUT,
+            max_bytes=VEHICLE_FRAME_MAX_BYTES,
+        )
+    except AiError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def _fetch_jpeg(path: str, *, timeout: float, max_bytes: int) -> bytes:
+    """GET one bounded JPEG from Camera-PC; an HTTP error becomes ``AiError``."""
+
     request = urllib.request.Request(
-        f"{AI_URL}/cameras/{camera}/vehicle-recognition/{raw_request_id}/frame",
+        f"{AI_URL}{path}",
         method="GET",
         headers={"X-Api-Key": AI_KEY, "Accept": "image/jpeg"},
     )
     try:
-        response = urllib.request.urlopen(request, timeout=VEHICLE_FRAME_TIMEOUT)
+        response = urllib.request.urlopen(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
         exc.close()
-        if exc.code == 404:
-            return None
         raise AiError(exc.code, f"AI-сервис: ошибка {exc.code}") from exc
     except (http.client.HTTPException, TimeoutError, OSError) as exc:
         raise AiUnavailable(str(exc)) from exc
@@ -674,16 +857,50 @@ def fetch_vehicle_recognition_frame(cam: str, request_id: UUID | str) -> bytes |
         if content_type.strip().lower() != "image/jpeg":
             raise AiProtocolError("AI-сервис вернул кадр в неожиданном формате")
         try:
-            data = response.read(VEHICLE_FRAME_MAX_BYTES + 1)
+            data = response.read(max_bytes + 1)
         except (http.client.HTTPException, TimeoutError, OSError) as exc:
             raise AiUnavailable(str(exc)) from exc
     finally:
         response.close()
-    if len(data) > VEHICLE_FRAME_MAX_BYTES:
+    if len(data) > max_bytes:
         raise AiProtocolError("AI-сервис вернул слишком большой кадр")
     if not data.startswith(_JPEG_MAGIC):
         raise AiProtocolError("AI-сервис вернул некорректный кадр")
     return bytes(data)
+
+
+CAMERA_LINE_FRAME_TIMEOUT = 8.0
+CAMERA_LINE_FRAME_MAX_BYTES = 8 * 1024 * 1024
+CAMERA_LINE_FRAME_ERRORS = {
+    404: (
+        "AI-сервис не отдаёт кадр этой камеры: камеры нет в его списке "
+        "или AI-сервис нужно обновить"
+    ),
+    503: (
+        "Нет свежего кадра: камера не подключена к AI. "
+        "Запустите камеру и обновите кадр"
+    ),
+}
+
+
+def counting_line_frame(cam: str) -> bytes:
+    """Latest still frame of an AI-connected camera for drawing its lines."""
+
+    path = f"/cameras/{camera_id(cam)}/frame"
+    try:
+        return _fetch_jpeg(
+            path,
+            timeout=CAMERA_LINE_FRAME_TIMEOUT,
+            max_bytes=CAMERA_LINE_FRAME_MAX_BYTES,
+        )
+    except AiError as exc:
+        detail = CAMERA_LINE_FRAME_ERRORS.get(exc.status)
+        # 401/5xx are CRM↔Camera-PC faults: never hand the browser a 401 that
+        # its session interceptor would mistake for an expired login.
+        raise AiError(
+            exc.status if detail else 502,
+            detail or exc.detail,
+        ) from exc
 
 
 def status(cam: str) -> dict | None:
@@ -863,7 +1080,12 @@ def count_events(
             "contract_version": 2,
         }
     )
-    return _call("GET", f"/events?{query}", none_on_404=True)
+    return _call(
+        "GET",
+        f"/events?{query}",
+        none_on_404=True,
+        max_response_bytes=EVENT_PAGE_MAX_BYTES,
+    )
 
 
 def always_on_status_cached() -> dict:

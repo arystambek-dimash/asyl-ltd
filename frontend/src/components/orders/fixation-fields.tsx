@@ -4,6 +4,7 @@ import { CalendarClock, Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Segmented } from "@/components/ui/segmented";
+import { ORDER_STATUS_LABELS } from "@/lib/constants";
 import { cn, todayLocalIsoDate } from "@/lib/utils";
 
 /** Фиксация статуса и оплаты задним числом — общий блок формы и модалки. */
@@ -42,31 +43,52 @@ export function fixationBody(draft: FixationDraft) {
   };
 }
 
-export function fixationDraftError(draft: FixationDraft, { shippedAlready }: { shippedAlready: boolean }) {
+/**
+ * Можно ли зафиксировать оплату: у подтверждённого заказа (предоплата) и у
+ * отгруженного. `orderStatus` — статус уже созданного заказа: фиксировать его
+ * можно только подтверждённым или отгруженным, поэтому оплата открыта и без
+ * смены статуса. Новому заказу статус выбирают в том же блоке.
+ */
+export function fixationPaymentAllowed(draft: FixationDraft, orderStatus?: string): boolean {
+  return draft.status !== "" || Boolean(orderStatus);
+}
+
+export function fixationDraftError(draft: FixationDraft, { orderStatus }: { orderStatus?: string } = {}) {
   if (!draft.date) return "Укажите дату.";
   if (draft.date > todayLocalIsoDate()) return "Дата не может быть в будущем.";
-  if (draft.paid && draft.status !== "shipped" && !shippedAlready) {
-    return "Оплату можно зафиксировать только у отгруженного заказа.";
+  if (draft.paid && !fixationPaymentAllowed(draft, orderStatus)) {
+    return "Оплату можно зафиксировать только у подтверждённого или отгруженного заказа.";
   }
   return "";
+}
+
+/** Статусы на выбор: новому заказу — оба, уже созданному — «как сейчас» или отгрузка. */
+function statusOptions(orderStatus?: string) {
+  if (!orderStatus) return FIXATION_STATUS_OPTIONS;
+  return [
+    { value: "" as const, label: "Не менять", caption: ORDER_STATUS_LABELS[orderStatus] ?? orderStatus },
+    ...FIXATION_STATUS_OPTIONS.filter((option) => option.value === "shipped"),
+  ];
 }
 
 export function FixationFields({
   draft,
   onChange,
   canPay,
-  /** Заказ уже отгружен: статус не меняем, фиксируем только оплату. */
-  shippedAlready = false,
+  /** Статус уже созданного заказа (окно «Зафиксировать»); у нового заказа не задан. */
+  orderStatus,
   idPrefix = "fixation",
 }: {
   draft: FixationDraft;
   onChange: (draft: FixationDraft) => void;
   canPay: boolean;
-  shippedAlready?: boolean;
+  orderStatus?: string;
   idPrefix?: string;
 }) {
   const update = (patch: Partial<FixationDraft>) => onChange({ ...draft, ...patch });
-  const paymentAllowed = canPay && (draft.status === "shipped" || shippedAlready);
+  // Отгруженный заказ: статус не меняем, фиксируем только оплату.
+  const shippedAlready = orderStatus === "shipped";
+  const paymentAllowed = canPay && fixationPaymentAllowed(draft, orderStatus);
 
   return (
     <div className="grid gap-4">
@@ -91,8 +113,8 @@ export function FixationFields({
             <Segmented
               ariaLabel="Статус заказа"
               value={draft.status}
-              options={FIXATION_STATUS_OPTIONS}
-              onChange={(status) => update({ status, paid: status === "shipped" ? draft.paid : false })}
+              options={statusOptions(orderStatus)}
+              onChange={(status) => update({ status })}
             />
           </div>
         )}
@@ -119,7 +141,7 @@ export function FixationFields({
               <span className="block text-[11px] text-slate-500">
                 {paymentAllowed
                   ? "Оплата на всю сумму той же датой, сразу подтверждена кассой"
-                  : "Доступно только для отгруженного заказа"}
+                  : "Сначала выберите статус заказа"}
               </span>
             </span>
           </label>

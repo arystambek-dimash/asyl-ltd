@@ -19,6 +19,10 @@ COLOR_LABELS = {
 }
 
 
+def color_label(color: str) -> str:
+    return COLOR_LABELS.get(color, color)
+
+
 def _compatibility_warehouse(*, lock: bool = False) -> Warehouse:
     warehouses = Warehouse.objects.filter(code=DEFAULT_WAREHOUSE_CODE)
     if lock:

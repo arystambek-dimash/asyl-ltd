@@ -9,11 +9,6 @@ import { PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE } from 
 import { ReceiptText } from "lucide-react";
 import type { Me, Order, Payment } from "@/lib/types";
 
-/** Приём оплат открывается после фактической отгрузки для любого отдела. */
-export function paymentOpen(order: Order): boolean {
-  return order.status === "shipped";
-}
-
 export function PaymentStageBadge({ status }: { status: string }) {
   return (
     <Badge tone={PAYMENT_STAGE_TONE[status] ?? "muted"} dot>

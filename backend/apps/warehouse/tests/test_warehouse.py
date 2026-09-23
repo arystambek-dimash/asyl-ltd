@@ -7,6 +7,7 @@ from rest_framework.exceptions import ValidationError
 from apps.catalog.models import Product
 from apps.warehouse.models import StockItem, StockMovement, StockReceipt, Warehouse
 from apps.warehouse.serializers import WarehouseSerializer
+from apps.warehouse.tests.legacy import force_legacy_null_warehouse
 from apps.warehouse.services import (
     adjust_stock,
     deduct_stock,
@@ -15,6 +16,7 @@ from apps.warehouse.services import (
     lock_stock_item,
     receive_stock,
     reconcile_shipment_stock,
+    stock_balances,
 )
 
 pytestmark = pytest.mark.django_db
@@ -105,6 +107,43 @@ def test_availability_is_scoped_to_requested_warehouse(boss):
 
     receive_stock(prod, 2, boss, warehouse=other)
     ensure_products_available([prod], warehouse=other)
+
+
+def _legacy_null_row(product, bags):
+    """Строка без склада рядом со строкой main — её вставил образ до мультисклада."""
+    scratch = Warehouse.objects.create(code=f"scratch-{product.pk}", name=f"Временный {product.pk}")
+    item = StockItem.objects.create(product=product, warehouse=scratch, bags=bags)
+    force_legacy_null_warehouse(item)
+    return item
+
+
+def test_stock_balances_sum_legacy_null_row_into_main_only():
+    prod = _product()
+    missing = Product.objects.create(name="Нет на складе", color="Red", weight_kg="50")
+    main = Warehouse.objects.get(code="main")
+    other = Warehouse.objects.create(code="west", name="Западный склад")
+    StockItem.objects.create(product=prod, warehouse=main, bags=5)
+    # Строка без склада принадлежит main: её мешки складываются, а не подменяют.
+    _legacy_null_row(prod, 3)
+    StockItem.objects.create(product=prod, warehouse=other, bags=7)
+
+    assert stock_balances(main, [prod.pk, missing.pk]) == {prod.pk: 8, missing.pk: 0}
+    assert stock_balances(other, [prod.pk]) == {prod.pk: 7}
+    assert stock_balances(main, []) == {}
+
+
+def test_availability_counts_main_row_and_legacy_null_row_together():
+    prod = _product()
+    main = Warehouse.objects.get(code="main")
+    StockItem.objects.create(product=prod, warehouse=main, bags=-2)
+    legacy = _legacy_null_row(prod, 5)
+
+    ensure_products_available([prod], warehouse=main)
+
+    StockItem.objects.filter(pk=legacy.pk).update(bags=2)
+    with pytest.raises(ValidationError) as exc_info:
+        ensure_products_available([prod], warehouse=main)
+    assert str(exc_info.value.detail["code"]) == "out_of_stock"
 
 
 def test_deduct_stock_reduces(boss):

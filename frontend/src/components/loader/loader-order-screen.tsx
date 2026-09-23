@@ -1,13 +1,17 @@
 "use client";
-import { ArrowLeft, PackageCheck, Printer, Undo2 } from "lucide-react";
+import { useRef } from "react";
+import { ArrowLeft, ClipboardPaste, Lock, PackageCheck, Printer, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { LoaderOrder } from "@/lib/loader";
+import { PlateInput, PlateSuggestions } from "@/components/ui/plate-input";
+import { WagonList } from "@/components/ui/wagon-list";
+import { loadWeight, type LoaderOrder } from "@/lib/loader";
 import { shortDate } from "@/lib/loader-groups";
+import type { TransportPair } from "@/lib/plates";
 import { cn } from "@/lib/utils";
 import { bagsWord, itemsSummary, PaymentMark, TransportNumber } from "./loader-order-card";
 
-/** Крупная строка «70 мешков · 3 500 кг» — главное, что грузчик держит в голове. */
+/** Крупная строка «70 мешков · 3500 кг» (у вагона — тонны) — главное, что грузчик держит в голове. */
 function BagsHeadline({ order }: { order: LoaderOrder }) {
   return (
     <div>
@@ -15,7 +19,72 @@ function BagsHeadline({ order }: { order: LoaderOrder }) {
         <span className="text-[56px] font-black leading-none tabular-nums">{order.bags}</span>
         <span className="text-xl font-semibold text-[var(--muted-foreground)]">{bagsWord(order.bags)}</span>
       </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums">{Number(order.total_kg)} кг</div>
+      <div className="mt-2 text-2xl font-bold tabular-nums">{loadWeight(order)}</div>
+    </div>
+  );
+}
+
+const FIELD_LABEL = "text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]";
+
+/**
+ * Номер фуры: тягач и прицеп. Номер вводит оператор перед отгрузкой — клиент
+ * его часто не указывает; прошлые пары клиента подставляются одним нажатием.
+ */
+function TruckNumbers({
+  order,
+  numbers,
+  onNumbers,
+}: {
+  order: LoaderOrder;
+  numbers: TransportPair;
+  onNumbers: (value: TransportPair) => void;
+}) {
+  const trailerRef = useRef<HTMLInputElement>(null);
+  const locked = Boolean(order.transport_locked);
+  const suggestions = locked ? [] : (order.transport_suggestions ?? []);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="loader-truck" className={FIELD_LABEL}>
+          Тягач
+        </label>
+        <PlateInput
+          id="loader-truck"
+          size="lg"
+          warning
+          enterKeyHint="next"
+          defaultCountry={order.client_country}
+          value={numbers.truck_number}
+          onChange={(truck_number) => onNumbers({ ...numbers, truck_number })}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            trailerRef.current?.focus();
+          }}
+          disabled={locked}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="loader-trailer" className={FIELD_LABEL}>
+          Прицеп (необязательно)
+        </label>
+        <PlateInput
+          ref={trailerRef}
+          id="loader-trailer"
+          kind="trailer"
+          size="lg"
+          defaultCountry={order.client_country}
+          value={numbers.trailer_number}
+          onChange={(trailer_number) => onNumbers({ ...numbers, trailer_number })}
+          disabled={locked}
+        />
+      </div>
+      {locked && (
+        <p className="flex items-center gap-1.5 text-sm text-[var(--muted-foreground)]">
+          <Lock className="size-4" /> Номер указал клиент — изменить его может только клиент.
+        </p>
+      )}
+      <PlateSuggestions suggestions={suggestions} current={numbers} onPick={onNumbers} />
     </div>
   );
 }
@@ -31,11 +100,12 @@ export function LoaderOrderScreen({
   canConfirm,
   busy,
   error,
-  number,
-  onNumber,
+  numbers,
+  onNumbers,
   onBack,
   onConfirm,
   onPrint,
+  onShipByReport,
 }: {
   order: LoaderOrder;
   day: string;
@@ -44,11 +114,13 @@ export function LoaderOrderScreen({
   canConfirm: boolean;
   busy: boolean;
   error: string;
-  number: string;
-  onNumber: (value: string) => void;
+  numbers: TransportPair;
+  onNumbers: (value: TransportPair) => void;
   onBack: () => void;
   onConfirm: () => void;
   onPrint: () => void;
+  /** Вагонный заказ целой партией: вагоны, станция и день — из отчёта о вагонах. */
+  onShipByReport?: () => void;
 }) {
   const overdue = day < today;
   return (
@@ -68,20 +140,22 @@ export function LoaderOrderScreen({
       </div>
 
       <div className="flex flex-col gap-5 rounded-2xl border-2 border-[var(--border)] bg-[var(--card)] p-5">
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-            {order.transport_type === "train" ? "Вагон" : "Машина"}
-          </span>
-          {/* Номер вводит оператор перед отгрузкой: клиент его часто не указывает. */}
-          <Input
-            aria-label={order.transport_type === "train" ? "Номер вагона" : "Номер машины"}
-            placeholder={order.transport_type === "train" ? "8 цифр" : "403 BJN 13"}
-            autoCapitalize="characters"
-            className="h-14 text-2xl font-bold tracking-wide"
-            value={number}
-            onChange={(event) => onNumber(event.target.value.toUpperCase())}
-          />
-        </div>
+        {order.transport_type === "train" ? (
+          <div className="flex flex-col gap-1.5">
+            <span className={FIELD_LABEL}>Вагон</span>
+            {/* Номер вводит оператор перед отгрузкой: клиент его часто не указывает. */}
+            <Input
+              aria-label="Номер вагона"
+              placeholder="8 цифр"
+              inputMode="numeric"
+              className="h-14 text-2xl font-bold tracking-wide"
+              value={numbers.truck_number}
+              onChange={(event) => onNumbers({ ...numbers, truck_number: event.target.value })}
+            />
+          </div>
+        ) : (
+          <TruckNumbers order={order} numbers={numbers} onNumbers={onNumbers} />
+        )}
         <div className="border-t pt-4">
           <BagsHeadline order={order} />
           <div className="mt-3 text-base font-semibold">{itemsSummary(order)}</div>
@@ -113,9 +187,14 @@ export function LoaderOrderScreen({
 
       <div className="mt-auto flex flex-col gap-2">
         {canConfirm && (
-          <Button className="h-16 w-full text-lg" disabled={busy || !number.trim()} onClick={onConfirm}>
+          <Button className="h-16 w-full text-lg" disabled={busy || !numbers.truck_number.trim()} onClick={onConfirm}>
             <PackageCheck className="size-6" />
             {busy ? "Отгружаем…" : "Подтвердить отгрузку"}
+          </Button>
+        )}
+        {canConfirm && order.transport_type === "train" && onShipByReport && (
+          <Button variant="outline" className="h-14 w-full text-base" disabled={busy} onClick={onShipByReport}>
+            <ClipboardPaste className="size-5" /> Отгрузить по отчёту
           </Button>
         )}
         <Button variant="ghost" className="h-11 w-full" onClick={onPrint}>
@@ -152,8 +231,11 @@ export function LoaderShippedScreen({
           <TransportNumber order={order} size="lg" />
         </div>
         <div className="mt-4 text-lg font-bold tabular-nums">
-          {order.bags} {bagsWord(order.bags)} · {Number(order.total_kg)} кг
+          {order.bags} {bagsWord(order.bags)} · {loadWeight(order)}
         </div>
+        {order.wagons && order.wagons.length > 0 && (
+          <WagonList wagons={order.wagons} headline={false} className="mt-3 [&_ul]:justify-center" />
+        )}
         <div className="mt-1 text-sm opacity-90">
           №{order.id} · {order.client_name}
         </div>

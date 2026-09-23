@@ -31,6 +31,7 @@ import {
   type AlwaysOnDayColorView,
   type AlwaysOnReceiptMappingContext,
 } from "@/components/monoblock/always-on-production-panel";
+import { InferredBadge } from "@/components/monoblock/unknown-color";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
 import { ShippingTransportCamera } from "@/components/monoblock/shipping-transport-camera";
 import { CameraShippingSessions } from "@/components/shipping/camera-shipping-sessions";
@@ -49,7 +50,7 @@ import { brandMeta } from "@/lib/monoblock-brands";
 import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
 import { orderedBagCount } from "@/lib/orders";
-import { resolveCountingLine } from "@/lib/camera-counting-line";
+import { normalizeVerificationLines, resolveCountingLine } from "@/lib/camera-counting-line";
 import { cameraOwnersFor, indexFirstBy, type PlayableCamera } from "@/lib/shipping-cameras";
 import { showSuccess } from "@/lib/toast";
 import { can } from "@/lib/can";
@@ -63,6 +64,7 @@ import type {
   AlwaysOnProductMapping,
   AlwaysOnProductionPayload,
   AlwaysOnStockBatch,
+  AlwaysOnUnknownColorInput,
   CameraContinuousReadiness,
   MonoblockCameraSettings,
   Order,
@@ -969,6 +971,26 @@ function AlwaysOnCard({
     }
   }
 
+  // «Указать цвет» мешкам без цвета. Ответ — свежий снимок вкладки: применяем
+  // его сразу, чтобы опрос не показал старое число. Ошибку показывает окно.
+  async function assignUnknownColor(input: AlwaysOnUnknownColorInput) {
+    if (!canManage) return;
+    productionMutationInFlight.current = true;
+    productionRequestSequence.current += 1;
+    setProductionLoading(false);
+    try {
+      const response = await api.post<AlwaysOnProductionPayload>("/cameras/always-on-production/unknown-colors/", {
+        camera: processor.cam,
+        ...input,
+      });
+      setProduction(response.data);
+      setProductionError(null);
+      showSuccess("Цвет указан");
+    } finally {
+      productionMutationInFlight.current = false;
+    }
+  }
+
   async function retryProductionBatch(batch: AlwaysOnStockBatch) {
     if (!canManage) return;
     productionMutationInFlight.current = true;
@@ -1086,7 +1108,11 @@ function AlwaysOnCard({
                     updatedAt={liveBoxes?.at}
                   />
                   {countingLine && (
-                    <CameraCountingLineOverlay line={countingLine.line} direction={countingLine.direction} />
+                    <CameraCountingLineOverlay
+                      line={countingLine.line}
+                      direction={countingLine.direction}
+                      verificationLines={normalizeVerificationLines(camera?.line_config?.verification_lines)}
+                    />
                   )}
                 </>
               )}
@@ -1195,6 +1221,7 @@ function AlwaysOnCard({
               canManage={canManage}
               onSave={saveProductionMappings}
               onRetry={retryProductionBatch}
+              onAssignUnknown={assignUnknownColor}
             />
           </div>
         ) : modalView === "analytics" ? (
@@ -1309,6 +1336,16 @@ function AlwaysOnCard({
                               </span>
                             </div>
                             <Metric value={item.total} size="sm" className="mt-1" />
+                            <InferredBadge inferred={item.inferred} className="mt-1" />
+                            {normalizedColor(item.color) === "unknown" && canManage && (
+                              <button
+                                type="button"
+                                onClick={() => setModalView("production")}
+                                className="mt-1 block text-[11px] font-semibold text-[var(--primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]/40"
+                              >
+                                Указать цвет — в «Выпуск и склад»
+                              </button>
+                            )}
                             <div className="mt-1.5 flex min-w-0 items-center gap-2">
                               <ColorDot className={colorMeta(item.color).dot} />
                               <span

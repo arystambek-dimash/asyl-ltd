@@ -22,6 +22,7 @@ import {
   ScanLine,
   Warehouse,
   Wheat,
+  MessageCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { can } from "@/lib/can";
@@ -88,6 +89,8 @@ function staffSections(): NavSection[] {
       title: "Управление",
       items: [
         { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
+        // Отчёты о вагонах из WhatsApp: что бот провёл сам и что ждёт человека.
+        { href: "/management/whatsapp-bot", label: "WhatsApp-бот", icon: MessageCircle, perm: "bots.view" },
         {
           href: "/management/employees",
           label: "Сотрудники",

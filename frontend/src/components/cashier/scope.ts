@@ -1,3 +1,4 @@
+import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
 import type { Department, Me } from "@/lib/types";
 
 /** «Все отделы» в переключателе кассы — параметр department не отправляется. */
@@ -46,23 +47,11 @@ export function cashierName(me: Me | null): string {
   return [me.first_name, me.last_name].filter(Boolean).join(" ").trim() || me.username;
 }
 
-/** Ключ на пользователя: на общем телефоне сменщик не должен унаследовать чужой отдел. */
-function storageKey(userId?: number): string {
-  return userId ? `${DEPARTMENT_STORAGE_KEY}:${userId}` : DEPARTMENT_STORAGE_KEY;
-}
-
+/** Отдел, выбранный в шапке кассы: на общем телефоне у каждого свой. */
 export function readStoredDepartment(userId?: number): string | null {
-  try {
-    return localStorage.getItem(storageKey(userId));
-  } catch {
-    return null;
-  }
+  return readStoredChoice(userChoiceKey(DEPARTMENT_STORAGE_KEY, userId));
 }
 
 export function storeDepartment(code: string, userId?: number) {
-  try {
-    localStorage.setItem(storageKey(userId), code);
-  } catch {
-    // Приватный режим или запрет хранилища — выбор живёт до перезагрузки.
-  }
+  storeChoice(userChoiceKey(DEPARTMENT_STORAGE_KEY, userId), code);
 }

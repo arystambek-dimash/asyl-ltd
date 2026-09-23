@@ -1,11 +1,14 @@
 from datetime import timedelta
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
+from apps.notifications.models import Notification
 from apps.orders.models import Order, OrderItem
 from apps.shipments.models import Shipment, WaybillSettings
 from apps.warehouse.models import StockItem
@@ -16,7 +19,7 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def loader(user_with_perms):
-    return user_with_perms("loader", codes=["loader.view", "loader.confirm"])
+    return user_with_perms("loader", codes=["loader.view", "loader.confirm", "loader.trucks", "loader.wagons"])
 
 
 @pytest.fixture
@@ -89,7 +92,8 @@ def test_one_button_ships_ordered_quantity_and_prints_waybill(auth_client, loade
     order.refresh_from_db()
     assert order.status == "shipped"
     assert order.payment_status == "unpaid"
-    assert order.truck_number == "403 BJN 13"
+    # Номер хранится слитно: «403 bjn 13» с экрана грузчика и «403BJN13» из формы — одна машина.
+    assert order.truck_number == "403BJN13"
     assert Shipment.objects.get(order=order).bags_loaded == 3
     assert _bags(product) == 97
     assert EventLog.objects.filter(order=order, event_type="shipment", message__contains=f"№{order.pk}").exists()
@@ -221,7 +225,7 @@ def test_loader_cannot_undo_an_old_or_foreign_dispatch(auth_client, loader, user
     api.post(f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "403 BJN 13"}, format="json")
 
     # Чужая отгрузка: другой грузчик её не отменяет.
-    other = user_with_perms("loader-2", codes=["loader.view", "loader.confirm"])
+    other = user_with_perms("loader-2", codes=["loader.view", "loader.confirm", "loader.trucks"])
     foreign = auth_client(other).post(f"/api/loader/orders/{order.pk}/rollback/", {}, format="json")
     assert foreign.status_code == 400
     assert foreign.data["code"] == "rollback_not_allowed"
@@ -236,3 +240,267 @@ def test_loader_cannot_undo_an_old_or_foreign_dispatch(auth_client, loader, user
     assert "часа" in late.data["detail"]
     order.refresh_from_db()
     assert order.status == "shipped"
+
+
+def test_dispatch_matches_the_number_in_any_spelling(auth_client, loader, manager, product):
+    """Номер из формы («403BJN13») и с экрана грузчика («403 bjn 13») — одна машина.
+
+    Раньше разница записи считалась сменой номера: после въезда это давало
+    «номер нельзя изменить», а у номера клиента — «задан другим пользователем».
+    """
+    order = _order(product, status="arrived", truck_number="403BJN13", truck_number_set_by=manager)
+
+    response = auth_client(loader).post(
+        f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "403 bjn 13"}, format="json")
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    assert (order.status, order.truck_number, order.truck_number_set_by) == ("shipped", "403BJN13", manager)
+
+
+def test_dispatch_fills_the_trailer_and_notifies_client_once(auth_client, loader, product):
+    """Одно уведомление об отгрузке — без номеров: машина уже на территории,
+    а её номер клиенту не показывается (решение владельца, как в портале)."""
+    order = _order(product, status="arrived")
+
+    response = auth_client(loader).post(
+        f"/api/loader/orders/{order.pk}/dispatch/",
+        {"truck_number": "07 kg 695 adt", "trailer_number": "07 kg 837 pb"},
+        format="json",
+    )
+
+    assert response.status_code == 200, response.data
+    assert (response.data["truck_number"], response.data["trailer_number"]) == ("07KG695ADT", "07KG837PB")
+    assert Shipment.objects.get(order=order).truck_number == "07KG695ADT"
+    assert list(Notification.objects.filter(client=order.client).values_list("text", flat=True)) == [
+        f"Заказ №{order.pk} отгружен"
+    ]
+
+
+def test_dispatch_clears_a_trailer_sent_empty_and_keeps_one_not_sent(auth_client, loader, manager, product):
+    """Пустой прицеп на кнопке — «стереть» (грузчик убрал ошибочный), как в форме
+    заказа и «Фурах»; непереданный — «не менять»: экран шлёт только исправленное."""
+    kept = _order(product, truck_number="403BJN13", trailer_number="07KG837PB", truck_number_set_by=manager)
+    cleared = _order(product, truck_number="612BEX13", trailer_number="07KG837PB", truck_number_set_by=manager)
+    api = auth_client(loader)
+
+    assert api.post(f"/api/loader/orders/{kept.pk}/dispatch/", {}, format="json").status_code == 200
+    response = api.post(f"/api/loader/orders/{cleared.pk}/dispatch/", {"trailer_number": ""}, format="json")
+
+    assert response.status_code == 200, response.data
+    assert (response.data["truck_number"], response.data["trailer_number"]) == ("612BEX13", "")
+    kept.refresh_from_db()
+    cleared.refresh_from_db()
+    assert (kept.status, kept.trailer_number) == ("shipped", "07KG837PB")
+    assert (cleared.status, cleared.trailer_number) == ("shipped", "")
+
+
+def test_dispatch_does_not_clear_the_trailer_after_arrival(auth_client, loader, manager, product, monkeypatch):
+    """После въезда прицеп заменить (и стереть) нельзя — отказ до закрытия AI-подсчёта."""
+    from apps.cameras import counting
+
+    closed = []
+    monkeypatch.setattr(counting, "close_session_for_dispatch", lambda order, user: closed.append(order.pk))
+    order = _order(
+        product, status="arrived", truck_number="403BJN13", trailer_number="07KG837PB", truck_number_set_by=manager)
+
+    response = auth_client(loader).post(
+        f"/api/loader/orders/{order.pk}/dispatch/", {"trailer_number": ""}, format="json")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "truck_number_locked"
+    assert closed == []
+    order.refresh_from_db()
+    assert (order.status, order.trailer_number) == ("arrived", "07KG837PB")
+
+
+def test_wagon_dispatch_notifies_without_the_wagon_number(auth_client, loader, product):
+    order = _order(product, transport_type="train", truck_number="00123456")
+
+    assert auth_client(loader).post(f"/api/loader/orders/{order.pk}/dispatch/", {}, format="json").status_code == 200
+
+    assert list(Notification.objects.filter(client=order.client).values_list("text", flat=True)) == [
+        f"Заказ №{order.pk} отгружен"
+    ]
+
+
+def test_queue_suggests_previous_pairs_of_the_client(auth_client, loader, product):
+    previous = _order(product, status="shipped", truck_number="07KG695ADT", trailer_number="07KG837PB")
+    waiting = Order.objects.create(client=previous.client, status="confirmed")
+    OrderItem.objects.create(order=waiting, product=product, quantity=1, unit_price="10.00")
+
+    rows = auth_client(loader).get("/api/loader/queue/").data
+
+    assert rows[0]["id"] == waiting.pk
+    assert rows[0]["trailer_number"] == ""
+    assert rows[0]["transport_suggestions"] == [{"truck_number": "07KG695ADT", "trailer_number": "07KG837PB"}]
+
+
+def test_queue_query_count_does_not_grow_with_rows(auth_client, loader, product, django_assert_max_num_queries):
+    def fill(count):
+        for index in range(count):
+            previous = _order(product, status="shipped", truck_number=f"{100 + index}ABC01")
+            # Номер указал клиент: transport_locked читает владельца номера.
+            waiting = Order.objects.create(
+                client=previous.client, status="confirmed",
+                truck_number=f"{200 + index}ABC01", truck_number_set_by=previous.client.user)
+            OrderItem.objects.create(order=waiting, product=product, quantity=1, unit_price="10.00")
+
+    api = auth_client(loader)
+    fill(2)
+    with CaptureQueriesContext(connection) as small:
+        assert len(api.get("/api/loader/queue/").data) == 2
+    fill(5)
+    with django_assert_max_num_queries(len(small.captured_queries)):
+        assert len(api.get("/api/loader/queue/").data) == 7
+
+
+def test_dispatch_accepts_the_clients_own_number_in_another_spelling(auth_client, loader, make_user, product):
+    portal_user = make_user(username="portal-client", client=True)
+    order = _order(product, truck_number="07KG695ADT", truck_number_set_by=portal_user)
+
+    response = auth_client(loader).post(
+        f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "07 695 adt"}, format="json")
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    assert (order.truck_number, order.truck_number_set_by) == ("07KG695ADT", portal_user)
+
+
+@pytest.mark.parametrize("fields", [{"truck_number": "AB1"}, {"trailer_number": "12"}])
+def test_dispatch_rejects_a_typo_before_closing_the_ai_count(auth_client, loader, product, monkeypatch, fields):
+    """Опечатка в номере — 400 до закрытия AI-подсчёта: сессию камер она не останавливает."""
+    from apps.cameras import counting
+
+    closed = []
+    monkeypatch.setattr(counting, "close_session_for_dispatch", lambda order, user: closed.append(order.pk))
+    order = _order(product, status="loading")
+
+    response = auth_client(loader).post(f"/api/loader/orders/{order.pk}/dispatch/", fields, format="json")
+
+    assert response.status_code == 400
+    assert closed == []
+    order.refresh_from_db()
+    assert (order.status, order.truck_number, order.trailer_number) == ("loading", "", "")
+
+
+def test_dispatch_keeps_an_unchanged_legacy_number(auth_client, loader, product):
+    """Экран грузчика отправляет сохранённый номер обратно: старый текст — не опечатка."""
+    order = _order(product, truck_number="САМОВЫВОЗ")
+
+    response = auth_client(loader).post(
+        f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "САМОВЫВОЗ"}, format="json")
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    assert (order.status, order.truck_number) == ("shipped", "САМОВЫВОЗ")
+
+
+def test_dispatch_refuses_a_trailer_on_the_clients_pair_before_closing_the_ai_count(
+    auth_client, loader, make_user, product, monkeypatch,
+):
+    """Пару указал клиент: прицеп к ней грузчик не дописывает, и сессию камер отказ не трогает."""
+    from apps.cameras import counting
+
+    closed = []
+    monkeypatch.setattr(counting, "close_session_for_dispatch", lambda order, user: closed.append(order.pk))
+    portal_user = make_user(username="portal-owner", client=True)
+    order = _order(product, status="loading", truck_number="403BJN13", truck_number_set_by=portal_user)
+
+    response = auth_client(loader).post(
+        f"/api/loader/orders/{order.pk}/dispatch/",
+        {"truck_number": "403BJN13", "trailer_number": "07KG837PB"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "forbidden"
+    assert "прицеп" in response.data["detail"]
+    assert closed == []
+    order.refresh_from_db()
+    assert (order.status, order.trailer_number) == ("loading", "")
+
+
+def test_queue_marks_the_pair_the_client_entered(auth_client, loader, make_user, manager, product):
+    """Номер клиента грузчик не меняет; после въезда пустой номер дописать можно."""
+    portal_user = make_user(username="portal-pair", client=True)
+    by_client = _order(product, truck_number="403BJN13", truck_number_set_by=portal_user)
+    by_staff = _order(product, truck_number="612BEX13", truck_number_set_by=manager)
+    arrived_empty = _order(product, status="arrived")
+
+    rows = {row["id"]: row for row in auth_client(loader).get("/api/loader/queue/").data}
+
+    assert rows[by_client.pk]["transport_locked"] is True
+    assert rows[by_staff.pk]["transport_locked"] is False
+    assert rows[arrived_empty.pk]["transport_locked"] is False
+
+
+def test_queue_search_finds_the_trailer(auth_client, loader, product):
+    trailer = _order(product, truck_number="07KG695ADT", trailer_number="07KG837PB")
+    _order(product, truck_number="403BJN13")
+
+    rows = auth_client(loader).get("/api/loader/queue/", {"search": "07 kg 837"}).data
+
+    assert [row["id"] for row in rows] == [trailer.pk]
+
+
+def test_rollback_answer_keeps_the_number_suggestions(auth_client, loader, product):
+    """Ответ отката применяется к строке очереди: чипы не пропадают до опроса."""
+    previous = _order(product, status="shipped", truck_number="07KG695ADT", trailer_number="07KG837PB")
+    order = Order.objects.create(client=previous.client, status="confirmed")
+    OrderItem.objects.create(order=order, product=product, quantity=1, unit_price="10.00")
+    api = auth_client(loader)
+    api.post(f"/api/loader/orders/{order.pk}/dispatch/", {"truck_number": "403 BJN 13"}, format="json")
+
+    response = api.post(f"/api/loader/orders/{order.pk}/rollback/", {}, format="json")
+
+    assert response.status_code == 200, response.data
+    assert response.data["transport_suggestions"] == [{"truck_number": "07KG695ADT", "trailer_number": "07KG837PB"}]
+
+
+def test_queue_row_carries_the_clients_country_for_the_plate_field(auth_client, loader, product):
+    """Страна клиента — страна номера по умолчанию в поле «Тягач» у грузчика."""
+    waiting = _order(product)
+    Client.objects.filter(pk=waiting.client_id).update(country="Кыргызстан")
+
+    rows = auth_client(loader).get("/api/loader/queue/").data
+
+    assert rows[0]["client_country"] == "Кыргызстан"
+
+
+def test_loader_ships_and_undoes_a_prepaid_order_keeping_the_money(auth_client, loader, boss, product):
+    """Предоплата + кнопка грузчика: оплата переживает отгрузку и её отмену.
+
+    ``_do_ship`` одновременно ставит статус оплаты по факту денег, пишет долг
+    только на остаток и шлёт клиенту одно уведомление об отгрузке; отмена своей
+    отгрузки не требует возврата денег — они остаются предоплатой.
+    """
+    from apps.orders.services import record_staff_payment
+
+    order = _order(product, quantity=2)
+    record_staff_payment(order, "15000.00", boss, method="cash")
+    api = auth_client(loader)
+
+    response = api.post(
+        f"/api/loader/orders/{order.pk}/dispatch/",
+        {"truck_number": "07 kg 695 adt", "trailer_number": "07 kg 837 pb"},
+        format="json",
+    )
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    assert (order.status, order.payment_status) == ("shipped", "partial")
+    debt = EventLog.objects.get(order=order, event_type="debt")
+    assert debt.payload["amount"] == "5000.00"
+    assert list(Notification.objects.filter(client=order.client).values_list("text", flat=True)) == [
+        f"Заказ №{order.pk} отгружен"
+    ]
+    assert [row["can_rollback"] for row in api.get("/api/loader/history/").data] == [True]
+
+    undo = api.post(f"/api/loader/orders/{order.pk}/rollback/", {}, format="json")
+
+    assert undo.status_code == 200, undo.data
+    order.refresh_from_db()
+    assert (order.status, order.payment_status) == ("confirmed", "partial")
+    assert str(order.paid_total) == "15000.00"
+    assert [row["id"] for row in api.get("/api/loader/queue/").data] == [order.pk]

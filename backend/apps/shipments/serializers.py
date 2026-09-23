@@ -3,6 +3,8 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.common.money import money_string
+from apps.orders.serializers import OrderWagonsMixin, TransportNumbersSerializer, TransportSuggestionsMixin
+from apps.orders.services import can_set_truck_number
 
 from .models import Shipment, WaybillSettings
 
@@ -38,17 +40,31 @@ class LoaderOrderItemSerializer(serializers.Serializer):
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
 
 
-class LoaderOrderSerializer(serializers.Serializer):
+class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, serializers.Serializer):
     """Заказ на экране грузчика: кому, на чём, что и сколько — без истории поста."""
 
     id = serializers.IntegerField()
     status = serializers.CharField()
     transport_type = serializers.CharField()
     truck_number = serializers.CharField()
+    trailer_number = serializers.CharField()
+    # Отгрузка по отчёту о вагонах: станция, вагоны и отчёт в формате
+    # владельца для «Скопировать отчёт» (считается на страницу, см. вьюху).
+    rail_station = serializers.CharField()
+    wagons = serializers.SerializerMethodField()
+    rail_report_text = serializers.SerializerMethodField()
+    # Прошлые пары клиента — чипы «как в прошлый раз» (считаются на страницу).
+    transport_suggestions = serializers.SerializerMethodField()
+    # Пару номеров указал клиент: грузчик её не меняет и прицеп к ней не
+    # дописывает. Статус замком здесь не считается — пустой номер после въезда
+    # грузчик дописать может, а замену непустого отклонит сервис.
+    transport_locked = serializers.SerializerMethodField()
     currency = serializers.CharField()
     arrival_date = serializers.DateField(allow_null=True)
     created_at = serializers.DateTimeField()
     client_name = serializers.SerializerMethodField()
+    # Страна номера по умолчанию в поле «Тягач».
+    client_country = serializers.CharField(source="client.country")
     items = LoaderOrderItemSerializer(many=True, source="items.all")
     bags = serializers.SerializerMethodField()
     total_kg = serializers.SerializerMethodField()
@@ -61,7 +77,14 @@ class LoaderOrderSerializer(serializers.Serializer):
     remaining_amount = serializers.SerializerMethodField()
 
     def get_client_name(self, order):
-        return order.client.company_name.strip() or order.client.name
+        return order.client.display_name
+
+    def get_rail_report_text(self, order):
+        return (self.context.get("rail_report_texts") or {}).get(order.pk, "")
+
+    def get_transport_locked(self, order):
+        request = self.context.get("request")
+        return request is not None and not can_set_truck_number(order, request.user)
 
     def get_bags(self, order):
         return sum(item.quantity for item in order.items.all())
@@ -93,8 +116,8 @@ class LoaderOrderSerializer(serializers.Serializer):
         return not loader_rollback_blocker(order, request.user)
 
 
-class LoaderDispatchSerializer(serializers.Serializer):
-    truck_number = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
+class LoaderDispatchSerializer(TransportNumbersSerializer):
+    """«Отгружено»: номер тягача и прицепа можно дописать прямо на кнопке."""
 
 
 class WaybillSignerSerializer(serializers.Serializer):

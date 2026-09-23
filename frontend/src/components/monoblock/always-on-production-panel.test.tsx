@@ -2,6 +2,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("@/lib/api", () => ({ apiError: (error: Error) => error.message }));
+
 import type { AlwaysOnProductionPayload, AlwaysOnProductionRun } from "@/lib/types";
 import {
   AlwaysOnDayColorViewToggle,
@@ -444,6 +446,104 @@ describe("AlwaysOnProductionPanel", () => {
     await user.click(screen.getByRole("button", { name: "Повторить" }));
     expect(onRetry).toHaveBeenCalledWith(batch);
   });
+
+  it("не блокирует приход мешками без цвета и предлагает указать цвет", async () => {
+    const user = userEvent.setup();
+    const onAssignUnknown = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AlwaysOnProductionPanel
+        payload={{
+          ...payload,
+          preview: [{ ...payload.preview[0], resolved_bags: 2, inferred: { neighbors: 2 } }],
+          unresolved: { business_day: "2026-08-16", bags: 3 },
+        }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+        onAssignUnknown={onAssignUnknown}
+      />,
+    );
+
+    const previewPanel = screen.getByText("Предварительный приход").closest('[data-testid="always-on-panel"]');
+    if (!(previewPanel instanceof HTMLElement)) throw new Error("Карточка предварительного прихода не найдена");
+    expect(within(previewPanel).getByText("по соседям · 2")).toBeInTheDocument();
+    expect(within(previewPanel).getByText("Цвет не определён: 3 мешка")).toBeInTheDocument();
+    expect(within(previewPanel).queryByText("Не определён")).not.toBeInTheDocument();
+
+    await user.click(within(previewPanel).getByRole("button", { name: "Указать цвет" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Мешков")).toHaveValue(3);
+    await user.type(within(dialog).getByLabelText("Причина"), "Проверено по записи");
+    await user.click(within(dialog).getByRole("button", { name: "Указать цвет" }));
+
+    expect(onAssignUnknown).toHaveBeenCalledWith({
+      business_day: "2026-08-16",
+      color: "red",
+      bags: 3,
+      reason: "Проверено по записи",
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("показывает мешки без цвета у оприходованной смены", async () => {
+    const user = userEvent.setup();
+    const onAssignUnknown = vi.fn().mockResolvedValue(undefined);
+    const batch = {
+      id: 11,
+      camera: "cam1",
+      business_day: "2026-08-15",
+      scheduled_for: "2026-08-15T14:00:00Z",
+      status: "posted" as const,
+      total_bags: 120,
+      pending_bags: 1,
+      last_error: "",
+      attempts: 1,
+      posted_at: "2026-08-15T14:01:00Z",
+      items: [],
+    };
+    render(
+      <AlwaysOnProductionPanel
+        payload={{ ...payload, batches: [batch] }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage
+        onSave={vi.fn()}
+        onAssignUnknown={onAssignUnknown}
+      />,
+    );
+
+    const history = screen.getByText("История приходов").closest('[data-testid="always-on-panel"]');
+    if (!(history instanceof HTMLElement)) throw new Error("История приходов не найдена");
+    expect(within(history).getByText("Цвет не определён: 1 мешок")).toBeInTheDocument();
+    expect(within(history).queryByText(/Не настроен товар/)).not.toBeInTheDocument();
+
+    await user.click(within(history).getByRole("button", { name: "Указать цвет" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/отдельным приходом/)).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText("Причина"), "Проверено по записи");
+    await user.click(within(dialog).getByRole("button", { name: "Указать цвет" }));
+    expect(onAssignUnknown).toHaveBeenCalledWith(expect.objectContaining({ business_day: "2026-08-15", bags: 1 }));
+  });
+
+  it("без права управления только показывает мешки без цвета", () => {
+    render(
+      <AlwaysOnProductionPanel
+        payload={{ ...payload, unresolved: { business_day: "2026-08-16", bags: 2 } }}
+        loading={false}
+        error={null}
+        saving={false}
+        canManage={false}
+        onSave={vi.fn()}
+        onAssignUnknown={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Цвет не определён: 2 мешка")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Указать цвет" })).not.toBeInTheDocument();
+  });
 });
 
 describe("AlwaysOnDayRunLog", () => {
@@ -656,6 +756,47 @@ describe("AlwaysOnDayRunLog", () => {
     expect(within(rows[3]).getByText("3")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сглажено" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сырой" })).not.toBeInTheDocument();
+  });
+
+  it("помечает мешки, цвет которых определила CRM, и показывает обе части разбитого периода", () => {
+    render(
+      <AlwaysOnDayRunLog
+        day="2026-08-16"
+        timezone="UTC"
+        loading={false}
+        error={null}
+        runs={[
+          makeRun({
+            id: 5,
+            color: "red",
+            model_bags: 1,
+            inferred: { votes: 1 },
+            source_color: "unknown",
+            segment: 0,
+            started_at: "2026-08-16T10:00:00Z",
+            last_counted_at: "2026-08-16T10:00:10Z",
+          }),
+          makeRun({
+            id: 5,
+            color: "blue",
+            model_bags: 1,
+            inferred: { votes: 1 },
+            source_color: "unknown",
+            segment: 1,
+            started_at: "2026-08-16T10:00:20Z",
+            last_counted_at: "2026-08-16T10:00:20Z",
+          }),
+          makeRun({ id: 6, color: "blue", model_bags: 8, started_at: "2026-08-16T10:01:00Z" }),
+        ]}
+      />,
+    );
+
+    const red = screen.getByRole("group", { name: "Период Красный: 1 мешков" });
+    const blue = screen.getByRole("group", { name: "Период Синий: 1 мешков" });
+    expect(within(red).getByText("по голосам · 1")).toBeInTheDocument();
+    expect(within(blue).getByText("по голосам · 1")).toBeInTheDocument();
+    const camera = screen.getByRole("group", { name: "Период Синий: 8 мешков" });
+    expect(camera.querySelector("[data-inferred-badge]")).toBeNull();
   });
 });
 

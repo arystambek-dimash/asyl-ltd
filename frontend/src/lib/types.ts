@@ -1,5 +1,6 @@
 import type { LineDirection, NormalizedLine } from "@/lib/camera-counting-line";
 import type { VehicleRoiConfig } from "@/components/grain/vehicle-roi-overlay";
+import type { TransportPair } from "@/lib/plates";
 
 export interface Me {
   id: number;
@@ -13,6 +14,20 @@ export interface Me {
   position: string | null;
   client_id: number | null;
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
+}
+
+/** Код товара в отчётах о вагонах («Д1с»), хранится ключом сравнения. */
+export interface ProductAlias {
+  id: number;
+  code: string;
+}
+
+/** Вагон отгрузки по отчёту о вагонах. */
+export interface ShipmentWagon {
+  number: string;
+  product_label: string;
+  bags: number;
+  weight_kg: string;
 }
 
 export interface Product {
@@ -32,6 +47,8 @@ export interface Product {
   ask_truck_weight?: boolean;
   /** Подписанная ссылка на фото (см. apiFileUrl); null — фото нет. */
   photo_url?: string | null;
+  /** Коды товара в отчётах о вагонах. */
+  aliases?: ProductAlias[];
 }
 /** Товар в каталоге клиента: цена из его личного прайса, остатков нет намеренно. */
 export interface PortalProduct {
@@ -316,13 +333,28 @@ export interface Order {
   payment_method?: PaymentMethod;
   transport_type?: "truck" | "train";
   truck_number: string;
+  /** Полуприцеп фуры; у вагона пусто. */
+  trailer_number?: string;
   truck_number_set_by?: number | null;
+  /** Станция назначения вагонного заказа (пишет отгрузка по отчёту). */
+  rail_station?: string;
+  /** Вагоны отгрузки по отчёту о вагонах. */
+  wagons?: ShipmentWagon[];
   arrival_date?: string | null;
   notes?: string;
   items: OrderItem[];
   total_amount: string;
   paid_total: string;
   remaining_amount?: string;
+  /** Окно оплаты для сотрудника считает сервер (statuses.is_payment_open): до
+   * отгрузки — предоплата только деньгами у кассы, после — любым способом. */
+  payment_open?: boolean;
+  /** Способы, которыми сейчас можно записать оплату: cash/kaspi/remote, после отгрузки и invoice. */
+  payment_open_methods?: string[];
+  /** Запрос денег (Kaspi QR через ApiPay, счёт на телефон) — только после отгрузки. */
+  payment_request_open?: boolean;
+  /** Переплата — сколько ещё вернуть клиенту (debt.order_overpaid). */
+  overpaid_amount?: string;
   has_pending_payment?: boolean;
   is_fully_paid: boolean;
   is_debt?: boolean;
@@ -342,6 +374,27 @@ export interface Order {
   repeated_from?: number | null;
   deleted_at?: string | null;
   deleted_by_name?: string | null;
+}
+
+/** Строка быстрого ввода «Фуры» (GET /orders/transport-queue/, POST /orders/{id}/transport/). */
+export interface TransportQueueRow {
+  id: number;
+  client: number;
+  client_name: string;
+  client_country: string;
+  status: string;
+  arrival_date: string | null;
+  created_at: string;
+  /** Плановый день: дата приезда, а без неё — день оформления. */
+  planned_on: string;
+  bags: number;
+  truck_number: string;
+  trailer_number: string;
+  /** Номер указал клиент: сотрудник его не меняет. */
+  transport_locked: boolean;
+  /** Прошлые пары клиента — чипы «как в прошлый раз». */
+  transport_suggestions: TransportPair[];
+  plate_warning: string | null;
 }
 
 export interface DashboardOperationalSummary {
@@ -408,8 +461,17 @@ export interface PortalOrder {
     total_refunded: string;
   } | null;
   client_phone: string;
+  /** Страна клиента — страна номера по умолчанию. */
+  client_country?: string;
   receipt_available: boolean;
+  /** Пусто, когда машина уже на территории: после заезда номер клиенту не показывается. */
   truck_number: string;
+  trailer_number?: string;
+  rail_station?: string;
+  /** Вагоны отгрузки по отчёту — только для чтения. */
+  wagons?: ShipmentWagon[];
+  /** Номер указал менеджер или машина уже заехала: только для чтения. */
+  transport_locked?: boolean;
   debt_requested: boolean;
   debt_override: boolean;
   created_at: string;
@@ -830,15 +892,24 @@ export interface WagonArchStop {
   continues: number | null;
   photo_url: string | null;
 }
+/**
+ * Как CRM определила цвет/бренд мешков, которые камера оставила «unknown»:
+ * по соседним мешкам, по голосам отдельных кадров проверки или вручную.
+ */
+export type AlwaysOnInferredMethod = "neighbors" | "votes" | "manual";
+/** Сколько мешков определено каждым способом; нет поля — всё распознала камера. */
+export type AlwaysOnInferred = Partial<Record<AlwaysOnInferredMethod, number>>;
 export interface AlwaysOnColorAnalytics {
   color: string;
   total: number;
   percent: number;
+  inferred?: AlwaysOnInferred;
 }
 export interface AlwaysOnBrandAnalytics {
   brand: string;
   total: number;
   percent: number;
+  inferred?: AlwaysOnInferred;
 }
 export interface AlwaysOnHistoryPoint {
   day: string;
@@ -932,6 +1003,12 @@ export interface AlwaysOnProductionRun {
   starts_before_day?: boolean;
   ends_after_day?: boolean;
   is_partial_for_day?: boolean;
+  /** Цвет мешков этого отрезка определила CRM, а не камера. */
+  inferred?: AlwaysOnInferred;
+  /** Что сказала камера (обычно `unknown`), когда цвет определён CRM. */
+  source_color?: string;
+  /** Номер части периода `unknown`, разбитого по определённым цветам (тот же `id`). */
+  segment?: number;
 }
 export interface AlwaysOnRunSmoothing {
   n_min: number;
@@ -952,10 +1029,14 @@ export interface AlwaysOnProductMapping {
 }
 export interface AlwaysOnStockPosting {
   id: number;
+  /** `shift` — приход смены в 19:00, `manual_color` — цвет указан вручную позже. */
+  kind?: "shift" | "manual_color";
   color: string;
   product: number;
   product_label: string;
   detected_bags: number;
+  /** Мешки без цвета от камеры, которым CRM определила этот цвет. */
+  resolved_bags?: number;
   correction_bags: number;
   posted_bags: number;
   receipt_id: number;
@@ -969,6 +1050,8 @@ export interface AlwaysOnStockBatch {
   scheduled_for: string;
   status: "scheduled" | "blocked" | "posted" | "empty" | "failed";
   total_bags: number;
+  /** Мешки смены без цвета: не оприходованы, ждут «Указать цвет». */
+  pending_bags?: number;
   last_error: string;
   attempts: number;
   posted_at: string | null;
@@ -990,6 +1073,11 @@ export interface AlwaysOnProductionProduct {
 export interface AlwaysOnStockPreview {
   color: string;
   detected_bags: number;
+  /** Мешки без цвета от камеры, которым CRM определила этот цвет. */
+  resolved_bags?: number;
+  /** Часть resolved_bags по соседям/голосам: может измениться до 19:00, вычитать её нельзя. */
+  provisional_bags?: number;
+  inferred?: AlwaysOnInferred;
   correction_bags: number;
   net_bags: number;
   product: number | null;
@@ -1005,6 +1093,11 @@ export interface CameraDayHistory {
   algorithm_day_runs?: AlwaysOnProductionRun[];
   run_smoothing?: AlwaysOnRunSmoothing;
   dominant_brand_by_color?: Record<string, string | null>;
+  /** Только AI 24/7: сколько мешков выбранного дня CRM определила сама и сколько осталось без цвета. */
+  color_resolution?: {
+    inferred: Record<string, AlwaysOnInferred>;
+    unresolved_bags: number;
+  };
 }
 export interface ShippingCameraDayHistory extends CameraDayHistory {
   selected_day: string;
@@ -1025,7 +1118,16 @@ export interface AlwaysOnProductionPayload extends CameraDayHistory {
   products: AlwaysOnProductionProduct[];
   runs: AlwaysOnProductionRun[];
   preview: AlwaysOnStockPreview[];
+  /** Мешки текущей смены без цвета — не блокируют приход, ждут «Указать цвет». */
+  unresolved?: { business_day: string; bags: number };
   batches: AlwaysOnStockBatch[];
+}
+/** POST /cameras/always-on-production/unknown-colors/ — «Указать цвет». */
+export interface AlwaysOnUnknownColorInput {
+  business_day: string;
+  color: string;
+  bags: number;
+  reason: string;
 }
 export interface Permission {
   id: number;

@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import connections, models, router, transaction
 
+from apps.common.text import match_key
+
 
 def product_photo_path(instance, filename):
     # Имя файла задаёт сервис (uuid), путь по товару — чтобы файлы легко найти.
@@ -127,3 +129,38 @@ class ClientPrice(models.Model):
 
     class Meta:
         unique_together = ("client", "product", "currency")
+
+
+class ProductAlias(models.Model):
+    """Код товара в отчётах о вагонах («Д1с») → товар каталога.
+
+    Код в отчёте не фиксирован: словарь правят на странице «Товары» и
+    пополняют при разборе отчёта. Хранится ключ сравнения
+    (:func:`apps.common.text.match_key`): «Д1с» и «Д1c» — один код.
+    """
+
+    code = models.CharField(max_length=64, unique=True)
+    # Код как его пишет отчёт («Д1с») — для людей и «Скопировать отчёт»;
+    # сравнение — только по ``code``. Последнее введённое написание.
+    spelling = models.CharField(max_length=64, blank=True, default="", db_default="")
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="aliases")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="product_aliases")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    @property
+    def display_code(self) -> str:
+        """Код для людей: как в отчёте, у записей без написания — ключ сравнения."""
+        return self.spelling or self.code
+
+    def save(self, *args, **kwargs):
+        self.spelling = " ".join(str(self.spelling or self.code).split())
+        self.code = match_key(self.code)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.display_code} → {self.product}"

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import signal
-import tempfile
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
@@ -17,35 +14,10 @@ from django.db import InterfaceError, OperationalError, close_old_connections
 
 from apps.cameras import shipping_automation
 from apps.cameras.shipping_transport_scheduler import ShippingTransportScheduler
+from apps.common.heartbeat import write_heartbeat as _write_heartbeat
 
 log = logging.getLogger(__name__)
 DEFAULT_HEARTBEAT_FILE = "/tmp/shipping-transport-monitor/heartbeat.json"
-
-
-def _write_heartbeat(path_value: str, status: str, *, now: float | None = None) -> None:
-    """Publish loop liveness atomically without a database write on every poll."""
-    path = Path(path_value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(
-        {"status": status, "updated_at": time.time() if now is None else now},
-        separators=(",", ":"),
-    ).encode("utf-8")
-    temporary_name = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", prefix=f".{path.name}.", dir=path.parent, delete=False
-        ) as temporary:
-            temporary_name = temporary.name
-            temporary.write(payload)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_name, path)
-    finally:
-        if temporary_name:
-            try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
-                pass
 
 
 class Command(BaseCommand):

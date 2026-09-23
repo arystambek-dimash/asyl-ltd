@@ -14,7 +14,7 @@ from datetime import date, datetime
 from django.db import transaction
 from django.utils import timezone
 
-from . import ai, analytics, production
+from . import ai, analytics, color_resolution, production
 from .event_policy import decide_event
 from .event_protocol import (
     EVENT_PAGE_LIMIT,
@@ -408,6 +408,7 @@ def apply_page(
         )
     }
     new_events: list[AlwaysOnImportedEvent] = []
+    first_resolvable_at: datetime | None = None
 
     for event in page.events:
         if event.upstream_event_id <= current_id:
@@ -453,13 +454,31 @@ def apply_page(
         imported = existing_events.get(event.upstream_event_id)
         created = imported is None
         if created:
+            resolvable = (
+                applies_to_analytics and event.analytics_scope == ANALYTICS_SCOPE_AI247
+            )
             new_events.append(
                 AlwaysOnImportedEvent(
                     camera=camera,
                     upstream_event_id=event.upstream_event_id,
+                    verification_votes=event.verification_votes,
                     **defaults,
+                    **(
+                        color_resolution.initial_markers(
+                            event.color,
+                            event.class_name,
+                            event.brand,
+                            event.classification_status,
+                        )
+                        if resolvable
+                        else {}
+                    ),
                 )
             )
+            if resolvable:
+                first_resolvable_at = min(
+                    filter(None, (first_resolvable_at, event.occurred_at))
+                )
         if not created:
             if (
                 imported.occurred_at != event.occurred_at
@@ -515,6 +534,8 @@ def apply_page(
     # Constraints remain authoritative. A conflicting writer or failed bulk
     # insert rolls back projections and cursor along with the entire page.
     AlwaysOnImportedEvent.objects.bulk_create(new_events, batch_size=EVENT_PAGE_LIMIT)
+    if first_resolvable_at is not None:
+        _resolve_unknown_bags(camera, first_resolvable_at)
 
     if late_for_posted_shift:
         log.warning(
@@ -573,6 +594,20 @@ def apply_page(
         ]
     )
     return processed, ignored, cursor.last_event_id
+
+
+def _resolve_unknown_bags(camera: str, since: datetime) -> None:
+    """Best-effort neighbour pass; it must never freeze the event journal.
+
+    A failure rolls back only its savepoint. The authoritative pass runs again
+    over the whole shift right before stock posting.
+    """
+
+    try:
+        with transaction.atomic():
+            color_resolution.resolve_after_import(camera, since)
+    except Exception:
+        log.exception("AI 24/7 unknown-bag resolution failed camera=%s", camera)
 
 
 def sync_camera(

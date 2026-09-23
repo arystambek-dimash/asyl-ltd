@@ -180,3 +180,73 @@ it("gives staff who confirm orders a «Заявки» tab and keeps a department
   expect(screen.getByRole("button", { name: "Проверить и подтвердить" })).toBeInTheDocument();
   expect(screen.queryByPlaceholderText("Поиск по клиенту, номеру или #ID")).not.toBeInTheDocument();
 });
+
+it("gives staff who edit orders a «Фуры» tab for quick truck numbers", async () => {
+  const user = userEvent.setup();
+  mocks.me = { permissions: ["orders.view", "orders.edit"] };
+  render(<OrdersPage />);
+
+  // Заявки разбирает orders.confirm — без него вкладки нет, «Фуры» есть.
+  expect(screen.queryByRole("tab", { name: /Заявки/ })).not.toBeInTheDocument();
+  await user.click(await screen.findByRole("tab", { name: "Фуры" }));
+
+  expect(mocks.replace).toHaveBeenCalledWith("/orders?tab=trucks", { scroll: false });
+  expect(await screen.findByText("У всех подтверждённых фур есть номер")).toBeInTheDocument();
+  expect(mocks.get).toHaveBeenCalledWith("/orders/transport-queue/?filter=missing", expect.anything());
+  expect(screen.queryByPlaceholderText("Поиск по клиенту, номеру или #ID")).not.toBeInTheDocument();
+
+  // «Фуры» список заказов не трогают: вернулись к нему — он перечитывается, «Машина» свежая.
+  const listRequests = () =>
+    mocks.get.mock.calls.filter(([url]) => new URL(String(url), "http://localhost").pathname === "/orders/").length;
+  const before = listRequests();
+  await user.click(screen.getByRole("tab", { name: "Все заказы" }));
+  await waitFor(() => expect(listRequests()).toBe(before + 1));
+});
+
+it("shows a prepayment badge before shipment and «Не оплачен» only after it", async () => {
+  const row = (fields: Record<string, unknown>) => ({
+    client_name: "Клиент",
+    department: "",
+    currency: "KZT",
+    total_amount: "100",
+    items: [],
+    created_at: "2026-09-01T10:00:00Z",
+    ...fields,
+  });
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/" && url.searchParams.get("confirm_queue") !== "1")
+      return {
+        data: {
+          results: [
+            row({ id: 1, status: "confirmed", paid_total: "0", payment_status: "unpaid" }),
+            row({ id: 2, status: "confirmed", paid_total: "100", payment_status: "settled" }),
+          ],
+          count: 2,
+          next: null,
+        },
+      };
+    return baseGet(raw);
+  });
+  const { rerender } = render(<OrdersPage />);
+
+  expect((await screen.findAllByText("Оплачен")).length).toBeGreaterThan(0);
+  expect(screen.queryByText("Не оплачен")).not.toBeInTheDocument();
+
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/" && url.searchParams.get("confirm_queue") !== "1")
+      return {
+        data: {
+          results: [row({ id: 3, status: "shipped", paid_total: "0", payment_status: "unpaid" })],
+          count: 1,
+          next: null,
+        },
+      };
+    return baseGet(raw);
+  });
+  rerender(<></>);
+  rerender(<OrdersPage />);
+  expect((await screen.findAllByText("Не оплачен")).length).toBeGreaterThan(0);
+});

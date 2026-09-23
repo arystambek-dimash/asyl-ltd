@@ -153,10 +153,30 @@ def test_backdate_date_only_keeps_normal_status(backdater, setup):
     assert _local_date(order.created_at) == date(2026, 9, 10)
 
 
-def test_backdated_paid_requires_shipped(backdater, setup):
+def test_backdated_confirmed_order_can_be_prepaid(backdater, setup):
     client, product, _ = setup
     response = _api(backdater).post(
         "/api/orders/", _body(client, product, status="confirmed", paid=True), format="json",
+    )
+    assert response.status_code == 201, response.data
+    order = Order.objects.get(pk=response.data["id"])
+    assert order.status == "confirmed"
+    assert order.payment_status == "settled"
+    assert not Shipment.objects.filter(order=order).exists()
+    payment = order.payments.get()
+    assert payment.status == "confirmed"
+    assert _local_date(payment.confirmed_at) == date(2026, 9, 10)
+
+
+def test_backdated_paid_requires_confirmed_order(user_with_perms, setup):
+    # Без права подтверждения заказ остаётся заявкой — оплату взять не за что.
+    client, product, _ = setup
+    no_confirm = user_with_perms(
+        "no-confirm",
+        codes=["orders.view", "orders.create", "orders.edit", "payments.view", "payments.create"],
+    )
+    response = _api(no_confirm).post(
+        "/api/orders/", _body(client, product, status=None, paid=True), format="json",
     )
     assert response.status_code == 400
     assert not Order.objects.exists()

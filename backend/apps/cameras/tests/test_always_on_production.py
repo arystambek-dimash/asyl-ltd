@@ -1182,8 +1182,22 @@ def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
         )
     ) == [("red", 100), ("blue", 2), ("red", 100)]
     assert production._day_totals("cam3", selected_day) == {
-        "blue": {"detected_bags": 2, "correction_bags": 0, "net_bags": 2},
-        "red": {"detected_bags": 200, "correction_bags": 0, "net_bags": 200},
+        "blue": {
+            "detected_bags": 2,
+            "resolved_bags": 0,
+            "correction_bags": 0,
+            "net_bags": 2,
+            "provisional_bags": 0,
+            "inferred": {},
+        },
+        "red": {
+            "detected_bags": 200,
+            "resolved_bags": 0,
+            "correction_bags": 0,
+            "net_bags": 200,
+            "provisional_bags": 0,
+            "inferred": {},
+        },
     }
 
 

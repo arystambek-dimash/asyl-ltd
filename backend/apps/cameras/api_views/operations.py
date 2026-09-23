@@ -35,6 +35,7 @@ from ..serializers import (
     AlwaysOnAnalyticsArchiveSerializer,
     AlwaysOnAnalyticsSubtractSerializer,
     AlwaysOnProductMappingsSerializer,
+    AlwaysOnUnknownColorSerializer,
     AnalyticsRangeSerializer,
     CameraSourcesSerializer,
     ShippingBoardSettingsSerializer,
@@ -674,6 +675,28 @@ class AlwaysOnProductionView(PermAPIViewMixin, APIView):
         )
 
     patch = put
+
+
+class AlwaysOnUnknownColorView(PermAPIViewMixin, APIView):
+    """Assign a colour to bags the camera and the resolver left unknown."""
+
+    required_perms: ClassVar[dict] = {"post": ALWAYS_ON_MANAGE_PERMISSION}
+
+    def post(self, request):
+        serializer = AlwaysOnUnknownColorSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        camera = _assert_ai247_camera(data["camera"])
+        return Response(
+            production.assign_unknown_color(
+                camera,
+                data["business_day"],
+                data["color"],
+                data["bags"],
+                data["reason"],
+                request.user,
+            )
+        )
 
 
 class AlwaysOnStockRetryView(PermAPIViewMixin, APIView):

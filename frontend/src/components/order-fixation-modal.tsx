@@ -54,7 +54,7 @@ export function OrderFixationModal({
   }, [orderId, orderStatus, canPay]);
 
   if (!order) return null;
-  const draftError = fixationDraftError(draft, { shippedAlready });
+  const draftError = fixationDraftError(draft, { orderStatus: order.status });
   const nothingToDo = !draft.status && !draft.paid;
 
   async function apply() {
@@ -81,7 +81,7 @@ export function OrderFixationModal({
       description={
         shippedAlready
           ? "Заказ уже отгружен — можно зафиксировать оплату нужной датой."
-          : "Проставить статус и оплату задним числом без прохождения поста и кассы."
+          : "Проставить отгрузку или оплату (в том числе предоплату) задним числом без поста и кассы."
       }
       footer={
         <>
@@ -100,7 +100,7 @@ export function OrderFixationModal({
           draft={draft}
           onChange={setDraft}
           canPay={canPay}
-          shippedAlready={shippedAlready}
+          orderStatus={order.status}
           idPrefix={`fixation-${order.id}`}
         />
         {(error || (draftError && draft.date)) && (

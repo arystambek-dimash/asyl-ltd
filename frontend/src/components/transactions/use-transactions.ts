@@ -114,8 +114,6 @@ export function useTransactions({
   // Возврат по Kaspi QR: ответ POST сразу показывает ссылку, дальше окно опрашивает сервер.
   const [qrRefund, setQrRefund] = useState<{ payment: Payment; initial: QrRefundState | null } | null>(null);
   const [rejectReason, setRejectReason] = useState("");
-  const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mutationInFlight = useRef(false);
@@ -142,27 +140,11 @@ export function useTransactions({
     }
   }
 
-  async function refund() {
-    if (!refundFor || mutationInFlight.current) return;
-    mutationInFlight.current = true;
-    setBusy(true);
-    setError("");
-    try {
-      const response = await api.post<{ method: string; qr_refund?: QrRefundState }>(
-        `/payment-transactions/${refundFor.id}/refund/`,
-        { amount: amount || undefined, reason, mode: "auto" },
-      );
-      if (response.data.qr_refund) setQrRefund({ payment: refundFor, initial: response.data.qr_refund });
-      setRefundFor(null);
-      setAmount("");
-      setReason("");
-      await Promise.all([refreshFromStart(), onChanged?.()]);
-    } catch (e) {
-      setError(apiError(e));
-    } finally {
-      mutationInFlight.current = false;
-      setBusy(false);
-    }
+  /** Возврат оформлен в окне PaymentRefundModal: QR-ссылка покупателю — в своё окно, лента — с начала. */
+  async function refunded(payment: Payment, qrRefund: QrRefundState | null) {
+    setRefundFor(null);
+    if (qrRefund) setQrRefund({ payment, initial: qrRefund });
+    await Promise.all([refreshFromStart(), onChanged?.()]);
   }
 
   async function reject() {
@@ -239,8 +221,6 @@ export function useTransactions({
   function openRefund(row: Payment) {
     setError("");
     setRefundFor(row);
-    setAmount(row.available_for_refund ?? "");
-    setReason("");
   }
   function openQrRefund(row: Payment) {
     setError("");
@@ -288,7 +268,7 @@ export function useTransactions({
     setError,
     receipt,
     issue,
-    refund,
+    refunded,
     reject,
     restore,
     reopen,
@@ -309,10 +289,6 @@ export function useTransactions({
     openQrRefund,
     rejectReason,
     setRejectReason,
-    amount,
-    setAmount,
-    reason,
-    setReason,
     openRefund,
     openReject,
     openRestore,

@@ -28,5 +28,5 @@ def test_client_sets_then_only_client_can_change(order, make_user):
 def test_staff_set_can_be_changed_by_staff(order, make_user):
     s1 = make_user(username="s1")
     s2 = make_user(username="s2")
-    services.set_truck_number(order, "AAA", s1)
+    services.set_truck_number(order, "403BJN13", s1)
     assert services.can_set_truck_number(order, s2) is True

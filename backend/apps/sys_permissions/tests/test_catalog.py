@@ -12,6 +12,8 @@ def test_known_codes_are_present():
         "orders.rollback",
         "monoblock.view",
         "loader.confirm",
+        "loader.trucks",
+        "loader.wagons",
         "clients.set_price",
         "clients.manage_access",
         "reports.export",

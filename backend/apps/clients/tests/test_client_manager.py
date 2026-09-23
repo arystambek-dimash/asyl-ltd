@@ -75,3 +75,14 @@ def test_create_with_employee_identity_is_rejected(make_user):
         Client.objects.create_with_user(user=user, phone="+7")
 
     assert not Client.objects.filter(user=user).exists()
+
+
+def test_display_name_prefers_the_company_over_the_person():
+    """Покупатель в документах и списках: ТОО / ИП, а без него — имя клиента."""
+    company = Client.objects.create_with_user(
+        first_name="Мурат", last_name="К", phone="+7", company_name="  ИП Мурат ")
+    person = Client.objects.create_with_user(
+        first_name="Азамат", last_name="К", phone="+7", company_name="   ")
+
+    assert company.display_name == "ИП Мурат"
+    assert person.display_name == "Азамат К"

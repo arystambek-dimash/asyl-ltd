@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OrderPaymentActions, paymentAmountProblem } from "./order-payment-actions";
@@ -23,9 +23,20 @@ const order = {
   paid_total: "0",
   remaining_amount: "707000",
   payment_status: "unpaid",
+  payment_open: true,
+  payment_open_methods: ["cash", "kaspi", "remote", "invoice"],
+  payment_request_open: true,
   payments: [],
   pending_payments: [],
 } as unknown as Order;
+
+/** Подтверждённый, ещё не отгруженный заказ: сервер открывает только деньги у кассы. */
+const prepaidOrder = {
+  ...order,
+  status: "confirmed",
+  payment_open_methods: ["cash", "kaspi", "remote"],
+  payment_request_open: false,
+} as Order;
 
 beforeEach(() => {
   postMock.mockReset();
@@ -156,9 +167,82 @@ describe("OrderPaymentActions", () => {
     expect(screen.queryByRole("button", { name: /Kaspi QR/ })).not.toBeInTheDocument();
   });
 
-  it("hides for unshipped orders, paid orders and users without payments.create", () => {
+  it("takes a prepayment before shipment only as money already at the till", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    render(<OrderPaymentActions order={prepaidOrder} me={me} onChanged={onChanged} />);
+
+    // Kaspi QR через ApiPay и счёт на телефон ждут отгрузки — сервер их не открывает.
+    expect(screen.queryByRole("button", { name: /Отправить удалённый счёт/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    const dialog = screen.getByRole("dialog", { name: "Принять оплату" });
+    expect(dialog).toHaveTextContent("предоплата");
+    expect(dialog).not.toHaveTextContent("долг");
+    expect(screen.getByRole("button", { name: /Наличные/ })).toBeInTheDocument();
+    // Свой Kaspi-терминал кассы, а не Kaspi QR через ApiPay — тот откроется после отгрузки.
+    expect(screen.getByRole("button", { name: /Kaspi-терминал/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Kaspi QR/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Удалённая оплата/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Принять" }));
+
+    expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
+      amount: "707000",
+      method: "cash",
+      stage: "received",
+    });
+    expect(onChanged).toHaveBeenCalledWith(expect.stringContaining("Предоплата"));
+    expect(onChanged).not.toHaveBeenCalledWith(expect.stringContaining("долг"));
+  });
+
+  it("offers only the methods the server opened", async () => {
+    const user = userEvent.setup();
+    render(
+      <OrderPaymentActions
+        order={{ ...prepaidOrder, payment_open_methods: ["cash", "remote"] } as Order}
+        me={me}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    expect(screen.queryByRole("button", { name: /Kaspi/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Удалённая оплата/ })).toBeInTheDocument();
+  });
+
+  it("opens the receive dialog prefilled when the order form could not take the payment", async () => {
+    const onAutoOpened = vi.fn();
+    render(
+      <OrderPaymentActions
+        order={prepaidOrder}
+        me={me}
+        onChanged={vi.fn()}
+        autoOpen={{ method: "kaspi", amount: "500", notice: "Оплата не прошла — примите её ещё раз." }}
+        onAutoOpened={onAutoOpened}
+      />,
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: "Принять оплату" });
+    expect(within(dialog).getByLabelText("Сумма")).toHaveValue(500);
+    expect(within(dialog).getByRole("button", { name: /Kaspi-терминал/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("Оплата не прошла");
+    expect(onAutoOpened).toHaveBeenCalledOnce();
+  });
+
+  it("hides when the server closes payment, for paid orders and users without payments.create", () => {
     const { container, rerender } = render(
-      <OrderPaymentActions order={{ ...order, status: "confirmed" } as Order} me={me} onChanged={vi.fn()} />,
+      <OrderPaymentActions
+        order={
+          {
+            ...order,
+            status: "pending",
+            payment_open: false,
+            payment_open_methods: [],
+            payment_request_open: false,
+          } as Order
+        }
+        me={me}
+        onChanged={vi.fn()}
+      />,
     );
     expect(container).toBeEmptyDOMElement();
     rerender(<OrderPaymentActions order={{ ...order, remaining_amount: "0" } as Order} me={me} onChanged={vi.fn()} />);

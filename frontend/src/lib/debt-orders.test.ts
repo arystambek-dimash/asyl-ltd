@@ -49,4 +49,9 @@ describe("debt orders", () => {
     expect(blockingStore(order({ store: 5 }), [{ ...store, payment_schedule_type: "none" }])).toBeNull();
     expect(blockingStore(order({ store: 9 }), [store])).toBeNull();
   });
+
+  it("lets a store prepay any day: the payment window schedules only debt of shipped orders", () => {
+    expect(blockingStore(order({ store: 5, status: "confirmed" }), [store])).toBeNull();
+    expect(blockingStore(order({ store: 5, status: "loaded" }), [store])).toBeNull();
+  });
 });

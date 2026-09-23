@@ -1,7 +1,6 @@
 "use client";
 import { OrderConfirmation } from "@/components/order-confirmation";
 import { OrderRejectionDialog } from "@/components/order-rejection-dialog";
-import { ActionError } from "@/components/cashier/action-error";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import type { Department, Order } from "@/lib/types";
@@ -49,7 +48,6 @@ export function OrderReviewDialogs({
         title={`Заказ #${confirming?.id ?? ""}`}
         mobileFullscreen
       >
-        <ActionError message={requests.actionError} />
         {departmentsError ? (
           <ErrorAlert message={departmentsError} onRetry={retryDepartments} />
         ) : (
@@ -59,6 +57,7 @@ export function OrderReviewDialogs({
               order={confirming}
               departments={departments ?? []}
               busy={requests.busy}
+              error={requests.actionError}
               onConfirm={async (payload) => {
                 if (await requests.confirm(confirming, payload)) onConfirmClose();
               }}

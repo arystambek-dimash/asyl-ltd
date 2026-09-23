@@ -14,6 +14,15 @@ from apps.catalog.models import Product
 from apps.warehouse.models import StockItem, Warehouse
 
 from . import ai
+from .color_resolution import (
+    PENDING_COLORS,
+    effective_brand,
+    effective_color_key,
+    merge_inferred,
+    overlay_daily_rows,
+    resolved_day_runs,
+    with_inferred,
+)
 from .models import (
     ANALYTICS_SCOPE_AI247,
     AlwaysOnColorProductMapping,
@@ -128,6 +137,11 @@ def _merge_algorithm_runs(left: dict, right: dict) -> dict:
 
     merged = dict(left)
     merged["model_bags"] = int(left["model_bags"]) + int(right["model_bags"])
+    inferred = merge_inferred(
+        {"_": left.get("inferred") or {}}, {"_": right.get("inferred") or {}}
+    ).get("_")
+    if inferred:
+        merged["inferred"] = inferred
     merged["last_counted_at"] = right["last_counted_at"]
     merged["ended_at"] = right.get("ended_at")
     merged["status"] = (
@@ -232,6 +246,15 @@ def _run_smoothing_payload(raw_runs: list[dict]) -> tuple[list[dict], dict]:
     # selected-day cards cannot produce a different percentage convention.
     from .analytics import _color_payload
 
+    def cards(per_color: dict[str, int], runs: list[dict]) -> list[dict]:
+        # Resolved bags keep their «по соседям»/«по голосам» marker on the
+        # selected-day colour cards, exactly as on their run rows.
+        return with_inferred(
+            _color_payload(per_color),
+            "color",
+            [{str(run["color"]): run["inferred"]} for run in runs if run.get("inferred")],
+        )
+
     metadata = {
         "n_min": RUN_SMOOTHING_N_MIN,
         "changed": algorithm_runs != raw_runs,
@@ -241,8 +264,8 @@ def _run_smoothing_payload(raw_runs: list[dict]) -> tuple[list[dict], dict]:
         "algorithm_model_total": sum(algorithm_per_color.values()),
         "raw_model_per_color": raw_per_color,
         "algorithm_model_per_color": algorithm_per_color,
-        "raw_colors": _color_payload(raw_per_color),
-        "algorithm_colors": _color_payload(algorithm_per_color),
+        "raw_colors": cards(raw_per_color, raw_runs),
+        "algorithm_colors": cards(algorithm_per_color, algorithm_runs),
     }
     return algorithm_runs, metadata
 
@@ -250,10 +273,12 @@ def _run_smoothing_payload(raw_runs: list[dict]) -> tuple[list[dict], dict]:
 def _posting_payload(row: AlwaysOnStockPosting) -> dict:
     return {
         "id": row.pk,
+        "kind": row.kind,
         "color": row.color,
         "product": row.product_id,
         "product_label": str(row.product),
         "detected_bags": row.detected_bags,
+        "resolved_bags": row.resolved_bags,
         "correction_bags": row.correction_bags,
         "posted_bags": row.posted_bags,
         "receipt_id": row.receipt_id,
@@ -274,6 +299,8 @@ def _batch_payload(row: AlwaysOnStockBatch) -> dict:
         "scheduled_for": _iso(row.scheduled_for),
         "status": row.status,
         "total_bags": row.total_bags,
+        # Bags left without a colour at posting; «Указать цвет» receives them.
+        "pending_bags": row.pending_bags,
         "last_error": row.last_error,
         "attempts": row.attempts,
         "posted_at": _iso(row.posted_at),
@@ -322,16 +349,20 @@ def _dominant_brand_by_color(
     if selected_day is None or selected_start is None or selected_end is None:
         return {}
 
-    model_per_color = (
+    daily = (
         AlwaysOnDailyAnalytics.objects.filter(
             camera=camera,
             day=selected_day,
             archived_at__isnull=True,
         )
-        .values_list("model_per_color", flat=True)
+        .only("camera", "day", "model_total", "model_per_color", "model_per_brand")
         .first()
-        or {}
     )
+    if daily is None:
+        return {}
+    # Resolved bags count under their colour here exactly as in the totals.
+    overlay_daily_rows([daily])
+    model_per_color = daily.model_per_color or {}
     active_counts = {
         str(color).strip().lower(): int(count)
         for color, count in model_per_color.items()
@@ -354,11 +385,32 @@ def _dominant_brand_by_color(
             occurred_at__lt=selected_end,
         )
         .order_by("-upstream_event_id")
-        .values_list("color", "class_name", "brand")
+        .values_list(
+            "color",
+            "class_name",
+            "brand",
+            "resolved_color",
+            "color_resolution",
+            "resolved_brand",
+            "brand_resolution",
+        )
     )
-    for classified_color, class_name, classified_brand in events.iterator():
-        # Keep this compatible with event_sync._event_color.
-        color = (classified_color or class_name).split("_", 1)[0].strip().lower()
+    for (
+        classified_color,
+        class_name,
+        classified_brand,
+        resolved_color,
+        color_method,
+        resolved_brand,
+        brand_method,
+    ) in events.iterator():
+        # Same colour/brand the overlaid daily totals and stock posting use.
+        color = effective_color_key(
+            classified_color, class_name, resolved_color, color_method
+        )
+        classified_brand = effective_brand(
+            classified_brand, resolved_brand, brand_method
+        )
         if (
             not color
             or len(color) > 32
@@ -455,13 +507,22 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         .distinct()
     )
     available_colors = list(BASE_COLORS)
+    # ``unknown`` bags are resolved by neighbours/votes or assigned manually;
+    # they never map to a product (that used to block the whole shift).
     available_colors.extend(
-        sorted((observed_colors | set(mapping_by_color)) - set(BASE_COLORS))
+        sorted(
+            (observed_colors | set(mapping_by_color))
+            - set(BASE_COLORS)
+            - PENDING_COLORS
+        )
     )
 
     totals = _day_totals(camera, current_day)
+    unresolved_bags = sum(
+        max(0, totals[color]["net_bags"]) for color in PENDING_COLORS if color in totals
+    )
     preview_colors = sorted(
-        set(totals),
+        set(totals) - PENDING_COLORS,
         key=lambda color: (
             BASE_COLORS.index(color) if color in BASE_COLORS else len(BASE_COLORS),
             color,
@@ -545,6 +606,20 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         )
         for row in day_runs
     ]
+    # Bags the camera left as ``unknown`` show their resolved colour with a
+    # marker; the stored run ledger keeps the camera's answer.
+    raw_day_runs, color_resolution_summary = (
+        resolved_day_runs(
+            camera,
+            day_runs,
+            raw_day_runs,
+            start=selected_start,
+            end=selected_end,
+            iso=_iso,
+        )
+        if selected_start is not None and selected_end is not None
+        else (raw_day_runs, None)
+    )
     algorithm_day_runs, run_smoothing = _run_smoothing_payload(raw_day_runs)
     return {
         "camera": camera,
@@ -572,6 +647,11 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         "day_runs": raw_day_runs,
         "algorithm_day_runs": algorithm_day_runs,
         "run_smoothing": run_smoothing,
+        **(
+            {"color_resolution": color_resolution_summary}
+            if color_resolution_summary is not None
+            else {}
+        ),
         "timezone": settings.TIME_ZONE,
         "close_time": CLOSE_TIME.strftime("%H:%M"),
         "current_business_day": current_day.isoformat(),
@@ -598,5 +678,11 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         ],
         "runs": [_run_payload(row, now=now) for row in runs],
         "preview": preview,
+        # Current shift bags still without a colour: posted later, never
+        # blocking. «Указать цвет» assigns them (production.assign_unknown_color).
+        "unresolved": {
+            "business_day": current_day.isoformat(),
+            "bags": unresolved_bags,
+        },
         "batches": [_batch_payload(row) for row in batches],
     }

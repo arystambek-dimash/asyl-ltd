@@ -44,6 +44,21 @@ function setup(overrides: Partial<React.ComponentProps<typeof CameraAnalyticsOve
 }
 
 describe("camera analytics overview", () => {
+  it("marks bags whose colour CRM took from neighbours and keeps unresolved ones apart", () => {
+    setup({
+      daily: {
+        ...daily,
+        colors: [
+          { color: "red", total: 810, percent: 99, inferred: { neighbors: 4, votes: 1 } },
+          { color: "unknown", total: 7, percent: 1 },
+        ],
+      },
+    });
+    expect(screen.getByText("по соседям 4 · по голосам 1")).toBeInTheDocument();
+    expect(screen.getAllByText("Не определён").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll("[data-inferred-badge]")).toHaveLength(1);
+  });
+
   it("offers calendar presets across a month boundary and resets to today", async () => {
     const user = userEvent.setup();
     const { props } = setup();

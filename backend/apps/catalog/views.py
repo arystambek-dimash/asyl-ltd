@@ -12,10 +12,10 @@ from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.sales.access import scope_by_client_department
 from apps.warehouse.models import StockItem
 
-from .models import ClientPrice, Product
+from .models import ClientPrice, Product, ProductAlias
 from .photos import remove_product_photo, set_product_photo
 from .serializers import ProductSerializer
-from .services import archive_product, restore_product
+from .services import archive_product, forget_product_alias, remember_product_alias, restore_product
 
 
 class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -28,6 +28,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "partial_update": "catalog.edit", "destroy": "catalog.edit",
         "archive": "catalog.edit", "restore": "catalog.edit",
         "photo": "catalog.edit",
+        "add_alias": "catalog.edit", "remove_alias": "catalog.edit",
     }
 
     def get_queryset(self):
@@ -35,7 +36,8 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             Prefetch(
                 "stock_items",
                 queryset=StockItem.objects.select_related("warehouse"),
-            )
+            ),
+            "aliases",
         )
         if self.request.query_params.get("archived") in ("1", "true"):
             return qs.filter(is_active=False)
@@ -46,8 +48,7 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _any_product(self, pk):
-        from django.shortcuts import get_object_or_404
-        obj = get_object_or_404(Product, pk=pk)
+        obj = get_object_or_404(Product.objects.prefetch_related("aliases"), pk=pk)
         self.check_object_permissions(self.request, obj)
         return obj
 
@@ -70,6 +71,20 @@ class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         else:
             product = set_product_photo(product, request.FILES.get("photo"), request.user)
         return Response(ProductSerializer(product, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="aliases")
+    def add_alias(self, request, pk=None):
+        """Код товара в отчётах о вагонах. Код другого товара переносится только с ``move``."""
+        product = self._any_product(pk)
+        code = str(request.data.get("code") or "")
+        remember_product_alias(code, product, request.user, move=request.data.get("move") is True)
+        return Response(ProductSerializer(self._any_product(pk), context={"request": request}).data)
+
+    @action(detail=True, methods=["delete"], url_path=r"aliases/(?P<alias_id>[0-9]+)")
+    def remove_alias(self, request, pk=None, alias_id=None):
+        product = self._any_product(pk)
+        forget_product_alias(get_object_or_404(ProductAlias, pk=alias_id, product=product), request.user)
+        return Response(ProductSerializer(self._any_product(pk), context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="restore")
     def restore(self, request, pk=None):

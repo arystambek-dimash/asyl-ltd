@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Segmented } from "@/components/ui/segmented";
-import { LicensePlateInput } from "@/components/ui/license-plate-input";
+import { PlateInput } from "@/components/ui/plate-input";
 import { DataGate } from "@/components/ui/data-state";
 import {
   FixationFields,
@@ -17,9 +17,14 @@ import {
   fixationDraftError,
   type FixationDraft,
 } from "@/components/orders/fixation-fields";
+import { OptionToggle } from "@/components/orders/option-toggle";
+import { PayNowFields, payAfterCreate, usePayNow } from "@/components/orders/pay-now";
+import { moneyCents } from "@/lib/debt-orders";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
+import { formatEstimate, requestEstimate } from "@/lib/orders";
+import { formatPlatePair, isValidWagonNumber } from "@/lib/plates";
 import { cn, formatCurrency, todayLocalIsoDate, currencySymbol } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 import {
@@ -33,6 +38,8 @@ import type { Client, Department, Order, Product, Store, Warehouse } from "@/lib
 
 type Row = { id: number; product: string; quantity: string; price: string };
 type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "phone" | "currency"> & {
+  /** Страна клиента — страна номера машины по умолчанию. */
+  country?: string;
   department_code?: string;
   department_name?: string;
 };
@@ -144,6 +151,9 @@ export function OrderForm({
   const [truck, setTruck] = useState(
     draft?.truck ?? (source?.transport_type === "train" ? "" : (source?.truck_number ?? "")),
   );
+  const [trailer, setTrailer] = useState(
+    draft?.trailer ?? (source?.transport_type === "train" ? "" : (source?.trailer_number ?? "")),
+  );
   const [wagonNumber, setWagonNumber] = useState(
     draft?.wagonNumber ?? (source?.transport_type === "train" ? source.truck_number : ""),
   );
@@ -169,54 +179,12 @@ export function OrderForm({
   const [backdateOn, setBackdateOn] = useState(draft?.backdateOn ?? false);
   const [fixation, setFixation] = useState<FixationDraft>(() => draft?.fixation ?? emptyFixationDraft());
 
-  // Автосохранение черновика нового заказа: случайное закрытие окна ничего не теряет.
-  const onDraftChangeRef = useRef(onDraftChange);
-  useEffect(() => {
-    onDraftChangeRef.current = onDraftChange;
-  }, [onDraftChange]);
-  const draftSaveBlocked = useRef(false);
-  useEffect(() => {
-    if (editing || draftSaveBlocked.current) return;
-    const next: OrderDraft = {
-      template: template ?? null,
-      dept,
-      client,
-      currency,
-      store,
-      warehouse,
-      transport,
-      truck,
-      wagonNumber,
-      arrival,
-      rows,
-      backdateOn,
-      fixation,
-    };
-    const hasContent = orderDraftHasContent(next);
-    if (hasContent) saveOrderDraft(me?.id, next);
-    else clearOrderDraft(me?.id);
-    onDraftChangeRef.current?.(hasContent);
-  }, [
-    editing,
-    template,
-    me?.id,
-    dept,
-    client,
-    currency,
-    store,
-    warehouse,
-    transport,
-    truck,
-    wagonNumber,
-    arrival,
-    rows,
-    backdateOn,
-    fixation,
-  ]);
-
   const canBackdate = !editing && can(me, "orders.edit");
   const canPay = can(me, "payments.create");
   const backdating = canBackdate && backdateOn;
+  // «Оплата сразу»: новый заказ подтверждается при создании (orders.confirm), и
+  // касса тут же принимает предоплату. С задним числом оплату фиксирует свой блок.
+  const canPayNow = !editing && canPay && can(me, "orders.confirm");
 
   const compositionLocked = editing?.status === "loading";
   const shippedCorrection = editing?.status === "shipped";
@@ -227,7 +195,7 @@ export function OrderForm({
     !unchangedWagonNumber &&
     transport === "train" &&
     wagonNumber !== "" &&
-    !/^[0-9]{8}$/.test(wagonNumber);
+    !isValidWagonNumber(wagonNumber);
 
   const selectedClient = clients.find((item) => String(item.id) === client);
   const clientDepartment = departments.find((item) => item.code === selectedClient?.department_code);
@@ -319,12 +287,67 @@ export function OrderForm({
       ? products.filter((item) => productIsAssignedToWarehouse(item, warehouse))
       : products;
   const validRows = rows.filter((row) => row.product && Number(row.quantity) > 0);
-  const allPriced = validRows.every((row) => Number(row.price) > 0);
-  const total = validRows.reduce((sum, row) => sum + Number(row.price || 0) * Number(row.quantity || 0), 0);
-  const selectedBags = validRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+  // Та же оценка, что у заявки: без цены у позиции сумма «Не рассчитана», а не «0 ₸».
+  const estimate = requestEstimate(validRows.map((row) => ({ quantity: row.quantity, unit_price: row.price })));
+  const allPriced = estimate.amount !== null;
+  const totalLabel = formatEstimate(estimate.amount, currency);
+  const selectedBags = estimate.bags;
   // Исторический заказ склад не списывает — товар без остатка тоже можно выбрать.
   const allowOutOfStock = shippedCorrection || backdating;
-  const fixationError = backdating ? fixationDraftError(fixation, { shippedAlready: false }) : "";
+  const fixationError = backdating ? fixationDraftError(fixation) : "";
+  // Без цены у позиции итога нет — создать заказ всё равно нельзя (allPriced).
+  const payNow = usePayNow(currency, moneyCents(estimate.amount ?? 0), draft?.payNow);
+  const payingNow = canPayNow && !backdating && payNow.on;
+  const payNowError = payingNow ? payNow.problem : "";
+
+  // Автосохранение черновика нового заказа: случайное закрытие окна ничего не теряет.
+  const onDraftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+  const draftSaveBlocked = useRef(false);
+  useEffect(() => {
+    if (editing || draftSaveBlocked.current) return;
+    const next: OrderDraft = {
+      template: template ?? null,
+      dept,
+      client,
+      currency,
+      store,
+      warehouse,
+      transport,
+      truck,
+      trailer,
+      wagonNumber,
+      arrival,
+      rows,
+      backdateOn,
+      fixation,
+      payNow: payNow.draft,
+    };
+    const hasContent = orderDraftHasContent(next);
+    if (hasContent) saveOrderDraft(me?.id, next);
+    else clearOrderDraft(me?.id);
+    onDraftChangeRef.current?.(hasContent);
+  }, [
+    editing,
+    template,
+    me?.id,
+    dept,
+    client,
+    currency,
+    store,
+    warehouse,
+    transport,
+    truck,
+    trailer,
+    wagonNumber,
+    arrival,
+    rows,
+    backdateOn,
+    fixation,
+    payNow.draft,
+  ]);
 
   const clientPickerVisible = !editing && (!selectedClient || clientPickerOpen || !!clientSearch);
   const departmentLocked = physicalFieldsLocked || (!!selectedClient?.department_code && !editing);
@@ -365,6 +388,7 @@ export function OrderForm({
       return "Укажите причину изменения отгруженного заказа — минимум 5 символов.";
     }
     if (fixationError) return fixationError;
+    if (payNowError) return payNowError;
     return "";
   }
 
@@ -392,7 +416,10 @@ export function OrderForm({
           ? {
               department: assignedDepartment?.code ?? dept,
               transport_type: transport,
-              truck_number: transport === "train" ? wagonNumber : truck,
+              // Номера уходят как записаны: неизменённый старый номер бэкенд не перепроверяет.
+              ...(transport === "train"
+                ? { truck_number: wagonNumber }
+                : { truck_number: truck, trailer_number: trailer }),
             }
           : {}),
         ...(!compositionLocked
@@ -409,13 +436,15 @@ export function OrderForm({
         await api.patch(`/orders/${editing.id}/`, body);
         onDone();
       } else {
-        const { data } = await api.post("/orders/", { ...body, client: Number(client) });
+        const { data } = await api.post<Order>("/orders/", { ...body, client: Number(client) });
         // Заказ создан — черновик больше не нужен; блокируем повторное сохранение до размонтирования.
+        // Чистим до «Оплаты сразу»: её повтор идёт с карточки заказа, а не из черновика.
         draftSaveBlocked.current = true;
         clearOrderDraft(me?.id);
         onDraftChangeRef.current?.(false);
+        const target = payingNow ? await payAfterCreate(data, payNow.payment) : `/orders/${data.id}`;
         onDone();
-        router.push(`/orders/${data.id}`);
+        router.push(target);
       }
     } catch (cause) {
       setError(apiError(cause));
@@ -432,7 +461,8 @@ export function OrderForm({
     (warehouseOptions.length > 0 && !warehouse) ||
     (!compositionLocked && (!validRows.length || !allPriced)) ||
     (shippedCorrection && editReason.trim().length < 5) ||
-    !!fixationError;
+    !!fixationError ||
+    !!payNowError;
 
   const orderSummaryRows = [
     { label: "Клиент", value: selectedClient?.name ?? "—" },
@@ -442,7 +472,9 @@ export function OrderForm({
     {
       label: "Транспорт",
       value:
-        transport === "train" ? `Вагон${wagonNumber ? ` ${wagonNumber}` : ""}` : `Машина${truck ? ` ${truck}` : ""}`,
+        transport === "train"
+          ? `Вагон${wagonNumber ? ` ${wagonNumber}` : ""}`
+          : `Машина${truck || trailer ? ` ${formatPlatePair(truck, trailer)}` : ""}`,
     },
     ...(arrival ? [{ label: "Прибытие", value: arrival }] : []),
   ];
@@ -751,73 +783,34 @@ export function OrderForm({
                     <Plus className="size-4" /> Добавить позицию
                   </button>
                   <span className="text-xs text-slate-500">
-                    {selectedBags} меш. ·{" "}
-                    <b className="font-semibold tabular-nums text-slate-900">
-                      {formatCurrency(String(total), currency)}
-                    </b>
+                    {selectedBags} меш. · <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b>
                   </span>
                 </div>
               </div>
             </section>
 
-            {(canBackdate || shippedCorrection || editing || template) && (
+            {(canBackdate || canPayNow || shippedCorrection || editing || template) && (
               <section className="space-y-4">
                 <SectionTitle step={3} title="Дополнительно" caption="Необязательно." />
 
                 {canBackdate && (
-                  <div
-                    className={cn(
-                      "rounded-xl border transition",
-                      backdateOn ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-white",
-                    )}
+                  <OptionToggle
+                    checked={backdateOn}
+                    onChange={(checked) => {
+                      setBackdateOn(checked);
+                      setError("");
+                    }}
+                    icon={CalendarClock}
+                    tone="amber"
+                    title="Оформить задним числом"
+                    caption="Указать дату заказа и сразу зафиксировать статус и оплату."
+                    ariaLabel="Задним числом"
                   >
-                    <label className="flex cursor-pointer items-center gap-3 px-4 py-3">
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
-                        <CalendarClock className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-slate-900">Оформить задним числом</span>
-                        <span className="block text-xs text-slate-500">
-                          Указать дату заказа и сразу зафиксировать статус и оплату.
-                        </span>
-                      </span>
-                      <span
-                        aria-hidden="true"
-                        className={cn(
-                          "relative h-6 w-11 shrink-0 rounded-full transition",
-                          backdateOn ? "bg-amber-500" : "bg-slate-300",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "absolute top-0.5 size-5 rounded-full bg-white shadow transition",
-                            backdateOn ? "left-[22px]" : "left-0.5",
-                          )}
-                        />
-                      </span>
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        aria-label="Задним числом"
-                        checked={backdateOn}
-                        onChange={(event) => {
-                          setBackdateOn(event.target.checked);
-                          setError("");
-                        }}
-                      />
-                    </label>
-                    {backdateOn && (
-                      <div className="border-t border-amber-200/70 px-4 py-4">
-                        <FixationFields
-                          draft={fixation}
-                          onChange={setFixation}
-                          canPay={canPay}
-                          idPrefix="order-backdate"
-                        />
-                      </div>
-                    )}
-                  </div>
+                    <FixationFields draft={fixation} onChange={setFixation} canPay={canPay} idPrefix="order-backdate" />
+                  </OptionToggle>
                 )}
+
+                {canPayNow && !backdating && <PayNowFields payNow={payNow} />}
 
                 {shippedCorrection && (
                   <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
@@ -920,16 +913,31 @@ export function OrderForm({
                   />
                 </div>
                 {transport === "truck" ? (
-                  <div className="grid gap-1.5">
-                    <Label id="order-truck-label">Номер машины</Label>
-                    <LicensePlateInput
-                      labelledBy="order-truck-label"
-                      value={truck}
-                      onChange={setTruck}
-                      disabled={physicalFieldsLocked}
-                    />
-                    <p className="text-[11px] text-slate-500">Можно указать позже, при въезде.</p>
-                  </div>
+                  <>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="order-truck">Тягач</Label>
+                      <PlateInput
+                        id="order-truck"
+                        warning
+                        defaultCountry={selectedClient?.country}
+                        value={truck}
+                        onChange={setTruck}
+                        disabled={physicalFieldsLocked}
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="order-trailer">Прицеп (необязательно)</Label>
+                      <PlateInput
+                        id="order-trailer"
+                        kind="trailer"
+                        defaultCountry={selectedClient?.country}
+                        value={trailer}
+                        onChange={setTrailer}
+                        disabled={physicalFieldsLocked}
+                      />
+                      <p className="text-[11px] text-slate-500">Номера можно указать позже, при въезде.</p>
+                    </div>
+                  </>
                 ) : (
                   <div className="grid gap-1.5">
                     <Label htmlFor="order-wagon-number">Номер вагона</Label>
@@ -962,9 +970,7 @@ export function OrderForm({
 
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Итог</div>
-              <div className="mt-1 text-2xl font-bold tabular-nums text-slate-900">
-                {formatCurrency(String(total), currency)}
-              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-slate-900">{totalLabel}</div>
               <div className="text-xs text-slate-500">
                 {validRows.length} {validRows.length === 1 ? "позиция" : "позиций"} · {selectedBags} меш.
               </div>
@@ -992,8 +998,7 @@ export function OrderForm({
 
       <div className="sticky -bottom-5 z-10 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
         <span className="mr-auto text-sm text-slate-500 lg:hidden">
-          <b className="font-semibold tabular-nums text-slate-900">{formatCurrency(String(total), currency)}</b> ·{" "}
-          {selectedBags} меш.
+          <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b> · {selectedBags} меш.
         </span>
         <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
           Отмена
@@ -1005,7 +1010,9 @@ export function OrderForm({
               ? "Сохранить изменения"
               : backdating
                 ? "Создать задним числом"
-                : "Создать заказ"}
+                : payingNow
+                  ? "Создать и принять оплату"
+                  : "Создать заказ"}
           {!busy && <Check className="size-4" />}
         </Button>
       </div>

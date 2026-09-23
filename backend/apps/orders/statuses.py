@@ -25,6 +25,10 @@ PUBLIC_MANUAL_STATUSES = ("pending", "confirmed", "shipped", "cancelled")
 # Новая заявка: её ещё разбирают — подтверждают или отклоняют.
 REVIEWABLE_STATUSES = ("draft", "pending")
 
+# Заказ ждёт отгрузки: подтверждён и ещё не выехал — на любом шаге поста.
+# Мешки таких заказов уже обещаны клиентам, хотя со склада ещё не списаны.
+AWAITING_SHIPMENT_STATUSES = ("confirmed", "arrived", "loading", "loaded")
+
 # Заказ в этих статусах ещё (или уже) не является финансовым документом:
 # черновик и «на рассмотрении» не подтверждены, отказ и отмена аннулированы.
 # Ни один из них не входит в оборот, выручку и долги.
@@ -39,6 +43,34 @@ def is_financial(status: str) -> bool:
 # Заказ закрыт: дальше по нему ничего не происходит. Отгруженный не входит —
 # он завершён логистически, но может быть ещё не оплачен.
 CLOSED_STATUSES = frozenset({"rejected", "cancelled"})
+
+
+def is_payment_open(status: str, *, method: str | None = None, by_client: bool = False) -> bool:
+    """Можно ли сейчас принять оплату по заказу в статусе ``status``.
+
+    После отгрузки — любым способом. До отгрузки (предоплата) — только
+    сотрудник и только деньги, которые уже у кассы (``Payment.SETTLED_ON_RECORD``:
+    наличные, свой Kaspi-терминал, «удалённо»). Kaspi QR и счёт на телефон ждут
+    отгрузки: поздняя оплата старого QR на отменённом заказе увела бы деньги из
+    учёта. ``method=None`` — запрос денег (QR, счёт), а не запись полученных.
+    Портал клиента платит только за отгруженное. Оплата логистику не блокирует.
+    """
+    from .models import Payment
+
+    if status == "shipped":
+        return True
+    if by_client:
+        return False
+    return status in AWAITING_SHIPMENT_STATUSES and method in Payment.SETTLED_ON_RECORD
+
+
+def payment_open_method(method: str, stage: str) -> str | None:
+    """Способ для :func:`is_payment_open` у оплаты на шаге ``stage``.
+
+    Запрошенная оплата (счёт, Kaspi QR через ApiPay) — ещё не деньги у кассы,
+    а запрос денег: до отгрузки она закрыта при любом способе.
+    """
+    return method if stage == "received" else None
 
 
 def is_in_progress(status: str) -> bool:

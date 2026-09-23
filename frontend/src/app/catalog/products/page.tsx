@@ -20,6 +20,7 @@ import {
   productPayload,
   type ProductDraft,
 } from "@/components/catalog/product-fields";
+import { ProductAliasCodes, ProductAliasesEditor } from "@/components/catalog/product-aliases";
 import { ProductPhoto, ProductPhotoPicker } from "@/components/catalog/product-photo";
 import { saveProductPhoto } from "@/lib/product-photo";
 import { Tabs } from "@/components/ui/tabs";
@@ -32,7 +33,7 @@ import { Plus, Check, Pencil, Archive, ArchiveRestore } from "lucide-react";
 import type { Product, Warehouse } from "@/lib/types";
 
 function ProductsPageInner() {
-  const { data: products, loading, error: loadError, reload } = useApi<Product[]>("/products/");
+  const { data: products, loading, error: loadError, reload, setData: setProducts } = useApi<Product[]>("/products/");
   const {
     data: archived,
     loading: archivedLoading,
@@ -125,6 +126,12 @@ function ProductsPageInner() {
       setBusy(false);
       reload();
     }
+  }
+
+  /** Коды в отчётах сохраняются сразу: ответ — свежий товар для окна и списка. */
+  function applyProduct(product: Product) {
+    setEditing(product);
+    setProducts((products ?? []).map((item) => (item.id === product.id ? product : item)));
   }
 
   const stockStepVisible = canStock && (!editing || editing.id === createdId);
@@ -297,6 +304,7 @@ function ProductsPageInner() {
                       />
                       {canViewColor && <TH>Цвет</TH>}
                       <TH>Фасовка</TH>
+                      <TH>Коды в отчётах</TH>
                       <TH></TH>
                     </TR>
                   </THead>
@@ -316,6 +324,9 @@ function ProductsPageInner() {
                         </TD>
                         {canViewColor && <TD>{p.color_label}</TD>}
                         <TD className="tabular-nums">{Number(p.weight_kg)} кг</TD>
+                        <TD>
+                          <ProductAliasCodes aliases={p.aliases} />
+                        </TD>
                         <TD>
                           <div className="flex items-center justify-end gap-1">
                             {canEdit && (
@@ -343,7 +354,7 @@ function ProductsPageInner() {
                     ))}
                     {sorted.length === 0 && (
                       <TR>
-                        <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
+                        <TD colSpan={canViewColor ? 5 : 4} className="py-4 text-center text-[var(--muted-foreground)]">
                           Товаров пока нет.
                         </TD>
                       </TR>
@@ -403,6 +414,7 @@ function ProductsPageInner() {
               </span>
             </span>
           </label>
+          {editing && canEdit && <ProductAliasesEditor product={editing} onChange={applyProduct} />}
           {stockStepVisible && (
             <div className="flex flex-col gap-3 rounded-lg border bg-[var(--muted)]/30 p-3">
               <div>

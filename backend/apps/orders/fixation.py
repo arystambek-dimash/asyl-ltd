@@ -10,7 +10,7 @@
 * ``POST /orders/{id}/fixate/`` — то же для уже существующего заказа
   (дата создания при этом не переписывается).
 """
-from datetime import date, datetime, time
+from datetime import date, datetime
 
 from django.db import transaction
 from django.utils import timezone
@@ -19,7 +19,9 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.eventlog.services import log_event
 
+from .backdate import backdate_events, backdate_moment
 from .models import Order, Payment
+from .statuses import AWAITING_SHIPMENT_STATUSES, is_payment_open
 
 FIXATION_STATUSES = ("confirmed", "shipped")
 FIXATION_STATUS_LABELS = {"confirmed": "Ожидает загрузки", "shipped": "Отгружено"}
@@ -41,11 +43,6 @@ class OrderFixationSerializer(serializers.Serializer):
         return value
 
 
-def fixation_moment(day: date) -> datetime:
-    """Полдень указанного дня в локальном поясе: день однозначен во всех отчётах."""
-    return timezone.make_aware(datetime.combine(day, time(12, 0)))
-
-
 def assert_can_fixate(user, *, paid: bool) -> None:
     if not user.has_perm_code("orders.edit"):
         raise PermissionDenied("Фиксация статуса доступна только с правом изменения заказов")
@@ -57,9 +54,11 @@ def _fix_shipped(order: Order, moment: datetime, user) -> None:
     from apps.shipments.models import Shipment
     from apps.shipments.services import estimated_load_kg
 
+    from .services import _payment_status_for
+
     if order.status == "shipped":
         raise ValidationError({"detail": "Заказ уже отгружен", "code": "already_shipped"})
-    if order.status not in ("confirmed", "arrived", "loading", "loaded"):
+    if order.status not in AWAITING_SHIPMENT_STATUSES:
         raise ValidationError({
             "detail": "Сначала подтвердите заказ — у него должны быть цены и отдел",
             "code": "order_confirmation_required",
@@ -79,8 +78,9 @@ def _fix_shipped(order: Order, moment: datetime, user) -> None:
     shipment.bags_loaded = bags
     shipment.save()
     order.status = "shipped"
-    order.payment_status = "unpaid"
     order.loading_camera = ""
+    # Предоплата переживает отгрузку: статус оплаты — по факту денег.
+    order.payment_status = _payment_status_for(order)
     order.save(update_fields=["status", "payment_status", "loading_camera"])
     # Оперативная сводка считает отгрузки по дню события «shipment» —
     # событие тоже переносим на указанную дату; аудит остаётся в order_backdated.
@@ -97,13 +97,7 @@ def _fix_shipped(order: Order, moment: datetime, user) -> None:
             "stock_deducted": False,
         },
     )
-    _shift_event(event, moment)
-
-
-def _shift_event(event, moment: datetime) -> None:
-    from apps.eventlog.models import EventLog
-
-    EventLog.objects.filter(pk=event.pk).update(created_at=moment)
+    backdate_events([event], moment)
 
 
 def _fix_paid(order: Order, moment: datetime, method: str, user) -> None:
@@ -121,9 +115,10 @@ def _fix_paid(order: Order, moment: datetime, method: str, user) -> None:
     # Журнал кассы и сводки по дням читают события оплаты по created_at.
     from apps.eventlog.models import EventLog
 
-    EventLog.objects.filter(
-        order=order, event_type="payment", payload__payment_id=payment.pk,
-    ).update(created_at=moment)
+    backdate_events(
+        EventLog.objects.filter(order=order, event_type="payment", payload__payment_id=payment.pk),
+        moment,
+    )
 
 
 @transaction.atomic
@@ -142,7 +137,7 @@ def fixate_order(
 
     assert_can_fixate(user, paid=paid)
     order = lock_live_order(order, user)
-    moment = fixation_moment(date)
+    moment = backdate_moment(date)
 
     if status == "shipped":
         _fix_shipped(order, moment, user)
@@ -152,9 +147,11 @@ def fixate_order(
             "code": "order_confirmation_required",
         })
     if paid:
-        if order.status != "shipped":
+        # Способ фиксации — всегда деньги у кассы, поэтому оплату можно
+        # зафиксировать и предоплатой у подтверждённого заказа.
+        if not is_payment_open(order.status, method=payment_method):
             raise ValidationError({
-                "detail": "Оплату можно зафиксировать только у отгруженного заказа",
+                "detail": "Оплату можно зафиксировать только у подтверждённого или отгруженного заказа",
                 "code": "payment_not_open",
             })
         _fix_paid(order, moment, payment_method, user)

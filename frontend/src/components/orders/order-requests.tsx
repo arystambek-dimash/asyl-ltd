@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { LoadMore } from "@/components/ui/load-more";
 import { withBack } from "@/lib/navigation";
+import { formatEstimate, requestEstimate } from "@/lib/orders";
 import type { Order } from "@/lib/types";
-import { formatCurrency, formatDateTime } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 import { OrderReviewDialogs } from "./order-review-dialogs";
 import type { OrderRequests } from "./use-order-requests";
 
@@ -32,6 +33,8 @@ function RequestCard({
   onConfirm: () => void;
   onReject: () => void;
 }) {
+  // Заявку ещё не подтвердили: сумма — оценка по ценам позиций или прайсу клиента.
+  const estimate = requestEstimate(order.items);
   return (
     <li className="flex flex-col gap-3 rounded-xl border bg-[var(--card)] p-4 shadow-card">
       <div className="flex items-start justify-between gap-3">
@@ -50,9 +53,17 @@ function RequestCard({
       </div>
       <div className="flex items-end justify-between gap-3">
         <p className="min-w-0 text-[13px] text-[var(--muted-foreground)]">{itemsSummary(order) || "Без позиций"}</p>
-        <span className="shrink-0 text-[15px] font-bold tabular-nums">
-          {formatCurrency(order.total_amount, order.currency)}
-        </span>
+        <div className="shrink-0 text-right tabular-nums">
+          <div
+            className={cn(
+              "text-[15px] font-bold",
+              estimate.amount === null && "text-[13px] font-medium text-[var(--muted-foreground)]",
+            )}
+          >
+            {formatEstimate(estimate.amount, order.currency, { approx: true })}
+          </div>
+          <div className="text-[12px] text-[var(--muted-foreground)]">{estimate.bags} меш.</div>
+        </div>
       </div>
       <div className="flex gap-2">
         <Button className="flex-1" size="sm" disabled={busy} onClick={onConfirm}>
@@ -73,12 +84,14 @@ export function OrderRequestsSection({ requests }: { requests: OrderRequests }) 
   const [confirming, setConfirming] = useState<Order | null>(null);
   const [rejecting, setRejecting] = useState<Order | null>(null);
   const { items, loading, error } = requests;
+  // Окно показывает свежую строку списка; ушла со страницы — остаётся открытая заявка.
+  const confirmingOrder = confirming && (items.find((order) => order.id === confirming.id) ?? confirming);
 
   return (
     <section className="flex flex-col gap-4">
       <OrderReviewDialogs
         requests={requests}
-        confirming={confirming}
+        confirming={confirmingOrder}
         rejecting={rejecting}
         onConfirmClose={() => {
           setConfirming(null);

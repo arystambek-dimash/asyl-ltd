@@ -22,7 +22,7 @@ def test_shipment_sets_unpaid_debt(boss):
     receive_stock(p, 100, boss)
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o = Order.objects.create(client=c, status="confirmed", truck_number="01A1")
-    OrderItem.objects.create(order=o, product=p, quantity=2)
+    OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")
     record_arrival(o, Decimal(8000), boss)
     record_count(o, 2, boss)
     finish_loading(o, boss)
@@ -36,6 +36,8 @@ def test_shipment_sets_unpaid_debt(boss):
     assert o.payment_status == "unpaid"
     debt_event = EventLog.objects.get(order=o, event_type="debt")
     assert debt_event.payload["intent"] == "debt"
+    # Долг — неоплаченный остаток, а не сумма заказа (предоплата в него не входит).
+    assert debt_event.payload["amount"] == "200.00"
 
 
 def test_instant_settlement_shipment_is_logged_as_debt(boss):
@@ -59,7 +61,7 @@ def test_instant_settlement_shipment_is_logged_as_debt(boss):
         settlement_intent="instant",
         payment_method="cash",
     )
-    OrderItem.objects.create(order=order, product=product, quantity=2)
+    OrderItem.objects.create(order=order, product=product, quantity=2, unit_price="100.00")
 
     record_arrival(order, Decimal(8000), boss)
     record_count(order, 2, boss)

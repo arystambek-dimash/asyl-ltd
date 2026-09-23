@@ -1,7 +1,7 @@
 import uuid
 
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import F, Q, Sum
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
@@ -170,6 +170,29 @@ def _apply(item, delta, reason, user, note="", *, transfer_id=None):
     )
 
 
+def stock_balances(warehouse, product_ids) -> dict[int, int]:
+    """Остаток мешков на складе по товарам: {product_id: мешков}.
+
+    Товар без складской карточки — 0. Строка без склада (её вставил образ до
+    мультисклада и ещё не забрал ``main``) принадлежит складу ``main`` — её
+    мешки складываются с его строкой, а не подменяют её.
+    """
+    product_ids = set(product_ids)
+    stock_scope = Q(warehouse=warehouse)
+    if warehouse.code == DEFAULT_WAREHOUSE_CODE:
+        stock_scope |= Q(warehouse__isnull=True)
+    balances = dict.fromkeys(product_ids, 0)
+    rows = (
+        StockItem.objects.filter(stock_scope, product_id__in=product_ids)
+        .order_by()
+        .values("product_id")
+        .annotate(total=Sum("bags"))
+        .values_list("product_id", "total")
+    )
+    balances.update(rows)
+    return balances
+
+
 def ensure_products_available(
     products,
     warehouse=None,
@@ -183,21 +206,12 @@ def ensure_products_available(
     """
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
     unique_products = {product.pk: product for product in products}
-    stock_scope = Q(warehouse=warehouse)
-    if warehouse.code == DEFAULT_WAREHOUSE_CODE:
-        stock_scope |= Q(warehouse__isnull=True)
-    rows = {
-        item.product_id: item
-        for item in StockItem.objects.filter(
-            stock_scope,
-            product_id__in=unique_products,
-        ).only("product_id", "warehouse_id", "bags")
-    }
-    missing = []
-    for product_id, product in unique_products.items():
-        stock = rows.get(product_id)
-        if stock is None or stock.bags <= 0:
-            missing.append(str(product))
+    balances = stock_balances(warehouse, unique_products)
+    missing = [
+        str(product)
+        for product_id, product in unique_products.items()
+        if balances[product_id] <= 0
+    ]
     if missing:
         raise ValidationError(
             {

@@ -250,3 +250,15 @@ def test_dashboard_operational_returns_authoritative_data(
     assert response.data["days"] == [
         {"date": today, "bags": 12, "orders": 1}
     ]
+
+
+def test_post_board_search_matches_the_trailer(auth_client, operator):
+    """Оператор поста ищет фуру и по номеру прицепа — в любой записи."""
+    client = Client.objects.create_with_user(first_name="Board", last_name="Trailer", phone="12")
+    trailer = _order(client, "loading", truck_number="07KG695ADT", trailer_number="07KG837PB")
+    _order(client, "loading", truck_number="403BJN13")
+
+    response = auth_client(operator).get("/api/orders/", {"post_board": "1", "search": "837pb"})
+
+    assert response.status_code == 200
+    assert _ids(response) == {trailer.id}

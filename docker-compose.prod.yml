@@ -127,6 +127,9 @@ x-backend-environment: &backend-environment
   APIPAY_RECONCILE_TASK_LOCK_SECONDS: ${APIPAY_RECONCILE_TASK_LOCK_SECONDS:-1200}
   APIPAY_MONITOR_HEARTBEAT_FILE: ${APIPAY_MONITOR_HEARTBEAT_FILE:-/tmp/apipay-monitor-heartbeat}
   APIPAY_MONITOR_HEARTBEAT_MAX_AGE_SECONDS: ${APIPAY_MONITOR_HEARTBEAT_MAX_AGE_SECONDS:-600}
+  # WhatsApp-бот отчётов о вагонах: флаг виден и журналу в CRM («выключен на
+  # сервере»). Ключи инстанса Green-API — только у сервиса whatsapp-bot.
+  WHATSAPP_BOT_ENABLED: ${WHATSAPP_BOT_ENABLED:-0}
 
 x-default-logging: &default-logging
   driver: json-file
@@ -401,6 +404,49 @@ services:
       start_period: 20s
     restart: unless-stopped
     logging: *default-logging
+    networks:
+      - data
+      - default
+
+  whatsapp-bot:
+    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    environment:
+      <<: *backend-environment
+      DJANGO_COLLECTSTATIC: "0"
+      APP_SERVICE: whatsapp-bot
+      # Всё необязательно: без WHATSAPP_BOT_ENABLED=1 процесс простаивает,
+      # без ключей включённый бот честно пишет «degraded».
+      WHATSAPP_BOT_API_URL: ${WHATSAPP_BOT_API_URL:-}
+      WHATSAPP_BOT_INSTANCE_ID: ${WHATSAPP_BOT_INSTANCE_ID:-}
+      WHATSAPP_BOT_API_TOKEN: ${WHATSAPP_BOT_API_TOKEN:-}
+      WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS: ${WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS:-20}
+      WHATSAPP_BOT_HEARTBEAT_FILE: /tmp/whatsapp-bot/heartbeat.json
+      WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS: ${WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS:-180}
+      WHATSAPP_BOT_LLM_ENABLED: ${WHATSAPP_BOT_LLM_ENABLED:-0}
+      WHATSAPP_BOT_LLM_MODEL: ${WHATSAPP_BOT_LLM_MODEL:-}
+    # Миграции и сервисный пользователь — после здорового backend.
+    entrypoint: []
+    command: ["python", "manage.py", "run_whatsapp_bot"]
+    depends_on:
+      backend:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    init: true
+    # Долгий опрос провайдера длится до receiveTimeout + 10 с.
+    stop_grace_period: 60s
+    tmpfs:
+      - /tmp/whatsapp-bot:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    # Живость цикла: сбой Green-API или неавторизованный номер — degraded, не рестарт.
+    healthcheck:
+      test: ["CMD", "python", "/app/whatsapp_bot_healthcheck.py"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+    # data — база; default — выход в интернет к Green-API и OpenAI.
     networks:
       - data
       - default

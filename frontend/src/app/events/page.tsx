@@ -26,6 +26,10 @@ import {
   ArrowDownToLine,
   Scale,
   Activity,
+  TrainFront,
+  Package,
+  UsersRound,
+  MessageCircle,
 } from "lucide-react";
 import type { EventLog } from "@/lib/types";
 
@@ -48,6 +52,12 @@ const EVENT_META: Record<string, EventMeta> = {
   shipment_rollback: { label: "Откат отгрузки", icon: ArrowDownToLine, color: "var(--destructive)" },
   debt_override: { label: "Долг", icon: Scale, color: "var(--destructive)" },
   stock_adjust: { label: "Склад", icon: Warehouse, color: "var(--warning)" },
+  rail_report: { label: "Отчёт о вагонах", icon: TrainFront, color: "var(--ring)" },
+  // Словари отчётов о вагонах: коды товара и клиенты с валютой.
+  catalog: { label: "Товары", icon: Package, color: "var(--muted-foreground)" },
+  clients: { label: "Клиенты", icon: UsersRound, color: "var(--muted-foreground)" },
+  // WhatsApp-бот: проведение сообщения человеком и настройки бота.
+  whatsapp_bot: { label: "WhatsApp-бот", icon: MessageCircle, color: "var(--ring)" },
 };
 
 const FALLBACK_META: EventMeta = { label: "Событие", icon: Activity, color: "var(--muted-foreground)" };

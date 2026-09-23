@@ -12,6 +12,7 @@ import {
 } from "@/components/monoblock/always-on-production-panel";
 import { fullDay, shortDay } from "@/lib/day-analytics";
 import { colorMeta } from "@/lib/monoblock-colors";
+import { InferredBadge } from "@/components/monoblock/unknown-color";
 import type { AlwaysOnDailyCameraAnalytics } from "@/lib/types";
 import { cn, pluralRu } from "@/lib/utils";
 
@@ -307,6 +308,7 @@ export function CameraAnalyticsOverview({
                         className="ml-5 mt-2"
                       />
                     )}
+                    <InferredBadge inferred={item.inferred} className="ml-5 mt-2" />
                   </div>
                 );
               })}

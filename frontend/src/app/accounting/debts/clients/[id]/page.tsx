@@ -16,6 +16,7 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { withBack } from "@/lib/navigation";
 import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { cn, formatCompactCurrency, formatCurrency, formatDateTime } from "@/lib/utils";
+import { orderTransportText } from "@/lib/wagons";
 import { can } from "@/lib/can";
 import { PaidMethodBreakdown } from "@/components/payment-chain";
 import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
@@ -168,7 +169,7 @@ function DebtOrderDetails({ order, layout = "full" }: { order: Order; layout?: "
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
         {order.department && <span>{order.department_name ?? order.department}</span>}
-        {order.truck_number && <span className="tabular-nums">{order.truck_number}</span>}
+        {orderTransportText(order) && <span className="tabular-nums">{orderTransportText(order)}</span>}
         <span>
           Сумма заказа: <b className="tabular-nums">{money(order.total_amount, order.currency)}</b>
         </span>

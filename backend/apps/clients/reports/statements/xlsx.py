@@ -15,6 +15,7 @@ from apps.orders.labels import (
     transport_label,
 )
 from apps.orders.statuses import public_status_label
+from apps.orders.transport import transport_cell_text
 
 from .data import (
     StatementData,
@@ -430,7 +431,8 @@ def render_client_statement(data: StatementData) -> bytes:
                 department_name(data, order.department),
                 order.store.name if order.store else "—",
                 transport_label(order.transport_type),
-                order.truck_number or "—", order.currency, _money(order.total_amount),
+                transport_cell_text(order) or "—",
+                order.currency, _money(order.total_amount),
                 _money(order.paid_total), _money(max(Decimal(0), order.remaining_amount)),
                 order.repeated_from_id, order.notes,
             ])
@@ -755,7 +757,7 @@ def render_all_clients_statement(data: StatementData) -> bytes:
                 department_name(data, order.department),
                 order.store.name if order.store else "—",
                 transport_label(order.transport_type),
-                order.truck_number or "—",
+                transport_cell_text(order) or "—",
                 order.currency,
                 _money(order.total_amount),
                 _money(order.paid_total),

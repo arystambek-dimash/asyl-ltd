@@ -8,7 +8,7 @@ import type { CameraFeed } from "@/components/camera-wall";
 import { DetectionOverlay } from "@/components/detection-overlay";
 import { ShippingTransportEvidence } from "@/components/shipping/shipping-transport-evidence";
 import { Badge } from "@/components/ui/badge";
-import { resolveCountingLine } from "@/lib/camera-counting-line";
+import { normalizeVerificationLines, resolveCountingLine } from "@/lib/camera-counting-line";
 import { orderedBagCount } from "@/lib/orders";
 import { bagColor } from "@/lib/shipping-cameras";
 import type { AiCountingSession, Order } from "@/lib/types";
@@ -119,7 +119,11 @@ export function ShippingRowDetail({
                 updatedAt={detectionFreshness.at}
               />
               {countingLine && (
-                <CameraCountingLineOverlay line={countingLine.line} direction={countingLine.direction} />
+                <CameraCountingLineOverlay
+                  line={countingLine.line}
+                  direction={countingLine.direction}
+                  verificationLines={normalizeVerificationLines(camera?.line_config?.verification_lines)}
+                />
               )}
             </>
           ) : (

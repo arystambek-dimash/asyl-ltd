@@ -22,4 +22,9 @@ urlpatterns = [
     path("loader/orders/<int:pk>/rollback/", LoaderViewSet.as_view({"post": "rollback"})),
     path("loader/orders/<int:pk>/waybill/", LoaderViewSet.as_view({"get": "waybill"})),
     path("loader/waybill-settings/", WaybillSettingsView.as_view()),
+    path("loader/rail-report/preview/", LoaderViewSet.as_view({"post": "rail_preview"})),
+    path("loader/rail-report/options/", LoaderViewSet.as_view({"get": "rail_options"})),
+    path("loader/rail-report/product-codes/", LoaderViewSet.as_view({"post": "rail_product_code"})),
+    path("loader/rail-report/client-names/", LoaderViewSet.as_view({"post": "rail_client_name"})),
+    path("loader/rail-report/apply/", LoaderViewSet.as_view({"post": "rail_apply"})),
 ]

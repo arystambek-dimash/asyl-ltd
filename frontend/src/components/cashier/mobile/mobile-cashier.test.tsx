@@ -80,6 +80,9 @@ const awaitingOrder = {
   client: 3,
   client_name: "Покупатель",
   status: "shipped",
+  payment_open: true,
+  payment_open_methods: ["cash", "kaspi", "remote", "invoice"],
+  payment_request_open: true,
   currency: "KZT",
   department: "field",
   department_name: "Нью-Сити",
@@ -91,6 +94,15 @@ const awaitingOrder = {
   items: [],
   created_at: `${todayIso}T08:00:00`,
   shipped_at: `${todayIso}T09:00:00`,
+};
+/** Подтверждённый, ещё не отгруженный заказ: сервер открыл предоплату деньгами у кассы. */
+const toShipOrder = {
+  ...awaitingOrder,
+  id: 31,
+  status: "confirmed",
+  payment_open_methods: ["cash", "kaspi", "remote"],
+  payment_request_open: false,
+  shipped_at: null,
 };
 const transaction = {
   id: 5,
@@ -206,6 +218,8 @@ beforeEach(() => {
         return { data: mocks.awaitingCount ? [{ currency: "KZT", amount: "250", count: mocks.awaitingCount }] : [] };
       return { data: { results: [awaitingOrder], count: 1, next: null } };
     }
+    if (url.pathname === "/orders/awaiting-shipment/")
+      return { data: { results: [toShipOrder], count: 1, next: null } };
     if (url.pathname === "/clients/debts/")
       return {
         data: [
@@ -507,6 +521,29 @@ it("confirms a payment from the queue screen", async () => {
   const dialog = await screen.findByRole("dialog", { name: "Оставить заказ #21 в долг?" });
   await user.click(within(dialog).getByRole("button", { name: "В долг" }));
   await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/21/to-debt/"));
+});
+
+it("takes a prepayment on the payments screen from «К отгрузке»", async () => {
+  const user = userEvent.setup();
+  resetNavigation("/accounting?view=confirm");
+  render(<CashierPage />);
+  await user.click(await screen.findByRole("tab", { name: "К отгрузке, 1" }));
+
+  expect(await screen.findByRole("link", { name: "Заказ #31" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "В долг" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+  await user.click(screen.getByRole("button", { name: "Принять" }));
+  await waitFor(() =>
+    expect(mocks.post).toHaveBeenCalledWith("/orders/31/payments/", {
+      amount: "250",
+      method: "cash",
+      stage: "received",
+    }),
+  );
+  const urls = mocks.get.mock.calls.map(([url]) => String(url));
+  expect(urls).toContain("/orders/awaiting-shipment/?page=1&page_size=50");
+  // «К возврату» — в кассе на компьютере: телефон её не грузит.
+  expect(urls.some((url) => url.startsWith("/orders/to-refund/"))).toBe(false);
 });
 
 it("narrows the payments screen by quick filters: today and department", async () => {

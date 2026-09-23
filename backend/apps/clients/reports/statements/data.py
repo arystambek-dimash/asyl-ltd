@@ -123,6 +123,8 @@ def _statement_orders(client=None, departments=None, client_ids=None):
         )
         .prefetch_related(
             "items__product",
+            # Ячейка «Номер» вагонного заказа — вагоны отгрузки по отчёту.
+            "shipment__wagons",
             "payments__recorded_by",
             "payments__received_by",
             "payments__confirmed_by",

@@ -858,6 +858,89 @@ describe("AI 24/7 live detections", () => {
     expect(screen.getByLabelText("Товар для цвета Синий")).toHaveValue("2");
   });
 
+  it("указывает цвет мешкам без цвета: ошибка остаётся в окне, ответ сразу применяется", async () => {
+    const user = userEvent.setup();
+    mocks.isSuperuser = true;
+    const production = {
+      camera: "cam2",
+      warehouse: 1,
+      warehouse_name: "Основной склад",
+      warehouses: [{ id: 1, code: "main", name: "Основной склад", is_active: true, is_default: true }],
+      timezone: "Asia/Almaty",
+      close_time: "19:00",
+      current_business_day: "2026-08-24",
+      next_run_at: "2026-08-24T13:00:00Z",
+      selected_day: null,
+      day_runs: [],
+      fully_configured: true,
+      available_colors: ["red"],
+      mappings: [{ color: "red", product: 1, product_label: "Красная мука · 50 кг" }],
+      products: [
+        {
+          id: 1,
+          label: "Красная мука · 50 кг",
+          color: "Red",
+          color_label: "Красный",
+          weight_kg: "50.00",
+          warehouse: 1,
+        },
+      ],
+      runs: [],
+      preview: [
+        {
+          color: "red",
+          detected_bags: 10,
+          resolved_bags: 0,
+          correction_bags: 0,
+          net_bags: 10,
+          product: 1,
+          product_label: "Красная мука · 50 кг",
+          configured: true,
+        },
+      ],
+      unresolved: { business_day: "2026-08-24", bags: 2 },
+      batches: [],
+    };
+    const assigned = {
+      ...production,
+      preview: [{ ...production.preview[0], resolved_bags: 2, net_bags: 12, inferred: { manual: 2 } }],
+      unresolved: { business_day: "2026-08-24", bags: 0 },
+    };
+    mocks.apiGet.mockImplementation((url: unknown) => {
+      if (url === "/cameras/always-on-detections/") return new Promise(() => undefined);
+      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
+      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
+      if (url === "/cameras/always-on-production/?camera=cam2") return Promise.resolve({ data: production });
+      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    });
+    mocks.apiPost.mockRejectedValueOnce(new Error("Без цвета осталось только 1 меш."));
+    mocks.apiPost.mockResolvedValueOnce({ data: assigned });
+
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Выпуск и склад" }));
+    await screen.findByText("Цвет не определён: 2 мешка");
+
+    await user.click(screen.getByRole("button", { name: "Указать цвет" }));
+    const dialog = screen.getAllByRole("dialog").at(-1)!;
+    await user.type(within(dialog).getByLabelText("Причина"), "Проверено по записи");
+    await user.click(within(dialog).getByRole("button", { name: "Указать цвет" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Ошибка тестового API");
+    expect(screen.getByText("Цвет не определён: 2 мешка")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Указать цвет" }));
+    await waitFor(() => expect(screen.queryByText("Цвет не определён: 2 мешка")).not.toBeInTheDocument());
+    expect(screen.getByText("вручную · 2")).toBeInTheDocument();
+    expect(mocks.apiPost).toHaveBeenLastCalledWith("/cameras/always-on-production/unknown-colors/", {
+      camera: "cam2",
+      business_day: "2026-08-24",
+      color: "red",
+      bags: 2,
+      reason: "Проверено по записи",
+    });
+  });
+
   it("переключает карточки цветов и периоды дня между алгоритмом и сырыми данными", async () => {
     const user = userEvent.setup();
     const day = "2026-08-24";

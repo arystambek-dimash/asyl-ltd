@@ -539,7 +539,7 @@ function LiveQueue({ m }: { m: DashboardMetrics }) {
             <div className="min-w-0 flex-1">
               <div className="font-semibold tabular-nums">
                 {order.truck_number
-                  ? formatTransportNumber(order.truck_number, order.transport_type)
+                  ? formatTransportNumber(order.truck_number, order.transport_type, order.trailer_number)
                   : `Заказ #${order.id}`}
               </div>
               <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">

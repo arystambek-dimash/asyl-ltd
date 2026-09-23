@@ -1,5 +1,7 @@
+import json
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
+from io import BytesIO
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +17,7 @@ from apps.cameras import (
     production,
     production_repair,
 )
+from apps.cameras.event_protocol import EVENT_PAGE_LIMIT
 from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -127,6 +130,7 @@ def test_ai_client_reads_the_bounded_camera_event_page():
         "GET",
         "/events?after_id=2&limit=500&cam=cam3&contract_version=2",
         none_on_404=True,
+        max_response_bytes=ai.EVENT_PAGE_MAX_BYTES,
     )
 
 
@@ -1373,3 +1377,172 @@ def test_late_journal_identity_requires_manual_continuity_verification():
     cursor.refresh_from_db()
     assert cursor.event_journal_id is None
     assert cursor.last_event_id == 9
+
+
+# --- multi-line verification (cv-service "Линии проверки") -------------------
+
+
+def _verified(event: dict, *, color: str, brand: str, sku: str, status: str) -> dict:
+    """An event settled by cross-line consensus, as the camera PC reports it."""
+
+    return {
+        **event,
+        "color": color,
+        "color_confidence": 0.0 if color == "unknown" else 0.93,
+        "brand": brand,
+        "brand_confidence": 0.0 if brand == "unknown" else 0.88,
+        "sku": sku,
+        "classification_status": status,
+        "verification": {
+            "version": 1,
+            "reason": "all_lines",
+            "minimum_votes": 2,
+            "expected_lines": ["count", "before", "after"],
+            "observed_lines": ["after", "before", "count"],
+            "distinct_frames": 3,
+            "samples": [
+                {
+                    "frame": 7001,
+                    "line_ids": ["before"],
+                    "bbox": [10.0, 20.0, 110.0, 220.0],
+                    "crop_size": [120, 240],
+                    "prediction": None,
+                    "latency_ms": 41.5,
+                    "error": "crop_too_small",
+                }
+            ],
+        },
+    }
+
+
+def test_verified_classification_payloads_never_invent_a_colour():
+    review = {"brand": "unknown", "status": "needs_review"}
+    events = [
+        # Consensus failed: the detector's own class must not leak in as blue.
+        _verified(_event(1, 1, class_name="Blue_50"), color="unknown", sku="unknown_unknown", **review),
+        _verified(
+            _event(2, 2, class_name="White_50"),
+            color="White_50",
+            brand="unknown",
+            sku="white_reverse",
+            status="white_reverse",
+        ),
+        _verified(_event(3, 3, class_name="Green_50"), color="Green_50", sku="green_unknown", **review),
+        # Weight-only detector: no colour anywhere, still one counted bag.
+        _verified(_event(4, 4, class_name="Bag_50"), color="unknown", sku="unknown_unknown", **review),
+    ]
+    with patch.object(ai, "count_events", return_value=_page(events)):
+        result = event_sync.sync_camera("cam3")
+
+    assert result == event_sync.SyncResult(True, 4, 0, 1, 4, True)
+    daily = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
+    assert daily.model_total == 4
+    assert daily.model_per_color == {"unknown": 2, "white": 1, "green": 1}
+    assert daily.model_per_brand == {"unknown": 4}
+    rows = list(AlwaysOnImportedEvent.objects.order_by("upstream_event_id"))
+    assert [row.classification_status for row in rows] == [
+        "needs_review",
+        "white_reverse",
+        "needs_review",
+        "needs_review",
+    ]
+    assert [row.sku for row in rows] == [
+        "unknown_unknown",
+        "white_reverse",
+        "green_unknown",
+        "unknown_unknown",
+    ]
+    colors = ["unknown", "white", "green", "unknown"]
+    assert [production_repair._event_color(row) for row in rows] == colors
+    runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
+    assert [(run.color, run.model_bags) for run in runs] == [(color, 1) for color in colors]
+
+
+def test_classification_still_pending_is_never_imported_as_final():
+    recognized = _event(1, 1, color="Red_50", brand="korol")
+    pending = {
+        **_event(2, 2, class_name="Blue_50", color="Blue_50"),
+        "classification_status": "pending",
+    }
+    later = _event(3, 3, color="Green_50", brand="korol")
+    page = event_sync.parse_page(
+        _page([recognized, pending, later], has_more=True),
+        camera="cam3",
+        after_id=0,
+    )
+
+    assert [event.upstream_event_id for event in page.events] == [1]
+    assert page.next_after_id == 1
+    assert page.has_more is False
+    assert page.enrichment_pending is True
+
+    with patch.object(ai, "count_events", return_value=_page([recognized, pending, later])):
+        result = event_sync.sync_camera("cam3")
+
+    assert result == event_sync.SyncResult(True, 1, 0, 1, 1, False)
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.last_event_id == 1
+    assert cursor.event_caught_up_at is None
+    assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_per_color == {"red": 1}
+
+
+class _EventPageResponse(BytesIO):
+    """A camera-PC /events reply as urllib hands it to the CRM."""
+
+    status = 200
+
+
+def _full_verification(event_id: int, extra_lines: int) -> dict:
+    """Evidence exactly as cv-service 1dc2431 serialises it: one sample per line."""
+
+    line_ids = ["count", *[f"check-{index}" for index in range(1, extra_lines + 1)]]
+    samples = [
+        {
+            "frame": 690_000 + event_id * 10 + offset,
+            "line_ids": [line_id],
+            "bbox": [412.73486328125, 188.2310791015625, 530.9981689453125, 322.8759765625],
+            "crop_size": [142, 158],
+            "prediction": {
+                "color": "Green_50",
+                "color_confidence": 0.9312345669269562,
+                "brand": "korol",
+                "brand_confidence": 0.8812345678901234,
+                "sku": "green_korol",
+                "classification_status": "recognized",
+            },
+            "latency_ms": 41.52345678901234,
+            "error": None,
+        }
+        for offset, line_id in enumerate(line_ids)
+    ]
+    return {
+        "version": 1,
+        "reason": "all_lines",
+        "minimum_votes": 2,
+        "expected_lines": line_ids,
+        "observed_lines": sorted(line_ids),
+        "distinct_frames": len(line_ids),
+        "samples": samples,
+    }
+
+
+@pytest.mark.parametrize("extra_lines", [2, 8])
+def test_a_full_page_of_verified_events_is_read_and_imported(extra_lines):
+    events = []
+    for event_id in range(1, EVENT_PAGE_LIMIT + 1):
+        event = _event(event_id, event_id, color="Green_50", brand="korol", second=0)
+        event["created_at"] = (_at(0) + timedelta(seconds=event_id)).isoformat()
+        event["verification"] = _full_verification(event_id, extra_lines)
+        events.append(event)
+    # Serialised like the camera PC's handler (default separators, UTF-8).
+    body = json.dumps(_page(events), ensure_ascii=False, default=str).encode()
+    # Larger than an ordinary AI reply, well inside the page allowance.
+    assert ai.MAX_JSON_RESPONSE_BYTES < len(body) < ai.EVENT_PAGE_MAX_BYTES / 3
+
+    with patch("urllib.request.urlopen", side_effect=lambda *_a, **_k: _EventPageResponse(body)):
+        assert len(ai.count_events("cam3", 0, EVENT_PAGE_LIMIT)["events"]) == EVENT_PAGE_LIMIT
+        result = event_sync.sync_camera("cam3", max_pages=1)
+
+    assert result == event_sync.SyncResult(True, EVENT_PAGE_LIMIT, 0, 1, EVENT_PAGE_LIMIT, True)
+    assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id == EVENT_PAGE_LIMIT
+    assert AlwaysOnImportedEvent.objects.count() == EVENT_PAGE_LIMIT

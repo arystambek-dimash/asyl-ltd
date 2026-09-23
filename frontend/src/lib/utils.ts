@@ -26,6 +26,12 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * 16px у полей в окнах на весь экран телефона: iOS зумит страницу при фокусе
+ * на поле мельче 16px. С `sm` — обычный размер.
+ */
+export const PHONE_INPUT_TEXT = "text-base sm:text-sm";
+
 export function formatMoney(value: number | string): string {
   const n = typeof value === "string" ? Number(value) : value;
   return MONEY_FORMATTER.format(Number.isFinite(n) ? n : 0);

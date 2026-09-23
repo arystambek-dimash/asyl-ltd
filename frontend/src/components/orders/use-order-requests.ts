@@ -2,6 +2,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { OrderConfirmationData } from "@/components/order-confirmation";
 import { api, apiError } from "@/lib/api";
+import { isChangedRequestError } from "@/lib/orders";
 import { showSuccess } from "@/lib/toast";
 import type { Order } from "@/lib/types";
 import { usePagedApi } from "@/lib/use-paged-api";
@@ -37,6 +38,8 @@ export function useOrderRequests(enabled: boolean, onChanged?: () => unknown) {
       return true;
     } catch (cause) {
       setActionError(apiError(cause));
+      // Окно берёт заявку из списка: перечитанный список покажет в нём новый состав.
+      if (isChangedRequestError(cause)) void reloadPage();
       return false;
     } finally {
       inFlight.current = false;

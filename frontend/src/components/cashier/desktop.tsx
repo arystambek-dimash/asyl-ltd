@@ -24,8 +24,8 @@ import { formatCurrency, todayLocalIsoDate } from "@/lib/utils";
 import { ActionError } from "./action-error";
 import { CashFiltersModal } from "./cash-filters-modal";
 import { debtPaymentState, matchesDebtQuery } from "./debt-state";
-import { AwaitingPaymentRow } from "./awaiting-payment-row";
 import { DepartmentBadge } from "./department-badge";
+import { ORDER_LISTS, OrderListRows, orderListPage, orderListTabs, type OrderListKey } from "./order-lists";
 import { canOpenQueueOrder, type DepartmentScope } from "./scope";
 import type { CashierModel } from "./use-cashier";
 import type { CashierQueue } from "./use-cashier-queue";
@@ -36,9 +36,12 @@ const TransactionsSection = dynamic(() =>
   import("@/components/transactions-section").then((m) => m.TransactionsSection),
 );
 
-/* ── Вкладка «Оплаты»: ждут оплаты и оплаты к подтверждению ─────────────── */
+/* ── Вкладка «Оплаты»: заказы отдела и оплаты к подтверждению ─────────────── */
 // Оплаты к подтверждению — общая очередь всех отделов, бейдж отдела на карточке говорит, чья это оплата.
-// «Ждут оплаты» — отгруженные заказы отдела кассы без долга: принять оплату или перевести в долг.
+// Заказы отдела кассы — вкладками: «Ждут оплаты» (отгружены без долга: принять оплату или перевести
+// в долг), «К отгрузке» (принять предоплату) и «К возврату» (вернуть переплату).
+const DESKTOP_ORDER_LISTS: OrderListKey[] = ["awaiting", "shipment", "refund"];
+
 function PaymentsSection({
   q,
   me,
@@ -52,6 +55,8 @@ function PaymentsSection({
   canReceivePayments: boolean;
   assigned: DepartmentScope["assigned"];
 }) {
+  const [list, setList] = useState<OrderListKey>("awaiting");
+  const page = orderListPage(q, list);
   return (
     <section className="flex flex-col gap-4">
       <ActionError message={q.error} />
@@ -59,26 +64,34 @@ function PaymentsSection({
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
         <Card>
-          <CardHeader>
-            <CardTitle>Ждут оплаты</CardTitle>
+          <CardHeader className="pb-0 pt-3">
+            <Tabs
+              label="Заказы отдела"
+              className="overflow-x-auto whitespace-nowrap"
+              tabs={orderListTabs(q, DESKTOP_ORDER_LISTS)}
+              active={list}
+              onChange={(key) => setList(key as OrderListKey)}
+            />
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {!q.loading && !q.loadError && q.awaiting.length === 0 && (
-              <p className="text-sm text-[var(--muted-foreground)]">Все отгруженные заказы оплачены или в долге.</p>
+          <CardContent className="flex flex-col gap-3 pt-4">
+            {!q.loading && !q.loadError && page.items.length === 0 && (
+              <p className="text-sm text-[var(--muted-foreground)]">{ORDER_LISTS[list].empty}</p>
             )}
-            {q.awaiting.length > 0 && (
-              <ul className="divide-y divide-[var(--border)] rounded-lg border">
-                {q.awaiting.map((order) => (
-                  <AwaitingPaymentRow key={order.id} order={order} q={q} me={me} canOpenOrder={canViewOrders} />
-                ))}
-              </ul>
+            {page.items.length > 0 && (
+              <OrderListRows
+                list={list}
+                q={q}
+                me={me}
+                canOpenOrder={canViewOrders}
+                className="divide-y divide-[var(--border)] rounded-lg border"
+              />
             )}
             <LoadMore
-              shown={q.awaiting.length}
-              total={q.awaitingPage.count}
-              hasMore={q.awaitingPage.hasMore}
-              loading={q.awaitingPage.loadingMore}
-              onClick={q.awaitingPage.loadMore}
+              shown={page.items.length}
+              total={page.count}
+              hasMore={page.hasMore}
+              loading={page.loadingMore}
+              onClick={page.loadMore}
             />
           </CardContent>
         </Card>
@@ -150,6 +163,7 @@ function PaymentsSection({
           </CardContent>
         </Card>
       </div>
+      {q.qrRefund.modal}
     </section>
   );
 }

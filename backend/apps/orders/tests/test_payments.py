@@ -375,12 +375,35 @@ def test_confirm_payment_requires_perm(auth_client, operator):
     assert r.status_code == 403
 
 
-def test_payment_before_shipped_rejected(auth_client, accountant):
-    o = _order(status="arrived")  # not yet shipped
+def test_payment_before_confirmation_rejected(auth_client, accountant):
+    o = _order(status="pending")
     resp = auth_client(accountant).post(
         f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
     )
     assert resp.status_code == 400
+    assert resp.data["code"] == "payment_not_open"
+
+
+def test_invoice_before_shipped_rejected(auth_client, accountant):
+    o = _order(status="arrived")  # not yet shipped
+    resp = auth_client(accountant).post(
+        f"/api/orders/{o.id}/payments/",
+        {"amount": "500.00", "method": "invoice", "channel": "document"},
+        format="json",
+    )
+    assert resp.status_code == 400
+    assert resp.data["code"] == "payment_not_open"
+
+
+def test_cash_prepayment_before_shipped_is_settled(auth_client, accountant):
+    o = _order(status="arrived")
+    resp = auth_client(accountant).post(
+        f"/api/orders/{o.id}/payments/", {"amount": "500.00"}, format="json"
+    )
+    assert resp.status_code == 201, resp.data
+    o.refresh_from_db()
+    assert o.status == "arrived"
+    assert o.payment_status == "settled"
 
 
 def test_manager_cannot_record_payment(auth_client, manager):

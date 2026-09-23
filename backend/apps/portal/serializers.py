@@ -8,7 +8,8 @@ from apps.catalog.photos import product_photo_url
 from apps.clients.models import Store
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.statuses import is_financial
-from apps.orders.serializers import DepartmentLabelMixin
+from apps.orders.serializers import DepartmentLabelMixin, OrderWagonsMixin
+from apps.orders.transport import transport_locked, transport_on_site
 
 MAX_PORTAL_ORDER_ITEMS = 100
 MAX_PORTAL_ITEM_QUANTITY = 1_000_000
@@ -80,8 +81,10 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
         }
 
 
-class PortalOrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
+class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelSerializer):
     department_name = serializers.SerializerMethodField()
+    # Вагоны отгрузки по отчёту и станция — клиенту только для чтения.
+    wagons = serializers.SerializerMethodField()
     items = PortalOrderItemSerializer(many=True)
     settlement_intent = serializers.ChoiceField(
         choices=Order.SETTLEMENT_INTENTS, required=False)
@@ -101,7 +104,13 @@ class PortalOrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
     payment_parts = serializers.SerializerMethodField()
     apipay_invoice = serializers.SerializerMethodField()
     client_phone = serializers.CharField(source="client.phone", read_only=True)
+    # Страна номера по умолчанию в полях «Тягач» и «Прицеп».
+    client_country = serializers.CharField(source="client.country", read_only=True)
     receipt_available = serializers.SerializerMethodField()
+    # Номер задал сотрудник или машина уже заехала: портал показывает его
+    # только для чтения, без кнопки «Сохранить» (после заезда номер скрыт,
+    # см. ``to_representation``).
+    transport_locked = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -127,8 +136,13 @@ class PortalOrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "payment_parts",
             "apipay_invoice",
             "client_phone",
+            "client_country",
             "receipt_available",
             "truck_number",
+            "trailer_number",
+            "rail_station",
+            "wagons",
+            "transport_locked",
             "debt_requested",
             "debt_override",
             "created_at",
@@ -139,6 +153,8 @@ class PortalOrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
             "department",
             "rejection_reason",
             "truck_number",
+            "trailer_number",
+            "rail_station",
             "debt_requested",
             "debt_override",
         ]
@@ -187,6 +203,18 @@ class PortalOrderSerializer(DepartmentLabelMixin, serializers.ModelSerializer):
                 "detail": "К аккаунту не привязан профиль клиента.",
                 "code": "missing_client_profile",
             }) from exc
+
+    def get_transport_locked(self, obj):
+        return transport_locked(obj, self.context["request"].user)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Машина уже на территории — номер клиенту не показываем совсем
+        # (решение владельца): ни тягач, ни прицеп, ни номер вагона.
+        if transport_on_site(instance):
+            data["truck_number"] = ""
+            data["trailer_number"] = ""
+        return data
 
     def _money_visible(self, obj):
         # Деньги показываем только по финансовым заказам — правило общее с

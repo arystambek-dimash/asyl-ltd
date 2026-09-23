@@ -18,6 +18,33 @@ def order_remaining(order) -> Decimal:
     return max(_ZERO, order.remaining_amount)
 
 
+def overpaid_amount(status: str, refundable: Decimal, total: Decimal) -> Decimal:
+    """Переплата — сколько ещё вернуть клиенту.
+
+    ``refundable`` — подтверждённые деньги заказа, которые ещё можно вернуть
+    (:attr:`Payment.available_for_refund`: без завершённых и начатых возвратов):
+    возврат по ссылке покупателю (Kaspi QR, ApiPay) ждёт его подтверждения, и
+    второй раз его сумма к возврату не предлагается. ``total`` — сумма позиций.
+
+    Подтверждённая оплата — неизменный факт: уменьшение количества или цены
+    после предоплаты её не отменяет, излишек возвращают отдельной операцией
+    (касса → «К возврату»). Заказ вне оборота (:func:`statuses.is_financial`:
+    заявка, отказ, отмена) клиенту ничего не стоит — к возврату все его деньги
+    (легаси до предоплаты, поздняя оплата старого Kaspi QR).
+    """
+    if not is_financial(status):
+        return refundable
+    return max(_ZERO, refundable - total)
+
+
+def order_overpaid(order) -> Decimal:
+    """Переплата заказа (:func:`overpaid_amount`); по выборке — ``querysets.order_overpaid_by_id``."""
+    refundable = sum(
+        (payment.available_for_refund for payment in order.payments.all()), _ZERO
+    )
+    return overpaid_amount(order.status, refundable, order.total_amount)
+
+
 def debt_orders(orders) -> list:
     return [order for order in orders if order.is_debt]
 

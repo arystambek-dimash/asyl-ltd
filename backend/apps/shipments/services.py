@@ -1,14 +1,21 @@
-from datetime import timedelta
+from collections import Counter
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.catalog.models import Product
 from apps.eventlog.services import log_event
+from apps.notifications.services import notify
+from apps.orders.backdate import backdate_events, backdate_moment
+from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
 from apps.warehouse.services import deduct_stock, resolve_warehouse
 
-from .models import Shipment
+from .access import assert_can_ship
+from .models import Shipment, ShipmentWagon
 
 LOADING_CAMERA_CONSTRAINT = "orders_one_active_order_per_loading_camera"
 
@@ -71,6 +78,7 @@ def _set_loading_camera_locked(order, camera: str, user=None):
 
     lock_camera_binding()
     order = _locked(order, user)
+    assert_can_ship(user, order)
 
     if camera and order.status not in ("arrived", "loading"):
         raise ValidationError({
@@ -220,6 +228,7 @@ def begin_camera_loading(
 def record_arrival(order, weigh_in_kg, user):
     """Зафиксировать прибытие машины и её входной вес."""
     order = _locked(order, user)
+    assert_can_ship(user, order)
     _require_transport(order, "truck")
     if order.status != "confirmed":
         raise ValidationError(
@@ -252,6 +261,7 @@ def record_arrival(order, weigh_in_kg, user):
 @transaction.atomic
 def record_count(order, bags, user):
     order = _locked(order, user)
+    assert_can_ship(user, order)
 
     if order.status in ("arrived", "loading"):
         shipment = _require_shipment(order)
@@ -290,6 +300,7 @@ def _assert_no_open_ai_session(order) -> None:
 @transaction.atomic
 def finish_loading(order, user):
     order = _locked(order, user)
+    assert_can_ship(user, order)
 
     _require_transport(order, "truck")
     if order.status != "loading":
@@ -419,7 +430,7 @@ def manual_complete_order(order, bags: int | None, user):
     должен остановить владелец или администратор на посту.
     """
     order = _locked(order, user)
-    if order.status not in ("confirmed", "arrived", "loading", "loaded"):
+    if order.status not in AWAITING_SHIPMENT_STATUSES:
         raise ValidationError({
             "detail": "Вручную завершить можно только подтверждённый или загружаемый заказ",
             "code": "invalid_status",
@@ -506,6 +517,10 @@ def rewind_loading(order, user, target_status="confirmed"):
             "detail": "Сначала остановите AI-подсчёт. Это может сделать начавший отгрузку или администратор",
             "code": "ai_session_active",
         })
+    from apps.orders.services import assert_money_allows_status
+
+    # Возврат в ожидание сохраняет деньги предоплатой; в заявку или отмену — без денег.
+    assert_money_allows_status(order, target_status)
 
     old = order.status
     shipment = getattr(order, "shipment", None)
@@ -544,10 +559,12 @@ def loader_rollback_blocker(order, user) -> str:
     shipment = getattr(order, "shipment", None)
     if shipment is None or shipment.shipped_at is None:
         return "У заказа нет отгрузки"
+    # Окно — от момента отгрузки, а не записи: отгрузку задним числом (отчёт
+    # о вагонах за прошедший день, фиксация) грузчик сам не отменяет. Иначе
+    # списку очереди пришлось бы читать журнал по каждой строке.
     if timezone.now() - shipment.shipped_at > LOADER_ROLLBACK_WINDOW:
         return "Прошло больше часа — отмену оформляет старший в «Заказах»"
-    if order.payments.exclude(status="rejected").exists():
-        return "По заказу уже есть оплата — сначала отмените её в кассе"
+    # Оплата не мешает: заказ возвращается в ожидание, деньги остаются предоплатой.
     last = (
         EventLog.objects.filter(event_type="shipment", order=order)
         .order_by("-created_at", "-id")
@@ -586,11 +603,10 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             "detail": "Откат доступен только для отгруженного заказа",
             "code": "invalid_status",
         })
-    if order.payments.exclude(status="rejected").exists():
-        raise ValidationError({
-            "detail": "Сначала отмените или откройте все оплаты по заказу",
-            "code": "payments_exist",
-        })
+    from apps.orders.services import _payment_status_for, assert_money_allows_status
+
+    # Возврат в ожидание сохраняет деньги предоплатой; в заявку или отмену — без денег.
+    assert_money_allows_status(order, target_status)
 
     items = list(
         order.items.select_related("product").order_by("product_id", "id")
@@ -663,8 +679,9 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
         ),
     )
     order.status = target_status
-    order.payment_status = "unpaid"
     order.loading_camera = ""
+    # Деньги остаются предоплатой: статус оплаты — по факту, а не «не оплачен».
+    order.payment_status = _payment_status_for(order)
     order.save(update_fields=["status", "payment_status", "loading_camera"])
     log_event(
         "shipment_rollback",
@@ -682,8 +699,15 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     return order
 
 
-def _do_ship(order, shipment, user, label):
-    """Списать со склада и зафиксировать отгрузку. Общее для трака и вагона."""
+def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None):
+    """Списать со склада и зафиксировать отгрузку. Общее для трака и вагона.
+
+    ``shipped_at`` — отгрузка по отчёту за прошедший день: момент выезда и
+    события отгрузки и долга переносятся на этот день (сводки читают их по
+    дате события), склад списывается как обычно.
+    """
+    from apps.orders.transport import client_transport_phrase
+
     items = list(
         order.items.select_related("product").order_by("product_id", "id")
     )
@@ -707,40 +731,55 @@ def _do_ship(order, shipment, user, label):
             warehouse=warehouse,
             require_active=False,
         )
-    shipment.shipped_at = timezone.now()
+    from apps.orders.debt import order_remaining
+    from apps.orders.services import _payment_status_for
+
+    shipment.shipped_at = shipped_at or timezone.now()
     shipment.save()
     order.status = "shipped"
-    order.payment_status = "unpaid"
     order.loading_camera = ""
+    # Предоплата переживает отгрузку: статус оплаты — по факту денег.
+    order.payment_status = _payment_status_for(order)
     order.save(update_fields=["status", "payment_status", "loading_camera"])
-    # Отгруженный неоплаченный заказ — долг клиента (orders/debt.py), как бы он ни
-    # собирался платить: оплаты до отгрузки не принимаются.
-    log_event(
-        "debt",
-        f"Заказ отгружен в долг: {order.total_amount}",
-        user=user,
-        order=order,
-        payload={
-            "amount": str(order.total_amount),
-            "intent": order.settlement_intent,
-        },
-    )
+    # Неоплаченный остаток отгруженного заказа — долг клиента (orders/debt.py),
+    # как бы он ни собирался платить. Предоплаченная часть долгом не становится.
+    remaining = order_remaining(order)
+    debt_event = None
+    if remaining > 0:
+        debt_event = log_event(
+            "debt",
+            f"Заказ отгружен в долг: {remaining}",
+            user=user,
+            order=order,
+            payload={
+                "amount": str(remaining),
+                "intent": order.settlement_intent,
+            },
+        )
     bag_estimate = estimated_load_kg(order)
-    log_event("shipment", label, user=user, order=order,
-              payload={"bags_loaded": shipment.bags_loaded,
-                       "bag_estimate_kg": str(bag_estimate),
-                       "amount": str(order.total_amount),
-                       "settlement_intent": order.settlement_intent,
-                       "weigh_in_kg": (
-                           str(shipment.weigh_in_kg)
-                           if shipment.weigh_in_kg is not None else None
-                       )})
+    shipment_event = log_event(
+        "shipment", label, user=user, order=order,
+        payload={"bags_loaded": shipment.bags_loaded,
+                 "bag_estimate_kg": str(bag_estimate),
+                 "amount": str(order.total_amount),
+                 "settlement_intent": order.settlement_intent,
+                 "weigh_in_kg": (
+                     str(shipment.weigh_in_kg)
+                     if shipment.weigh_in_kg is not None else None
+                 )})
+    if shipped_at is not None:
+        backdate_events([shipment_event, debt_event], shipped_at)
+    # Единственное уведомление клиенту об отгрузке. Машина на территории —
+    # номер клиенту не называем; вагоны отчёта — «12 ваг., ст. …», без номеров.
+    transport = client_transport_phrase(order, joiner=" / ")
+    notify(order.client, f"Заказ №{order.pk} отгружен" + (f" ({transport})" if transport else ""))
     return shipment
 
 
 @transaction.atomic
 def record_shipment(order, user):
     order = _locked(order, user)
+    assert_can_ship(user, order)
     if order.status != "loaded":
         raise ValidationError(
             {"detail": "Выезд возможен только после завершения загрузки",
@@ -758,29 +797,31 @@ def record_shipment(order, user):
     return _do_ship(order, shipment, user, label)
 
 
-# Заказ ждёт отгрузки: подтверждён и ещё не выехал — на любом шаге поста.
-DISPATCHABLE_STATUSES = ("confirmed", "arrived", "loading", "loaded")
-
-
 @transaction.atomic
-def dispatch_order(order, user, *, truck_number: str = ""):
+def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str | None = None):
     """Грузчик: одна кнопка — заказ отгружен на заказанное количество.
 
     Без въезда, счёта мешков и камер: списание со склада, долг и журнал — те же,
     что у выезда с поста (``_do_ship``). Номер накладной — номер заказа.
+    Пустой номер тягача — «не менять». Прицеп: ``None`` — «не менять», пустая
+    строка — «стереть», как в форме заказа и «Фурах» (экран грузчика шлёт
+    только исправленные номера, устаревший экран чужой прицеп не сотрёт).
     """
-    from apps.orders.services import set_truck_number
+    from apps.orders.transport import set_order_transport
 
     order = _locked(order, user)
-    if order.status not in DISPATCHABLE_STATUSES:
+    assert_can_ship(user, order)
+    if order.status not in AWAITING_SHIPMENT_STATUSES:
         raise ValidationError({
             "detail": "Отгрузить можно только подтверждённый заказ, который ещё не выехал",
             "code": "invalid_status",
         })
     _assert_no_open_ai_session(order)
-    truck_number = " ".join(str(truck_number or "").split()).upper()
-    if truck_number and truck_number != order.truck_number:
-        set_truck_number(order, truck_number, user)
+    truck_number = (truck_number or "").strip() or None
+    trailer_number = None if trailer_number is None else trailer_number.strip()
+    if truck_number is not None or trailer_number is not None:
+        # Клиенту об отгрузке сообщит _do_ship — одним уведомлением.
+        set_order_transport(order, user, truck=truck_number, trailer=trailer_number, notify_client=False)
     shipment, _ = Shipment.objects.get_or_create(order=order)
     if not shipment.bags_loaded:
         shipment.bags_loaded = sum(item.quantity for item in order.items.all())
@@ -794,10 +835,124 @@ def dispatch_order(order, user, *, truck_number: str = ""):
     return _do_ship(order, shipment, user, label)
 
 
+def loader_dispatch(order, user, *, truck_number: str = "", trailer_number: str | None = None):
+    """Кнопка «Отгружено» грузчика: право и номер — до закрытия AI-подсчёта.
+
+    Отказ по области или опечатка в номере не должны останавливать сессию
+    камер: сначала проверки, затем открытый подсчёт закрывает сама отгрузка
+    (кнопок погрузки в Моноблоке нет), затем ``dispatch_order``. Ошибки ПК
+    камер (``ai.AiUnavailable``/``ai.AiError``) пробрасываются: заказ остаётся
+    как был, грузчик повторит.
+    """
+    # Local imports avoid a shipments -> cameras/orders -> shipments import cycle.
+    from apps.cameras import counting
+    from apps.orders.transport import check_transport_change
+
+    assert_can_ship(user, order)
+    check_transport_change(
+        order, user, truck=(truck_number or "").strip() or None, trailer=trailer_number, ignore_ai_session=True)
+    counting.close_session_for_dispatch(order, user)
+    return dispatch_order(order, user, truck_number=truck_number, trailer_number=trailer_number)
+
+
+@dataclass(frozen=True)
+class RailWagon:
+    """Вагон из отчёта об отгрузке: номер, товар, мешки и вес в кг."""
+
+    number: str
+    product: Product
+    bags: int
+    weight_kg: Decimal
+
+
+def rail_bags_mismatch(order, wagons) -> str:
+    """«Д1с: в заказе 4080, в отчёте 2720» по каждому расхождению; пусто — сошлось."""
+    ordered: Counter = Counter()
+    labels = {}
+    for item in order.items.all():
+        ordered[item.product_id] += item.quantity
+        labels[item.product_id] = item.product_label
+    reported: Counter = Counter()
+    for wagon in wagons:
+        reported[wagon.product.pk] += wagon.bags
+        labels.setdefault(wagon.product.pk, str(wagon.product))
+    return "; ".join(
+        f"«{labels[product_id]}»: в заказе {ordered[product_id]}, в отчёте {reported[product_id]}"
+        for product_id in sorted(ordered.keys() | reported.keys(), key=lambda pk: labels[pk])
+        if ordered[product_id] != reported[product_id]
+    )
+
+
+@transaction.atomic
+def ship_rail_report(order, wagons, user, *, station: str, shipped_day: date):
+    """Отгрузить вагонный заказ по отчёту: вагоны, склад и долг — одной транзакцией.
+
+    Мешки отчёта по каждому товару должны совпасть с заказом: заранее
+    внесённый заказ с другим количеством сначала правят (склад и долг не
+    должны разойтись с вагонами). Отчёт за прошедший день датирует отгрузку
+    полднем того дня (:func:`_do_ship`); такую отгрузку отменяет только старший
+    в «Заказах» — часовое окно грузчика (:func:`loader_rollback_blocker`)
+    считается от даты отгрузки. Сессию камер (``ShippingLoadingSession``)
+    отчёт не трогает — вагоны под аркой считаются отдельно.
+    """
+    from apps.orders.transport import rail_phrase
+
+    order = _locked(order, user)
+    assert_can_ship(user, order)
+    _require_transport(order, "train")
+    if order.status not in AWAITING_SHIPMENT_STATUSES:
+        raise ValidationError({
+            "detail": "По отчёту отгружается только подтверждённый вагонный заказ, который ещё не отгружен",
+            "code": "invalid_status",
+        })
+    wagons = list(wagons)
+    if not wagons:
+        raise ValidationError({"detail": "В отчёте нет вагонов", "code": "rail_no_wagons"})
+    repeated = sorted(number for number, count in Counter(w.number for w in wagons).items() if count > 1)
+    if repeated:
+        raise ValidationError({
+            "detail": f"Вагон указан дважды: {', '.join(repeated)}",
+            "code": "rail_duplicate_wagon",
+        })
+    today = timezone.localdate()
+    if shipped_day > today:
+        raise ValidationError({"detail": "Дата отчёта ещё не наступила", "code": "rail_future_day"})
+    _assert_no_open_ai_session(order)
+    mismatch = rail_bags_mismatch(order, wagons)
+    if mismatch:
+        raise ValidationError({
+            "detail": f"Мешки не совпадают — {mismatch}. Поправьте заказ и отгрузите снова.",
+            "code": "rail_bags_mismatch",
+        })
+
+    shipment, _ = Shipment.objects.get_or_create(order=order)
+    shipment.bags_loaded = sum(wagon.bags for wagon in wagons)
+    for position, wagon in enumerate(wagons, start=1):
+        ShipmentWagon.objects.create(
+            shipment=shipment,
+            number=wagon.number,
+            product=wagon.product,
+            bags=wagon.bags,
+            weight_kg=wagon.weight_kg,
+            position=position,
+        )
+    station = " ".join(station.split())[:120]
+    if station:
+        # Пустая станция отчёта не стирает станцию, внесённую в заказ заранее.
+        order.rail_station = station
+        order.save(update_fields=["rail_station"])
+    label = f"Вагоны отгружены по отчёту: {rail_phrase(len(wagons), order.rail_station)}"
+    return _do_ship(
+        order, shipment, user, label,
+        shipped_at=backdate_moment(shipped_day) if shipped_day < today else None,
+    )
+
+
 @transaction.atomic
 def start_train_loading(order, user):
     """Вагон: старт сессии загрузки (без въезда и взвешивания)."""
     order = _locked(order, user)
+    assert_can_ship(user, order)
     _require_transport(order, "train")
     if order.status != "confirmed":
         raise ValidationError(
@@ -817,6 +972,7 @@ def start_train_loading(order, user):
 def finish_train_loading(order, user):
     """Вагон: завершить загрузку и подготовить к отгрузке."""
     order = _locked(order, user)
+    assert_can_ship(user, order)
     _require_transport(order, "train")
     if order.status != "loading":
         raise ValidationError(

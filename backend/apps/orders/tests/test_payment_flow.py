@@ -16,11 +16,27 @@ def _order(boss, status="shipped"):
     return o
 
 
-def test_payment_blocked_before_shipped(boss):
-    o = _order(boss, status="loading")
+def test_payment_blocked_before_confirmation(boss):
+    o = _order(boss, status="pending")
     with pytest.raises(ValidationError) as e:
         add_payment(o, "100", boss)
     assert e.value.detail["code"] == "payment_not_open"
+
+
+def test_money_request_blocked_before_shipped(boss):
+    # До отгрузки принимают только деньги у кассы: счёт ждёт отгрузки.
+    o = _order(boss, status="loading")
+    with pytest.raises(ValidationError) as e:
+        add_payment(o, "100", boss, method="invoice", stage="requested")
+    assert e.value.detail["code"] == "payment_not_open"
+
+
+def test_prepayment_before_shipped(boss, settle_payment):
+    o = _order(boss, status="loading")
+    settle_payment(add_payment(o, "100", boss), boss)
+    o.refresh_from_db()
+    assert o.status == "loading"
+    assert o.payment_status == "partial"
 
 
 def test_partial_then_full_payment(boss, settle_payment):

@@ -602,11 +602,14 @@ def test_automatic_session_control_requires_loader_permission(
     order = _order(pipeline, number=number, transport=transport)
     _confirm(pipeline, binding, number=number)
     session = AiCountingSession.objects.get()
-    # Автоматическую сессию закрывает грузчик — для машин и вагонов одинаково.
-    permitted = user_with_perms("transport-loader", codes=["loader.confirm"])
-    viewer = user_with_perms("transport-viewer", codes=["monoblock.view", "loader.view"])
+    # Автоматическую сессию закрывает грузчик области заказа: фуры или вагоны.
+    area, other_area = ("loader.trucks", "loader.wagons") if transport == "truck" else ("loader.wagons", "loader.trucks")
+    permitted = user_with_perms("transport-loader", codes=["loader.confirm", area])
+    foreign = user_with_perms("transport-foreign-loader", codes=["loader.confirm", other_area])
+    viewer = user_with_perms("transport-viewer", codes=["monoblock.view", "loader.view", area])
     assert session_started_by_name(session) == "Автоматически"
     assert can_control_session(session, permitted)
+    assert not can_control_session(session, foreign)
     assert not can_control_session(session, viewer)
     assert not can_control_session(session, client_user)
     assert not can_control_session(session, None)

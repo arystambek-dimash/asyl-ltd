@@ -1,5 +1,5 @@
 "use client";
-import { use, useEffect, useRef, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
@@ -23,8 +23,10 @@ import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { safeBackPath } from "@/lib/navigation";
+import { UNPRICED_TOTAL, hasUnpricedItems, isChangedRequestError } from "@/lib/orders";
 import { cn } from "@/lib/utils";
 import { currencySymbol, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
+import { orderTransportLabel } from "@/lib/wagons";
 import {
   ORDER_MANUAL_STATUSES,
   ORDER_STATUS_LABELS,
@@ -37,9 +39,13 @@ import {
 import { DataGate } from "@/components/ui/data-state";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ActionMenu } from "@/components/ui/action-menu";
-import { PaymentChain, PaidMethodBreakdown, paymentOpen } from "@/components/payment-chain";
+import { PaymentChain, PaidMethodBreakdown } from "@/components/payment-chain";
 import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
-import { formatTransportNumber } from "@/components/ui/transport-number";
+import { OrderPaymentBadge } from "@/components/payments/order-payment-badge";
+import { OverpaymentRefundButton } from "@/components/payments/overpayment-refund";
+import { useQrRefundWindow } from "@/components/transactions/qr-refund-modal";
+import { payRetryFromParams, payRetryPageNotice, withoutPayRetry } from "@/components/orders/pay-now";
+import { WagonList } from "@/components/ui/wagon-list";
 import { OrderForm } from "@/components/order-form";
 import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { Modal } from "@/components/ui/modal";
@@ -96,7 +102,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const canViewReports = can(me, "reports.view");
   const { data: order, loading, error: loadError, reload } = useApi<Order>(`/orders/${id}/`);
   const { data: client } = useApi<Client>(order && canViewClients ? `/clients/${order.client}/` : null);
-  const [section, setSection] = useState("items");
+  // «Оплата сразу» из формы не прошла: карточка открывает «Принять оплату» с тем же способом и суммой.
+  const payRetryKey = searchParams.toString();
+  const payRetry = useMemo(() => payRetryFromParams(new URLSearchParams(payRetryKey)), [payRetryKey]);
+  const clearPayRetry = useCallback(
+    () => router.replace(`/orders/${id}${withoutPayRetry(new URLSearchParams(payRetryKey))}`),
+    [id, payRetryKey, router],
+  );
+  const [section, setSection] = useState(payRetry ? "payment" : "items");
   const [printing, setPrinting] = useState(false);
   useEffect(() => {
     // The printed order includes all three sections, regardless of the open tab.
@@ -118,6 +131,8 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     order && section === "history" && can(me, "events.view") ? `/events/?order=${order.id}` : null,
     20,
   );
+  // Возврат переплаты по Kaspi QR: окно ссылки переживает исчезновение баннера переплаты.
+  const qrRefund = useQrRefundWindow(() => Promise.all([reload(), events.reload()]));
   const mutationInFlight = useRef(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -155,6 +170,16 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     reload: reloadDepartments,
   } = useApi<Department[]>(order && isManager && ["draft", "pending"].includes(order.status) ? "/departments/" : null);
 
+  // Заказ не подтвердился при создании или ответ об оплате потерялся — окно
+  // оплаты само не открывается, объясняем на странице.
+  const payRetryNotice = payRetry && order ? payRetryPageNotice(payRetry, order) : "";
+  useEffect(() => {
+    if (!payRetryNotice) return;
+    setError(payRetryNotice);
+    clearPayRetry();
+  }, [payRetryNotice, clearPayRetry]);
+  const payRetryDialog = payRetry && !payRetryNotice ? payRetry : null;
+
   async function act(fn: () => Promise<unknown>) {
     if (mutationInFlight.current) return false;
     mutationInFlight.current = true;
@@ -173,6 +198,12 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     }
   }
 
+  // Окно подтверждения показывает ошибку страницы как свою: открываем его с чистой.
+  function openConfirmation() {
+    setError("");
+    setConfirmationOpen(true);
+  }
+
   if (!order)
     return (
       <AppShell title="Заказ">
@@ -181,7 +212,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
     );
 
   const total = Number(order.total_amount);
-  const hasUnpricedItems = order.items.some((item) => item.unit_price == null);
+  const unpriced = hasUnpricedItems(order.items);
   const paid = Number(order.paid_total);
   const remaining = total - paid;
 
@@ -197,8 +228,11 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const pendingReqs = order.pending_status_requests ?? [];
   const pendingPayments = order.pending_payments ?? [];
   const hasPendingPayment = pendingPayments.length > 0;
-  // Начать цепочку оплаты можно, пока есть непогашенный остаток.
-  const canStartPayment = can(me, "payments.create") && paymentOpen(order) && remaining > 0 && !hasPendingPayment;
+  // Начать цепочку оплаты можно, пока есть непогашенный остаток. Когда деньги
+  // принимаются (предоплата до отгрузки или оплата после), решает сервер.
+  const canStartPayment =
+    can(me, "payments.create") && Boolean(order.payment_open) && remaining > 0 && !hasPendingPayment;
+  const overpaid = Number(order.overpaid_amount ?? 0);
   const orderEvents = events.items;
   // Ручной выбор ограничен четырьмя управляемыми статусами:
   // внутренние этапы ставят только бизнес-процессы, в журнале они видны как события.
@@ -225,11 +259,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-xl font-semibold tracking-tight">Заказ #{order.id}</h2>
             <StatusBadge status={order.status} dot />
-            {order.status === "shipped" && order.payment_status && (
-              <Badge tone={PAYMENT_STATUS_TONE[order.payment_status] ?? "muted"} dot>
-                {PAYMENT_STATUS_LABELS[order.payment_status] ?? order.payment_status}
-              </Badge>
-            )}
+            <OrderPaymentBadge order={order} dot />
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--muted-foreground)]">
             <span className="flex items-center gap-1.5">
@@ -240,9 +270,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             </span>
             <span className="flex items-center gap-1.5">
               <Truck className="size-3.5" />
-              {order.transport_type === "train"
-                ? `Вагон ${order.truck_number || "· без номера"}`
-                : formatTransportNumber(order.truck_number, order.transport_type) || "Машина не указана"}
+              {orderTransportLabel(order, "Машина не указана")}
             </span>
             <span>{order.department ? order.department_name || order.department : "Нет отдела"}</span>
           </div>
@@ -321,7 +349,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
         <div className="min-w-0">
           <div className="text-xs text-[var(--muted-foreground)]">Сумма заказа</div>
           <div className="mt-1 truncate text-lg font-semibold leading-none tabular-nums">
-            {hasUnpricedItems ? "Не рассчитана" : `${formatMoney(order.total_amount)} ${moneySymbol}`}
+            {unpriced ? UNPRICED_TOTAL : `${formatMoney(order.total_amount)} ${moneySymbol}`}
           </div>
         </div>
         <div className="min-w-0">
@@ -341,7 +369,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           >
             {["rejected", "cancelled"].includes(order.status)
               ? "—"
-              : hasUnpricedItems
+              : unpriced
                 ? "После расчёта"
                 : isNew
                   ? "После подтверждения"
@@ -349,6 +377,24 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
           </div>
         </div>
       </Card>
+      {overpaid > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-4 py-3 text-sm print:hidden">
+          <span>
+            Переплата{" "}
+            <b className="tabular-nums">
+              {formatMoney(order.overpaid_amount!)} {moneySymbol}
+            </b>{" "}
+            — вернуть клиенту
+          </span>
+          <OverpaymentRefundButton
+            order={order}
+            me={me}
+            onChanged={() => Promise.all([reload(), events.reload()])}
+            onQrRefund={qrRefund.start}
+          />
+        </div>
+      )}
+      {qrRefund.modal}
       {confirmInPriceCard && (
         <Card className="mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
@@ -356,7 +402,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">Проверьте отдел продаж и цены.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => setConfirmationOpen(true)} disabled={busy}>
+            <Button onClick={openConfirmation} disabled={busy}>
               Проверить и подтвердить
             </Button>
             {order.status === "pending" && (
@@ -451,11 +497,10 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <InfoRow label="Дата прибытия">
                     {order.arrival_date ? formatIsoDate(order.arrival_date) : "Не указана"}
                   </InfoRow>
-                  <InfoRow label="Способ">
-                    {order.transport_type === "train"
-                      ? `Вагон ${order.truck_number || "· без номера"}`
-                      : formatTransportNumber(order.truck_number, order.transport_type) || "Машина"}
-                  </InfoRow>
+                  <InfoRow label="Способ">{orderTransportLabel(order, "Машина")}</InfoRow>
+                  {order.transport_type === "train" && order.rail_station && (
+                    <InfoRow label="Станция назначения">{order.rail_station}</InfoRow>
+                  )}
                   <InfoRow label="Отдел">
                     {order.department ? order.department_name || order.department : "Нет отдела"}
                   </InfoRow>
@@ -472,6 +517,9 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                     </>
                   )}
                 </div>
+                {order.wagons && order.wagons.length > 0 && (
+                  <WagonList wagons={order.wagons} station={order.rail_station} variant="table" className="mt-3" />
+                )}
                 {order.notes && (
                   <div className="mt-3 rounded-lg bg-[var(--muted)] p-3 text-sm">
                     <p className="mb-1 font-medium">Примечание</p>
@@ -510,7 +558,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                 {pendingPayments.length > 0 && (
                   <>
                     <PaymentChain order={order} me={me} onChanged={reload} />
-                    <OrderPaymentActions order={order} me={me} onChanged={() => reload()} className="border-t pt-3" />
+                    <OrderPaymentActions
+                      order={order}
+                      me={me}
+                      onChanged={() => reload()}
+                      className="border-t pt-3"
+                      autoOpen={payRetryDialog}
+                      onAutoOpened={clearPayRetry}
+                    />
                   </>
                 )}
                 {pendingPayments.length === 0 && canStartPayment && (
@@ -521,14 +576,20 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                         {formatMoney(String(remaining))} {moneySymbol}
                       </div>
                     </div>
-                    <OrderPaymentActions order={order} me={me} onChanged={() => reload()} />
+                    <OrderPaymentActions
+                      order={order}
+                      me={me}
+                      onChanged={() => reload()}
+                      autoOpen={payRetryDialog}
+                      onAutoOpened={clearPayRetry}
+                    />
                   </div>
                 )}
                 {pendingPayments.length === 0 && !canStartPayment && (
                   <div className="flex flex-col gap-1 text-sm">
                     {isNew && (
                       <p className="mb-2 text-[var(--muted-foreground)]">
-                        Оплата станет доступна после подтверждения и отгрузки заказа.
+                        Оплата станет доступна после подтверждения заказа.
                       </p>
                     )}
                     <InfoRow label="Получено">
@@ -676,7 +737,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                         disabled={busy || !newStatus || newStatus === currentStatusOption}
                         onClick={() => {
                           if (isNew && newStatus === "confirmed") {
-                            setConfirmationOpen(true);
+                            openConfirmation();
                             return;
                           }
                           if (order.status === "shipped" && newStatus !== "shipped") {
@@ -751,15 +812,18 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             order={order}
             departments={departments ?? []}
             busy={busy}
+            error={error}
             onConfirm={async (data) => {
-              if (await act(() => api.post(`/orders/${order.id}/confirm/`, data))) setConfirmationOpen(false);
+              const confirmed = await act(() =>
+                api.post(`/orders/${order.id}/confirm/`, data).catch((cause: unknown) => {
+                  // Состав заявки изменился: окно перечитает заказ, ошибка останется в нём.
+                  if (isChangedRequestError(cause)) void reload();
+                  throw cause;
+                }),
+              );
+              if (confirmed) setConfirmationOpen(false);
             }}
           />
-        )}
-        {error && (
-          <p role="alert" className="mt-3 text-sm text-[var(--destructive)]">
-            {error}
-          </p>
         )}
       </Modal>
       {rejectionOpen && (

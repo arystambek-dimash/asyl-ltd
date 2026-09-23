@@ -1,11 +1,27 @@
 "use client";
 
 import { useCallback, useId, useRef, useState } from "react";
-import type { LineDirection, NormalizedLine } from "@/lib/camera-counting-line";
+import {
+  COUNT_LINE_COLOR,
+  COUNT_LINE_ID,
+  verificationLineColor,
+  type LineDirection,
+  type NormalizedLine,
+  type VerificationLine,
+} from "@/lib/camera-counting-line";
 import { useVideoBox } from "@/lib/use-video-box";
 import { cn } from "@/lib/utils";
 
 const VIEWBOX_WIDTH = 1000;
+const HANDLE_HIT_PX = 24;
+// A fingertip lands less precisely than a mouse pointer.
+const LINE_HIT_PX = { mouse: 12, touch: 24 };
+// A redraw starts only once the pointer really moves: a tap is not a line.
+const DRAW_START_PX = 6;
+const LABEL_FONT_SIZE = 22;
+// Smallest on-screen sizes, in CSS pixels, however small the frame is drawn.
+const LABEL_MIN_PX = { editable: 11, readOnly: 9 };
+const HANDLE_MIN_RADIUS_PX = 9;
 
 function clamp(value: number) {
   return Math.max(0, Math.min(1, value));
@@ -33,27 +49,139 @@ function directionalArrow(line: NormalizedLine, direction: LineDirection, height
   };
 }
 
+/** Pixel distance from a point to a segment on the rendered surface. */
+function distanceToSegment(
+  point: { x: number; y: number },
+  line: NormalizedLine,
+  size: { width: number; height: number },
+) {
+  const [px, py] = [point.x * size.width, point.y * size.height];
+  const [ax, ay] = [line.x1 * size.width, line.y1 * size.height];
+  const [bx, by] = [line.x2 * size.width, line.y2 * size.height];
+  const [dx, dy] = [bx - ax, by - ay];
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function scaled(line: NormalizedLine, height: number) {
+  return {
+    x1: line.x1 * VIEWBOX_WIDTH,
+    y1: line.y1 * height,
+    x2: line.x2 * VIEWBOX_WIDTH,
+    y2: line.y2 * height,
+  };
+}
+
+/** Name tag next to the upper end of a segment, kept inside the frame. */
+function LineLabel({
+  line,
+  height,
+  color,
+  text,
+  fontSize,
+}: {
+  line: NormalizedLine;
+  height: number;
+  color: string;
+  text: string;
+  fontSize: number;
+}) {
+  const upperFirst = line.y1 <= line.y2;
+  const x = (upperFirst ? line.x1 : line.x2) * VIEWBOX_WIDTH;
+  const y = (upperFirst ? line.y1 : line.y2) * height;
+  const gap = fontSize * 0.6;
+  // Flip to the left only when the name would run off the frame.
+  const nearRight = x + gap + text.length * fontSize * 0.58 > VIEWBOX_WIDTH;
+  return (
+    <text
+      x={nearRight ? x - gap : x + gap}
+      y={y < fontSize * 1.5 ? y + fontSize * 1.5 : y - gap}
+      textAnchor={nearRight ? "end" : "start"}
+      fontSize={fontSize}
+      fontWeight="600"
+      fill={color}
+      stroke="rgba(15,23,42,.85)"
+      strokeWidth="5"
+      paintOrder="stroke"
+    >
+      {text}
+    </text>
+  );
+}
+
+function Handles({
+  line,
+  height,
+  color,
+  scale,
+}: {
+  line: NormalizedLine;
+  height: number;
+  color: string;
+  /** ≥ 1: keeps handles grabbable on a phone-width frame. */
+  scale: number;
+}) {
+  return (
+    <>
+      {(
+        [
+          [line.x1, line.y1],
+          [line.x2, line.y2],
+        ] as const
+      ).map(([x, y], index) => (
+        <g key={index}>
+          <circle cx={x * VIEWBOX_WIDTH} cy={y * height} r={18 * scale} fill="rgba(15,23,42,.7)" />
+          <circle
+            cx={x * VIEWBOX_WIDTH}
+            cy={y * height}
+            r={11 * scale}
+            fill="#f8fafc"
+            stroke={color}
+            strokeWidth={5 * scale}
+          />
+        </g>
+      ))}
+    </>
+  );
+}
+
 export function CameraCountingLineOverlay({
   line,
   direction,
+  verificationLines = [],
+  activeLineId = COUNT_LINE_ID,
   editable = false,
   disabled = false,
   onLineChange,
+  onVerificationLineChange,
+  onActiveLineChange,
   className,
 }: {
   line: NormalizedLine;
   direction: LineDirection;
+  /** Sampling lines: classify the bag again, never count it. */
+  verificationLines?: VerificationLine[];
+  /** Line that an empty-spot drag redraws in the editor. */
+  activeLineId?: string;
   editable?: boolean;
   disabled?: boolean;
   onLineChange?: (line: NormalizedLine) => void;
+  onVerificationLineChange?: (id: string, line: NormalizedLine) => void;
+  onActiveLineChange?: (id: string) => void;
   className?: string;
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [container, setContainer] = useState<HTMLElement | null>(null);
-  const [dragging, setDragging] = useState<"start" | "end" | "draw" | null>(null);
+  const [dragging, setDragging] = useState<
+    { id: string; end: "start" | "end" } | { id: string; from: { x: number; y: number }; drawing: boolean } | null
+  >(null);
   const box = useVideoBox(container);
   const viewBoxHeight = box?.width ? (VIEWBOX_WIDTH * box.height) / box.width : 562.5;
   const arrow = directionalArrow(line, direction, viewBoxHeight);
+  const unitsPerPx = box?.width ? VIEWBOX_WIDTH / box.width : 1;
+  const labelSize = Math.max(LABEL_FONT_SIZE, (editable ? LABEL_MIN_PX.editable : LABEL_MIN_PX.readOnly) * unitsPerPx);
+  const handleScale = Math.max(1, (HANDLE_MIN_RADIUS_PX * unitsPerPx) / 18);
   const svgId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const glowId = `counting-line-glow-${svgId}`;
   const arrowId = `counting-line-arrow-${svgId}`;
@@ -61,6 +189,14 @@ export function CameraCountingLineOverlay({
     surfaceRef.current = node;
     setContainer(node);
   }, []);
+
+  const segments = [{ id: COUNT_LINE_ID, line }, ...verificationLines];
+  const activeId = segments.some((segment) => segment.id === activeLineId) ? activeLineId : COUNT_LINE_ID;
+  const countActive = activeId === COUNT_LINE_ID;
+  const changeLine = (id: string, next: NormalizedLine) => {
+    if (id === COUNT_LINE_ID) onLineChange?.(next);
+    else onVerificationLineChange?.(id, next);
+  };
 
   const pointAt = (clientX: number, clientY: number) => {
     const rect = surfaceRef.current?.getBoundingClientRect();
@@ -76,25 +212,55 @@ export function CameraCountingLineOverlay({
     if (!box || !editable || disabled || !onLineChange) return;
     const point = pointAt(event.clientX, event.clientY);
     if (!point) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
     const distance = (x: number, y: number) =>
       Math.hypot((point.x - x) * point.rect.width, (point.y - y) * point.rect.height);
-    if (distance(line.x1, line.y1) <= 24) {
-      setDragging("start");
-    } else if (distance(line.x2, line.y2) <= 24) {
-      setDragging("end");
-    } else {
-      setDragging("draw");
-      onLineChange({ x1: point.x, y1: point.y, x2: point.x, y2: point.y });
+    const active = segments.find((segment) => segment.id === activeId)!;
+    const others = segments.filter((segment) => segment.id !== activeId);
+
+    // The selected line's handles win when handles of two lines overlap.
+    for (const segment of [active, ...others]) {
+      const end =
+        distance(segment.line.x1, segment.line.y1) <= HANDLE_HIT_PX
+          ? "start"
+          : distance(segment.line.x2, segment.line.y2) <= HANDLE_HIT_PX
+            ? "end"
+            : null;
+      if (end) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        if (segment.id !== activeId) onActiveLineChange?.(segment.id);
+        setDragging({ id: segment.id, end });
+        return;
+      }
     }
+    // Touching another line only selects it; nothing is redrawn by accident.
+    const reach = event.pointerType === "touch" ? LINE_HIT_PX.touch : LINE_HIT_PX.mouse;
+    const touched = others.find((segment) => distanceToSegment(point, segment.line, point.rect) <= reach);
+    if (touched) {
+      onActiveLineChange?.(touched.id);
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging({ id: activeId, from: { x: point.x, y: point.y }, drawing: false });
   };
 
   const move = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!box || !dragging || disabled || !onLineChange) return;
+    if (!box || !dragging || disabled) return;
     const point = pointAt(event.clientX, event.clientY);
-    if (!point) return;
-    if (dragging === "start") onLineChange({ ...line, x1: point.x, y1: point.y });
-    else onLineChange({ ...line, x2: point.x, y2: point.y });
+    const segment = segments.find((item) => item.id === dragging.id);
+    if (!point || !segment) return;
+    if ("from" in dragging) {
+      const { from } = dragging;
+      if (!dragging.drawing) {
+        const moved = Math.hypot((point.x - from.x) * point.rect.width, (point.y - from.y) * point.rect.height);
+        if (moved < DRAW_START_PX) return;
+        setDragging({ ...dragging, drawing: true });
+      }
+      changeLine(segment.id, { x1: from.x, y1: from.y, x2: point.x, y2: point.y });
+    } else if (dragging.end === "start") {
+      changeLine(segment.id, { ...segment.line, x1: point.x, y1: point.y });
+    } else {
+      changeLine(segment.id, { ...segment.line, x2: point.x, y2: point.y });
+    }
   };
 
   const finish = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -152,23 +318,38 @@ export function CameraCountingLineOverlay({
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#f8fafc" />
           </marker>
         </defs>
+        {verificationLines.map((item, index) => {
+          const color = verificationLineColor(index);
+          const selected = editable && item.id === activeId;
+          const coordinates = scaled(item.line, viewBoxHeight);
+          return (
+            <g key={item.id} data-verification-line={item.id} opacity={editable ? 1 : 0.75}>
+              <line {...coordinates} stroke="rgba(15,23,42,.6)" strokeWidth={editable ? 10 : 6} strokeLinecap="round" />
+              <line
+                data-verification-stroke
+                {...coordinates}
+                stroke={color}
+                strokeWidth={selected ? 6 : editable ? 4 : 3}
+                strokeLinecap="round"
+                // Read-only views keep the checks visibly secondary to counting.
+                strokeDasharray={editable ? undefined : "16 12"}
+              />
+              <LineLabel line={item.line} height={viewBoxHeight} color={color} text={item.name} fontSize={labelSize} />
+              {selected && <Handles line={item.line} height={viewBoxHeight} color={color} scale={handleScale} />}
+            </g>
+          );
+        })}
         <line
           data-counting-line="shadow"
-          x1={line.x1 * VIEWBOX_WIDTH}
-          y1={line.y1 * viewBoxHeight}
-          x2={line.x2 * VIEWBOX_WIDTH}
-          y2={line.y2 * viewBoxHeight}
+          {...scaled(line, viewBoxHeight)}
           stroke="rgba(15,23,42,.75)"
           strokeWidth="13"
           strokeLinecap="round"
         />
         <line
           data-counting-line="primary"
-          x1={line.x1 * VIEWBOX_WIDTH}
-          y1={line.y1 * viewBoxHeight}
-          x2={line.x2 * VIEWBOX_WIDTH}
-          y2={line.y2 * viewBoxHeight}
-          stroke="#38bdf8"
+          {...scaled(line, viewBoxHeight)}
+          stroke={COUNT_LINE_COLOR}
           strokeWidth="6"
           strokeLinecap="round"
           filter={`url(#${glowId})`}
@@ -182,23 +363,12 @@ export function CameraCountingLineOverlay({
           markerStart={direction === "any" ? `url(#${arrowId})` : undefined}
           markerEnd={`url(#${arrowId})`}
         />
-        {editable &&
-          ([line.x1, line.x2] as const).map((x, index) => {
-            const y = index === 0 ? line.y1 : line.y2;
-            return (
-              <g key={index}>
-                <circle cx={x * VIEWBOX_WIDTH} cy={y * viewBoxHeight} r="18" fill="rgba(15,23,42,.7)" />
-                <circle
-                  cx={x * VIEWBOX_WIDTH}
-                  cy={y * viewBoxHeight}
-                  r="11"
-                  fill="#f8fafc"
-                  stroke="#38bdf8"
-                  strokeWidth="5"
-                />
-              </g>
-            );
-          })}
+        {editable && verificationLines.length > 0 && (
+          <LineLabel line={line} height={viewBoxHeight} color={COUNT_LINE_COLOR} text="Подсчёт" fontSize={labelSize} />
+        )}
+        {editable && countActive && (
+          <Handles line={line} height={viewBoxHeight} color={COUNT_LINE_COLOR} scale={handleScale} />
+        )}
       </svg>
     </div>
   );

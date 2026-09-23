@@ -40,22 +40,28 @@ from .querysets import (
     shipping_calendar_days,
     CASHIER_QUEUE_PAYMENT,
     awaiting_payment_orders,
+    awaiting_shipment_orders,
+    order_overpaid_by_id,
     order_remaining_by_id,
+    overpaid_orders,
     for_post_board,
     post_board_params,
     with_order_api_relations,
     with_payment_api_relations,
     with_order_amounts, filter_order_search, order_page_sort,
+    TRANSPORT_QUEUE_FILTERS, transport_queue, transport_rows,
 )
 from .reports import summary_report
 from .references import build_order_form_options
 from .statuses import (
     PUBLIC_STATUS_LABELS, REVIEWABLE_STATUSES, is_financial, is_in_progress, statuses_in_group,
 )
-from .serializers import (OrderSerializer, PaymentSerializer, PaymentQueueSerializer,
-                          StatusChangeRequestSerializer)
-from .services import (add_payment, confirm_order, reject_order,
-                       accountant_confirm_payment,
+from .serializers import (ConfirmOrderSerializer, OrderSerializer, OrderTransportRowSerializer,
+                          PaymentSerializer, PaymentQueueSerializer, StatusChangeRequestSerializer,
+                          TransportNumbersSerializer)
+from .transport import set_order_transport, suggestion_pairs, transport_locked
+from .services import (add_payment, confirm_order, confirm_stock_context, reject_order,
+                       accountant_confirm_payment, assert_payment_status_open,
                        confirm_received_staff_payments,
                        correct_order_prices,
                        receive_and_confirm_payment,
@@ -119,6 +125,11 @@ def _issue_provider_payment(payment: Payment, *, user, phone_number=None):
     if channel is None:
         return None
     current = getattr(payment, "apipay_invoice", None)
+    if current is None:
+        # Новый счёт провайдеру — запрос денег (statuses.is_payment_open):
+        # до отгрузки его не выдаёт ни одна ручка, в том числе повторная выдача
+        # после отката отгрузки. Сверка уже начатой выдачи не блокируется.
+        assert_payment_status_open(payment.order, method=None)
     if (
         current is not None
         and current.channel == "qr"
@@ -756,6 +767,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "restore": "orders.edit",
         "purge": "orders.edit",
         "payments": "payments.create", "confirm": "orders.confirm",
+        "confirm_context": "orders.confirm",
         "payment_detail": ("payments.create", "payments.view"),
         "correct_price": "orders.correct_price",
         "set_status": "orders.view",
@@ -772,6 +784,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "payments_queue": "payments.confirm",
         # «Оплаты» кассы: принять оплату или перевести в долг отгруженный заказ.
         "awaiting_payment": ("payments.confirm", "payments.create"),
+        # «К отгрузке» (предоплата) и «К возврату» (переплата) — там же, в «Оплатах».
+        "awaiting_shipment": ("payments.confirm", "payments.create"),
+        "to_refund": ("payments.confirm", "payments.create"),
         "to_debt": ("payments.confirm", "payments.create"),
         "fixate": "orders.edit",
         "cashier_log": "payments.confirm",
@@ -782,6 +797,9 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "review": "orders.confirm",
         "dashboard_operational": "orders.view",
         "repeat": "orders.create",
+        # Быстрый ввод номеров «Фуры»: та же правка заказа, что и в форме.
+        "transport_queue": "orders.edit",
+        "transport": "orders.edit",
         "form_options": ("orders.create", "orders.edit"),
         # Календарь отгрузки открыт тем же, кому открыта очередь поста.
         "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
@@ -801,14 +819,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     # Новая заявка клиента без отдела — общая очередь: её видит и разбирает
     # любой отдел, подтверждение закрепляет клиента за отделом.
     UNASSIGNED_REQUEST_ACTIONS = frozenset(
-        {"list", "retrieve", "workflow_summary", "review", "confirm", "reject"}
+        {"list", "retrieve", "workflow_summary", "review", "confirm", "confirm_context", "reject"}
     )
     # Общие очереди для сотрудника, закреплённого за отделом. Оплаты в ручной
     # очереди кассы видны и разбираются всеми отделами. Заявки всех отделов
     # («Заказы» → «Заявки») — только с правом orders.confirm_all; список заявок
     # входит в очередь только с ``?confirm_queue=1``. Журнал (cashier-log,
     # reopen/restore), долги, отчёты, транзакции и POS остаются в его отделе.
-    SHARED_REQUEST_ACTIONS = frozenset({"retrieve", "review", "confirm", "reject"})
+    SHARED_REQUEST_ACTIONS = frozenset({"retrieve", "review", "confirm", "confirm_context", "reject"})
     SHARED_PAYMENT_ACTIONS = frozenset(
         {"receive_payment", "confirm_payment", "reject_payment"}
     )
@@ -1032,6 +1050,50 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             OrderSerializer(order, context={"request": request}).data
         )
 
+    def _transport_rows(self, rows):
+        return OrderTransportRowSerializer(
+            rows,
+            many=True,
+            context={"request": self.request, "transport_pairs": suggestion_pairs(rows)},
+        ).data
+
+    @action(detail=False, methods=["get"], url_path="transport-queue")
+    def transport_queue(self, request):
+        """«Фуры»: подтверждённые фуры для ввода тягача и прицепа, с подсказками.
+
+        ``filter=missing`` (по умолчанию) — без номера тягача, ``today`` — все
+        фуры на сегодня.
+        """
+        scope = request.query_params.get("filter") or "missing"
+        if scope not in TRANSPORT_QUEUE_FILTERS:
+            raise ValidationError({"detail": "Неизвестный фильтр", "code": "bad_filter"})
+        rows = list(transport_queue(self.get_queryset(), scope))
+        return Response(self._transport_rows(rows))
+
+    @action(detail=True, methods=["post"], url_path="transport")
+    def transport(self, request, pk=None):
+        """Записать тягач и прицеп заказа; ответ — строка «Фур» с предупреждением."""
+        serializer = TransportNumbersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order = self.get_object()
+        # Быстрый ввод — для заказов в работе: отгруженный или закрытый заказ
+        # он не правит и клиенту о нём не пишет (правка — в карточке заказа).
+        if not is_in_progress(order.status):
+            raise ValidationError({
+                "detail": "Номер вводится только для заказа в работе",
+                "code": "invalid_status",
+            })
+        # «Фуры» вбивают номера пачкой: клиенту пишет отгрузка, а не каждое сохранение.
+        order, _ = set_order_transport(
+            order,
+            request.user,
+            truck=serializer.validated_data.get("truck_number"),
+            trailer=serializer.validated_data.get("trailer_number"),
+            notify_client=False,
+        )
+        row = transport_rows(self.get_queryset().filter(pk=order.pk)).get()
+        return Response(self._transport_rows([row])[0])
+
     @action(detail=False, methods=["get"], url_path="shipping-calendar")
     def shipping_calendar(self, request):
         """Календарь отгрузки на месяц: по дням — сколько грузить и сколько уехало.
@@ -1215,11 +1277,14 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         ).data
         return self.get_paginated_response(data) if page is not None else Response(data)
 
-    @action(detail=False, methods=["get"], url_path="awaiting-payment")
-    def awaiting_payment(self, request):
-        """«Ждут оплаты»: несогласованные долги отдела — принять оплату или согласовать долг."""
+    def _cashier_orders(self, request, qs, *, date_field, ordering, amounts=order_remaining_by_id):
+        """Список заказов «Оплат» кассы: фильтры отдела/магазина/дат, сводка, страница.
+
+        Сводка (``summary=1``) — сумма и число заказов по валютам. Сумму по
+        каждому заказу выборки отдаёт ``amounts``: остаток к оплате, а для
+        «К возврату» — переплата (``order_overpaid_by_id``).
+        """
         params = request.query_params
-        qs = awaiting_payment_orders(self.get_queryset())
         department = params.get("department")
         if department:
             # Заказ без своего отдела учитывается в отделе клиента — как в списке заказов.
@@ -1228,24 +1293,55 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if store:
             qs = qs.filter(store_id=store)
         date_from, date_to = parse_date_range(params)
-        qs = filter_date_range(qs, "shipment__shipped_at", date_from, date_to)
+        qs = filter_date_range(qs, date_field, date_from, date_to)
         if params.get("summary") == "1":
             rows = list(qs.order_by().values("pk", "currency"))
-            remaining = order_remaining_by_id(qs)
+            by_id = amounts(qs)
             totals: dict[str, dict] = {}
             for row in rows:
                 entry = totals.setdefault(row["currency"] or "KZT", {"amount": Decimal("0"), "count": 0})
-                entry["amount"] += remaining.get(row["pk"], Decimal("0"))
+                entry["amount"] += by_id.get(row["pk"], Decimal("0"))
                 entry["count"] += 1
             return Response([
                 {"currency": currency, "amount": money_string(entry["amount"]), "count": entry["count"]}
                 for currency, entry in sorted(totals.items())
             ])
-        # Свежие отгрузки сверху; заказы без записи отгрузки (старые данные) — в конце.
-        qs = qs.order_by(F("shipment__shipped_at").desc(nulls_last=True), "-id")
+        qs = qs.order_by(*ordering)
         page = self.paginate_queryset(qs)
         data = self.get_serializer(page if page is not None else qs, many=True).data
         return self.get_paginated_response(data) if page is not None else Response(data)
+
+    @action(detail=False, methods=["get"], url_path="awaiting-payment")
+    def awaiting_payment(self, request):
+        """«Ждут оплаты»: несогласованные долги отдела — принять оплату или согласовать долг."""
+        return self._cashier_orders(
+            request,
+            awaiting_payment_orders(self.get_queryset()),
+            date_field="shipment__shipped_at",
+            # Свежие отгрузки сверху; заказы без записи отгрузки (старые данные) — в конце.
+            ordering=(F("shipment__shipped_at").desc(nulls_last=True), "-id"),
+        )
+
+    @action(detail=False, methods=["get"], url_path="awaiting-shipment")
+    def awaiting_shipment(self, request):
+        """«К отгрузке»: неоплаченные заказы отдела, ждущие отгрузки, — принять предоплату."""
+        return self._cashier_orders(
+            request,
+            awaiting_shipment_orders(self.get_queryset()),
+            date_field="created_at",
+            ordering=("-created_at", "-id"),
+        )
+
+    @action(detail=False, methods=["get"], url_path="to-refund")
+    def to_refund(self, request):
+        """«К возврату»: переплаченные заказы отдела — вернуть клиенту излишек."""
+        return self._cashier_orders(
+            request,
+            overpaid_orders(self.get_queryset()),
+            date_field="created_at",
+            ordering=("-created_at", "-id"),
+            amounts=order_overpaid_by_id,
+        )
 
     @action(detail=True, methods=["post"], url_path="fixate")
     def fixate(self, request, pk=None):
@@ -1582,7 +1678,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         missing = []
         if not order.client.iin.strip():
             missing.append("ИИН/БИН")
-        if not (order.client.company_name.strip() or order.client.name):
+        if not order.client.display_name:
             missing.append("название ТОО / ИП")
         if missing:
             raise ValidationError({
@@ -1641,14 +1737,34 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         receive_and_confirm_payment(payment, request.user, any_department=in_queue)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
+    @action(detail=True, methods=["get"], url_path="confirm-context")
+    def confirm_context(self, request, pk=None):
+        """Окно подтверждения: остаток на складе и можно ли менять номер транспорта.
+
+        Страна клиента — маска пустого поля номера, как в форме заказа.
+        """
+        order = self.get_object()
+        return Response({
+            "items": confirm_stock_context(order),
+            "transport_locked": transport_locked(order, request.user),
+            "client_country": order.client.country,
+        })
+
     @action(detail=True, methods=["post"], url_path="confirm")
     def confirm(self, request, pk=None):
         order = self.get_object()
-        if not request.data.get("department"):
-            raise ValidationError({"department": "Перед подтверждением выберите отдел продаж"})
-        order = confirm_order(order, request.user,
-                              prices=request.data.get("prices"),
-                              department=request.data["department"])
+        serializer = ConfirmOrderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        order = confirm_order(
+            order,
+            request.user,
+            prices=data.get("prices"),
+            department=data["department"],
+            quantities=data.get("quantities"),
+            truck=data.get("truck_number"),
+            trailer=data.get("trailer_number"),
+        )
         # confirm_order updates item instances loaded inside the service; the
         # view's prefetched items still contain the old prices until refreshed.
         order.refresh_from_db()

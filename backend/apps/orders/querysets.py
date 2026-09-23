@@ -5,6 +5,7 @@ one place prevents list and detail endpoints from drifting back into N+1
 queries when serializer fields evolve.
 """
 
+from collections import defaultdict
 from datetime import date, timedelta
 
 from decimal import Decimal
@@ -13,7 +14,9 @@ from django.db.models import (
     CharField,
     Count,
     DecimalField,
+    Exists,
     F,
+    Max,
     OuterRef,
     Prefetch,
     Q,
@@ -26,13 +29,17 @@ from django.db.models.functions import Cast, Coalesce, Concat, Greatest, NullIf,
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 
+from apps.common.plates import is_valid_plate, normalize_plate, plate_match_key
 from apps.common.query_params import (
     parse_iso_date,
     parse_search_param,
     plate_search_q,
 )
+from apps.shipments.models import ShipmentWagon
 
+from .debt import overpaid_amount
 from .models import Order, OrderItem, Payment, StatusChangeRequest
+from .statuses import AWAITING_SHIPMENT_STATUSES
 
 
 MONEY = DecimalField(max_digits=30, decimal_places=2)
@@ -48,6 +55,17 @@ def payment_net_sum():
     """Сумма подтверждённых оплат: каждая за вычетом завершённых возвратов и не ниже нуля."""
     return Sum(
         Greatest(F("amount") - F("refunded_amount"), ZERO_MONEY), output_field=MONEY
+    )
+
+
+def payment_refundable_sum():
+    """Сколько ещё можно вернуть (Payment.available_for_refund): каждая оплата за
+    вычетом завершённых и начатых возвратов, не ниже нуля."""
+    return Sum(
+        Greatest(
+            F("amount") - F("refunded_amount") - F("pending_refund_amount"), ZERO_MONEY
+        ),
+        output_field=MONEY,
     )
 
 
@@ -100,6 +118,59 @@ def awaiting_payment_orders(queryset: QuerySet[Order]) -> QuerySet[Order]:
         .exclude(payment_status="settled"),
         select=False,
     ).filter(amount_remaining__gt=0)
+
+
+def awaiting_shipment_orders(queryset: QuerySet[Order]) -> QuerySet[Order]:
+    """«К отгрузке»: заказ ждёт отгрузки и оплачен не полностью.
+
+    Касса берёт по нему предоплату (statuses.is_payment_open) — наличными,
+    своим Kaspi-терминалом или отметкой об удалённой оплате.
+    """
+    return with_order_amounts(
+        queryset.filter(status__in=AWAITING_SHIPMENT_STATUSES), select=False
+    ).filter(amount_remaining__gt=0)
+
+
+def overpaid_orders(queryset: QuerySet[Order]) -> QuerySet[Order]:
+    """«К возврату»: заказы с переплатой (debt.overpaid_amount).
+
+    Подтверждённая оплата неизменна, поэтому после уменьшения количества или
+    цены излишек остаётся у заказа, пока касса не оформит возврат. Заказы с
+    деньгами — почти вся история отдела, а подзапрос суммы на каждый заказ
+    повторялся бы на каждой странице и в COUNT опрашиваемого экрана, — поэтому
+    переплата считается сразу группирующими запросами (:func:`order_overpaid_by_id`),
+    а выборка сужается до найденных заказов.
+    """
+    return queryset.filter(pk__in=list(order_overpaid_by_id(queryset)))
+
+
+def order_overpaid_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
+    """Переплата по каждому заказу выборки (debt.overpaid_amount) за два группирующих запроса.
+
+    Переплата бывает только при подтверждённых деньгах: суммы позиций берутся
+    лишь у заказов, где они есть. Заказа нет в словаре — переплаты нет.
+    """
+    confirmed = Payment.objects.filter(
+        order_id__in=queryset.order_by().values("pk"), status="confirmed"
+    ).order_by()
+    money = (
+        confirmed.values("order_id", "order__status")
+        .annotate(value=payment_refundable_sum())
+        .values_list("order_id", "order__status", "value")
+    )
+    totals = dict(
+        OrderItem.objects.filter(order_id__in=confirmed.values("order_id"))
+        .order_by()
+        .values("order_id")
+        .annotate(value=item_value_sum())
+        .values_list("order_id", "value")
+    )
+    zero = Decimal("0")
+    overpaid = (
+        (pk, overpaid_amount(status, refundable, totals.get(pk) or zero))
+        for pk, status, refundable in money
+    )
+    return {pk: amount for pk, amount in overpaid if amount > 0}
 
 
 def order_remaining_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
@@ -156,8 +227,25 @@ def filter_order_search(queryset: QuerySet[Order], search: str) -> QuerySet[Orde
     return queryset.filter(
         Q(search_name__icontains=search)
         | Q(search_id__icontains=search)
-        | plate_search_q("truck_number", search)
+        | order_plate_q(search)
     )
+
+
+# Номер вагона ищется от трёх цифр: «12» нашло бы половину вагонов за месяц.
+WAGON_SEARCH_MIN_DIGITS = 3
+
+
+def order_plate_q(search: str) -> Q:
+    """Номер тягача или прицепа — в любой записи (с пробелами, с/без «KG»),
+    а у вагонного заказа — и номер любого вагона отгрузки по отчёту."""
+    condition = plate_search_q("truck_number", search) | plate_search_q("trailer_number", search)
+    digits = "".join(search.split())
+    if digits.isascii() and digits.isdigit() and len(digits) >= WAGON_SEARCH_MIN_DIGITS:
+        # Exists, а не JOIN: у заказа 12 вагонов — строка не размножается.
+        condition |= Q(Exists(
+            ShipmentWagon.objects.filter(shipment__order_id=OuterRef("pk"), number__contains=digits)
+        ))
+    return condition
 
 
 def order_page_sort(queryset: QuerySet[Order], ordering: str) -> QuerySet[Order]:
@@ -245,10 +333,10 @@ def for_post_board(
     today = timezone.localdate()
     if search:
         since = today - timedelta(days=BOARD_SEARCH_SHIPPED_DAYS)
-        scope = Q(status__in=("confirmed", *BOARD_ACTIVE_STATUSES)) | Q(
+        scope = Q(status__in=AWAITING_SHIPMENT_STATUSES) | Q(
             status="shipped", shipment__shipped_at__date__gte=since
         )
-        match = plate_search_q("truck_number", search) | _client_name_query(search)
+        match = order_plate_q(search) | _client_name_query(search)
         # ``str.isdigit()`` истинно и для «²», а ``int()`` на нём падает —
         # номером заказа считаем только ASCII-цифры.
         if search.isascii() and search.isdigit():
@@ -277,6 +365,108 @@ def for_post_board(
     )
 
 
+def planned_day():
+    """Плановый день заказа: дата приезда, а без неё — день оформления.
+
+    TruncDate считает день в часовом поясе проекта: Cast дал бы дату по UTC
+    и ночные заказы уехали бы в соседний день.
+    """
+    return Coalesce("arrival_date", TruncDate("created_at"))
+
+
+def awaiting_shipment_bags(warehouse, product_ids, *, exclude_order_id=None) -> dict[int, int]:
+    """Мешки, уже обещанные клиентам со склада: {product_id: мешков}.
+
+    Живые заказы того же склада, ждущие отгрузки: склад списывает их мешки
+    только при отгрузке, поэтому в остатке они ещё числятся. Склад заказа с
+    позициями всегда задан (его закрепляет сама база), корзину отсекает
+    менеджер ``Order.objects``.
+    """
+    product_ids = set(product_ids)
+    orders = Order.objects.filter(warehouse=warehouse, status__in=AWAITING_SHIPMENT_STATUSES)
+    if exclude_order_id is not None:
+        orders = orders.exclude(pk=exclude_order_id)
+    bags = dict.fromkeys(product_ids, 0)
+    bags.update(
+        OrderItem.objects.filter(order__in=orders, product_id__in=product_ids)
+        .order_by()
+        .values("product_id")
+        .annotate(total=Sum("quantity"))
+        .values_list("product_id", "total")
+    )
+    return bags
+
+
+# Фильтры быстрого ввода «Фуры»: без номера тягача (любой день) и все на сегодня.
+TRANSPORT_QUEUE_FILTERS = ("missing", "today")
+
+
+def transport_rows(queryset: QuerySet[Order]) -> QuerySet[Order]:
+    """Лёгкая строка «Фур»: клиент, мешки и владелец номера — без истории заказа."""
+    bags = (
+        OrderItem.objects.filter(order_id=OuterRef("pk"))
+        .order_by()
+        .values("order_id")
+        .annotate(value=Sum("quantity"))
+        .values("value")
+    )
+    return (
+        queryset.select_related(None)
+        .prefetch_related(None)
+        .select_related("client__user", "truck_number_set_by")
+        .annotate(planned_on=planned_day(), bags=Coalesce(Subquery(bags), 0))
+    )
+
+
+def transport_queue(queryset: QuerySet[Order], scope: str) -> QuerySet[Order]:
+    """Подтверждённые фуры, которым вводят номер тягача и прицепа.
+
+    ``missing`` — все без номера тягача, старые сверху; ``today`` — все с
+    плановым днём сегодня, с номером и без.
+    """
+    queryset = transport_rows(queryset.filter(status="confirmed", transport_type="truck"))
+    if scope == "today":
+        queryset = queryset.filter(planned_on=timezone.localdate())
+    else:
+        queryset = queryset.filter(truck_number="")
+    return queryset.order_by("planned_on", "id")
+
+
+def recent_transport_pairs(client_ids, *, limit: int) -> dict[int, list[dict]]:
+    """Последние пары «тягач + прицеп» клиентов — подсказки «как в прошлый раз».
+
+    Один группирующий запрос на всю страницу: каждая пара со своим последним
+    заказом. Одна машина в разной записи — одна подсказка (слитно); свободный
+    текст вместо номера («самовывоз») не подсказывается.
+    """
+    if not client_ids:
+        return {}
+    rows = (
+        Order.objects.filter(client_id__in=client_ids, transport_type="truck")
+        .exclude(truck_number="")
+        .order_by()
+        .values("client_id", "truck_number", "trailer_number")
+        .annotate(last_id=Max("id"))
+    )
+    pairs: dict[int, list[dict]] = defaultdict(list)
+    seen: dict[int, set] = defaultdict(set)
+    for row in sorted(rows, key=lambda row: row["last_id"], reverse=True):
+        client_id, truck, trailer = row["client_id"], row["truck_number"], row["trailer_number"]
+        key = (plate_match_key(truck), plate_match_key(trailer))
+        if (
+            len(pairs[client_id]) >= limit
+            or key in seen[client_id]
+            or not is_valid_plate(truck)
+            or (trailer and not is_valid_plate(trailer))
+        ):
+            continue
+        seen[client_id].add(key)
+        pairs[client_id].append(
+            {"truck_number": normalize_plate(truck), "trailer_number": normalize_plate(trailer)}
+        )
+    return dict(pairs)
+
+
 def shipping_calendar_days(queryset: QuerySet[Order], first_day: date, last_day: date) -> list[dict]:
     """Итоги отгрузки по дням месяца: сколько заказов ждёт погрузки и сколько уехало.
 
@@ -284,12 +474,9 @@ def shipping_calendar_days(queryset: QuerySet[Order], first_day: date, last_day:
     у выехавшего — день фактической отгрузки. Одна и та же поездка попадает
     в календарь один раз, поэтому счётчики дня не пересекаются.
     """
-    # TruncDate считает день в часовом поясе проекта: Cast дал бы дату по UTC
-    # и ночные заказы уехали бы в соседний день календаря.
-    planned_day = Coalesce("arrival_date", TruncDate("created_at"))
     waiting = (
-        queryset.filter(status__in=("confirmed", *BOARD_ACTIVE_STATUSES))
-        .annotate(day=planned_day)
+        queryset.filter(status__in=AWAITING_SHIPMENT_STATUSES)
+        .annotate(day=planned_day())
         .filter(day__gte=first_day, day__lte=last_day)
         .values("day")
         .annotate(orders=Count("id", distinct=True), bags=Sum("items__quantity"))
@@ -377,6 +564,8 @@ def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     ).prefetch_related(
         "items__product",
         "client__prices",
+        # Вагоны отгрузки по отчёту — везде, где виден номер вагонного заказа.
+        "shipment__wagons",
         Prefetch("payments", queryset=payments),
         Prefetch("status_requests", queryset=status_requests),
     )

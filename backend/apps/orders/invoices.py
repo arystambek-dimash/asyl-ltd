@@ -18,6 +18,8 @@ from reportlab.platypus import (
     HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
+from apps.common.text import plural_ru
+
 from .labels import payment_method_label
 from .models import Order, Payment
 
@@ -145,18 +147,6 @@ def _escape_paragraph_text(value: object) -> str:
     return escape(str(value), quote=True)
 
 
-def _plural(value: int, one: str, few: str, many: str) -> str:
-    tail = value % 100
-    if 11 <= tail <= 14:
-        return many
-    last = value % 10
-    if last == 1:
-        return one
-    if 2 <= last <= 4:
-        return few
-    return many
-
-
 def _triplet_words(value: int, feminine: bool = False) -> list[str]:
     words: list[str] = []
     hundreds, rest = divmod(value, 100)
@@ -193,12 +183,12 @@ def amount_in_words(amount: Decimal, currency_code: str = "KZT") -> str:
             scale = SCALES[index]
             words.extend(_triplet_words(group, scale[3]))
             if index:
-                words.append(_plural(group, scale[0], scale[1], scale[2]))
+                words.append(plural_ru(group, scale[0], scale[1], scale[2]))
     if currency_code == "USD":
-        currency = _plural(whole, "доллар", "доллара", "долларов")
-        coin = _plural(coins, "цент", "цента", "центов")
+        currency = plural_ru(whole, "доллар", "доллара", "долларов")
+        coin = plural_ru(coins, "цент", "цента", "центов")
         return f"{' '.join(words)} {currency} {coins:02d} {coin}"
-    currency = _plural(whole, "тенге", "тенге", "тенге")
+    currency = plural_ru(whole, "тенге", "тенге", "тенге")
     return f"{' '.join(words)} {currency} {coins:02d} тиын"
 
 
@@ -296,7 +286,7 @@ def build_invoice_pdf(order: Order, amount: Decimal | None = None) -> bytes:
               HRFlowable(width="100%", thickness=1.8, color=colors.black, spaceBefore=2 * mm,
                          spaceAfter=3 * mm)]
 
-    buyer = order.client.company_name.strip() or order.client.name
+    buyer = order.client.display_name
     details = Table([
         [Paragraph("Поставщик:", body),
          Paragraph(f"<b>{_escape_paragraph_text(supplier['legal_name'])}</b>, " +

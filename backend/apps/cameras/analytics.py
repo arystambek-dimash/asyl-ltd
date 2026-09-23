@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import date, datetime, timedelta
 
 from django.db import transaction
@@ -10,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.eventlog.services import log_event
 
-from . import ai
+from . import ai, color_resolution
 from .models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -659,6 +660,14 @@ def today_payload(
         )}
         queryset = queryset.filter(Q(day__range=(history_start, history_end)) | Q(day=day))
     all_rows = list(queryset)
+    # Bags the camera left as ``unknown`` count under their resolved colour
+    # (neighbours/votes/manual) exactly as in stock posting. The rows are only
+    # read here; the stored ledger keeps the camera's own answers.
+    inferred = (
+        color_resolution.overlay_daily_rows(all_rows)
+        if analytics_scope == ANALYTICS_SCOPE_AI247
+        else {}
+    )
     period_rows = [row for row in all_rows if history_start <= row.day <= history_end] if ranged else all_rows
     rows_by_camera: dict[
         str,
@@ -675,9 +684,17 @@ def today_payload(
         by_day = {row.day: row for row in camera_rows}
         selected_rows = [row for row in camera_rows if history_start <= row.day <= history_end] if ranged else camera_rows
         colors = _merge_colors(selected_rows)
-        color_items = _color_payload(colors)
+        color_items = color_resolution.with_inferred(
+            _color_payload(colors),
+            "color",
+            [inferred.get((camera, row.day), {}).get("colors") for row in selected_rows],
+        )
         brands = _merge_brands(selected_rows)
-        brand_items = _brand_payload(brands)
+        brand_items = color_resolution.with_inferred(
+            _brand_payload(brands),
+            "brand",
+            [inferred.get((camera, row.day), {}).get("brands") for row in selected_rows],
+        )
         cameras.append(
             _row_payload(by_day.get(day), camera, day, analytics_scope)
             | {
@@ -762,7 +779,16 @@ def today_payload(
         current += timedelta(days=1)
     all_colors = _merge_colors(period_rows)
     all_brands = _merge_brands(period_rows)
-    brand_items = _brand_payload(all_brands)
+    brand_items = color_resolution.with_inferred(
+        _brand_payload(all_brands),
+        "brand",
+        [inferred.get((row.camera, row.day), {}).get("brands") for row in period_rows],
+    )
+    all_color_items = color_resolution.with_inferred(
+        _color_payload(all_colors),
+        "color",
+        [inferred.get((row.camera, row.day), {}).get("colors") for row in period_rows],
+    )
     sync_rows = [item["analytics_sync"] for item in cameras]
     return {
         "analytics_scope": analytics_scope,
@@ -778,10 +804,8 @@ def today_payload(
         "model_all_time_total": sum(row["model"] for row in lifetime.values()) if ranged else sum(row.model_total for row in all_rows),
         "adjustment": sum(row["adjustment"] for row in lifetime.values()) if ranged else sum(row.adjustment for row in all_rows),
         "history": history,
-        "colors": _color_payload(all_colors),
-        "dominant_color": _color_payload(all_colors)[0]["color"]
-        if all_colors
-        else None,
+        "colors": all_color_items,
+        "dominant_color": all_color_items[0]["color"] if all_color_items else None,
         "model_per_brand": all_brands,
         "brands": brand_items,
         "dominant_brand": _dominant_brand(brand_items),
@@ -1102,7 +1126,13 @@ def subtract_today(camera: str, amount, reason: str, user, color: str) -> dict:
                 "amount": f"Нельзя вычесть больше текущего итога ({before})",
             }
         )
-    available_color = int((row.model_per_color or {}).get(color, 0))
+    # Manually assigned bags count under their colour; neighbour/vote
+    # decisions may still change before posting (production.record_correction).
+    shown = copy.copy(row)
+    color_resolution.overlay_daily_rows(
+        [shown], methods=(color_resolution.METHOD_MANUAL,)
+    )
+    available_color = int((shown.model_per_color or {}).get(color, 0))
     if amount > available_color:
         raise ValidationError(
             {

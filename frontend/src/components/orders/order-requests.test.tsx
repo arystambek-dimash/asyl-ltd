@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import { formatCurrency } from "@/lib/utils";
 import { OrderRequestsSection } from "./order-requests";
 import { ORDER_REQUESTS_URL, useOrderRequests } from "./use-order-requests";
 
@@ -39,9 +40,11 @@ const request = {
   items: [{ id: 7, product: 1, quantity: 2, product_label: "Мука" }],
 };
 let includeRequest = true;
+let requestItems: object[] = request.items;
 
 beforeEach(() => {
   includeRequest = true;
+  requestItems = request.items;
   mocks.get.mockReset();
   mocks.post.mockReset();
   mocks.post.mockResolvedValue({ data: {} });
@@ -49,7 +52,11 @@ beforeEach(() => {
     const url = new URL(raw, "http://localhost");
     if (url.pathname === "/orders/")
       return {
-        data: { results: includeRequest ? [request] : [], count: includeRequest ? 1 : 0, next: null },
+        data: {
+          results: includeRequest ? [{ ...request, items: requestItems }] : [],
+          count: includeRequest ? 1 : 0,
+          next: null,
+        },
       };
     if (url.pathname === "/departments/") return { data: [{ id: 1, code: "main", name: "Мельница", is_active: true }] };
     return { data: [] };
@@ -66,6 +73,9 @@ it("lists client requests of the shared queue and rejects one", async () => {
   expect(mocks.get).toHaveBeenCalledWith(`${ORDER_REQUESTS_URL}&page=1&page_size=50`, expect.anything());
   expect(screen.getByText("Ждёт отдела")).toBeInTheDocument();
   expect(screen.getByText("Мука × 2")).toBeInTheDocument();
+  // Заявка без цен: «0 ₸» выглядел бы бесплатным заказом.
+  expect(screen.getByText("Не рассчитана")).toBeInTheDocument();
+  expect(screen.getByText("2 меш.")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Отклонить" }));
   const dialog = await screen.findByRole("dialog", { name: "Отклонить заявку #621" });
   expect(dialog).toBeInTheDocument();
@@ -105,4 +115,36 @@ it("shows a confirmation error inside the dialog", async () => {
   await user.click(within(dialog).getByRole("button", { name: "Подтвердить заказ" }));
   await user.click(within(dialog).getByRole("button", { name: "Да, закрепить и подтвердить" }));
   expect(await within(dialog).findByText("Цена не указана")).toBeInTheDocument();
+});
+
+it("rereads a request whose items changed while the dialog was open", async () => {
+  const user = userEvent.setup();
+  const message = "Состав заявки изменился — обновите заявку";
+  mocks.post.mockRejectedValue(
+    Object.assign(new Error(message), { response: { status: 400, data: { detail: message, code: "invalid_item" } } }),
+  );
+  render(<Harness />);
+  await user.click(await screen.findByRole("button", { name: "Проверить и подтвердить" }));
+  const dialog = await screen.findByRole("dialog", { name: /Заказ #621/ });
+  await user.selectOptions(within(dialog).getByRole("combobox", { name: "Отдел продаж" }), "main");
+  await user.type(within(dialog).getByRole("spinbutton", { name: "Цена: Мука" }), "10");
+  // Пока окно было открыто, клиент поменял состав заявки.
+  requestItems = [{ id: 9, product: 2, quantity: 3, product_label: "Отруби", client_price: "50" }];
+  await user.click(within(dialog).getByRole("button", { name: "Подтвердить заказ" }));
+  await user.click(within(dialog).getByRole("button", { name: "Да, закрепить и подтвердить" }));
+
+  expect(await within(dialog).findByText(message)).toBeInTheDocument();
+  expect(await within(dialog).findByRole("spinbutton", { name: "Цена: Отруби" })).toHaveValue(50);
+  expect(within(dialog).queryByRole("spinbutton", { name: "Цена: Мука" })).not.toBeInTheDocument();
+});
+
+it("estimates a request by the client price list", async () => {
+  requestItems = [
+    { id: 7, product: 1, quantity: 2, product_label: "Мука", client_price: "500" },
+    { id: 8, product: 2, quantity: 3, product_label: "Отруби", unit_price: "100" },
+  ];
+  render(<Harness />);
+  const estimate = `≈ ${formatCurrency(1300, "KZT")}`.replace(/\s/g, " ");
+  expect(await screen.findByText(estimate)).toBeInTheDocument();
+  expect(screen.getByText("5 меш.")).toBeInTheDocument();
 });

@@ -22,12 +22,13 @@ from apps.orders.apipay import (
 )
 from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
 from apps.orders.models import Order, Payment
+from apps.orders.serializers import TransportNumbersSerializer
 from apps.orders.services import (
     create_client_payment,
     release_client_payment,
     request_client_debt,
-    set_truck_number,
 )
+from apps.orders.transport import set_order_transport
 from apps.warehouse.models import Warehouse
 from apps.warehouse.services import DEFAULT_WAREHOUSE_CODE
 from config.throttles import PortalOrderCreateRateThrottle
@@ -115,9 +116,10 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def get_queryset(self):
         return (
             Order.objects.filter(client__user=self.request.user)
-            .select_related("store", "client__user")
+            .select_related("store", "client__user", "truck_number_set_by", "shipment")
             .prefetch_related(
                 "items__product",
+                "shipment__wagons",
                 Prefetch(
                     "payments",
                     queryset=Payment.objects.select_related("apipay_invoice"),
@@ -226,7 +228,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         missing = []
         if not order.client.iin.strip():
             missing.append("ИИН/БИН")
-        if not (order.client.company_name.strip() or order.client.name):
+        if not order.client.display_name:
             missing.append("название ТОО / ИП")
         if missing:
             raise ValidationError({
@@ -289,8 +291,11 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         if order.status != "confirmed":
             raise Conflict({"detail": "Номер транспорта доступен после подтверждения заказа",
                             "code": "invalid_status"})
-        value = (request.data.get("truck_number") or "").strip()
-        if not value:
+        serializer = TransportNumbersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        truck = serializer.validated_data.get("truck_number", "")
+        if not truck:
             raise ValidationError({"detail": "Введите номер транспорта", "code": "empty"})
-        set_truck_number(order, value, request.user)
+        set_order_transport(
+            order, request.user, truck=truck, trailer=serializer.validated_data.get("trailer_number"))
         return Response(self.get_serializer(order).data)

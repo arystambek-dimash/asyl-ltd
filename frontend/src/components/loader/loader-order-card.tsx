@@ -1,8 +1,10 @@
 "use client";
 import { ChevronRight, TrainFront, Wallet } from "lucide-react";
-import { PlateBadge } from "@/components/ui/license-plate-input";
-import type { LoaderOrder } from "@/lib/loader";
+import { PlatePair } from "@/components/ui/transport-number";
+import { WagonList } from "@/components/ui/wagon-list";
+import { loadWeight, type LoaderOrder } from "@/lib/loader";
 import { cn, formatCurrency, formatTime, pluralRu } from "@/lib/utils";
+import { wagonsHeadline } from "@/lib/wagons";
 
 export const bagsWord = (count: number) => pluralRu(count, ["мешок", "мешка", "мешков"]);
 
@@ -43,9 +45,13 @@ export function itemsSummary(order: LoaderOrder): string {
   return order.items.map((item) => item.label).join(" · ") || "состав не указан";
 }
 
-/** Номер транспорта крупно: у грузовика — как на самой машине. */
+/**
+ * Номер транспорта крупно: у фуры — тягач и прицеп, как на самих машинах; у
+ * отгрузки по отчёту — «12 вагонов · ст. Раустан» (номера — в карточке).
+ */
 export function TransportNumber({ order, size = "md" }: { order: LoaderOrder; size?: "md" | "lg" }) {
   if (order.transport_type === "train") {
+    const wagons = order.wagons?.length ?? 0;
     return (
       <span
         className={cn(
@@ -54,7 +60,7 @@ export function TransportNumber({ order, size = "md" }: { order: LoaderOrder; si
         )}
       >
         <TrainFront className={size === "lg" ? "size-5" : "size-4"} />
-        {order.truck_number || "без номера"}
+        {wagons ? wagonsHeadline(wagons, order.rail_station) : order.truck_number || "без номера"}
       </span>
     );
   }
@@ -70,10 +76,10 @@ export function TransportNumber({ order, size = "md" }: { order: LoaderOrder; si
       </span>
     );
   }
-  return <PlateBadge value={order.truck_number} size={size} />;
+  return <PlatePair truck={order.truck_number} trailer={order.trailer_number} size={size} />;
 }
 
-/** Карточка очереди: номер машины, сколько грузить, что и кому. */
+/** Карточка очереди: номер машины или вагона, сколько грузить (у вагона — в тоннах), что и кому. */
 export function LoaderOrderCard({
   order,
   onOpen,
@@ -98,9 +104,8 @@ export function LoaderOrderCard({
       <div className="mt-2.5 flex flex-wrap items-baseline gap-x-2">
         <span className="text-3xl font-black leading-none tabular-nums">{order.bags}</span>
         <span className="text-sm font-medium text-[var(--muted-foreground)]">{bagsWord(order.bags)}</span>
-        <span className="text-sm font-semibold tabular-nums text-[var(--muted-foreground)]">
-          · {Number(order.total_kg)} кг
-        </span>
+        <span className="text-sm font-semibold tabular-nums text-[var(--muted-foreground)]">·</span>
+        <span className="text-sm font-semibold tabular-nums text-[var(--muted-foreground)]">{loadWeight(order)}</span>
       </div>
       <div className="mt-1.5 truncate text-sm font-medium">{itemsSummary(order)}</div>
       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -109,6 +114,8 @@ export function LoaderOrderCard({
         </span>
         <PaymentMark order={order} />
       </div>
+      {/* Номера вагонов отгрузки по отчёту; заголовок «12 вагонов» — в табличке сверху. */}
+      <WagonList wagons={order.wagons ?? []} headline={false} className="mt-2.5" />
     </>
   );
   const className = cn(

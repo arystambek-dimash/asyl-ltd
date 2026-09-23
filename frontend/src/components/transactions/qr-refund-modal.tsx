@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AlertTriangle, CheckCircle2, Copy, Loader2, Send, Share2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
@@ -227,4 +227,25 @@ export function QrRefundModal({
       </div>
     </Modal>
   );
+}
+
+/**
+ * Окно возврата по Kaspi QR, начатого кнопкой в строке или баннере. Начатый
+ * возврат сразу резервирует деньги: переплата исчезает, и строка «К возврату»
+ * или баннер карточки уходят после перезагрузки — вместе с ними ушло бы и окно
+ * со ссылкой. Поэтому окно держит родитель, который перезагрузку переживает.
+ */
+export function useQrRefundWindow(onChanged: () => unknown) {
+  const [started, setStarted] = useState<{ payment: Payment; initial: QrRefundState } | null>(null);
+  const start = useCallback((payment: Payment, initial: QrRefundState) => setStarted({ payment, initial }), []);
+  const modal = started && (
+    <QrRefundModal
+      key={started.payment.id}
+      payment={started.payment}
+      initial={started.initial}
+      onClose={() => setStarted(null)}
+      onChanged={async () => onChanged()}
+    />
+  );
+  return { start, modal };
 }

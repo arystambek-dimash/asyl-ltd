@@ -24,6 +24,7 @@ from .api_views.configuration import (
 from .api_views.counting import (
     CameraAiResetView,
     CameraAiView,
+    CameraCountingLineFrameView,
     CameraCountingLineView,
 )
 from .api_views.history import (
@@ -42,6 +43,7 @@ from .api_views.operations import (
     AlwaysOnDetectionsView,
     AlwaysOnProductionView,
     AlwaysOnStockRetryView,
+    AlwaysOnUnknownColorView,
     CameraHealthView,
     ShippingBoardSettingsView,
     ShippingContinuousAnalyticsView,
@@ -73,6 +75,7 @@ __all__ = [
     "AlwaysOnDetectionsView",
     "AlwaysOnProductionView",
     "AlwaysOnStockRetryView",
+    "AlwaysOnUnknownColorView",
     "CameraAiRecordingVideoView",
     "CameraAiRecordingView",
     "CameraAiResetView",
@@ -80,6 +83,7 @@ __all__ = [
     "CameraAiSessionListView",
     "CameraAiView",
     "CameraAuthView",
+    "CameraCountingLineFrameView",
     "CameraCountingLineView",
     "CameraHealthView",
     "CameraListView",

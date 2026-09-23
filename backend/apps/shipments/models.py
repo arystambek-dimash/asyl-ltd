@@ -17,6 +17,57 @@ class Shipment(models.Model):
     shipped_at = models.DateTimeField(null=True, blank=True)
 
 
+class ShipmentWagon(models.Model):
+    """Вагон отгрузки по отчёту: номер, товар, мешки и вес.
+
+    Один вагонный заказ — вся партия (16 320 мешков = 12 вагонов по 68 т),
+    поэтому номера вагонов живут здесь, а не в ``Order.truck_number``.
+    Откат отгрузки удаляет Shipment — вагоны уходят вместе с ней.
+    """
+
+    shipment = models.ForeignKey(Shipment, on_delete=models.CASCADE, related_name="wagons")
+    number = models.CharField(max_length=8)
+    # Снимок товара, как у OrderItem: удаление товара не стирает историю вагона.
+    product = models.ForeignKey(
+        "catalog.Product", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="shipment_wagons",
+    )
+    product_label_snapshot = models.CharField(max_length=255, blank=True, default="")
+    product_weight_kg_snapshot = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True)
+    bags = models.PositiveIntegerField()
+    weight_kg = models.DecimalField(max_digits=10, decimal_places=2)
+    position = models.PositiveSmallIntegerField()
+    # Сообщение WhatsApp-бота, по которому проведён вагон (пусто — «Вставить отчёт» у грузчика).
+    source_message = models.ForeignKey(
+        "bots.BotMessage", null=True, blank=True, on_delete=models.SET_NULL, related_name="wagons",
+    )
+
+    class Meta:
+        ordering = ["position", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["shipment", "number"], name="shipment_wagon_unique_number"),
+            # Номер вагона — ровно 8 цифр (контрольную цифру проверяет разбор отчёта).
+            models.CheckConstraint(condition=models.Q(number__regex=r"^[0-9]{8}$"), name="shipment_wagon_number_digits"),
+        ]
+        indexes = [
+            # Дубли отчётов: тот же вагон у другой отгрузки за последние дни.
+            models.Index(fields=["number"], name="shipment_wagon_number_idx"),
+        ]
+
+    @property
+    def product_label(self):
+        if self.product_label_snapshot:
+            return self.product_label_snapshot
+        return str(self.product) if self.product_id else "Удалённый товар"
+
+    def save(self, *args, **kwargs):
+        if self.product_id and not self.product_label_snapshot:
+            self.product_label_snapshot = str(self.product)
+            self.product_weight_kg_snapshot = self.product.weight_kg
+        super().save(*args, **kwargs)
+
+
 def default_waybill_signers():
     # Как на бумажном бланке мельницы; меняется в настройках накладной.
     return [

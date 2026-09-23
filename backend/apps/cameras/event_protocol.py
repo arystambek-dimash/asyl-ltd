@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from django.utils import timezone
@@ -12,6 +13,11 @@ from django.utils.dateparse import parse_datetime
 from .models import ANALYTICS_SCOPE_AI247, ANALYTICS_SCOPE_SHIPPING
 
 EVENT_PAGE_LIMIT = 500
+PENDING_CLASSIFICATION = "pending"
+UNKNOWN_CLASS = "unknown"
+# Camera answers that carry no brand evidence (legacy and explicit unknown).
+NO_BRAND = frozenset({"unknown", "unclassified"})
+MAX_VOTE_SAMPLES = 16
 
 
 class EventSyncError(Exception):
@@ -35,6 +41,10 @@ class CountEvent:
     brand_confidence: float | None = None
     sku: str | None = None
     classification_status: str | None = None
+    # Compact per-frame colour/brand votes from the camera's multi-line
+    # verification (color_resolution.compact_votes). Evidence only: it never
+    # changes what is counted, and a replay does not compare it.
+    verification_votes: dict = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True)
@@ -134,6 +144,7 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
             "classification_status",
             max_length=32,
         ),
+        verification_votes=compact_votes(raw.get("verification")),
     )
 
 
@@ -180,6 +191,22 @@ def parse_page(payload: object, *, camera: str, after_id: int) -> EventPage:
         raise EventSyncError("AI /events: next_after_id skipped an event")
     if has_more and not events:
         raise EventSyncError("AI /events: has_more without cursor progress")
+    # The camera PC withholds a bag while its lines are still voting on the
+    # colour. Should one slip through anyway, stop before it: its colour is a
+    # placeholder, and the settled event will be delivered on a later poll.
+    pending_at = next(
+        (
+            index
+            for index, event in enumerate(events)
+            if event.classification_status == PENDING_CLASSIFICATION
+        ),
+        None,
+    )
+    if pending_at is not None:
+        events = events[:pending_at]
+        next_after_id = events[-1].upstream_event_id if events else after_id
+        has_more = False
+        enrichment_pending = True
     return EventPage(
         tuple(events),
         next_after_id,
@@ -207,3 +234,54 @@ def _event_brand(event: CountEvent) -> dict[str, int] | None:
         return None
     brand = " ".join(event.brand.split()).lower()
     return {brand: 1} if brand and len(brand) <= 100 else None
+
+
+def normalize_brand(value: object) -> str | None:
+    """Brand key as analytics stores it, or ``None`` for no brand evidence."""
+
+    if not isinstance(value, str):
+        return None
+    brand = " ".join(value.split()).lower()
+    if not brand or len(brand) > 100 or brand in NO_BRAND:
+        return None
+    return brand
+
+
+def compact_votes(verification: object) -> dict:
+    """Keep only per-frame vote counts from the camera's ``verification``.
+
+    The CRM does not archive samples/bboxes; the counts are enough evidence
+    for a run boundary and stay a few dozen bytes per bag. Malformed evidence
+    is diagnostics, not accounting: it is dropped rather than rejected.
+    """
+
+    if not isinstance(verification, dict):
+        return {}
+    samples = verification.get("samples")
+    colors: Counter[str] = Counter()
+    brands: Counter[str] = Counter()
+    frames = 0
+    for sample in samples[:MAX_VOTE_SAMPLES] if isinstance(samples, list) else ():
+        prediction = sample.get("prediction") if isinstance(sample, dict) else None
+        if not isinstance(prediction, dict):
+            continue
+        frames += 1
+        color = prediction.get("color")
+        if isinstance(color, str):
+            key = event_color_key(color, None)
+            if key and key != UNKNOWN_CLASS:
+                colors[key] += 1
+        brand = normalize_brand(prediction.get("brand"))
+        if brand is not None:
+            brands[brand] += 1
+    result: dict = {}
+    if colors:
+        result["color"] = dict(sorted(colors.items()))
+    if brands:
+        result["brand"] = dict(sorted(brands.items()))
+    if frames:
+        result["frames"] = frames
+    reason = verification.get("reason")
+    if isinstance(reason, str) and 0 < len(reason) <= 32:
+        result["reason"] = reason
+    return result

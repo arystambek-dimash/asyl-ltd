@@ -199,6 +199,8 @@ export function useCashier({
     scoped.confirm,
     awaitingFilters,
     paymentChanged,
+    // «К возврату» — в кассе на компьютере; на телефоне этого списка нет.
+    { refunds: !mobile },
   );
 
   const overviewValid = !overviewActive || filtersAreValid(filtersByScreen.overview);
@@ -208,13 +210,7 @@ export function useCashier({
   useVisiblePolling(
     queue.refresh,
     30_000,
-    perms.canPayments &&
-      view === "confirm" &&
-      !queue.busy &&
-      !queue.awaitingPage.loadingMore &&
-      !queue.queuePage.loadingMore &&
-      queue.awaiting.length <= 50 &&
-      queue.toReview.length <= 50,
+    perms.canPayments && view === "confirm" && !queue.busy && !queue.loadingMore && queue.longestList <= 50,
   );
 
   const debtRows = debts.data ?? [];

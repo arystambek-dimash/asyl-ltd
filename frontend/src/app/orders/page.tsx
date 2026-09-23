@@ -9,9 +9,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
-import { formatTransportNumber } from "@/components/ui/transport-number";
 import { StatusBadge } from "@/components/status-badge";
-import { Badge } from "@/components/ui/badge";
+import { OrderPaymentBadge, paymentBadgeStatus } from "@/components/payments/order-payment-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
@@ -30,16 +29,11 @@ import { ArchiveDock } from "@/components/orders/archive-dock";
 import { OrderPurgeDialog } from "@/components/orders/order-purge-dialog";
 import { DepartmentManager } from "@/components/orders/department-manager";
 import { OrderRequestsSection } from "@/components/orders/order-requests";
+import { TruckEntrySection } from "@/components/orders/truck-entry";
 import { useOrderRequests } from "@/components/orders/use-order-requests";
 import { departmentScope } from "@/components/cashier/scope";
 import { Tabs } from "@/components/ui/tabs";
-import {
-  ORDER_PUBLIC_STATUSES,
-  ORDER_STATUS_LABELS,
-  PAYMENT_STATUS_LABELS,
-  PAYMENT_STATUS_TONE,
-  orderStatusGroup,
-} from "@/lib/constants";
+import { ORDER_PUBLIC_STATUSES, ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useDebounced } from "@/lib/use-debounced";
@@ -49,6 +43,7 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, sumMoneyByCurrency } from "@/lib/utils";
+import { orderTransportText } from "@/lib/wagons";
 import { useDismiss } from "@/lib/use-dismiss";
 import { useRovingTabs } from "@/lib/use-roving-tabs";
 import { clearOrderDraft, loadOrderDraft } from "@/lib/order-draft";
@@ -581,6 +576,11 @@ function OrderTemplatePicker({
   );
 }
 
+type OrdersTab = "orders" | "requests" | "trucks";
+
+const tabFromQuery = (value: string | null): OrdersTab =>
+  value === "requests" || value === "trucks" ? value : "orders";
+
 function OrdersPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -593,9 +593,7 @@ function OrdersPageInner() {
   const [sortKey, setSortKey] = useState("id");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [view, setView] = useState<"orders" | "archive">("orders");
-  const [tab, setTab] = useState<"orders" | "requests">(() =>
-    searchParams.get("tab") === "requests" ? "requests" : "orders",
-  );
+  const [tab, setTab] = useState<OrdersTab>(() => tabFromQuery(searchParams.get("tab")));
   // Фильтры уходят на бэк: список, карточки и сумма считаются по выборке сервера.
   const ordersUrl = useMemo(() => {
     const params = new URLSearchParams();
@@ -635,13 +633,17 @@ function OrdersPageInner() {
   // Заявки клиентов разбирает сотрудник с правом подтверждения; закреплённый за отделом видит свой отдел.
   const canReviewOrders = can(me, "orders.confirm");
   const { assigned } = departmentScope(me);
-  const activeTab = canReviewOrders && tab === "requests" ? "requests" : "orders";
+  // Быстрый ввод номеров «Фуры» — та же правка заказа, что и в форме (orders.edit).
+  const activeTab: OrdersTab =
+    canReviewOrders && tab === "requests" ? "requests" : canEdit && tab === "trucks" ? "trucks" : "orders";
   const reloadAfterReview = useCallback(() => Promise.all([reload(), reloadSummary()]), [reload, reloadSummary]);
   const requests = useOrderRequests(canReviewOrders && view === "orders", reloadAfterReview);
   function chooseTab(key: string) {
-    const next = key === "requests" ? "requests" : "orders";
+    const next = tabFromQuery(key);
+    // «Фуры» правят номера без перечитывания списка: вернулись к заказам — «Машина» свежая.
+    if (next === "orders" && activeTab === "trucks") void reload();
     setTab(next);
-    router.replace(next === "requests" ? "/orders?tab=requests" : "/orders", { scroll: false });
+    router.replace(next === "orders" ? "/orders" : `/orders?tab=${next}`, { scroll: false });
   }
   const showDept = (departments?.length ?? 0) > 1 || orders.some((order) => !order.department);
   const [open, setOpen] = useState(false);
@@ -892,13 +894,16 @@ function OrdersPageInner() {
         />
       ) : (
         <>
-          {canReviewOrders && (
+          {(canReviewOrders || canEdit) && (
             <Tabs
               className="mb-4"
               label="Заказы и заявки"
               tabs={[
                 { key: "orders", label: "Все заказы" },
-                { key: "requests", label: "Заявки", count: requests.loading ? undefined : requests.count },
+                ...(canReviewOrders
+                  ? [{ key: "requests", label: "Заявки", count: requests.loading ? undefined : requests.count }]
+                  : []),
+                ...(canEdit ? [{ key: "trucks", label: "Фуры" }] : []),
               ]}
               active={activeTab}
               onChange={chooseTab}
@@ -906,6 +911,8 @@ function OrdersPageInner() {
           )}
           {activeTab === "requests" ? (
             <OrderRequestsSection requests={requests} />
+          ) : activeTab === "trucks" ? (
+            <TruckEntrySection />
           ) : (
             <>
               <Modal
@@ -1025,14 +1032,12 @@ function OrdersPageInner() {
                             {formatMoney(o.paid_total)} {currencySymbol(o.currency)}
                           </div>
                         </div>
-                        {o.truck_number && (
+                        {orderTransportText(o) && (
                           <div>
                             <div className="text-[11px] text-[var(--muted-foreground)]">
-                              {o.transport_type === "train" ? "Вагон" : "Машина"}
+                              {o.transport_type !== "train" ? "Машина" : o.wagons?.length ? "Вагоны" : "Вагон"}
                             </div>
-                            <div className="tabular-nums">
-                              {formatTransportNumber(o.truck_number, o.transport_type)}
-                            </div>
+                            <div className="tabular-nums">{orderTransportText(o)}</div>
                           </div>
                         )}
                         {o.arrival_date && (
@@ -1043,13 +1048,7 @@ function OrdersPageInner() {
                         )}
                       </div>
                       <div className="flex items-center justify-between border-t pt-2">
-                        {o.status === "shipped" && o.payment_status ? (
-                          <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                            {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                          </Badge>
-                        ) : (
-                          <span />
-                        )}
+                        {paymentBadgeStatus(o) ? <OrderPaymentBadge order={o} /> : <span />}
                         {(canEdit || canCorrectPrice) && (
                           <div className="relative z-10">
                             <ActionMenu items={rowActions(o)} />
@@ -1144,11 +1143,7 @@ function OrdersPageInner() {
                                 ) : (
                                   <StatusBadge status={o.status} dot />
                                 )}
-                                {o.payment_status && (
-                                  <Badge tone={PAYMENT_STATUS_TONE[o.payment_status] ?? "muted"}>
-                                    {PAYMENT_STATUS_LABELS[o.payment_status] ?? o.payment_status}
-                                  </Badge>
-                                )}
+                                <OrderPaymentBadge order={o} />
                               </div>
                             </TD>
                             {(canEdit || canCorrectPrice) && (

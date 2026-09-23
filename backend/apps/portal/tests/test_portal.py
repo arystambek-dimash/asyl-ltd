@@ -1,13 +1,13 @@
 from decimal import Decimal
 
 import pytest
-from django.db import connection
 
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
 from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
 from apps.warehouse.models import StockItem, Warehouse
+from apps.warehouse.tests.legacy import force_legacy_null_warehouse
 
 pytestmark = pytest.mark.django_db
 
@@ -28,22 +28,6 @@ def _make_default(warehouse):
     )
     Warehouse.objects.filter(pk=warehouse.pk).update(is_default=True)
     warehouse.refresh_from_db()
-
-
-def _force_legacy_null_warehouse(stock_item):
-    """Emulate a row written by the pre-warehouse application image."""
-    if connection.vendor == "postgresql":
-        with connection.cursor() as cursor:
-            cursor.execute("ALTER TABLE warehouse_stockitem DISABLE TRIGGER USER")
-        try:
-            StockItem.objects.filter(pk=stock_item.pk).update(warehouse=None)
-        finally:
-            with connection.cursor() as cursor:
-                cursor.execute("ALTER TABLE warehouse_stockitem ENABLE TRIGGER USER")
-    else:
-        StockItem.objects.filter(pk=stock_item.pk).update(warehouse=None)
-    stock_item.refresh_from_db()
-    assert stock_item.warehouse_id is None
 
 
 def test_client_creates_own_pending_order(auth_client, client_user):
@@ -229,7 +213,7 @@ def test_legacy_null_stock_belongs_only_to_compatibility_main_default(
     legacy_stock = StockItem.objects.create(
         product=legacy_product, warehouse=main, bags=4,
     )
-    _force_legacy_null_warehouse(legacy_stock)
+    force_legacy_null_warehouse(legacy_stock)
 
     response = auth_client(client_user).get("/api/portal/catalog/")
 

@@ -22,6 +22,7 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.orders.models import Order
+from apps.shipments.access import assert_can_ship
 from apps.shipments.services import (
     begin_camera_loading,
     finish_ai_counting,
@@ -77,10 +78,16 @@ def metadata(
 
 
 def _assert_order_department_scope(order_id: int, user) -> Order:
-    """Lock Order then Client and recheck ownership before edge effects."""
+    """Lock Order then Client and recheck ownership before edge effects.
+
+    Счётчиком заказа управляет только грузчик его области («Фуры | Вагоны»);
+    системная автоматика (``user=None``) не проверяется.
+    """
     from apps.orders.services import lock_live_order
 
-    return lock_live_order(order_id, user)
+    order = lock_live_order(order_id, user)
+    assert_can_ship(user, order)
+    return order
 
 
 def _payload(value: object) -> dict:
@@ -380,9 +387,7 @@ def start(
             or not type(user)._default_manager.filter(pk=user.pk, is_active=True).exists()
         ):
             raise PermissionDenied("Учётная запись отключена администратором")
-        from apps.orders.services import lock_live_order
-
-        order = lock_live_order(order, user)
+        order = _assert_order_department_scope(order.pk, user)
         existing = sessions.current_for_camera(camera)
         _assert_expected_session(existing, expected_session_id)
         _validate_start(order, camera)
@@ -784,7 +789,8 @@ def stop(
     """Finish an order exactly, or cancel local ownership best-effort.
 
     ``dispatching`` — сессию закрывает отгрузка грузчика: право на неё уже
-    проверено (loader.confirm), а не только тот, кто подсчёт запустил.
+    проверено (loader.confirm и область транспорта), а не только тот, кто
+    подсчёт запустил.
 
     Business completion requires the scoped durable DELETE result before its
     database commit. A plain cancel may still close locally when remote cleanup

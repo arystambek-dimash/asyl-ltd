@@ -422,6 +422,15 @@ class AlwaysOnCounterCursor(models.Model):
         ]
 
 
+RESOLUTION_CHOICES = (
+    ("", "Classified by camera"),
+    ("unresolved", "Unresolved"),
+    ("neighbors", "Neighbours"),
+    ("votes", "Partial votes"),
+    ("manual", "Manual"),
+)
+
+
 class AlwaysOnImportedEvent(models.Model):
     """One durable camera-PC count event applied to CRM at most once."""
 
@@ -447,6 +456,36 @@ class AlwaysOnImportedEvent(models.Model):
     sku = models.CharField(max_length=255, null=True, blank=True)
     classification_status = models.CharField(max_length=32, null=True, blank=True)
     total_after = models.PositiveBigIntegerField(null=True, blank=True)
+    # Compact per-frame answers of the camera's multi-line verification, e.g.
+    # {"color": {"red": 1, "blue": 1}, "brand": {"korol": 1}, "frames": 2,
+    # "reason": "track_ended"}. Only counts are kept, never crops or boxes.
+    verification_votes = models.JSONField(default=dict, db_default={}, blank=True)
+    # The camera's own colour/brand above are never rewritten. A bag it left
+    # as ``unknown`` gets a decision here (see color_resolution.py): ``""`` =
+    # camera answer used as is; otherwise unresolved/neighbors/votes/manual.
+    # Every column has a database default so an image rollback keeps inserting.
+    resolved_color = models.CharField(
+        max_length=32, blank=True, default="", db_default=""
+    )
+    color_resolution = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        db_default="",
+        choices=RESOLUTION_CHOICES,
+    )
+    resolved_brand = models.CharField(
+        max_length=100, blank=True, default="", db_default=""
+    )
+    brand_resolution = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        db_default="",
+        choices=RESOLUTION_CHOICES,
+    )
+    # {"color": "до: red (12 с), после: red (8 с)", "brand": "…"}
+    resolution_note = models.JSONField(default=dict, db_default={}, blank=True)
     applied_to_analytics = models.BooleanField(default=False)
     # The database default keeps automatic rollback safe: the previous image
     # inserts ordinary AI 24/7 events without naming this candidate column.
@@ -460,6 +499,15 @@ class AlwaysOnImportedEvent(models.Model):
 
     class Meta:
         ordering = ["upstream_event_id"]
+        indexes = [
+            # Resolution passes and colour transfers only ever read the few
+            # bags that needed a decision; keep them off the full journal.
+            models.Index(
+                fields=["camera", "occurred_at"],
+                condition=~Q(color_resolution="") | ~Q(brand_resolution=""),
+                name="aon_event_resolution_idx",
+            ),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["camera", "upstream_event_id"],
@@ -878,6 +926,10 @@ class AlwaysOnStockBatch(models.Model):
     scheduled_for = models.DateTimeField()
     status = models.CharField(max_length=12, choices=STATUSES, default=SCHEDULED)
     total_bags = models.PositiveIntegerField(default=0)
+    # Bags still without a colour when the shift was posted. They were not
+    # received with the shift; an operator assigns them a colour later and
+    # each assignment is received separately (kind=manual_color postings).
+    pending_bags = models.PositiveIntegerField(default=0, db_default=0)
     last_error = models.CharField(max_length=500, blank=True, default="")
     attempts = models.PositiveIntegerField(default=0)
     posted_at = models.DateTimeField(null=True, blank=True)
@@ -895,30 +947,55 @@ class AlwaysOnStockBatch(models.Model):
 
 
 class AlwaysOnStockPosting(models.Model):
-    """One product receipt produced by an automatic daily stock batch."""
+    """One product receipt produced by an automatic daily stock batch.
+
+    ``shift`` rows are the 19:00 posting (one per colour). ``manual_color``
+    rows receive bags an operator assigned a colour after that posting.
+    """
+
+    SHIFT = "shift"
+    MANUAL_COLOR = "manual_color"
+    KINDS = (
+        (SHIFT, "Shift posting"),
+        (MANUAL_COLOR, "Manual colour assignment"),
+    )
 
     batch = models.ForeignKey(
         AlwaysOnStockBatch,
         on_delete=models.CASCADE,
         related_name="items",
     )
+    kind = models.CharField(
+        max_length=16, choices=KINDS, default=SHIFT, db_default=SHIFT
+    )
     color = models.CharField(max_length=32)
     product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
     detected_bags = models.PositiveIntegerField()
+    # Bags the camera left as ``unknown`` and CRM resolved to this colour
+    # (neighbours/votes/manual). posted = detected + resolved + correction.
+    resolved_bags = models.IntegerField(default=0, db_default=0)
     correction_bags = models.IntegerField(default=0)
     posted_bags = models.PositiveIntegerField()
     receipt = models.OneToOneField(
         "warehouse.StockReceipt",
         on_delete=models.PROTECT,
     )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="always_on_stock_postings",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["color"]
+        ordering = ["color", "id"]
         constraints = [
             models.UniqueConstraint(
                 fields=["batch", "color"],
-                name="cameras_one_stock_posting_per_color",
+                condition=Q(kind="shift"),
+                name="cameras_one_shift_posting_per_color",
             ),
         ]
 

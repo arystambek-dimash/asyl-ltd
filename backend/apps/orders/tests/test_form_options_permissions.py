@@ -76,6 +76,8 @@ def test_order_permission_grants_minimal_form_options(
         "company_name": "ТОО Север",
         "phone": "+77010000000",
         "currency": "USD",
+        # Страна клиента — страна номера машины по умолчанию в форме заказа.
+        "country": "Казахстан",
         "department_code": client.department.code if client.department_id else "",
         "department_name": client.department.name if client.department_id else "",
     }
@@ -108,7 +110,6 @@ def test_order_permission_grants_minimal_form_options(
         "iin",
         "bank",
         "bank_account",
-        "country",
         "debt_total",
     }.isdisjoint(clients[client.id])
     assert {

@@ -11,10 +11,12 @@ import type {
   AlwaysOnProductionProduct,
   AlwaysOnProductionRun,
   AlwaysOnStockBatch,
+  AlwaysOnUnknownColorInput,
 } from "@/lib/types";
 import { cn, formatIsoDate } from "@/lib/utils";
 import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
 import { ColorDot, Eyebrow, Hairline, InfoHint, Panel, SectionHead, StatusChip } from "@/components/monoblock/ui";
+import { InferredBadge, UnknownColorDialog, unresolvedBagsLabel } from "@/components/monoblock/unknown-color";
 
 const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; className: string }> = {
   scheduled: { label: "Запланировано", className: "bg-blue-50 text-blue-600" },
@@ -213,6 +215,39 @@ interface AlwaysOnProductionPanelProps {
   canManage: boolean;
   onSave: (mappings: AlwaysOnProductMapping[], warehouse: number | null) => void | Promise<void>;
   onRetry?: (batch: AlwaysOnStockBatch) => void | Promise<void>;
+  /** «Указать цвет»: бросает ошибку запроса, чтобы окно показало её у себя. */
+  onAssignUnknown?: (input: AlwaysOnUnknownColorInput) => Promise<void>;
+}
+
+interface UnknownColorTarget {
+  businessDay: string;
+  bags: number;
+  posted: boolean;
+}
+
+/** Мешки без цвета не блокируют приход: они ждут, пока оператор укажет цвет. */
+function UnresolvedBagsRow({ bags, onAssign, className }: { bags: number; onAssign?: () => void; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-dashed border-amber-300 bg-amber-50/70 px-3 py-2",
+        className,
+      )}
+    >
+      <ColorDot className={colorMeta("unknown").dot} />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold text-amber-800">{unresolvedBagsLabel(bags)}</p>
+        <p className="mt-0.5 text-[11px] text-amber-700">
+          Не попадают в приход, пока не указан цвет. Остальная продукция приходуется как обычно.
+        </p>
+      </div>
+      {onAssign && (
+        <Button variant="outline" size="sm" onClick={onAssign}>
+          Указать цвет
+        </Button>
+      )}
+    </div>
+  );
 }
 
 interface AlwaysOnDayRunLogProps {
@@ -298,7 +333,9 @@ export function AlwaysOnDayRunLog({
     () =>
       [...(runs ?? [])].sort(
         (left, right) =>
-          new Date(left.started_at).getTime() - new Date(right.started_at).getTime() || left.id - right.id,
+          new Date(left.started_at).getTime() - new Date(right.started_at).getTime() ||
+          left.id - right.id ||
+          (left.segment ?? 0) - (right.segment ?? 0),
       ),
     [runs],
   );
@@ -357,7 +394,7 @@ export function AlwaysOnDayRunLog({
             const partial = Boolean(run.is_partial_for_day);
             return (
               <div
-                key={run.id}
+                key={`${run.id}:${run.segment ?? 0}`}
                 role="group"
                 aria-label={
                   partial
@@ -419,6 +456,7 @@ export function AlwaysOnDayRunLog({
                       ≈ приблизительно
                     </span>
                   )}
+                  <InferredBadge inferred={run.inferred} />
                 </div>
                 <div className="col-start-2 row-start-1 whitespace-nowrap text-right sm:col-start-3">
                   {partial ? (
@@ -458,8 +496,10 @@ export function AlwaysOnProductionPanel({
   canManage,
   onSave,
   onRetry,
+  onAssignUnknown,
 }: AlwaysOnProductionPanelProps) {
   const [draft, setDraft] = useState<AlwaysOnProductMapping[]>([]);
+  const [unknownTarget, setUnknownTarget] = useState<UnknownColorTarget | null>(null);
   const [warehouseDraft, setWarehouseDraft] = useState<number | null>(null);
   // Сопоставление цвет→товар скрыто под сворачиваемой секцией, чтобы не
   // загромождать вкладку. Раскрываем автоматически, только пока остаются
@@ -563,6 +603,8 @@ export function AlwaysOnProductionPanel({
 
   const timezone = payload.timezone || "Asia/Almaty";
   const nextRun = zonedDateTime(payload.next_run_at, timezone);
+  const unresolvedBags = payload.unresolved?.bags ?? 0;
+  const canAssignUnknown = canManage && Boolean(onAssignUnknown);
 
   function updateMapping(color: string, value: string) {
     if (!canManage) return;
@@ -755,7 +797,7 @@ export function AlwaysOnProductionPanel({
           aside={<span className="text-[11px] font-medium text-slate-400">до {payload.close_time}</span>}
         />
 
-        {payload.preview.length ? (
+        {payload.preview.length > 0 && (
           <div className="mt-5 grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3">
             {payload.preview.map((row) => {
               const meta = colorMeta(row.color);
@@ -786,11 +828,29 @@ export function AlwaysOnProductionPanel({
                     colorLabel={meta.label}
                     className="mt-1.5"
                   />
+                  <InferredBadge inferred={row.inferred} className="mt-1.5" />
                 </div>
               );
             })}
           </div>
-        ) : (
+        )}
+        {unresolvedBags > 0 && payload.unresolved && (
+          <UnresolvedBagsRow
+            bags={unresolvedBags}
+            className="mt-5"
+            onAssign={
+              canAssignUnknown
+                ? () =>
+                    setUnknownTarget({
+                      businessDay: payload.unresolved!.business_day,
+                      bags: unresolvedBags,
+                      posted: false,
+                    })
+                : undefined
+            }
+          />
+        )}
+        {!payload.preview.length && unresolvedBags === 0 && (
           <div className="mt-5 py-8 text-center text-sm text-slate-400">В текущей смене продукции пока нет.</div>
         )}
       </Panel>
@@ -806,6 +866,10 @@ export function AlwaysOnProductionPanel({
             {batches.map((batch, index) => {
               const meta = BATCH_META[batch.status];
               const retryable = batch.status === "blocked" || batch.status === "failed";
+              const pendingBags = batch.pending_bags ?? 0;
+              const manualBags = batch.items
+                .filter((item) => item.kind === "manual_color")
+                .reduce((sum, item) => sum + item.posted_bags, 0);
               return (
                 <article key={batch.id}>
                   {index > 0 && <Hairline className="my-1" />}
@@ -826,6 +890,27 @@ export function AlwaysOnProductionPanel({
                     </div>
                   </div>
 
+                  {manualBags > 0 && (
+                    <p className="pb-2 text-[11px] text-slate-500">
+                      Из них {manualBags} меш. — цвет указан вручную после закрытия смены
+                    </p>
+                  )}
+                  {pendingBags > 0 && (
+                    <UnresolvedBagsRow
+                      bags={pendingBags}
+                      className="mb-2"
+                      onAssign={
+                        canAssignUnknown
+                          ? () =>
+                              setUnknownTarget({
+                                businessDay: batch.business_day,
+                                bags: pendingBags,
+                                posted: batch.status === "posted" || batch.status === "empty",
+                              })
+                          : undefined
+                      }
+                    />
+                  )}
                   {(batch.last_error || retryable) && (
                     <div className="flex flex-wrap items-center gap-2 pb-2">
                       {batch.last_error && <p className="min-w-0 flex-1 text-xs text-red-600">{batch.last_error}</p>}
@@ -846,6 +931,18 @@ export function AlwaysOnProductionPanel({
           </div>
         )}
       </Panel>
+
+      {onAssignUnknown && (
+        <UnknownColorDialog
+          open={unknownTarget !== null}
+          businessDay={unknownTarget?.businessDay ?? payload.current_business_day}
+          pendingBags={unknownTarget?.bags ?? 0}
+          posted={unknownTarget?.posted ?? false}
+          mappings={payload.mappings}
+          onClose={() => setUnknownTarget(null)}
+          onSubmit={onAssignUnknown}
+        />
+      )}
     </div>
   );
 }
