@@ -22,6 +22,13 @@ import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { cn, formatCurrency, todayLocalIsoDate, currencySymbol } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
+import {
+  clearOrderDraft,
+  loadOrderDraft,
+  orderDraftHasContent,
+  saveOrderDraft,
+  type OrderDraft,
+} from "@/lib/order-draft";
 import type { Client, Department, Order, Product, Store, Warehouse } from "@/lib/types";
 
 type Row = { id: number; product: string; quantity: string; price: string };
@@ -99,14 +106,24 @@ export function OrderForm({
   template,
   onCancel,
   onDone,
+  onDraftChange,
 }: {
   editing?: Order | null;
   template?: Order | null;
   onCancel: () => void;
   onDone: () => void;
+  /** Новый заказ: сообщает, есть ли в сохранённом черновике введённые данные. */
+  onDraftChange?: (hasContent: boolean) => void;
 }) {
   const router = useRouter();
   const { me } = useAuth();
+  // Черновик восстанавливаем, только если он начат от того же шаблона (или с нуля):
+  // явный выбор другого шаблона в окне начинает заказ заново.
+  const [draft] = useState<OrderDraft | null>(() => {
+    if (editing) return null;
+    const saved = loadOrderDraft(me?.id);
+    return saved && (saved.template?.id ?? null) === (template?.id ?? null) ? saved : null;
+  });
   const {
     data: formOptions,
     loading: formOptionsLoading,
@@ -115,34 +132,87 @@ export function OrderForm({
   } = useApi<OrderFormOptions>("/orders/form-options/");
   const { clients, products, stores, departments, warehouses = [] } = formOptions ?? EMPTY_FORM_OPTIONS;
   const source = editing ?? template;
-  const nextRowId = useRef(source?.items.length ?? 1);
+  const nextRowId = useRef(draft ? Math.max(0, ...draft.rows.map((row) => row.id)) + 1 : (source?.items.length ?? 1));
   const [clientSearch, setClientSearch] = useState("");
-  const [clientPickerOpen, setClientPickerOpen] = useState(!source);
-  const [dept, setDept] = useState(source?.department ?? "");
-  const [client, setClient] = useState(source ? String(source.client) : "");
-  const [currency, setCurrency] = useState<"KZT" | "USD">(source?.currency ?? "KZT");
-  const [store, setStore] = useState(source?.store ? String(source.store) : "");
-  const [warehouse, setWarehouse] = useState(source?.warehouse ? String(source.warehouse) : "");
-  const [transport, setTransport] = useState<"truck" | "train">(source?.transport_type ?? "truck");
-  const [truck, setTruck] = useState(source?.transport_type === "train" ? "" : (source?.truck_number ?? ""));
-  const [wagonNumber, setWagonNumber] = useState(source?.transport_type === "train" ? source.truck_number : "");
-  const [arrival, setArrival] = useState(editing?.arrival_date ?? (template ? todayLocalIsoDate() : ""));
+  const [clientPickerOpen, setClientPickerOpen] = useState(draft ? !draft.client : !source);
+  const [dept, setDept] = useState(draft?.dept ?? source?.department ?? "");
+  const [client, setClient] = useState(draft?.client ?? (source ? String(source.client) : ""));
+  const [currency, setCurrency] = useState<"KZT" | "USD">(draft?.currency ?? source?.currency ?? "KZT");
+  const [store, setStore] = useState(draft?.store ?? (source?.store ? String(source.store) : ""));
+  const [warehouse, setWarehouse] = useState(draft?.warehouse ?? (source?.warehouse ? String(source.warehouse) : ""));
+  const [transport, setTransport] = useState<"truck" | "train">(draft?.transport ?? source?.transport_type ?? "truck");
+  const [truck, setTruck] = useState(
+    draft?.truck ?? (source?.transport_type === "train" ? "" : (source?.truck_number ?? "")),
+  );
+  const [wagonNumber, setWagonNumber] = useState(
+    draft?.wagonNumber ?? (source?.transport_type === "train" ? source.truck_number : ""),
+  );
+  const [arrival, setArrival] = useState(
+    draft?.arrival ?? editing?.arrival_date ?? (template ? todayLocalIsoDate() : ""),
+  );
   const [rows, setRows] = useState<Row[]>(
-    source
-      ? source.items.map((item, index) => ({
-          id: index,
-          product: String(item.product ?? ""),
-          quantity: String(item.quantity),
-          price: item.unit_price ?? item.price ?? "",
-        }))
-      : [{ id: 0, product: "", quantity: "", price: "" }],
+    draft?.rows.length
+      ? draft.rows
+      : source
+        ? source.items.map((item, index) => ({
+            id: index,
+            product: String(item.product ?? ""),
+            quantity: String(item.quantity),
+            price: item.unit_price ?? item.price ?? "",
+          }))
+        : [{ id: 0, product: "", quantity: "", price: "" }],
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editReason, setEditReason] = useState("");
   // Заказ задним числом: дата, статус и оплата фиксируются вместе с созданием.
-  const [backdateOn, setBackdateOn] = useState(false);
-  const [fixation, setFixation] = useState<FixationDraft>(emptyFixationDraft);
+  const [backdateOn, setBackdateOn] = useState(draft?.backdateOn ?? false);
+  const [fixation, setFixation] = useState<FixationDraft>(() => draft?.fixation ?? emptyFixationDraft());
+
+  // Автосохранение черновика нового заказа: случайное закрытие окна ничего не теряет.
+  const onDraftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+  const draftSaveBlocked = useRef(false);
+  useEffect(() => {
+    if (editing || draftSaveBlocked.current) return;
+    const next: OrderDraft = {
+      template: template ?? null,
+      dept,
+      client,
+      currency,
+      store,
+      warehouse,
+      transport,
+      truck,
+      wagonNumber,
+      arrival,
+      rows,
+      backdateOn,
+      fixation,
+    };
+    const hasContent = orderDraftHasContent(next);
+    if (hasContent) saveOrderDraft(me?.id, next);
+    else clearOrderDraft(me?.id);
+    onDraftChangeRef.current?.(hasContent);
+  }, [
+    editing,
+    template,
+    me?.id,
+    dept,
+    client,
+    currency,
+    store,
+    warehouse,
+    transport,
+    truck,
+    wagonNumber,
+    arrival,
+    rows,
+    backdateOn,
+    fixation,
+  ]);
 
   const canBackdate = !editing && can(me, "orders.edit");
   const canPay = can(me, "payments.create");
@@ -201,8 +271,14 @@ export function OrderForm({
     }
   }, [editing, products, template, warehouse, warehouses]);
 
+  // Цены из черновика уже проверены человеком — первый загруженный прайс их не перетирает.
+  const keepDraftPrices = useRef(Boolean(draft?.client));
   useEffect(() => {
     if (!loadedClientPrices || editing) return;
+    if (keepDraftPrices.current) {
+      keepDraftPrices.current = false;
+      return;
+    }
     setRows((current) =>
       current.map((row) => (row.product ? { ...row, price: loadedClientPrices[row.product] ?? "" } : row)),
     );
@@ -334,6 +410,10 @@ export function OrderForm({
         onDone();
       } else {
         const { data } = await api.post("/orders/", { ...body, client: Number(client) });
+        // Заказ создан — черновик больше не нужен; блокируем повторное сохранение до размонтирования.
+        draftSaveBlocked.current = true;
+        clearOrderDraft(me?.id);
+        onDraftChangeRef.current?.(false);
         onDone();
         router.push(`/orders/${data.id}`);
       }

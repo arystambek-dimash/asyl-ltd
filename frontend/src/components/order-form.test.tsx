@@ -558,3 +558,41 @@ describe("OrderForm reference data resilience", () => {
     expect(postMock).not.toHaveBeenCalled();
   });
 });
+
+describe("OrderForm draft", () => {
+  beforeEach(() => {
+    useApiMock.mockReset();
+    postMock.mockReset();
+    postMock.mockResolvedValue({ data: { id: 77 } });
+    localStorage.clear();
+    meMock.current = { id: 5, sales_department: null, permissions: [] } as typeof meMock.current;
+    const states = new Map<string, unknown>([
+      [
+        "/orders/form-options/",
+        apiState({ clients: [client], products: [product], stores: [], departments: [department] }),
+      ],
+      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({ "2": "10" })],
+    ]);
+    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+  });
+
+  it("restores typed data after the form is closed and clears the draft once the order is created", async () => {
+    const user = userEvent.setup();
+    const onDraftChange = vi.fn();
+    const first = render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} onDraftChange={onDraftChange} />);
+    await user.click(screen.getByRole("button", { name: /Тестовый клиент/ }));
+    await user.type(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }), "4");
+    expect(onDraftChange).toHaveBeenLastCalledWith(true);
+    first.unmount();
+
+    render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Изменить" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 1" })).toHaveValue(4);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Товар, позиция 1" }), "2");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Отдел продаж" }), "sales");
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledOnce());
+    expect(localStorage.getItem("asyl_order_draft_v1:5")).toBeNull();
+  });
+});

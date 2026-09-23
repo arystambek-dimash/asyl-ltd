@@ -6,6 +6,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
+import { Field } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
@@ -26,7 +29,7 @@ import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
 import { Plus, Check, Pencil, Archive, ArchiveRestore } from "lucide-react";
-import type { Product } from "@/lib/types";
+import type { Product, Warehouse } from "@/lib/types";
 
 function ProductsPageInner() {
   const { data: products, loading, error: loadError, reload } = useApi<Product[]>("/products/");
@@ -40,6 +43,10 @@ function ProductsPageInner() {
   const canCreate = can(me, "catalog.create");
   const canEdit = can(me, "catalog.edit");
   const canViewColor = canViewProductColor(me);
+  // Новый товар сразу приходуется на склад — если у сотрудника есть право корректировки.
+  const canStock = can(me, "warehouse.adjust");
+  const { data: warehouseData } = useApi<Warehouse[]>(canStock ? "/warehouses/" : null);
+  const warehouses = (warehouseData ?? []).filter((item) => item.is_active);
 
   const [tab, setTab] = useState<"active" | "archive">("active");
   const [open, setOpen] = useState(false);
@@ -48,6 +55,10 @@ function ProductsPageInner() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoRemoved, setPhotoRemoved] = useState(false);
   const [askWeight, setAskWeight] = useState(false);
+  const [stockBags, setStockBags] = useState("");
+  const [stockWarehouse, setStockWarehouse] = useState("");
+  // Товар, созданный в этом окне: если приход не прошёл, повтор досоздаст только приход.
+  const [createdId, setCreatedId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [arcItem, setArcItem] = useState<Product | null>(null);
@@ -62,6 +73,9 @@ function ProductsPageInner() {
     setPhotoFile(null);
     setPhotoRemoved(false);
     setAskWeight(false);
+    setStockBags("");
+    setStockWarehouse("");
+    setCreatedId(null);
     setError("");
     setOpen(true);
   }
@@ -71,6 +85,8 @@ function ProductsPageInner() {
     setPhotoFile(null);
     setPhotoRemoved(false);
     setAskWeight(p.ask_truck_weight ?? false);
+    setStockBags("");
+    setCreatedId(null);
     setError("");
     setOpen(true);
   }
@@ -90,7 +106,18 @@ function ProductsPageInner() {
       // Фото — отдельный запрос: товар уже сохранён, и повтор после ошибки фото
       // пойдёт правкой этого товара, а не созданием дубля.
       setEditing(saved.data);
+      if (!editing) setCreatedId(saved.data.id);
       await saveProductPhoto(saved.data.id, { file: photoFile, removed: photoRemoved && Boolean(editing?.photo_url) });
+      const bags = Number(stockBags);
+      if (stockStepVisible && bags > 0) {
+        const warehouseId = stockWarehouse || defaultWarehouseId;
+        await api.post("/stock/adjust/", {
+          ...(warehouseId ? { warehouse: Number(warehouseId) } : {}),
+          product: saved.data.id,
+          delta: bags,
+        });
+        setStockBags("");
+      }
       setOpen(false);
     } catch (e) {
       setError(apiError(e));
@@ -99,6 +126,10 @@ function ProductsPageInner() {
       reload();
     }
   }
+
+  const stockStepVisible = canStock && (!editing || editing.id === createdId);
+  const defaultWarehouseId = String((warehouses.find((item) => item.is_default) ?? warehouses[0])?.id ?? "");
+  const stockBagsInvalid = stockBags !== "" && !(Number.isInteger(Number(stockBags)) && Number(stockBags) >= 0);
 
   async function confirmArchive() {
     if (!arcItem) return;
@@ -336,7 +367,7 @@ function ProductsPageInner() {
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Отмена
             </Button>
-            <Button type="submit" form="product-form" disabled={busy}>
+            <Button type="submit" form="product-form" disabled={busy || (stockStepVisible && stockBagsInvalid)}>
               {busy ? "Сохранение…" : editing ? "Сохранить" : "Создать"}
             </Button>
           </>
@@ -372,6 +403,52 @@ function ProductsPageInner() {
               </span>
             </span>
           </label>
+          {stockStepVisible && (
+            <div className="flex flex-col gap-3 rounded-lg border bg-[var(--muted)]/30 p-3">
+              <div>
+                <div className="text-sm font-medium">Сколько добавить на склад?</div>
+                <div className="text-xs text-[var(--muted-foreground)]">
+                  Мешков этого товара уже в наличии. Оставьте пустым — добавите позже на странице «Склады».
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {warehouses.length > 1 && (
+                  <Field label="Склад" htmlFor="product-stock-warehouse">
+                    <Select
+                      id="product-stock-warehouse"
+                      value={stockWarehouse || defaultWarehouseId}
+                      onChange={(e) => setStockWarehouse(e.target.value)}
+                    >
+                      {warehouses.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                          {item.is_default ? " · основной" : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
+                <Field
+                  label="Количество мешков"
+                  htmlFor="product-stock-bags"
+                  error={stockBagsInvalid ? "Целое число мешков, 0 или больше." : undefined}
+                  className={warehouses.length > 1 ? undefined : "sm:col-span-2"}
+                >
+                  <Input
+                    id="product-stock-bags"
+                    type="number"
+                    min="0"
+                    step="1"
+                    inputMode="numeric"
+                    placeholder="Например, 100"
+                    value={stockBags}
+                    onChange={(e) => setStockBags(e.target.value)}
+                    aria-invalid={stockBagsInvalid || undefined}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
           {error && (
             <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
               {error}

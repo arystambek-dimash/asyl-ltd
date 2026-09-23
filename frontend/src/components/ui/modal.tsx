@@ -88,6 +88,7 @@ export function Modal({
   className,
   mobileFullscreen = false,
   variant = "dialog",
+  dismissible = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -100,6 +101,8 @@ export function Modal({
   mobileFullscreen?: boolean;
   /** "sheet": на телефоне шторка снизу, на десктопе обычный диалог. */
   variant?: "dialog" | "sheet";
+  /** false: клик мимо окна и Esc не закрывают его — только крестик и кнопки внутри. */
+  dismissible?: boolean;
 }) {
   const [mounted, setMounted] = useState(false);
   const titleId = useId();
@@ -107,6 +110,7 @@ export function Modal({
   const modalId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
+  const dismissibleRef = useRef(dismissible);
 
   useEffect(() => {
     setMounted(true);
@@ -114,7 +118,8 @@ export function Modal({
 
   useEffect(() => {
     onCloseRef.current = onClose;
-  }, [onClose]);
+    dismissibleRef.current = dismissible;
+  }, [onClose, dismissible]);
 
   useEffect(() => {
     if (!open || !mounted) return;
@@ -125,7 +130,7 @@ export function Modal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !isTopmostModal(modalId)) return;
       e.preventDefault();
-      onCloseRef.current();
+      if (dismissibleRef.current) onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
 
@@ -179,7 +184,9 @@ export function Modal({
     >
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-[1px] animate-modal-backdrop"
-        onClick={() => onCloseRef.current()}
+        onClick={() => {
+          if (dismissible) onCloseRef.current();
+        }}
       />
       <div
         ref={dialogRef}

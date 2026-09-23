@@ -51,17 +51,20 @@ import { otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
 import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, sumMoneyByCurrency } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
 import { useRovingTabs } from "@/lib/use-roving-tabs";
+import { clearOrderDraft, loadOrderDraft } from "@/lib/order-draft";
 import {
   Archive,
   BarChart3,
   Building2,
   CalendarClock,
   CalendarDays,
+  Check,
   ChevronDown,
   ChevronLeft,
   CircleDollarSign,
   Clock3,
   CopyPlus,
+  Eraser,
   FileSpreadsheet,
   ListChecks,
   Pencil,
@@ -508,10 +511,14 @@ function OrderTemplatePicker({
   orders,
   selected,
   onSelect,
+  draftSaved,
+  onClear,
 }: {
   orders: Order[];
   selected: Order | null;
   onSelect: (order: Order | null) => void;
+  draftSaved: boolean;
+  onClear: () => void;
 }) {
   const sorted = [...orders].sort((a, b) => b.id - a.id);
   const itemsSummary = selected?.items
@@ -534,24 +541,42 @@ function OrderTemplatePicker({
                 } · ${formatMoney(selected.total_amount)} ${currencySymbol(selected.currency)}`
               : "Данные заполнятся из шаблона, заказ сохранится после вашей проверки."}
           </div>
+          {draftSaved && (
+            <div role="status" className="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+              <Check className="size-3" /> Черновик сохранён — можно закрыть окно и вернуться
+            </div>
+          )}
         </div>
       </div>
-      <select
-        aria-label="Шаблон заказа"
-        value={selected ? String(selected.id) : ""}
-        onChange={(event) => {
-          const value = Number(event.target.value);
-          onSelect(sorted.find((order) => order.id === value) ?? null);
-        }}
-        className="h-9 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 sm:w-64"
-      >
-        <option value="">Новый заказ с нуля</option>
-        {sorted.map((order) => (
-          <option key={order.id} value={order.id}>
-            #{order.id} · {order.client_name ?? `Клиент ${order.client}`} · {formatDateTime(order.created_at)}
-          </option>
-        ))}
-      </select>
+      <div className="flex w-full items-center gap-2 sm:w-auto">
+        <select
+          aria-label="Шаблон заказа"
+          value={selected ? String(selected.id) : ""}
+          onChange={(event) => {
+            const value = Number(event.target.value);
+            onSelect(sorted.find((order) => order.id === value) ?? null);
+          }}
+          className="h-9 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 sm:w-64 sm:flex-none"
+        >
+          <option value="">Новый заказ с нуля</option>
+          {sorted.map((order) => (
+            <option key={order.id} value={order.id}>
+              #{order.id} · {order.client_name ?? `Клиент ${order.client}`} · {formatDateTime(order.created_at)}
+            </option>
+          ))}
+        </select>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-9 shrink-0 rounded-xl"
+          disabled={!draftSaved && !selected}
+          onClick={onClear}
+          title="Очистить форму и черновик"
+        >
+          <Eraser className="size-4" /> Очистить всё
+        </Button>
+      </div>
     </section>
   );
 }
@@ -621,6 +646,9 @@ function OrdersPageInner() {
   const showDept = (departments?.length ?? 0) > 1 || orders.some((order) => !order.department);
   const [open, setOpen] = useState(false);
   const [templateOrder, setTemplateOrder] = useState<Order | null>(null);
+  const [draftSaved, setDraftSaved] = useState(false);
+  // Смена ключа пересоздаёт форму заказа с нуля (кнопка «Очистить всё»).
+  const [orderFormResetKey, setOrderFormResetKey] = useState(0);
   const [statementOpen, setStatementOpen] = useState(false);
   const [editing, setEditing] = useState<Order | null>(null);
   const [correctingPrice, setCorrectingPrice] = useState<Order | null>(null);
@@ -663,9 +691,23 @@ function OrdersPageInner() {
     if (requestedTemplate) setTemplateOrder(requestedTemplate);
   }, [requestedTemplate]);
 
+  function openNewOrder() {
+    // Незаконченный заказ продолжается с того же шаблона, на котором его бросили.
+    setTemplateOrder(loadOrderDraft(me?.id)?.template ?? null);
+    setOpen(true);
+  }
+
   function closeNewOrder() {
     setOpen(false);
     setTemplateOrder(null);
+    if (requestedTemplateId) router.replace("/orders");
+  }
+
+  function clearNewOrder() {
+    clearOrderDraft(me?.id);
+    setDraftSaved(false);
+    setTemplateOrder(null);
+    setOrderFormResetKey((key) => key + 1);
     if (requestedTemplateId) router.replace("/orders");
   }
 
@@ -824,14 +866,7 @@ function OrdersPageInner() {
               </Button>
             )}
             {canCreate && (
-              <Button
-                size="sm"
-                aria-label="Новый заказ"
-                onClick={() => {
-                  setTemplateOrder(null);
-                  setOpen(true);
-                }}
-              >
+              <Button size="sm" aria-label="Новый заказ" onClick={openNewOrder}>
                 <Plus className="size-4" /> <span className="hidden sm:inline">Новый заказ</span>
               </Button>
             )}
@@ -1214,16 +1249,24 @@ function OrdersPageInner() {
         description="Создайте с нуля или подставьте старый заказ, проверьте данные и только потом сохраните."
         className="max-w-5xl"
         mobileFullscreen
+        dismissible={false}
       >
         {open && (
           <div className="space-y-4">
             {requestedTemplateError && (
               <ErrorAlert message={requestedTemplateError} onRetry={reloadRequestedTemplate} />
             )}
-            <OrderTemplatePicker orders={templateOrders} selected={templateOrder} onSelect={setTemplateOrder} />
+            <OrderTemplatePicker
+              orders={templateOrders}
+              selected={templateOrder}
+              onSelect={setTemplateOrder}
+              draftSaved={draftSaved}
+              onClear={clearNewOrder}
+            />
             <OrderForm
-              key={templateOrder?.id ?? "blank"}
+              key={`${templateOrder?.id ?? "blank"}-${orderFormResetKey}`}
               template={templateOrder}
+              onDraftChange={setDraftSaved}
               onCancel={closeNewOrder}
               onDone={() => {
                 closeNewOrder();

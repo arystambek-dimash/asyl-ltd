@@ -133,3 +133,21 @@ describe("Modal sheet variant", () => {
     expect(screen.getByRole("dialog", { name: "Фильтры" })).toHaveClass("animate-sheet-content");
   });
 });
+
+describe("Modal dismissible=false", () => {
+  it("ignores backdrop clicks and Escape, closes only by the cross", async () => {
+    const user = userEvent.setup();
+    let closed = 0;
+    render(
+      <Modal open onClose={() => (closed += 1)} title="Новый заказ" dismissible={false}>
+        <input aria-label="Поле" />
+      </Modal>,
+    );
+    const backdrop = document.querySelector(".animate-modal-backdrop") as HTMLElement;
+    await user.click(backdrop);
+    await user.keyboard("{Escape}");
+    expect(closed).toBe(0);
+    await user.click(screen.getByRole("button", { name: "Закрыть" }));
+    expect(closed).toBe(1);
+  });
+});
