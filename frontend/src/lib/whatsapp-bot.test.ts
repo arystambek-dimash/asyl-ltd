@@ -31,6 +31,8 @@ function status(fields: Partial<WhatsAppBotStatus> = {}): WhatsAppBotStatus {
       show_amounts_in_reply: false,
       duplicate_window_days: 3,
       price_tolerance_pct: "15.00",
+      report_recipient_name: "Динара",
+      report_recipient_phone: "",
       updated_at: "2026-09-23T09:00:00Z",
       seen_chats: [],
     },

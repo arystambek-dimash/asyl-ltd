@@ -27,4 +27,6 @@ urlpatterns = [
     path("loader/rail-report/product-codes/", LoaderViewSet.as_view({"post": "rail_product_code"})),
     path("loader/rail-report/client-names/", LoaderViewSet.as_view({"post": "rail_client_name"})),
     path("loader/rail-report/apply/", LoaderViewSet.as_view({"post": "rail_apply"})),
+    path("loader/wagon-report/compose/", LoaderViewSet.as_view({"get": "report_compose"})),
+    path("loader/wagon-report/send/", LoaderViewSet.as_view({"post": "report_send"})),
 ]

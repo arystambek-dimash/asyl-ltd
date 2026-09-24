@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -15,6 +16,18 @@ class Shipment(models.Model):
     arrived_at = models.DateTimeField(null=True, blank=True)
     loading_started_at = models.DateTimeField(null=True, blank=True)
     shipped_at = models.DateTimeField(null=True, blank=True)
+    # «Отправить отчёт» в истории грузчика: когда и кто отправил отчёт о вагонах
+    # этой отгрузки и само сообщение (кому, через бота или ссылкой, дошло ли).
+    # Откат отгрузки удаляет Shipment — отметка уходит вместе с ней.
+    report_sent_at = models.DateTimeField(null=True, blank=True, db_default=None)
+    report_sent_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+        db_default=None,
+    )
+    report_message = models.ForeignKey(
+        "bots.OutgoingMessage", null=True, blank=True, on_delete=models.SET_NULL, related_name="shipments",
+        db_default=None,
+    )
 
 
 class ShipmentWagon(models.Model):

@@ -29,7 +29,7 @@ from apps.orders.backdate import backdate_moment
 from apps.orders.models import Order, OrderItem
 from apps.orders.services import MESSAGE_MAX_LENGTH, confirm_order, lock_live_order
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES, CLOSED_STATUSES
-from apps.orders.transport import order_wagons, rail_phrase
+from apps.orders.transport import rail_phrase
 from apps.sales.access import assigned_department_id
 from apps.shipments.access import assert_can_ship_transport
 from apps.shipments.models import ShipmentWagon
@@ -37,7 +37,7 @@ from apps.shipments.services import RailWagon, rail_bags_mismatch, ship_rail_rep
 from apps.warehouse.services import resolve_warehouse, stock_balances
 
 from .models import DEFAULT_DUPLICATE_WINDOW_DAYS, BotClientProfile, WhatsAppBotSettings
-from .parsing import KG_PER_TON, RailReport, ReportIssue, bags_for, format_rail_report, format_tons
+from .parsing import RailReport, ReportIssue, bags_for, format_tons
 
 # Цена клиента дальше этого от цены прошлого вагонного заказа — на разбор.
 DEFAULT_PRICE_TOLERANCE_PCT = Decimal("15")
@@ -725,47 +725,3 @@ def remember_report_client(name: str, client: Client, currency: str, user) -> Bo
         raise PermissionDenied("Клиента отчёта выбирает тот, кто создаёт заказы")
     return remember_client_profile(name, client, currency, user)
 
-
-def rail_report_texts(orders) -> dict[int, str]:
-    """«Скопировать отчёт»: отгрузка вагонов снова в формате владельца.
-
-    Для страницы истории — по запросу на коды товаров и на названия клиентов
-    в отчётах на всю страницу (вагоны — из предзагрузки). Код товара — самый
-    свежий из словаря в написании отчёта («Д1с»), без кода — название товара;
-    клиент — как его называет отчёт в валюте заказа, иначе по карточке.
-    Заказа без вагонов в словаре нет.
-    """
-    shipped = [
-        (order, wagons)
-        for order in orders
-        if order.transport_type == RAIL_TRANSPORT
-        and (wagons := order_wagons(order))
-        and order.shipment.shipped_at is not None
-    ]
-    if not shipped:
-        return {}
-    codes = {
-        product_id: spelling or code
-        for product_id, spelling, code in ProductAlias.objects.filter(
-            product_id__in={wagon.product_id for _, wagons in shipped for wagon in wagons if wagon.product_id},
-        ).order_by("created_at", "pk").values_list("product_id", "spelling", "code")
-    }
-    names = {
-        (client_id, currency): name
-        for client_id, currency, name in BotClientProfile.objects.filter(
-            client_id__in={order.client_id for order, _ in shipped},
-        ).order_by("updated_at", "pk").values_list("client_id", "currency", "name")
-    }
-    return {
-        order.pk: format_rail_report(
-            day=timezone.localtime(order.shipment.shipped_at).date(),
-            country=order.client.country,
-            client_name=names.get((order.client_id, order.currency)) or order.client.display_name,
-            station=order.rail_station,
-            wagons=[
-                (codes.get(wagon.product_id) or wagon.product_label, wagon.number, wagon.weight_kg / KG_PER_TON)
-                for wagon in wagons
-            ],
-        )
-        for order, wagons in shipped
-    }

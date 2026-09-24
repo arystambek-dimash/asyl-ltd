@@ -8,19 +8,26 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.bots.parsing import parse_rail_report
 from apps.bots.preview import preview_report, resolution_options
 from apps.bots.rail import (
+    RAIL_TRANSPORT,
     apply_rail_report,
-    rail_report_texts,
     remember_report_client,
     remember_report_product,
 )
-from apps.bots.serializers import RailClientNameSerializer, RailProductCodeSerializer, RailReportSerializer
+from apps.bots.serializers import (
+    RailClientNameSerializer,
+    RailProductCodeSerializer,
+    RailReportSerializer,
+    WagonReportComposeSerializer,
+    WagonReportSendSerializer,
+)
+from apps.bots.wagon_report import REPORT_MAX_ORDERS, report_draft, send_wagon_report, sent_payload
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.query_params import parse_date_range, parse_search_param
@@ -131,6 +138,10 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "rail_product_code": "loader.view",
         "rail_client_name": "loader.view",
         "rail_apply": "loader.confirm",
+        # «Отправить отчёт» в истории вагонов — Динаре: составить и отправить может
+        # каждый, кто видит историю вагонов (область проверяет requested_transport).
+        "report_compose": "loader.view",
+        "report_send": "loader.view",
     }
 
     def get_queryset(self):
@@ -141,7 +152,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         queryset = Order.objects.filter(
             transport_type__in=allowed_transports(self.request.user),
         ).select_related(
-            "client__user", "shipment", "truck_number_set_by",
+            "client__user", "shipment__report_message", "truck_number_set_by",
         ).prefetch_related("items__product", "payments", "shipment__wagons")
         return scope_by_client_department(queryset, self.request.user, client_path="client")
 
@@ -151,12 +162,8 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         return queryset if transport is None else queryset.filter(transport_type=transport)
 
     def _rows(self, rows):
-        # Подсказки номеров и отчёты о вагонах — запросами на страницу, не на строку.
-        context = {
-            **self.get_serializer_context(),
-            "transport_pairs": suggestion_pairs(rows),
-            "rail_report_texts": rail_report_texts(rows),
-        }
+        # Подсказки номеров — запросом на страницу, не на строку.
+        context = {**self.get_serializer_context(), "transport_pairs": suggestion_pairs(rows)}
         return self.get_serializer(rows, many=True, context=context).data
 
     def _page(self, queryset):
@@ -194,18 +201,64 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         queryset = filter_order_search(queryset, parse_search_param(request.query_params.get("search")))
         return self._page(queryset.order_by("planned_on", "id"))
 
-    @action(detail=False, methods=["get"], url_path="history")
-    def history(self, request):
-        """Отгруженные за период по времени выезда; по умолчанию — сегодня."""
-        date_from, date_to = parse_date_range(request.query_params)
+    def _shipped_in_period(self, queryset):
+        """Фильтр истории: отгруженные за период по времени выезда (по умолчанию — сегодня) и поиск."""
+        params = self.request.query_params
+        date_from, date_to = parse_date_range(params)
         today = timezone.localdate()
-        queryset = self._tab(self.get_queryset()).filter(
+        queryset = queryset.filter(
             status="shipped",
             shipment__shipped_at__date__gte=date_from or today,
             shipment__shipped_at__date__lte=date_to or date_from or today,
         )
-        queryset = filter_order_search(queryset, parse_search_param(request.query_params.get("search")))
+        return filter_order_search(queryset, parse_search_param(params.get("search")))
+
+    @action(detail=False, methods=["get"], url_path="history")
+    def history(self, request):
+        """Отгруженные за период по времени выезда; по умолчанию — сегодня."""
+        queryset = self._shipped_in_period(self._tab(self.get_queryset()))
         return self._page(queryset.order_by(F("shipment__shipped_at").desc(nulls_last=True), "-id"))
+
+    def _wagon_orders(self):
+        """Вагонные заказы своего отдела; без области «Вагоны» — 403, а не пустой отчёт."""
+        requested_transport(self.request.user, RAIL_TRANSPORT)
+        return self.get_queryset().filter(transport_type=RAIL_TRANSPORT)
+
+    @action(detail=False, methods=["get"], url_path="wagon-report/compose")
+    def report_compose(self, request):
+        """«Отправить отчёт»: текст в формате владельца, кому и как он уйдёт. Ничего не пишет.
+
+        ``?order=`` — одна отгрузка из истории; без него — вся история вагонов
+        с фильтрами экрана (период и поиск).
+        """
+        query = WagonReportComposeSerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        orders = self._wagon_orders()
+        order_id = query.validated_data.get("order")
+        if order_id is not None:
+            rows = [get_object_or_404(orders.filter(status="shipped"), pk=order_id)]
+        else:
+            rows = list(self._shipped_in_period(orders).order_by("shipment__shipped_at", "id")[:REPORT_MAX_ORDERS + 1])
+            if len(rows) > REPORT_MAX_ORDERS:
+                raise ValidationError({
+                    "detail": f"За период больше {REPORT_MAX_ORDERS} отгрузок — выберите период короче",
+                    "code": "report_too_many_orders",
+                })
+        return Response(report_draft(rows))
+
+    @action(detail=False, methods=["post"], url_path="wagon-report/send")
+    def report_send(self, request):
+        """Отправить отчёт: ботом — в очередь, ссылкой — отметить отправку. Ответ экран применяет к строкам."""
+        orders = self._wagon_orders()
+        serializer = WagonReportSendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        ids = data["order_ids"]
+        rows = list(orders.filter(status="shipped", pk__in=ids).order_by("shipment__shipped_at", "id"))
+        if len(rows) != len(ids):
+            raise NotFound("Заказ не найден или не отгружен")
+        message = send_wagon_report(rows, data["text"], request.user, delivery=data["delivery"], key=data["key"])
+        return Response(sent_payload(message))
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     def confirm(self, request, pk=None):

@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LoaderOrder } from "@/lib/loader";
-import { todayLocalIsoDate } from "@/lib/utils";
+import { formatTime, todayLocalIsoDate } from "@/lib/utils";
+import type { WagonReportScope, WagonReportSent } from "@/lib/wagon-report";
 
 import LoaderPage from "./page";
 
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   apiUrls: [] as (string | null)[],
   showToast: vi.fn(),
   railRow: null as LoaderOrder | null,
+  reportSent: null as WagonReportSent | null,
 }));
 
 vi.mock("@/store/auth", () => ({
@@ -57,6 +59,17 @@ vi.mock("@/components/loader/rail-report-sheet", () => ({
       <span>{orderId === null ? "новый отчёт" : `заказ ${orderId}`}</span>
       <button type="button" onClick={() => onApplied(mocks.railRow!)}>
         Провести отчёт
+      </button>
+    </div>
+  ),
+}));
+// Окно отправки проверено своими тестами; здесь — с чем страница его открывает и как применяет ответ.
+vi.mock("@/components/loader/wagon-report-modal", () => ({
+  WagonReportModal: ({ scope, onSent }: { scope: WagonReportScope; onSent: (sent: WagonReportSent) => void }) => (
+    <div role="dialog" aria-label="Отправить отчёт">
+      <span>{JSON.stringify(scope)}</span>
+      <button type="button" onClick={() => onSent(mocks.reportSent!)}>
+        Отправить Динаре
       </button>
     </div>
   ),
@@ -132,6 +145,7 @@ describe("LoaderPage", () => {
     mocks.apiUrls = [];
     mocks.showToast.mockReset();
     mocks.railRow = null;
+    mocks.reportSent = null;
     localStorage.clear();
     mocks.paged.mockReset().mockImplementation((url: string | null) => {
       if (url?.startsWith("/loader/queue/?transport=train"))
@@ -663,33 +677,90 @@ describe("LoaderPage", () => {
     expect(screen.getByRole("button", { name: /Вставить отчёт/ })).toBeInTheDocument();
   });
 
-  it("копирует отчёт отгрузки в формате владельца из истории", async () => {
+  it("отправляет отчёт Динаре из истории вагонов: всей историей или одной отгрузкой, отметка — из ответа", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const text = "сб 19.09.26 Узбекистан ООО OSIYO NAV NIHOL\nСт. Раустан 1 вагон\nД1C-28087658-68 тн";
+    const historyApply = vi.fn();
+    const today = todayLocalIsoDate();
+    const sentAt = `${today}T07:45:00+05:00`;
     mocks.paged.mockImplementation((url: string | null) =>
       url?.startsWith("/loader/history/")
-        ? paged([
-            order(700, {
-              status: "shipped",
-              transport_type: "train",
-              shipped_at: "2026-09-19T12:00:00+05:00",
-              rail_report_text: text,
-              wagons: [{ number: "28087658", product_label: "Д1с", bags: 1360, weight_kg: "68000.00" }],
-            }),
-            order(620, { status: "shipped", shipped_at: "2026-09-19T11:31:00+05:00" }),
-          ])
+        ? paged(
+            [
+              order(366, {
+                status: "shipped",
+                transport_type: "train",
+                truck_number: "12345678",
+                shipped_at: `${today}T07:30:00+05:00`,
+              }),
+              order(365, {
+                status: "shipped",
+                transport_type: "train",
+                shipped_at: `${today}T07:00:00+05:00`,
+                report_sent_at: sentAt,
+                report_sent_to: "Динаре",
+                report_status: "link",
+              }),
+            ],
+            { applyItems: historyApply },
+          )
+        : paged([]),
+    );
+    mocks.reportSent = {
+      status: "queued",
+      status_label: "В очереди",
+      sent_at: sentAt,
+      order_ids: [366],
+      recipient: { name: "Динара", to: "Динаре", phone: "77011234567" },
+      error: "",
+    };
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
+    // В очереди отправлять нечего: кнопка — только в истории.
+    expect(screen.queryByRole("button", { name: "Отправить отчёт" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /История/ }));
+
+    expect(screen.getByText(`Отправлено Динаре ${formatTime(sentAt)}`)).toBeInTheDocument();
+    const buttons = screen.getAllByRole("button", { name: "Отправить отчёт" });
+    // Сверху — вся история, у каждой отгрузки — своя; копия отчёта — в окне.
+    expect(buttons).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: /Скопировать отчёт/ })).not.toBeInTheDocument();
+
+    await user.click(buttons[0]);
+    expect(screen.getByRole("dialog", { name: "Отправить отчёт" })).toHaveTextContent(
+      JSON.stringify({ date_from: today, date_to: today, search: "" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Отправить Динаре" }));
+    const [marked] = historyApply.mock.calls.at(-1)!;
+    const rows = marked([order(366, { shipped_at: sentAt }), order(360)]);
+    expect(rows[0]).toMatchObject({ report_status: "queued", report_sent_to: "Динаре", report_sent_at: sentAt });
+    expect(rows[1].report_sent_at).toBeUndefined();
+    expect(mocks.reload).not.toHaveBeenCalled();
+  });
+
+  it("отчёт одной отгрузки — из её карточки", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation((url: string | null) =>
+      url?.startsWith("/loader/history/")
+        ? paged([order(366, { status: "shipped", transport_type: "train", shipped_at: "2026-09-24T07:30:00+05:00" })])
         : paged([]),
     );
     render(<LoaderPage />);
 
+    await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
     await user.click(screen.getByRole("tab", { name: /История/ }));
-    const buttons = screen.getAllByRole("button", { name: /Скопировать отчёт/ });
-    expect(buttons).toHaveLength(1);
-    await user.click(buttons[0]);
+    await user.click(screen.getAllByRole("button", { name: "Отправить отчёт" })[1]);
 
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(text));
-    expect(mocks.showToast).toHaveBeenCalledWith("Отчёт по заказу №700 скопирован", "success");
+    expect(screen.getByRole("dialog", { name: "Отправить отчёт" })).toHaveTextContent(JSON.stringify({ order: 366 }));
+  });
+
+  it("у фур отчёта о вагонах нет", async () => {
+    const user = userEvent.setup();
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("tab", { name: /История/ }));
+
+    expect(screen.getByRole("button", { name: /Накладная/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Отправить отчёт/ })).not.toBeInTheDocument();
   });
 });

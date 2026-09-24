@@ -78,6 +78,8 @@ function status(fields: Partial<WhatsAppBotStatus> = {}): WhatsAppBotStatus {
       show_amounts_in_reply: false,
       duplicate_window_days: 3,
       price_tolerance_pct: "15.00",
+      report_recipient_name: "Динара",
+      report_recipient_phone: "",
       updated_at: "2026-09-23T09:00:00Z",
       seen_chats: [{ id: "120363000000000001@g.us", name: "Склад", at: null }],
     },
@@ -257,7 +259,28 @@ describe("WhatsApp-бот: журнал", () => {
       show_amounts_in_reply: false,
       duplicate_window_days: 3,
       price_tolerance_pct: "15",
+      report_recipient_name: "Динара",
+      report_recipient_phone: "",
     });
+  });
+
+  it("administrator sets who gets the wagon report", async () => {
+    mocks.status = status({ can_configure: true });
+    mocks.put.mockResolvedValueOnce({ data: status({ can_configure: true }) });
+    render(<WhatsAppBotPage />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
+    const name = screen.getByLabelText("Имя");
+    expect(name).toHaveValue("Динара");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Динара Б.");
+    await userEvent.type(screen.getByLabelText("Номер WhatsApp"), "7011234567");
+    await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() => expect(mocks.put).toHaveBeenCalled());
+    const body = mocks.put.mock.calls[0][1];
+    expect(body.report_recipient_name).toBe("Динара Б.");
+    expect(body.report_recipient_phone.replace(/\D/g, "")).toBe("77011234567");
   });
 
   it("settings errors stay inside the modal", async () => {

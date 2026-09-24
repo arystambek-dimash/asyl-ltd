@@ -96,7 +96,7 @@ class WhatsAppBotSettingsView(PermAPIViewMixin, APIView):
             user=request.user,
             payload={key: serializer.data[key] for key in (
                 "enabled", "allowed_chat_ids", "allowed_sender_ids", "show_amounts_in_reply",
-                "duplicate_window_days", "price_tolerance_pct")},
+                "duplicate_window_days", "price_tolerance_pct", "report_recipient_name", "report_recipient_phone")},
         )
         # Экран применяет ответ, а не перечитывает опрашиваемую шапку.
         return Response(_status_payload(request))

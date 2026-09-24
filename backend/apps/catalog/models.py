@@ -140,7 +140,7 @@ class ProductAlias(models.Model):
     """
 
     code = models.CharField(max_length=64, unique=True)
-    # Код как его пишет отчёт («Д1с») — для людей и «Скопировать отчёт»;
+    # Код как его пишет отчёт («Д1с») — для людей и «Отправить отчёт»;
     # сравнение — только по ``code``. Последнее введённое написание.
     spelling = models.CharField(max_length=64, blank=True, default="", db_default="")
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="aliases")

@@ -2,13 +2,14 @@
 
 Один круг: состояние номера (раз в минуту) → одно уведомление из очереди
 провайдера (долгий опрос) → запись сообщения в базу → подтверждение приёма
-→ разбор и проведение ожидающих сообщений → ответы цитатой. Статус круга
-пишется в heartbeat для healthcheck контейнера и (не чаще раза в полминуты,
-если ничего не поменялось) в настройки бота — для журнала.
+→ разбор и проведение ожидающих сообщений → ответы цитатой → отчёты о
+вагонах из истории грузчика («Отправить отчёт», :mod:`apps.bots.wagon_report`).
+Статус круга пишется в heartbeat для healthcheck контейнера и (не чаще раза
+в полминуты, если ничего не поменялось) в настройки бота — для журнала.
 
 ``WHATSAPP_BOT_ENABLED`` ≠ 1 — процесс простаивает и к провайдеру не ходит.
 Выключатель в журнале («Бот проводит отчёты») останавливает приём: очередь
-провайдера копит сообщения сутки.
+провайдера копит сообщения сутки, а отчёты в очереди ждут включения.
 """
 from __future__ import annotations
 
@@ -20,18 +21,19 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
-from .models import WhatsAppBotSettings
+from .models import INSTANCE_AUTHORIZED, RUNTIME_RUNNING, WhatsAppBotSettings
 from .providers.green_api import GreenApiClient, GreenApiError, incoming_message, state_change
 from .service_user import ensure_bot_user
+from .wagon_report import send_pending_reports
 from .whatsapp import ingest, process_pending, send_pending_replies
 
 log = logging.getLogger(__name__)
 
 DISABLED = "disabled"
-RUNNING = "running"
+RUNNING = RUNTIME_RUNNING
 DEGRADED = "degraded"
 # Номер, который может принимать и отправлять сообщения.
-AUTHORIZED = "authorized"
+AUTHORIZED = INSTANCE_AUTHORIZED
 STATE_REFRESH_SECONDS = 60
 RECORD_EVERY_SECONDS = 30
 
@@ -107,6 +109,7 @@ class BotRunner:
                 client.delete_notification(notification.receipt_id)
             process_pending(user=self._user(), bot_settings=bot_settings)
             send_pending_replies(client)
+            send_pending_reports(client)
         except GreenApiError as exc:
             log.warning("WhatsApp bot provider failure: %s", exc)
             self._record(bot_settings, DEGRADED, str(exc))

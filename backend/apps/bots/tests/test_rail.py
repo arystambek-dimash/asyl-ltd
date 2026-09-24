@@ -56,7 +56,7 @@ def _shipped_train_order(client, product, *, day, bags=OWNER_BAGS, unit_price="7
 
 def test_alias_and_profile_store_layout_free_keys(client, product):
     alias = ProductAlias.objects.get(product=product)
-    # Сравнение — по ключу, людям и «Скопировать отчёт» — как в отчёте.
+    # Сравнение — по ключу, людям и «Отправить отчёт» — как в отчёте.
     assert (alias.code, alias.spelling, alias.display_code) == ("Д1C", "Д1с", "Д1с")
     with pytest.raises(IntegrityError), transaction.atomic():
         ProductAlias.objects.create(code="д1c", product=product)  # тот же код латиницей

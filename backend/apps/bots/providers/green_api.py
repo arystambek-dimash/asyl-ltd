@@ -8,10 +8,15 @@
 
 Токен инстанса стоит в пути запроса — он не попадает ни в тексты ошибок, ни
 в журнал: ошибки называют только метод API и код ответа.
+
+Сбой, после которого запрос мог выполниться (нет ответа, 5xx, непонятный
+ответ), — :class:`GreenApiOutcomeUnknown`: отправку сообщения по нему не
+повторяют сами, иначе получатель увидит его дважды.
 """
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -44,6 +49,19 @@ class GreenApiError(RuntimeError):
 
 class GreenApiNotConfigured(GreenApiError):
     """Не заданы WHATSAPP_BOT_INSTANCE_ID / WHATSAPP_BOT_API_TOKEN."""
+
+
+class GreenApiOutcomeUnknown(GreenApiError):
+    """Запрос мог выполниться: ответа нет (тайм-аут, обрыв), 5xx или ответ непонятный.
+
+    Остальные сбои — отказ провайдера (4xx) или запрос, который не ушёл
+    (соединение отклонено, адрес не найден), — точно ничего не отправили.
+    """
+
+
+def _never_sent(reason) -> bool:
+    """Запрос не ушёл: соединение отклонено или адрес провайдера не найден."""
+    return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
 
 
 @dataclass(frozen=True)
@@ -163,17 +181,20 @@ class GreenApiClient:
             with self._open(request, timeout=timeout) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as exc:
-            raise GreenApiError(f"Green-API {api_method}: HTTP {exc.code}") from None
+            error = GreenApiOutcomeUnknown if exc.code >= 500 else GreenApiError
+            raise error(f"Green-API {api_method}: HTTP {exc.code}") from None
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise GreenApiError(f"Green-API {api_method}: нет связи ({type(exc).__name__})") from None
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            error = GreenApiError if _never_sent(reason) else GreenApiOutcomeUnknown
+            raise error(f"Green-API {api_method}: нет связи ({type(exc).__name__})") from None
         if len(raw) > _MAX_RESPONSE_BYTES:
-            raise GreenApiError(f"Green-API {api_method}: слишком большой ответ")
+            raise GreenApiOutcomeUnknown(f"Green-API {api_method}: слишком большой ответ")
         if not raw.strip():
             return None
         try:
             return json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise GreenApiError(f"Green-API {api_method}: ответ не JSON") from None
+            raise GreenApiOutcomeUnknown(f"Green-API {api_method}: ответ не JSON") from None
 
     def receive_notification(self) -> Notification | None:
         """Следующее уведомление очереди или ``None``, если за время ожидания ничего не пришло."""
@@ -203,7 +224,8 @@ class GreenApiClient:
         payload = self._call("POST", "sendMessage", body=body)
         message_id = _text(_dict(payload).get("idMessage"))
         if not message_id:
-            raise GreenApiError("Green-API sendMessage: нет idMessage")
+            # Провайдер ответил, но без id: сообщение могло уйти.
+            raise GreenApiOutcomeUnknown("Green-API sendMessage: нет idMessage")
         return message_id
 
     def get_state_instance(self) -> str:

@@ -1,6 +1,7 @@
 """Green-API в режиме опроса: разбор уведомлений и четыре метода API без сети."""
 import io
 import json
+import socket
 import urllib.error
 from datetime import UTC, datetime
 
@@ -13,6 +14,7 @@ from apps.bots.providers.green_api import (
     GreenApiClient,
     GreenApiError,
     GreenApiNotConfigured,
+    GreenApiOutcomeUnknown,
     incoming_message,
     state_change,
 )
@@ -206,6 +208,47 @@ def test_unexpected_answers_are_errors(payload):
 
     with pytest.raises(GreenApiError):
         api.get_state_instance() if payload != {"receiptId": "x"} else api.receive_notification()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        urllib.error.HTTPError(f"https://x/{TOKEN}", 400, "Bad Request", {}, None),
+        urllib.error.HTTPError(f"https://x/{TOKEN}", 429, "Too Many Requests", {}, None),
+        urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+        urllib.error.URLError(socket.gaierror(-2, "Name or service not known")),
+    ],
+)
+def test_refused_requests_surely_did_not_send(failure):
+    """Провайдер отказал (4xx) или запрос не ушёл (соединение, DNS) — отправку можно повторить."""
+    api, _ = client(failure)
+
+    with pytest.raises(GreenApiError) as raised:
+        api.send_message(GROUP, "отчёт")
+
+    assert not isinstance(raised.value, GreenApiOutcomeUnknown)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        urllib.error.HTTPError(f"https://x/{TOKEN}", 502, "Bad Gateway", {}, None),
+        urllib.error.URLError(TimeoutError("timed out")),
+        urllib.error.URLError("timed out"),
+        TimeoutError(),
+        ConnectionResetError(),
+        b"<html>",
+        {"idMessage": ""},
+    ],
+)
+def test_unanswered_requests_may_have_sent(failure):
+    """Ответа нет (тайм-аут, обрыв), 5xx или непонятный ответ — сообщение могло уйти: повтор задвоил бы его."""
+    api, _ = client(failure)
+
+    with pytest.raises(GreenApiOutcomeUnknown) as raised:
+        api.send_message(GROUP, "отчёт")
+
+    assert TOKEN not in str(raised.value)
 
 
 def test_missing_credentials_are_reported():

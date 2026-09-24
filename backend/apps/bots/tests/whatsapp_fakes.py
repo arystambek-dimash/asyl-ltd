@@ -1,6 +1,8 @@
 """Green-API без сети: сообщения чата и записывающий клиент для тестов бота."""
 from datetime import UTC, datetime
 
+from django.utils import timezone
+
 from apps.bots.providers.green_api import DELETED, EDITED, MESSAGE, GreenApiError, IncomingMessage, Notification
 
 GROUP = "120363043968066561@g.us"
@@ -24,6 +26,13 @@ def deleted(*, target_id="MSG1", message_id="DEL1"):
     return incoming(message_id=message_id, kind=DELETED, target_id=target_id)
 
 
+def bot_alive(row, *, polled_at=None):
+    """Процесс бота жив — как после удачного круга: «running», номер authorized, свежий опрос."""
+    row.runtime_status, row.instance_state = "running", "authorized"
+    row.polled_at = polled_at or timezone.now()
+    return row
+
+
 def webhook_body(message: IncomingMessage) -> dict:
     """Тело уведомления incomingMessageReceived с текстом сообщения."""
     return {
@@ -37,7 +46,10 @@ def webhook_body(message: IncomingMessage) -> dict:
 
 
 class FakeGreenApi:
-    """Очередь уведомлений и журнал вызовов вместо провайдера."""
+    """Очередь уведомлений и журнал вызовов вместо провайдера.
+
+    ``fail_send`` — True (сбой провайдера) или исключение, которым падает отправка.
+    """
 
     def __init__(self, *bodies, state="authorized", fail_send=False, fail_receive=False):
         self.queue = [Notification(receipt, body) for receipt, body in enumerate(bodies, start=1)]
@@ -58,6 +70,8 @@ class FakeGreenApi:
         self.queue = [item for item in self.queue if item.receipt_id != receipt_id]
 
     def send_message(self, chat_id, message, *, quoted_message_id=""):
+        if isinstance(self.fail_send, Exception):
+            raise self.fail_send
         if self.fail_send:
             raise GreenApiError("Green-API sendMessage: HTTP 500")
         self.sent.append((chat_id, message, quoted_message_id))

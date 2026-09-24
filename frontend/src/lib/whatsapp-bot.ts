@@ -56,6 +56,9 @@ export interface WhatsAppBotSettings {
   /** Дубль вагона: тот же номер отгружен в пределах ± стольких дней от даты отчёта (по умолчанию 3). */
   duplicate_window_days: number;
   price_tolerance_pct: string;
+  /** «Отправить отчёт» в истории грузчика: кому (по умолчанию «Динара») и номер — цифры с кодом страны. */
+  report_recipient_name: string;
+  report_recipient_phone: string;
   updated_at: string;
   /** Недавние чаты бота — выбрать группу, не зная её идентификатора. */
   seen_chats: { id: string; name: string; at: string | null }[];

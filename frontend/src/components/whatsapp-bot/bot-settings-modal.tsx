@@ -6,6 +6,7 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { api, apiError } from "@/lib/api";
 import { cn, PHONE_INPUT_TEXT } from "@/lib/utils";
 import { parseIdList, WHATSAPP_BOT_API, type WhatsAppBotSettings, type WhatsAppBotStatus } from "@/lib/whatsapp-bot";
@@ -15,8 +16,10 @@ const TEXTAREA =
 
 /**
  * Настройки бота (администратор): включить, какие чаты и отправители
- * разрешены, суммы в ответе, окно дублей (± дней от даты отчёта) и допуск цены. Ответ PUT — вся
- * шапка журнала: экран применяет его, а не перечитывает опрашиваемый статус.
+ * разрешены, суммы в ответе, окно дублей (± дней от даты отчёта), допуск цены
+ * и кому уходит «Отправить отчёт» из истории грузчика (имя и номер WhatsApp).
+ * Ответ PUT — вся шапка журнала: экран применяет его, а не перечитывает
+ * опрашиваемый статус.
  */
 export function BotSettingsModal({
   settings,
@@ -33,6 +36,11 @@ export function BotSettingsModal({
   const [showAmounts, setShowAmounts] = useState(settings.show_amounts_in_reply);
   const [windowDays, setWindowDays] = useState(String(settings.duplicate_window_days));
   const [tolerance, setTolerance] = useState(String(Number(settings.price_tolerance_pct)));
+  const [reportName, setReportName] = useState(settings.report_recipient_name);
+  // Сервер хранит цифры с кодом страны; поле показывает номер по маске страны.
+  const [reportPhone, setReportPhone] = useState(
+    settings.report_recipient_phone ? `+${settings.report_recipient_phone}` : "",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -51,6 +59,8 @@ export function BotSettingsModal({
         show_amounts_in_reply: showAmounts,
         duplicate_window_days: Number(windowDays),
         price_tolerance_pct: tolerance.replace(",", "."),
+        report_recipient_name: reportName,
+        report_recipient_phone: reportPhone,
       });
       onSaved(data);
     } catch (cause) {
@@ -184,6 +194,30 @@ export function BotSettingsModal({
             />
           </Field>
         </div>
+
+        <section aria-label="Отчёт о вагонах" className="flex flex-col gap-3 rounded-xl border p-3">
+          <div className="text-sm">
+            <span className="font-medium">Кому «Отправить отчёт»</span>
+            <span className="block text-[12px] text-[var(--muted-foreground)]">
+              Кнопка в истории грузчика (вкладка «Вагоны»). Без номера бот пишет в первую разрешённую группу, а когда
+              бот выключен, WhatsApp откроет выбор чата.
+            </span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Имя" htmlFor="bot-report-name">
+              <Input
+                id="bot-report-name"
+                maxLength={60}
+                value={reportName}
+                onChange={(event) => setReportName(event.target.value)}
+                className={PHONE_INPUT_TEXT}
+              />
+            </Field>
+            <Field label="Номер WhatsApp" htmlFor="bot-report-phone">
+              <PhoneInput id="bot-report-phone" value={reportPhone} onChange={setReportPhone} />
+            </Field>
+          </div>
+        </section>
       </div>
     </Modal>
   );

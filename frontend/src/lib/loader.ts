@@ -1,6 +1,7 @@
 import { api } from "@/lib/api";
 import type { TransportPair } from "@/lib/plates";
 import type { ShipmentWagon } from "@/lib/types";
+import type { WagonReportStatus } from "@/lib/wagon-report";
 import { downloadBlob } from "@/lib/download";
 import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
 import { formatMoney, toLocalIsoDate } from "@/lib/utils";
@@ -40,10 +41,14 @@ export interface LoaderOrder {
   remaining_amount?: string;
   /** Грузчик может сам отменить эту отгрузку (своя и не старше часа). */
   can_rollback?: boolean;
-  /** Отгрузка по отчёту о вагонах: станция, вагоны и отчёт в формате владельца. */
+  /** Отгрузка по отчёту о вагонах: станция и вагоны. */
   rail_station?: string;
   wagons?: ShipmentWagon[];
-  rail_report_text?: string;
+  /** «Отправить отчёт» о вагонах: когда, кому («Динаре») и что с сообщением. */
+  report_sent_at?: string | null;
+  report_sent_to?: string;
+  report_status?: "" | WagonReportStatus;
+  report_error?: string;
 }
 
 export interface WaybillSigner {

@@ -1,4 +1,4 @@
-"""«Отгрузить по отчёту» заранее внесённый вагонный заказ, «Скопировать отчёт» и права словарей."""
+"""«Отгрузить по отчёту» заранее внесённый вагонный заказ, отчёт о нём в формате владельца и права словарей."""
 from decimal import Decimal
 
 import pytest
@@ -15,11 +15,11 @@ from apps.bots.rail import (
     can_remember_products,
     can_ship_by_report,
     conduct_rail_report,
-    rail_report_texts,
     resolve_order_report,
     ship_order_by_report,
 )
 from apps.bots.tests.samples import OWNER_BAGS, OWNER_DAY, OWNER_REPORT, OWNER_WAGONS, report
+from apps.bots.wagon_report import compose_rail_report
 from apps.catalog.models import ProductAlias
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
@@ -167,14 +167,14 @@ def test_shipping_by_report_needs_the_wagon_area(client, product, user_with_perm
     assert order.status == "confirmed"
 
 
-# --- «Скопировать отчёт» ------------------------------------------------------------------------
+# --- отчёт в формате владельца («Отправить отчёт») ------------------------------------------------
 
 
 def _history_rows(*orders):
     return list(
         Order.objects.filter(pk__in=[order.pk for order in orders])
         .select_related("client__user", "shipment")
-        .prefetch_related("shipment__wagons")
+        .prefetch_related("items__product", "shipment__wagons")
         .order_by("pk")
     )
 
@@ -182,7 +182,7 @@ def _history_rows(*orders):
 def test_copied_report_is_the_owner_format_and_parses_back(client, product, price, conductor):
     order = conduct_rail_report(parse_rail_report(OWNER_REPORT), conductor)
 
-    text = rail_report_texts(_history_rows(order))[order.pk]
+    text = compose_rail_report(_history_rows(order)).text
 
     # Код товара — из словаря в написании владельца («Д1с», а не ключ «Д1C»).
     assert text.splitlines() == [
@@ -201,7 +201,7 @@ def test_copied_report_names_the_client_as_the_report_does(client, product, pric
     BotClientProfile.objects.create(name="OSIYO KZT", client=client, currency="KZT", created_by=boss)
     ProductAlias.objects.create(code="D1", product=product)
 
-    header, _, first = rail_report_texts(_history_rows(order))[order.pk].splitlines()[:3]
+    header, _, first = compose_rail_report(_history_rows(order)).text.splitlines()[:3]
 
     assert header == "сб 19.09.26 Узбекистан OSIYO NAV"
     assert first.startswith("D1-")
@@ -211,12 +211,12 @@ def test_copied_report_falls_back_to_the_product_name_without_a_code(client, pro
     order = conduct_rail_report(parse_rail_report(OWNER_REPORT), conductor)
     ProductAlias.objects.all().delete()
 
-    lines = rail_report_texts(_history_rows(order))[order.pk].splitlines()
+    lines = compose_rail_report(_history_rows(order)).text.splitlines()
 
     assert lines[2] == f"{product}-{OWNER_WAGONS[0]}-68 тн"
 
 
-def test_only_wagon_shipments_by_report_can_be_copied(client, product, price, conductor, django_assert_num_queries):
+def test_only_shipped_wagon_orders_are_in_the_report(client, product, price, conductor, django_assert_num_queries):
     by_report = conduct_rail_report(parse_rail_report(OWNER_REPORT), conductor)
     manual = _manual_order(client, product)
     truck = _manual_order(client, product, status="shipped")
@@ -225,10 +225,10 @@ def test_only_wagon_shipments_by_report_can_be_copied(client, product, price, co
 
     # Коды товаров и названия клиентов — по запросу на страницу.
     with django_assert_num_queries(2):
-        texts = rail_report_texts(rows)
+        composed = compose_rail_report(rows)
 
-    assert list(texts) == [by_report.pk]
-    assert rail_report_texts(_history_rows(manual, truck)) == {}
+    assert composed.order_ids == [by_report.pk]
+    assert compose_rail_report(_history_rows(manual, truck)).text == ""
 
 
 # --- права ---------------------------------------------------------------------------------------

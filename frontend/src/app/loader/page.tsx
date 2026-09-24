@@ -1,12 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
 import {
-  ClipboardCopy,
+  AlertTriangle,
+  CheckCheck,
   ClipboardPaste,
+  Clock3,
   PackageCheck,
   Printer,
   RefreshCwOff,
   Search,
+  Send,
   Settings2,
   Undo2,
 } from "lucide-react";
@@ -14,6 +17,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { LoaderOrderCard, bagsWord } from "@/components/loader/loader-order-card";
 import { LoaderOrderScreen, LoaderShippedScreen } from "@/components/loader/loader-order-screen";
 import { RailReportSheet } from "@/components/loader/rail-report-sheet";
+import { WagonReportModal } from "@/components/loader/wagon-report-modal";
 import { WaybillSettingsModal } from "@/components/loader/waybill-settings-modal";
 import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
@@ -49,13 +53,12 @@ import {
   type LoaderTransport,
 } from "@/lib/loader-groups";
 import { EMPTY_TRANSPORT_PAIR, transportChanges, transportPairOf, type TransportPair } from "@/lib/plates";
-import { copyText } from "@/lib/rail-report";
-import { showToast } from "@/lib/toast";
 import { useDebounced } from "@/lib/use-debounced";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn, pluralRu, todayLocalIsoDate } from "@/lib/utils";
+import { reportMark, withReportSent, type WagonReportScope, type WagonReportSent } from "@/lib/wagon-report";
 import { useAuth } from "@/store/auth";
 
 type View = "queue" | "history";
@@ -94,6 +97,8 @@ function LoaderPageInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // «Вставить отчёт» (orderId null) или «Отгрузить по отчёту» открытого заказа.
   const [railSheet, setRailSheet] = useState<{ orderId: number | null } | null>(null);
+  // «Отправить отчёт» Динаре: одна отгрузка истории или вся история с фильтрами экрана.
+  const [reportScope, setReportScope] = useState<WagonReportScope | null>(null);
 
   const queueParams: LoaderQueueFilter = {
     day: queueFilter === "overdue" || queueFilter === "all" ? "" : queueDay,
@@ -242,12 +247,9 @@ function LoaderPageInner() {
     refreshCounters();
   }
 
-  async function copyReport(order: LoaderOrder) {
-    const copied = await copyText(order.rail_report_text ?? "");
-    showToast(
-      copied ? `Отчёт по заказу №${order.id} скопирован` : "Не удалось скопировать — браузер не дал доступ к буферу",
-      copied ? "success" : "error",
-    );
+  /** Отчёт о вагонах отправлен: ответ — отметка для строк истории, без перечитывания. */
+  function reportSent(sent: WagonReportSent) {
+    history.applyItems((rows) => withReportSent(rows, sent));
   }
 
   async function print(orderId: number) {
@@ -356,11 +358,29 @@ function LoaderPageInner() {
               { key: "history", label: "История" },
             ]}
           />
-          {/* Отчёт Джин-Сина о вагонах: предпросмотр, разбор и «Провести» — в листе. */}
           {transport === "train" && (
-            <Button variant="outline" className="h-10" onClick={() => setRailSheet({ orderId: null })}>
-              <ClipboardPaste className="size-4" /> Вставить отчёт
-            </Button>
+            // На телефоне обе кнопки — одной строкой на всю ширину, под вкладками.
+            <div className="flex w-full min-w-0 gap-2 sm:w-auto">
+              {/* Отчёт Джин-Сина о вагонах: предпросмотр, разбор и «Провести» — в листе. */}
+              <Button
+                variant="outline"
+                className="h-10 min-w-0 flex-1 px-3 sm:flex-none"
+                onClick={() => setRailSheet({ orderId: null })}
+              >
+                <ClipboardPaste className="size-4" /> Вставить отчёт
+              </Button>
+              {/* Отгрузки показанного периода — отчётом в формате владельца Динаре. */}
+              {view === "history" && (
+                <Button
+                  variant="outline"
+                  className="h-10 min-w-0 flex-1 px-3 sm:flex-none"
+                  disabled={history.items.length === 0}
+                  onClick={() => setReportScope({ date_from: range.from, date_to: range.to, search: debouncedSearch })}
+                >
+                  <Send className="size-4" /> Отправить отчёт
+                </Button>
+              )}
+            </div>
           )}
         </div>
         {error && (
@@ -488,13 +508,14 @@ function LoaderPageInner() {
             busy={busy}
             onPrint={print}
             onUndo={undo}
-            onCopyReport={(order) => void copyReport(order)}
+            onSendReport={(order) => setReportScope({ order: order.id })}
           />
         )}
       </div>
 
       <WaybillSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {railReportSheet}
+      {reportScope && <WagonReportModal scope={reportScope} onClose={() => setReportScope(null)} onSent={reportSent} />}
     </AppShell>
   );
 }
@@ -571,14 +592,14 @@ function HistoryList({
   busy,
   onPrint,
   onUndo,
-  onCopyReport,
+  onSendReport,
 }: {
   history: Paged;
   today: string;
   busy: boolean;
   onPrint: (orderId: number) => void;
   onUndo: (order: LoaderOrder) => void;
-  onCopyReport: (order: LoaderOrder) => void;
+  onSendReport: (order: LoaderOrder) => void;
 }) {
   if (history.loading && history.items.length === 0) return <DataGate loading error="" onRetry={history.reload} />;
   if (history.error) return <DataGate loading={false} error={history.error} onRetry={history.reload} />;
@@ -604,14 +625,15 @@ function HistoryList({
               </span>
             )}
             <LoaderOrderCard order={order} />
+            <ReportSentMark order={order} />
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" className="h-11 flex-1" onClick={() => onPrint(order.id)}>
                 <Printer className="size-4" /> Накладная
               </Button>
-              {/* Отгрузка по отчёту — снова текстом в формате владельца (для WhatsApp). */}
-              {order.rail_report_text && (
-                <Button variant="outline" className="h-11 flex-1" onClick={() => onCopyReport(order)}>
-                  <ClipboardCopy className="size-4" /> Скопировать отчёт
+              {/* Отгрузка вагонов — отчётом в формате владельца Динаре (копия — в окне). */}
+              {order.transport_type === "train" && (
+                <Button variant="outline" className="h-11 flex-1" onClick={() => onSendReport(order)}>
+                  <Send className="size-4" /> Отправить отчёт
                 </Button>
               )}
               {/* Ошибочную отгрузку грузчик отменяет сам, пока она свежая. */}
@@ -632,6 +654,25 @@ function HistoryList({
         onClick={history.loadMore}
       />
     </div>
+  );
+}
+
+const MARK_TONES = {
+  success: { className: "text-[var(--success)]", Icon: CheckCheck },
+  muted: { className: "text-[var(--muted-foreground)]", Icon: Clock3 },
+  destructive: { className: "text-[var(--destructive)]", Icon: AlertTriangle },
+} as const;
+
+/** «Отправлено Динаре 07:45» под карточкой истории. */
+function ReportSentMark({ order }: { order: LoaderOrder }) {
+  const mark = reportMark(order);
+  if (!mark) return null;
+  const { className, Icon } = MARK_TONES[mark.tone];
+  return (
+    <p className={cn("flex min-w-0 items-center gap-1.5 text-xs font-medium tabular-nums", className)}>
+      <Icon className="size-3.5 shrink-0" />
+      <span className="min-w-0 break-words">{mark.text}</span>
+    </p>
   );
 }
 

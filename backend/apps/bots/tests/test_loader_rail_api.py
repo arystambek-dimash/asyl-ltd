@@ -322,7 +322,7 @@ def test_apply_conducts_the_report_and_answers_with_the_history_row(auth_client,
     assert row["wagons"][0] == {
         "number": OWNER_WAGONS[0], "product_label": str(product), "bags": 1360, "weight_kg": "68000.00"}
     assert row["bags"] == OWNER_BAGS
-    assert row["rail_report_text"].splitlines()[:2] == ["сб 19.09.26 Узбекистан ООО OSIYO NAV NIHOL", "Ст. Раустан 12 вагон"]
+    assert (row["report_sent_at"], row["report_status"]) == (None, "")
     assert StockItem.objects.get(product=product).bags == 20000 - OWNER_BAGS
 
 
@@ -395,21 +395,25 @@ def test_history_finds_a_report_order_by_any_wagon_number(auth_client, client, p
         assert [row["id"] for row in rows] == [order.pk], search
 
 
-def test_history_lists_wagons_and_report_texts_without_n_plus_one(
+def test_history_lists_wagons_without_n_plus_one(
     auth_client, client, product, conductor, django_assert_max_num_queries,
 ):
+    # Вчерашние отгрузки: у свежей (≤ часа, а до полудня — «из будущего»)
+    # «Отменить» спрашивает журнал, и счёт запросов зависел бы от часа прогона.
+    yesterday = timezone.localdate() - timedelta(days=1)
+    url = f"/api/loader/history/?transport=train&date_from={yesterday.isoformat()}"
     api = auth_client(conductor)
-    _report_order(client, product, OWNER_WAGONS[:2])
+    _report_order(client, product, OWNER_WAGONS[:2], day=yesterday)
     with CaptureQueriesContext(connection) as small:
-        assert len(api.get("/api/loader/history/?transport=train").data) == 1
+        assert len(api.get(url).data) == 1
     for start in range(2, 12, 2):
-        _report_order(client, product, OWNER_WAGONS[start:start + 2])
+        _report_order(client, product, OWNER_WAGONS[start:start + 2], day=yesterday)
 
     with django_assert_max_num_queries(len(small.captured_queries)):
-        rows = api.get("/api/loader/history/?transport=train").data
+        rows = api.get(url).data
 
     assert len(rows) == 6
-    assert all(len(row["wagons"]) == 2 and row["rail_report_text"] for row in rows)
+    assert all(len(row["wagons"]) == 2 for row in rows)
 
 
 def test_orders_api_shows_wagons_and_finds_by_wagon_once(
