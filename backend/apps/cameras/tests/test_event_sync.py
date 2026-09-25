@@ -591,6 +591,17 @@ def test_pending_enrichment_does_not_claim_event_stream_is_caught_up():
     assert cursor.last_event_id == 0
     assert cursor.event_boundary_validated is False
     assert cursor.event_caught_up_at is None
+    # Everything else was delivered: only the deploy health gate relies on it.
+    assert cursor.event_delivered_at is not None
+
+
+def test_more_pages_mean_nothing_is_delivered_yet():
+    response = _page([_event(1, 1)], has_more=True)
+    with patch.object(ai, "count_events", return_value=response):
+        event_sync.sync_camera("cam3", max_pages=1)
+
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.event_caught_up_at is None and cursor.event_delivered_at is None
 
 
 def test_events_404_is_a_sync_failure_not_a_legacy_mode():

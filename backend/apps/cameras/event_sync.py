@@ -76,6 +76,7 @@ def mark_sync_failure(camera: str, error: Exception) -> None:
     cursor.event_sync_error = (str(error) or error.__class__.__name__)[:500]
     cursor.event_sync_failed_at = timezone.now()
     cursor.event_caught_up_at = None
+    cursor.event_delivered_at = None
     cursor.event_sync_supported = (
         True
         if cursor.event_sync_supported is True or cursor.last_event_id is not None
@@ -86,6 +87,7 @@ def mark_sync_failure(camera: str, error: Exception) -> None:
             "event_sync_error",
             "event_sync_failed_at",
             "event_caught_up_at",
+            "event_delivered_at",
             "event_sync_supported",
             "updated_at",
         ]
@@ -101,11 +103,13 @@ def request_stop_drain(camera: str) -> None:
         cursor.event_stop_drain_requested_at = timezone.now()
         cursor.event_stop_confirmed_at = None
         cursor.event_caught_up_at = None
+        cursor.event_delivered_at = None
         cursor.save(
             update_fields=[
                 "event_stop_drain_requested_at",
                 "event_stop_confirmed_at",
                 "event_caught_up_at",
+                "event_delivered_at",
                 "updated_at",
             ]
         )
@@ -124,11 +128,13 @@ def confirm_stop_drain(camera: str) -> None:
         cursor.event_stop_confirmed_at = confirmed_at
         cursor.event_drain_required_at = confirmed_at
         cursor.event_caught_up_at = None
+        cursor.event_delivered_at = None
         cursor.save(
             update_fields=[
                 "event_stop_confirmed_at",
                 "event_drain_required_at",
                 "event_caught_up_at",
+                "event_delivered_at",
                 "updated_at",
             ]
         )
@@ -164,12 +170,14 @@ def reactivate_stop_drain(
     cursor.event_stop_confirmed_at = None
     cursor.event_drain_required_at = required_at
     cursor.event_caught_up_at = None
+    cursor.event_delivered_at = None
     cursor.save(
         update_fields=[
             "event_stop_drain_requested_at",
             "event_stop_confirmed_at",
             "event_drain_required_at",
             "event_caught_up_at",
+            "event_delivered_at",
             "updated_at",
         ]
     )
@@ -437,6 +445,9 @@ def apply_page(
     cursor.event_caught_up_at = (
         synced_at if stream_caught_up and drain_satisfied else None
     )
+    cursor.event_delivered_at = (
+        synced_at if not page.has_more and drain_satisfied else None
+    )
     if stream_caught_up and drain_satisfied:
         cursor.event_drain_required_at = None
         cursor.event_stop_drain_requested_at = None
@@ -450,6 +461,7 @@ def apply_page(
             "event_journal_id",
             "last_event_at",
             "event_caught_up_at",
+            "event_delivered_at",
             "event_drain_required_at",
             "event_stop_drain_requested_at",
             "event_stop_confirmed_at",

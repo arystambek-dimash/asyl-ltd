@@ -661,6 +661,44 @@ def test_failed_poll_of_a_legacy_camera_is_an_error_not_legacy():
     assert analytics._event_sync_payload(cursor, now=now)["status"] == "error"
 
 
+def test_deploy_gate_accepts_a_journal_withholding_only_bags_voting_on_colour():
+    # During loading the camera PC nearly always holds back a bag whose colour
+    # is still being voted on, so the journal is never fully caught up.
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
+        expected_count=10,
+        online_count=10,
+        last_checked_at=now,
+    )
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    cursor = AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        last_event_id=9,
+        event_sync_supported=True,
+        event_boundary_validated=True,
+        event_delivered_at=now,
+    )
+
+    deploy = health.state_payload(state, now=now, max_age=180, require_events=True)
+    assert deploy["event_sync"]["cameras"][0]["status"] == "synced"
+    assert health.exit_code(deploy) == 0
+    previous_release = health.state_payload(
+        state, now=now + timedelta(seconds=2), max_age=180, require_events=True,
+        required_since=now + timedelta(seconds=1),
+    )
+    assert previous_release["event_sync"]["cameras"][0]["status"] == "stale"
+
+    cursor.event_delivered_at = None  # more pages still to import
+    cursor.save(update_fields=["event_delivered_at"])
+    backlog = health.state_payload(state, now=now, max_age=180, require_events=True)
+    assert backlog["event_sync"]["cameras"][0]["status"] == "catching_up"
+    assert health.exit_code(backlog) == 2
+    # Accounting keeps waiting for the complete journal.
+    assert analytics._event_sync_payload(cursor, now=now)["status"] == "catching_up"
+
+
 def test_deploy_gate_requires_events_while_default_health_allows_legacy():
     now = timezone.now()
     state = CameraHealthState.objects.create(

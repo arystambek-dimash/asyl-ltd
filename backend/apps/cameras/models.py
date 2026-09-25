@@ -296,6 +296,10 @@ class AlwaysOnCounterCursor(models.Model):
     event_journal_id = models.CharField(max_length=64, null=True, blank=True)
     last_event_at = models.DateTimeField(null=True, blank=True)
     event_caught_up_at = models.DateTimeField(null=True, blank=True)
+    # Last sync that received everything the camera PC offered, except bags it
+    # withholds while their colour is still being voted on. Proves a live
+    # journal to the deploy health gate; accounting waits for event_caught_up_at.
+    event_delivered_at = models.DateTimeField(null=True, blank=True)
     # NULL: not probed yet; True: durable event journal is the sole count
     # source; False: only historical rows of cameras that answered 404 on
     # /events before the journal cutover — no new ones are written.

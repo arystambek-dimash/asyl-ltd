@@ -715,6 +715,16 @@ def state_payload(
             if cursor is not None
             else "pending"
         )
+        live_at = cursor.event_caught_up_at if cursor is not None else None
+        delivered_at = cursor.event_delivered_at if cursor is not None else None
+        if (
+            code == "catching_up"
+            and delivered_at is not None
+            and timedelta(0) <= now - delivered_at <= timedelta(seconds=max_age)
+        ):
+            # During loading the camera PC nearly always withholds a bag still
+            # voting on its colour. Everything else arrived: the journal is live.
+            code, live_at = "synced", delivered_at
         sync_status, detail = _EVENT_SYNC_STATES[code]
         if code == "error":
             detail = cursor.event_sync_error or detail
@@ -725,7 +735,7 @@ def state_payload(
         elif (
             code in ("stale", "synced")
             and required_since
-            and cursor.event_caught_up_at < required_since
+            and live_at < required_since
         ):
             sync_status = "stale"
             detail = "event journal has not been synchronized by this release"
