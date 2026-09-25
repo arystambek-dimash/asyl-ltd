@@ -423,24 +423,19 @@ def test_shipped_order_with_money_can_still_be_deleted(boss, accountant, product
     from apps.clients.reports.statements.data import build_statement_data
 
     order = _order(product, status="shipped")
-    payment = _prepay(order, boss, "4000.00")
+    _prepay(order, boss, "4000.00")
 
     services.soft_delete_order(order, boss)
 
     assert not Order.objects.filter(pk=order.pk).exists()
-    # Деньги состоявшейся продажи из корзины не пропадают: журнал кассы и
-    # выписка по-прежнему видят оплату, а выписка — и саму продажу.
+    # Корзина — это удалённое: ни журнал кассы, ни выписка заказ и его деньги
+    # не видят.
     journal = APIClient()
     journal.force_authenticate(accountant)
-    rows = journal.get("/api/payment-transactions/").data["results"]
-    assert [row["id"] for row in rows] == [payment.pk]
+    assert journal.get("/api/payment-transactions/").data["results"] == []
     statement = build_statement_data(client=order.client)
-    assert [row.pk for row in statement.payments] == [payment.pk]
-    assert [(op.kind, op.amount) for op in statement.operations] == [
-        ("sale", Decimal("10000.00")),
-        ("payment", Decimal("-4000.00")),
-    ]
-    assert statement.closing["KZT"] == Decimal("6000.00")
+    assert list(statement.payments) == []
+    assert list(statement.operations) == []
 
 
 def test_shipment_rollback_keeps_prepayment_when_order_waits_again(boss, product):

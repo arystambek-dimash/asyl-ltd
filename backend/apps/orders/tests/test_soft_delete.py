@@ -375,28 +375,19 @@ def test_deleted_order_not_in_payments_queue(manager, accountant, make_product, 
     assert o.id not in [row["order"] for row in r.data]
 
 
-def test_transactions_journal_keeps_money_of_shipped_order_from_trash(manager, accountant, make_product, auth_client):
-    """Корзина прячет отгруженный заказ, но не его деньги: журнал и итог кассы их хранят."""
+def test_transactions_journal_skips_orders_from_trash(manager, accountant, make_product, auth_client):
+    """Корзина — это удалённое: ни строки журнала, ни итог кассы её не видят,
+    даже если заказ был отгружен и оплачен."""
     p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     live = _order(c, p, paid="1000.00")
-    trashed = _order(c, p, paid="7777.00")
-    auth_client(manager).delete(f"/api/orders/{trashed.id}/")
-
-    r = auth_client(accountant).get("/api/payment-transactions/")
-    assert {row["order"] for row in r.data["results"]} == {live.id, trashed.id}
-    assert r.data["summary"]["paid_by_currency"]["KZT"] == "8777.00"
-    assert r.data["summary"]["paid_by_method"]["KZT"]["cash"] == "8777.00"
-
-
-def test_transactions_journal_skips_unshipped_order_from_trash(manager, accountant, make_product, auth_client):
-    p = make_product()
-    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
-    live = _order(c, p, paid="1000.00")
-    trashed = _order(c, p, status="confirmed")
-    Payment.objects.create(order=trashed, amount="500.00", status="rejected")
-    auth_client(manager).delete(f"/api/orders/{trashed.id}/")
+    shipped_trashed = _order(c, p, paid="7777.00")
+    unshipped_trashed = _order(c, p, status="confirmed")
+    Payment.objects.create(order=unshipped_trashed, amount="500.00", status="rejected")
+    auth_client(manager).delete(f"/api/orders/{shipped_trashed.id}/")
+    auth_client(manager).delete(f"/api/orders/{unshipped_trashed.id}/")
 
     r = auth_client(accountant).get("/api/payment-transactions/")
     assert [row["order"] for row in r.data["results"]] == [live.id]
     assert r.data["summary"]["paid_by_currency"]["KZT"] == "1000.00"
+    assert r.data["summary"]["paid_by_method"]["KZT"]["cash"] == "1000.00"

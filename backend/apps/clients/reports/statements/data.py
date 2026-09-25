@@ -10,7 +10,7 @@ from django.utils import timezone
 from apps.common.money import CURRENCY_CODES, ZERO
 from apps.common.query_params import filter_date_range
 from apps.orders.debt import DEBT_STATUS, debt_orders as current_debt_orders, order_remaining
-from apps.orders.models import Order, Payment, PaymentRefund, money_ledger_q
+from apps.orders.models import Order, Payment, PaymentRefund
 from apps.sales.labels import UNASSIGNED_NAME
 from apps.sales.models import Department
 
@@ -89,11 +89,8 @@ def _stamped(queryset, stamp, *, date_from=None, date_to=None, before=None):
 
 
 def _statement_orders(client=None, departments=None, client_ids=None):
-    # Выписка — денежная лента: отгруженный заказ из корзины в ней остаётся.
     queryset = (
-        Order
-        .all_objects
-        .filter(money_ledger_q())
+        Order.objects
         .select_related(
             "client__user",
             "store",
@@ -118,7 +115,7 @@ def _statement_orders(client=None, departments=None, client_ids=None):
 
 def _statement_payments(client=None, departments=None, client_ids=None):
     queryset = (
-        Payment.objects.filter(money_ledger_q("order__"))
+        Payment.objects.filter(order__deleted_at__isnull=True)
         .exclude(method__in=Payment.NON_MONEY_METHODS)
         .select_related(
             "order__client__user",
@@ -139,10 +136,10 @@ def _statement_payments(client=None, departments=None, client_ids=None):
 def _statement_refunds(client=None, departments=None, client_ids=None):
     # Refunds have their own recognition date. Filtering through Payment would
     # move a later refund back to the original confirmation period. As with the
-    # payment queryset, the explicit ledger predicate is required because
+    # payment queryset, the explicit trash filter is required because
     # traversing ``payment__order`` does not apply Order's live manager.
     queryset = PaymentRefund.objects.filter(
-        money_ledger_q("payment__order__"),
+        payment__order__deleted_at__isnull=True,
         status="completed",
     ).exclude(payment__method__in=Payment.NON_MONEY_METHODS).select_related(
         "payment__order__client__user",

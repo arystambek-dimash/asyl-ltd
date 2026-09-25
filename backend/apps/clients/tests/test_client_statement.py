@@ -693,9 +693,8 @@ def test_refund_only_statement_keeps_scope_and_soft_delete_rules():
 
     included_client, included_refund = refund_for("Видимый", north)
     refund_for("Другой отдел", south)
-    # Отгруженный заказ из корзины остаётся в денежной ленте, отменённый — нет.
-    trashed_client, trashed_refund = refund_for(
-        "Отгружен в корзине", north, deleted_status="shipped")
+    # Заказы из корзины — и отгруженный, и отменённый — в выписку не попадают.
+    refund_for("Отгружен в корзине", north, deleted_status="shipped")
     refund_for("Отменён в корзине", north, deleted_status="cancelled")
 
     data = build_statement_data(
@@ -703,15 +702,10 @@ def test_refund_only_statement_keeps_scope_and_soft_delete_rules():
         date_to=now.date(),
         departments=[north.code],
     )
-    assert [client.id for client in data.clients] == [
-        included_client.id, trashed_client.id,
-    ]
-    assert [refund.id for refund in data.refunds] == [
-        included_refund.id, trashed_refund.id,
-    ]
-    assert data.totals["KZT"]["payments"] == Decimal(-400)
+    assert [client.id for client in data.clients] == [included_client.id]
+    assert [refund.id for refund in data.refunds] == [included_refund.id]
+    assert data.totals["KZT"]["payments"] == Decimal(-200)
     assert [(operation.kind, operation.amount) for operation in data.operations] == [
-        ("refund", Decimal(200)),
         ("refund", Decimal(200)),
     ]
 

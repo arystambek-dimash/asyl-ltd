@@ -31,7 +31,7 @@ from apps.shipments.services import rollback_shipment
 from apps.shipments.serializers import LoadSerializer
 from django.db import transaction
 from .models import (
-    ApiPayInvoice, ApiPayQrRefund, Order, Payment, StatusChangeRequest, money_ledger_q,
+    ApiPayInvoice, ApiPayQrRefund, Order, Payment, StatusChangeRequest,
 )
 from .qr_refunds import execute_qr_refund, revoke_qr_refund, serialize_qr_refund, start_qr_refund
 from .apipay import (
@@ -281,10 +281,9 @@ class PaymentTransactionListView(PermAPIViewMixin, APIView):
     required_perms = {"get": "payments.view"}
 
     def get(self, request):
-        # order__ не проходит через LiveOrderManager — корзину отсекаем явно,
-        # но деньги отгруженного заказа из корзины в кассе остаются.
+        # order__ не проходит через LiveOrderManager — корзину отсекаем явно.
         payments = scope_by_client_department(
-            Payment.objects.filter(money_ledger_q("order__")),
+            Payment.objects.filter(order__deleted_at__isnull=True),
             request.user,
             client_path="order__client",
         )

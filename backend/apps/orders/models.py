@@ -25,19 +25,6 @@ class OrderQuerySet(models.QuerySet):
         )
 
 
-def money_ledger_q(prefix: str = "") -> Q:
-    """Заказы денежной ленты — журнала кассы и выписок: живые и отгруженные из корзины.
-
-    Отгруженный заказ — состоявшаяся продажа: товар уехал, деньги получены.
-    Корзина прячет его из списков и аналитики, но продажу, оплаты и возвраты
-    лента не теряет. У неотгруженного заказа в корзине денег нет: удалить его
-    с деньгами не даёт ``services.assert_order_has_no_money``. ``prefix`` —
-    путь до заказа от модели выборки (``"order__"``, ``"payment__order__"``).
-    """
-    live = Q(**{f"{prefix}deleted_at__isnull": True, f"{prefix}purged_at__isnull": True})
-    return live | Q(**{f"{prefix}status": "shipped"})
-
-
 class LiveOrderManager(models.Manager):
     """Менеджер по умолчанию: удалённые (в корзине) заказы не видны нигде —
     ни в списках, ни в агрегатах, ни через related (client.orders/store.orders)."""
@@ -119,9 +106,8 @@ class Order(models.Model):
     # Пустая строка = камера не выбрана. Несколько заказов грузятся параллельно
     # на разных камерах.
     loading_camera = models.CharField(max_length=32, blank=True, default="")
-    # Мягкое удаление: заказ уезжает в «Корзину», из отчётов исчезает (кроме
-    # денежной ленты отгруженного — money_ledger_q), данные сохраняются и его
-    # можно восстановить.
+    # Мягкое удаление: заказ уезжает в «Корзину», из отчётов и журнала кассы
+    # исчезает, данные сохраняются и его можно восстановить.
     deleted_at = models.DateTimeField(null=True, blank=True)
     deleted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

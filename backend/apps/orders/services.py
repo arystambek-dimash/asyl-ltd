@@ -1823,8 +1823,7 @@ def _lock_any_order(order: Order, *, purged_detail: str) -> Order:
 def soft_delete_order(order: Order, user) -> Order:
     """Мягкое удаление: заказ уезжает в «Корзину». Из списков и аналитики
     исчезает (default-manager его не видит), но данные сохраняются и заказ
-    можно восстановить. Деньги отгруженного заказа остаются в журнале кассы
-    и выписках (:func:`models.money_ledger_q`)."""
+    можно восстановить. Из журнала кассы и выписок он тоже исчезает."""
     order = _lock_any_order(order, purged_detail="Заказ удалён безвозвратно")
     if order.deleted_at is not None:
         raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
