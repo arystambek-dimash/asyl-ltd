@@ -1,9 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import { apiState } from "@/test-utils/api";
 import { PassageHistory } from "./passage-history";
-import { WagonPhotos } from "./wagon-photos";
-import type { GrainWagon } from "@/lib/types";
 
 const useApiMock = vi.hoisted(() => vi.fn());
 const pollingMock = vi.hoisted(() => vi.fn());
@@ -13,16 +12,11 @@ vi.mock("@/lib/use-visible-polling", () => ({ useVisiblePolling: (...args: unkno
 beforeEach(() => {
   useApiMock.mockReset();
   pollingMock.mockReset();
-  useApiMock.mockReturnValue({ data: null, loading: false, error: "", reload: vi.fn() });
+  useApiMock.mockReturnValue(apiState(null));
 });
 
 it("loads the selected journal and pauses live polling on older pages", async () => {
-  useApiMock.mockImplementation((url: string | null) => ({
-    data: url ? { results: [], next_cursor: 42 } : null,
-    loading: false,
-    error: "",
-    reload: vi.fn(),
-  }));
+  useApiMock.mockImplementation((url: string | null) => apiState(url ? { results: [], next_cursor: 42 } : null));
   render(<PassageHistory />);
   expect(useApiMock).toHaveBeenLastCalledWith("/grain/automatic-passage-scale/history/");
   expect(pollingMock.mock.lastCall?.[2]).toBe(true);
@@ -36,7 +30,7 @@ it("loads the selected journal and pauses live polling on older pages", async ()
 
 it("refreshes the journal on demand", async () => {
   const reload = vi.fn();
-  useApiMock.mockReturnValue({ data: { results: [], next_cursor: null }, loading: false, error: "", reload });
+  useApiMock.mockReturnValue(apiState({ results: [], next_cursor: null }, { reload }));
   render(<PassageHistory />);
   await userEvent.click(screen.getByRole("button", { name: "Обновить журнал" }));
   expect(reload).toHaveBeenCalledOnce();
@@ -80,7 +74,7 @@ it("shows a failed stabilization separately from a saved weight awaiting assignm
 });
 
 it("does not show a loading error as an empty history", async () => {
-  useApiMock.mockReturnValue({ data: null, loading: false, error: "offline", reload: vi.fn() });
+  useApiMock.mockReturnValue(apiState(null, { error: "offline" }));
   render(<PassageHistory />);
   expect(screen.getByRole("alert")).toHaveTextContent("Не удалось загрузить журнал");
   expect(screen.queryByText("Попыток взвешивания пока нет.")).not.toBeInTheDocument();
@@ -112,21 +106,4 @@ it("distinguishes automatic resolution from operator action without showing stal
   expect(screen.getByText("Обработано оператором")).toBeInTheDocument();
   expect(screen.getByText("Отклонено")).toBeInTheDocument();
   expect(screen.queryByText(/выезд без заезда/)).not.toBeInTheDocument();
-});
-
-it("distinguishes an expected exit photo from a retrying entry photo", () => {
-  render(
-    <WagonPhotos
-      wagon={
-        {
-          direction: "passage",
-          entry_weight_kg: 3900,
-          exit_weight_kg: null,
-          weighings: [{ id: 1, kind: "gross", photo_status: "retrying" }],
-        } as GrainWagon
-      }
-    />,
-  );
-  expect(screen.getByText("Фото загружается повторно")).toBeInTheDocument();
-  expect(screen.getByText("появится после взвешивания гружёной")).toBeInTheDocument();
 });

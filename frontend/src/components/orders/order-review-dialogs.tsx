@@ -1,31 +1,43 @@
 "use client";
-import { OrderConfirmation } from "@/components/order-confirmation";
+import { OrderConfirmation, type OrderConfirmationData } from "@/components/order-confirmation";
 import { OrderRejectionDialog } from "@/components/order-rejection-dialog";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { DataGate } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import type { Department, Order } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import type { OrderRequests } from "./use-order-requests";
 
-/** Подтверждение и отклонение заявки — одни и те же окна на десктопе и телефоне. */
+/**
+ * Подтверждение и отклонение заявки — одни и те же окна во вкладке «Заявки»
+ * и в карточке заказа. onConfirm возвращает true, когда заказ подтверждён.
+ * Справочник отделов окно грузит само, если страница не передала свой.
+ */
 export function OrderReviewDialogs({
-  requests,
+  departments: pageDepartments,
   confirming,
   rejecting,
+  busy,
+  error,
+  onConfirm,
   onConfirmClose,
   onRejectClose,
+  onRejected,
 }: {
-  requests: OrderRequests;
+  departments?: Department[];
   confirming: Order | null;
   rejecting: Order | null;
+  busy: boolean;
+  error: string;
+  onConfirm: (order: Order, payload: OrderConfirmationData) => Promise<boolean>;
   onConfirmClose: () => void;
   onRejectClose: () => void;
+  onRejected: () => void;
 }) {
   const {
-    data: departments,
+    data: loadedDepartments,
     error: departmentsError,
     reload: retryDepartments,
-  } = useApi<Department[]>(confirming ? "/departments/" : null);
+  } = useApi<Department[]>(confirming && !pageDepartments ? "/departments/" : null);
+  const departments = pageDepartments ?? loadedDepartments;
   return (
     <>
       {rejecting && (
@@ -35,31 +47,32 @@ export function OrderReviewDialogs({
           onClose={onRejectClose}
           onDone={() => {
             onRejectClose();
-            void requests.reload();
+            onRejected();
           }}
         />
       )}
       <Modal
         open={!!confirming}
         onClose={() => {
-          if (!requests.busy) onConfirmClose();
+          if (!busy) onConfirmClose();
         }}
         eyebrow="Подтверждение"
-        title={`Заказ #${confirming?.id ?? ""}`}
+        title={`Подтвердить заказ #${confirming?.id ?? ""}`}
         mobileFullscreen
       >
-        {departmentsError ? (
-          <ErrorAlert message={departmentsError} onRetry={retryDepartments} />
+        {/* Форма ждёт справочник отделов: пустой список она показала бы как «Нет доступных отделов». */}
+        {!departments ? (
+          <DataGate loading={!departmentsError} error={departmentsError} onRetry={retryDepartments} />
         ) : (
           confirming && (
             <OrderConfirmation
               key={confirming.id}
               order={confirming}
-              departments={departments ?? []}
-              busy={requests.busy}
-              error={requests.actionError}
+              departments={departments}
+              busy={busy}
+              error={error}
               onConfirm={async (payload) => {
-                if (await requests.confirm(confirming, payload)) onConfirmClose();
+                if (await onConfirm(confirming, payload)) onConfirmClose();
               }}
             />
           )

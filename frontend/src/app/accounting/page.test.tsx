@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { Payment } from "@/lib/types";
+import { makePayment, makeQrRefund } from "@/test-utils/factories";
 import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
 import CashierPage from "./page";
 
@@ -10,21 +12,12 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   paid: false,
   queueError: false,
-  poll: async () => {},
   me: null as unknown,
 }));
-vi.mock("@/lib/use-visible-polling", () => ({
-  useVisiblePolling: (poll: () => Promise<void>, _interval: number, active: boolean) => {
-    if (active) mocks.poll = poll;
-  },
-}));
+vi.mock("@/lib/use-visible-polling", () => ({ useVisiblePolling: () => {} }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 vi.mock("@/lib/api", () => ({
@@ -113,17 +106,6 @@ beforeEach(() => {
                 overdue_count: 0,
               },
             ],
-      };
-    if (url.pathname === "/payment-transactions/")
-      return {
-        data: {
-          results: [],
-          page: 1,
-          pages: 1,
-          count: 0,
-          status_counts: {},
-          summary: { paid_by_currency: { KZT: "100", USD: "0" }, refunded_by_currency: { KZT: "0", USD: "0" } },
-        },
       };
     return { data: [] };
   });
@@ -264,7 +246,6 @@ it("takes payment for a shipped order or moves it to debt from «Ждут опл
     expect(mocks.post).toHaveBeenCalledWith("/orders/632/payments/", {
       amount: "200",
       method: "cash",
-      stage: "received",
     }),
   );
 
@@ -332,7 +313,6 @@ it("takes a prepayment for an order awaiting shipment from «К отгрузке
     expect(mocks.post).toHaveBeenCalledWith("/orders/700/payments/", {
       amount: "500",
       method: "remote",
-      stage: "received",
     }),
   );
   const urls = mocks.get.mock.calls.map(([url]) => String(url));
@@ -356,17 +336,13 @@ it("returns an overpayment to the client from «К возврату»", async ()
               remaining_amount: "0",
               overpaid_amount: "200.00",
               payments: [
-                {
+                makePayment({
                   id: 91,
                   order: 701,
-                  currency: "KZT",
                   amount: "500.00",
-                  method: "cash",
-                  status: "confirmed",
                   paid_at: "2026-09-22T10:00:00",
-                  recorded_by: null,
                   available_for_refund: "500.00",
-                },
+                }),
               ],
             },
           ],
@@ -390,27 +366,19 @@ it("returns an overpayment to the client from «К возврату»", async ()
     expect(mocks.post).toHaveBeenCalledWith("/payment-transactions/91/refund/", {
       amount: "200",
       reason: "Уменьшили заказ",
-      mode: "auto",
     }),
   );
 });
 
 it("keeps the Kaspi QR refund window open after the order leaves «К возврату»", async () => {
   const user = userEvent.setup();
-  const qrRefund = {
+  const qrRefund = makeQrRefund({
     id: 5,
-    status: "awaiting_customer",
     amount: "200.00",
-    refunded_amount: null,
-    client_name: null,
     customer_url: "https://pay.example/refund/5",
     link_expires_at: null,
-    operations: [],
-    receipt_url: null,
-    error_code: null,
-    error_message: null,
     created_at: "2026-09-23T10:00:00",
-  };
+  });
   let refundStarted = false;
   const overpaid = {
     ...toShipOrder,
@@ -420,18 +388,15 @@ it("keeps the Kaspi QR refund window open after the order leaves «К возвр
     remaining_amount: "0",
     overpaid_amount: "200.00",
     payments: [
-      {
+      makePayment({
         id: 92,
         order: 702,
-        currency: "KZT",
         amount: "500.00",
         method: "kaspi",
-        status: "confirmed",
         paid_at: "2026-09-22T10:00:00",
-        recorded_by: null,
         available_for_refund: "500.00",
-        provider: { channel: "qr" },
-      },
+        provider: { channel: "qr" } as Payment["provider"],
+      }),
     ],
   };
   const baseGet = mocks.get.getMockImplementation()!;

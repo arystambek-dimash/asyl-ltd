@@ -9,7 +9,6 @@ import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import type { Client, Department, Me } from "@/lib/types";
-import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { formatDateTime, pluralRu } from "@/lib/utils";
 
@@ -23,16 +22,18 @@ type OwnDepartment = Me["sales_department"];
  */
 export function UnassignedClients({
   ownDepartment,
+  departments,
   onAssigned,
 }: {
   ownDepartment: OwnDepartment;
+  /** Справочник отделов страницы: сотруднику без своего отдела — выбор, за кем закрепить. */
+  departments: Department[];
   onAssigned: () => void;
 }) {
   const [open, setOpen] = useState(false);
   // Плашке нужно только число — одна строка на страницу.
   const waiting = usePagedApi<Client>(UNASSIGNED_CLIENTS_URL, 1);
   const list = usePagedApi<Client>(open ? UNASSIGNED_CLIENTS_URL : null, 20);
-  const { data: departments } = useApi<Department[]>(open && !ownDepartment ? "/departments/" : null);
 
   function assigned() {
     void waiting.reload();
@@ -87,7 +88,7 @@ export function UnassignedClients({
               key={client.id}
               client={client}
               ownDepartment={ownDepartment}
-              departments={departments ?? []}
+              departments={departments}
               onAssigned={assigned}
             />
           ))}

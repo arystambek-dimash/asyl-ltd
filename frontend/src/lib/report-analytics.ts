@@ -1,63 +1,33 @@
-import { finiteMoney, otherCurrencyAmounts } from "@/lib/currency-map";
+import { amountForCurrency, finiteMoney, otherCurrencyAmounts } from "@/lib/currency-map";
 import type { ReportDay, ReportSummary } from "@/lib/types";
+import { formatCurrency, formatIsoDayMonth } from "@/lib/utils";
 
 /** Текущее финансовое состояние заказов, отгруженных в выбранном периоде. */
-export interface ShipmentSettlement {
+interface ShipmentSettlement {
   currency: string;
   revenue: number;
   debt: number;
   paidToDate: number;
-  awaiting: number;
   /** Доля долга в основной валюте, целые проценты; null — отгрузок не было. */
   debtSharePct: number | null;
   /** Те же числа для остальных валют — их нельзя смешивать с основной. */
-  others: { currency: string; revenue: number; debt: number; paidToDate: number; awaiting: number }[];
+  others: { currency: string; revenue: number; debt: number; paidToDate: number }[];
 }
 
-function settlementFor(revenue: number, paid: number, debt: number, awaiting: number, explicit: boolean) {
-  const normalizedRevenue = Math.max(revenue, 0);
-  const normalizedDebt = Math.max(debt, 0);
-  if (!explicit) {
-    // Совместимость со старым API: раньше отдельных paid/awaiting не было.
-    return {
-      revenue: normalizedRevenue,
-      debt: normalizedDebt,
-      paidToDate: Math.max(normalizedRevenue - normalizedDebt, 0),
-      awaiting: 0,
-    };
-  }
+function settlementFor(shipped: ReportSummary["shipped"], currency: string) {
   return {
-    revenue: normalizedRevenue,
-    debt: normalizedDebt,
-    paidToDate: Math.max(paid, 0),
-    awaiting: Math.max(awaiting, 0),
+    revenue: Math.max(amountForCurrency(shipped.revenue_by_currency, currency), 0),
+    debt: Math.max(amountForCurrency(shipped.debt_amount_by_currency, currency), 0),
+    paidToDate: Math.max(amountForCurrency(shipped.paid_amount_by_currency, currency), 0),
   };
 }
 
 export function shipmentSettlement(shipped: ReportSummary["shipped"]): ShipmentSettlement {
   const currency = shipped.currency || "KZT";
-  const primaryExplicit =
-    Object.prototype.hasOwnProperty.call(shipped.paid_amount_by_currency ?? {}, currency) ||
-    Object.prototype.hasOwnProperty.call(shipped.awaiting_amount_by_currency ?? {}, currency) ||
-    shipped.paid_amount !== undefined ||
-    shipped.awaiting_amount !== undefined;
-  const primary = settlementFor(
-    finiteMoney(shipped.revenue_by_currency[currency] ?? shipped.revenue),
-    finiteMoney(shipped.paid_amount_by_currency?.[currency] ?? shipped.paid_amount),
-    finiteMoney(shipped.debt_amount_by_currency[currency] ?? 0),
-    finiteMoney(shipped.awaiting_amount_by_currency?.[currency] ?? shipped.awaiting_amount),
-    primaryExplicit,
-  );
-  const others = otherCurrencyAmounts(shipped.revenue_by_currency, currency).map(([other, revenue]) => ({
+  const primary = settlementFor(shipped, currency);
+  const others = otherCurrencyAmounts(shipped.revenue_by_currency, currency).map(([other]) => ({
     currency: other,
-    ...settlementFor(
-      revenue,
-      finiteMoney(shipped.paid_amount_by_currency?.[other] ?? 0),
-      finiteMoney(shipped.debt_amount_by_currency[other] ?? 0),
-      finiteMoney(shipped.awaiting_amount_by_currency?.[other] ?? 0),
-      Object.prototype.hasOwnProperty.call(shipped.paid_amount_by_currency ?? {}, other) ||
-        Object.prototype.hasOwnProperty.call(shipped.awaiting_amount_by_currency ?? {}, other),
-    ),
+    ...settlementFor(shipped, other),
   }));
   return {
     currency,
@@ -67,7 +37,60 @@ export function shipmentSettlement(shipped: ReportSummary["shipped"]): ShipmentS
   };
 }
 
-export interface ReportChartPoint {
+interface IncomeTotals {
+  currency: string;
+  total: number;
+  cash: number;
+  cashless: number;
+  gross: number;
+  refunded: number;
+  payments: number;
+  otherCurrencies: [string, number][];
+  otherRefunds: [string, number][];
+  grossFor: (currency: string) => number;
+}
+
+/** Итоги поступлений в основной валюте; прочие валюты — отдельными парами, без сложения. */
+export function incomeTotals(summary: Pick<ReportSummary, "income"> | null): IncomeTotals {
+  const income = summary?.income;
+  const byCurrency = income?.by_currency ?? {};
+  const currency = income?.currency || Object.keys(byCurrency)[0] || "KZT";
+  const pick = (map: Record<string, string> | undefined) => amountForCurrency(map ?? {}, currency);
+  return {
+    currency,
+    total: pick(byCurrency),
+    cash: pick(income?.cash_by_currency),
+    cashless: pick(income?.cashless_by_currency),
+    gross: pick(income?.gross_by_currency),
+    refunded: pick(income?.refunded_by_currency),
+    payments: income?.payments ?? 0,
+    otherCurrencies: otherCurrencyAmounts(byCurrency, currency),
+    otherRefunds: otherCurrencyAmounts(income?.refunded_by_currency ?? {}, currency),
+    grossFor: (unit) => amountForCurrency(income?.gross_by_currency ?? {}, unit),
+  };
+}
+
+/** Строки карточки поступлений после нал/безнала: прочие валюты и возвраты по каждой валюте. */
+export function incomeDetailRows(income: IncomeTotals): { label: string; value: string }[] {
+  return [
+    ...income.otherCurrencies.map(([currency, value]) => ({
+      label: "Также чистыми",
+      value: formatCurrency(value, currency),
+    })),
+    ...(income.refunded > 0
+      ? [
+          { label: "Поступило до возвратов", value: formatCurrency(income.gross, income.currency) },
+          { label: "Возвращено", value: formatCurrency(income.refunded, income.currency) },
+        ]
+      : []),
+    ...income.otherRefunds.flatMap(([currency, value]) => [
+      { label: `Поступило до возвратов, ${currency}`, value: formatCurrency(income.grossFor(currency), currency) },
+      { label: `Возвращено, ${currency}`, value: formatCurrency(value, currency) },
+    ]),
+  ];
+}
+
+interface ReportChartPoint {
   date: string;
   label: string;
   revenue: number;
@@ -77,23 +100,13 @@ export interface ReportChartPoint {
 /** Валюты, в которых графику действительно есть что показать. */
 export function reportChartCurrencies(data: ReportSummary): string[] {
   const active = new Set<string>();
-  let hasRevenueMap = false;
-  let hasReceivedMap = false;
   for (const day of data.days) {
-    hasRevenueMap ||= Object.keys(day.revenue_by_currency).length > 0;
-    hasReceivedMap ||= Object.keys(day.received_by_currency).length > 0;
     for (const [currency, value] of Object.entries(day.revenue_by_currency)) {
       if (finiteMoney(value) !== 0) active.add(currency);
     }
     for (const [currency, value] of Object.entries(day.received_by_currency)) {
       if (finiteMoney(value) !== 0) active.add(currency);
     }
-  }
-  if (!hasRevenueMap && finiteMoney(data.shipped.revenue) !== 0) {
-    active.add(data.shipped.currency || "KZT");
-  }
-  if (!hasReceivedMap && finiteMoney(data.income.total) !== 0) {
-    active.add(data.income.currency || "KZT");
   }
   const preferred = data.shipped.currency || data.income.currency || "KZT";
   if (active.size === 0) active.add(preferred);
@@ -104,31 +117,14 @@ export function reportChartCurrencies(data: ReportSummary): string[] {
   });
 }
 
-function chartAmount(
-  byCurrency: Readonly<Record<string, string | number>>,
-  legacy: string | number,
-  currency: string,
-  legacyCurrency: string,
-): number {
-  if (Object.keys(byCurrency).length === 0) {
-    return currency === legacyCurrency ? finiteMoney(legacy) : 0;
-  }
-  return finiteMoney(byCurrency[currency] ?? 0);
-}
-
 /** Дни API идут по убыванию даты — график требует хронологию и одну валюту. */
-export function reportChartSeries(
-  days: readonly ReportDay[],
-  currency: string,
-  revenueCurrency = currency,
-  incomeCurrency = currency,
-): ReportChartPoint[] {
+export function reportChartSeries(days: readonly ReportDay[], currency: string): ReportChartPoint[] {
   return days
     .map((day) => ({
       date: day.date,
-      label: day.date.slice(8, 10) + "." + day.date.slice(5, 7),
-      revenue: chartAmount(day.revenue_by_currency, day.revenue, currency, revenueCurrency),
-      received: chartAmount(day.received_by_currency, day.received, currency, incomeCurrency),
+      label: formatIsoDayMonth(day.date),
+      revenue: amountForCurrency(day.revenue_by_currency, currency),
+      received: amountForCurrency(day.received_by_currency, currency),
     }))
     .sort((a, b) => (a.date < b.date ? -1 : 1));
 }

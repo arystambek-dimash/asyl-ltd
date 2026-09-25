@@ -6,13 +6,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from numbers import Real
 from uuid import UUID
 
 from django.conf import settings
 from django.core.cache import cache
+
+from apps.common.wagon_numbers import is_wagon_number, wagon_check_digit_ok
 
 AI_URL = settings.AI_SERVICE_URL
 AI_KEY = settings.AI_SERVICE_API_KEY
@@ -31,7 +33,30 @@ VEHICLE_RUNTIME_PROBE_TIMEOUT = 2.0
 # standard still carried by old trucks: X209LAN.
 VEHICLE_PLATE_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
 
+
+def kz_vehicle_plate(compact: str) -> str:
+    """Казахстанский номер без отметки страны «KZ» или "", если формат не тот.
+
+    ``compact`` — уже слитная запись заглавными; символы OCR не заменяются.
+    Номер известного формата с «KZ» начинаться не может, поэтому префикс
+    снимается безусловно.
+    """
+    plate = compact.removeprefix("KZ")
+    return plate if VEHICLE_PLATE_RE.fullmatch(plate) else ""
+
+
 VEHICLE_ORIENTATIONS = frozenset({"front", "rear"})
+
+
+def unit_interval(value: object) -> float | None:
+    """Конечное число от 0 до 1 (уверенность, координата) как float, иначе None.
+
+    ``True``/``False`` числом не считаются, хотя в Python это int.
+    """
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and 0 <= number <= 1 else None
 
 
 def vehicle_orientation(payload: Mapping | None) -> tuple[str, float | None]:
@@ -47,18 +72,13 @@ def vehicle_orientation(payload: Mapping | None) -> tuple[str, float | None]:
     orientation = payload.get("orientation")
     if not isinstance(orientation, Mapping):
         return "", None
-    confidence = orientation.get("confidence")
-    if (
-        isinstance(confidence, bool)
-        or not isinstance(confidence, Real)
-        or not math.isfinite(float(confidence))
-        or not 0 <= float(confidence) <= 1
-    ):
-        confidence = None
+    confidence = unit_interval(orientation.get("confidence"))
     label = orientation.get("label")
     if not isinstance(label, str) or label not in VEHICLE_ORIENTATIONS:
-        return "", None if confidence is None else float(confidence)
-    return label, None if confidence is None else float(confidence)
+        return "", confidence
+    return label, confidence
+
+
 MAX_VEHICLE_CONFIRMATION_VOTES = 32_767
 
 ALWAYS_ON_CACHE_KEY = "cameras:always-on-status:v2"
@@ -66,9 +86,6 @@ ALWAYS_ON_TTL = 5
 SESSION_READY_POLL_SECONDS = 0.2
 DETECTIONS_CACHE_KEY = "cameras:always-on-detections:v2"
 DETECTIONS_TTL = 1
-
-WAGON_NUMBER_CACHE_KEY = "cameras:wagon-number-status:v1"
-WAGON_NUMBER_TTL = 5
 
 CAM_RE = re.compile(r"^cam[1-9][0-9]*$")
 LINE_DIRECTIONS = frozenset({"any", "up", "down", "positive", "negative"})
@@ -186,31 +203,35 @@ def _request(
         response.close()
 
 
-def _call(
-    method: str,
-    path: str,
-    body: dict | None = None,
-    none_on_404: bool = False,
-    *,
-    timeout_seconds: float | None = None,
-    max_response_bytes: int | None = None,
-) -> dict | None:
-    # Pass only the overrides actually used: the historical call shape stays
-    # stable for normal requests and tests.
-    options: dict = {}
-    if timeout_seconds is not None:
-        options["timeout_seconds"] = timeout_seconds
-    if max_response_bytes is not None:
-        options["max_response_bytes"] = max_response_bytes
-    status, payload = _request(method, path, body, **options)
-    if status == 404 and none_on_404:
-        return None
+def _error_from_payload(status: int, payload: Mapping) -> AiError:
+    """Ошибка ПК цеха: текст берём из ответа (cv-service пишет ``error``), иначе по коду."""
+    detail = payload.get("error") or payload.get("detail")
+    if not isinstance(detail, str) or not detail.strip():
+        detail = f"AI-сервис: ошибка {status}"
+    return AiError(status, detail, payload)
+
+
+def _checked(status: int, payload: dict) -> dict:
     if status >= 400:
-        detail = payload.get("detail") or payload.get("error")
-        if not isinstance(detail, str) or not detail.strip():
-            detail = f"AI-сервис: ошибка {status}"
-        raise AiError(status, detail, payload)
+        raise _error_from_payload(status, payload)
     return payload
+
+
+def _call(method: str, path: str, body: dict | None = None, **options) -> dict:
+    """JSON-запрос к ПК цеха; ответ 4xx/5xx — ``AiError``.
+
+    ``options`` (timeout_seconds, max_response_bytes) передаются в _request
+    как есть: обычный вызов сохраняет прежнюю форму для тестов.
+    """
+    return _checked(*_request(method, path, body, **options))
+
+
+def _call_optional(
+    method: str, path: str, body: dict | None = None, **options
+) -> dict | None:
+    """Как _call, но явный 404 — ``None`` (модель на камере не запущена)."""
+    status, payload = _request(method, path, body, **options)
+    return None if status == 404 else _checked(status, payload)
 
 
 def normalize(cam: str) -> str:
@@ -258,12 +279,8 @@ def _line_coordinates(line) -> list[float]:
 
     values: list[float] = []
     for coordinate in coordinates:
-        if isinstance(coordinate, bool) or not isinstance(coordinate, Real):
-            raise AiError(
-                400, "Координаты линии должны быть конечными числами от 0 до 1"
-            )
-        value = float(coordinate)
-        if not math.isfinite(value) or value < 0 or value > 1:
+        value = unit_interval(coordinate)
+        if value is None:
             raise AiError(
                 400, "Координаты линии должны быть конечными числами от 0 до 1"
             )
@@ -447,7 +464,7 @@ def _path(cam: str) -> str:
 
 def inventory() -> dict:
     """Живой инвентарь сети цеха: devices (nvr-channel/direct/locked) + ai."""
-    return _call("GET", "/cameras") or {}
+    return _call("GET", "/cameras")
 
 
 def counting_line(cam: str) -> tuple[int, dict]:
@@ -464,72 +481,44 @@ def save_counting_line(cam: str, payload) -> tuple[int, dict]:
     )
 
 
+def _probe_get(path: str) -> dict:
+    """Короткий GET настроек ПК цеха: экран не ждёт полный ``TIMEOUT``."""
+    return _call("GET", path, timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT)
+
+
+def _probe_put(path: str, payload: dict) -> tuple[int, dict]:
+    """Проксировать сохранение настройки с тем же коротким таймаутом."""
+    return _request("PUT", path, payload, timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT)
+
+
 def vehicle_number_info() -> dict:
     """Return the live vehicle detector/OCR capability document."""
-    return (
-        _call(
-            "GET",
-            "/vehicle-number",
-            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-        )
-        or {}
-    )
+    return _probe_get("/vehicle-number")
 
 
 def vehicle_roi(cam: str) -> dict:
     """Return one camera's canonical vehicle-plate ROI."""
-    return (
-        _call(
-            "GET",
-            f"/cameras/{camera_id(cam)}/vehicle-roi",
-            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-        )
-        or {}
-    )
+    return _probe_get(f"/cameras/{camera_id(cam)}/vehicle-roi")
 
 
 def save_vehicle_roi(cam: str, payload: dict) -> tuple[int, dict]:
     """Forward one canonical ROI update with a bounded camera-PC timeout."""
-    return _request(
-        "PUT",
-        f"/cameras/{camera_id(cam)}/vehicle-roi",
-        payload,
-        timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-    )
+    return _probe_put(f"/cameras/{camera_id(cam)}/vehicle-roi", payload)
 
 
 def arch_motion(cam: str) -> dict:
     """Состояние зоны арки вагонных весов: едет / стоит и сколько секунд стоит."""
-    return (
-        _call(
-            "GET",
-            f"/cameras/{camera_id(cam)}/arch-motion",
-            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-        )
-        or {}
-    )
+    return _probe_get(f"/cameras/{camera_id(cam)}/arch-motion")
 
 
 def arch_zone(cam: str) -> dict:
     """Return one camera's canonical wagon-arch motion-detection zone."""
-    return (
-        _call(
-            "GET",
-            f"/cameras/{camera_id(cam)}/arch-zone",
-            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-        )
-        or {}
-    )
+    return _probe_get(f"/cameras/{camera_id(cam)}/arch-zone")
 
 
 def save_arch_zone(cam: str, payload: dict) -> tuple[int, dict]:
     """Forward one arch-zone update with a bounded camera-PC timeout."""
-    return _request(
-        "PUT",
-        f"/cameras/{camera_id(cam)}/arch-zone",
-        payload,
-        timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-    )
+    return _probe_put(f"/cameras/{camera_id(cam)}/arch-zone", payload)
 
 
 def _same_camera_timestamp(actual, expected: str) -> bool:
@@ -548,6 +537,18 @@ def _same_camera_timestamp(actual, expected: str) -> bool:
     )
 
 
+def _canonical_request_id(request_id: UUID | str) -> str:
+    """UUID запроса распознавания строго в каноническом виде — ключ идемпотентности."""
+    raw = str(request_id)
+    try:
+        parsed = UUID(raw)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("request_id must be a canonical UUID") from exc
+    if str(parsed) != raw:
+        raise ValueError("request_id must be a canonical UUID")
+    return raw
+
+
 def _recognize_vehicle_from_camera(
     cam: str,
     request_id: UUID | str,
@@ -556,13 +557,7 @@ def _recognize_vehicle_from_camera(
     retry_only: bool,
 ) -> dict:
     camera = camera_id(cam)
-    raw_request_id = str(request_id)
-    try:
-        parsed_request_id = UUID(raw_request_id)
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError("request_id must be a canonical UUID") from exc
-    if str(parsed_request_id) != raw_request_id:
-        raise ValueError("request_id must be a canonical UUID")
+    raw_request_id = _canonical_request_id(request_id)
     if not isinstance(stable_weight_at, str) or not stable_weight_at:
         raise ValueError("stable_weight_at must be a timestamp")
 
@@ -578,10 +573,7 @@ def _recognize_vehicle_from_camera(
         idempotency_key=raw_request_id,
     )
     if status != 200:
-        detail = payload.get("error") or payload.get("detail")
-        if not isinstance(detail, str) or not detail.strip():
-            detail = f"AI-сервис: ошибка {status}"
-        raise AiError(status, detail, payload)
+        raise _error_from_payload(status, payload)
 
     confirmation = payload.get("confirmation")
     number = payload.get("vehicle_number")
@@ -623,21 +615,13 @@ def _recognize_vehicle_from_camera(
         )
 
     votes = confirmation.get("votes")
-    detector_confidence = confirmation.get("detector_confidence")
-    ocr_confidence = confirmation.get("ocr_confidence")
     if (
         isinstance(votes, bool)
         or not isinstance(votes, int)
         or votes < 1
         or votes > MAX_VEHICLE_CONFIRMATION_VOTES
-        or isinstance(detector_confidence, bool)
-        or not isinstance(detector_confidence, Real)
-        or not math.isfinite(float(detector_confidence))
-        or not 0 <= float(detector_confidence) <= 1
-        or isinstance(ocr_confidence, bool)
-        or not isinstance(ocr_confidence, Real)
-        or not math.isfinite(float(ocr_confidence))
-        or not 0 <= float(ocr_confidence) <= 1
+        or unit_interval(confirmation.get("detector_confidence")) is None
+        or unit_interval(confirmation.get("ocr_confidence")) is None
     ):
         raise AiProtocolError(
             "AI-сервис вернул некорректную уверенность OCR"
@@ -695,19 +679,10 @@ def retry_vehicle_recognition_from_camera(
 
 VEHICLE_FRAME_TIMEOUT = 5.0
 VEHICLE_FRAME_MAX_BYTES = 4 * 1024 * 1024
-_JPEG_MAGIC = b"\xff\xd8\xff"
+JPEG_MAGIC = b"\xff\xd8\xff"
 
 
 ORIENTATION_SAMPLE_TIMEOUT = 20.0
-
-
-def _orientation_error(status: int, payload: Mapping) -> AiError:
-    """Ошибка эндпоинтов датасета: текст берём из ответа, иначе по коду."""
-
-    detail = payload.get("error") or payload.get("detail")
-    if not isinstance(detail, str) or not detail.strip():
-        detail = f"AI-сервис: ошибка {status}"
-    return AiError(status, detail, payload)
 
 
 def _orientation_done(status: int) -> bool:
@@ -751,7 +726,7 @@ def post_orientation_sample(
         timeout_seconds=ORIENTATION_SAMPLE_TIMEOUT,
     )
     if not _orientation_done(status):
-        raise _orientation_error(status, payload)
+        raise _error_from_payload(status, payload)
     return payload
 
 
@@ -770,7 +745,7 @@ def delete_orientation_sample(sample_id: str) -> bool:
     if status == 404:
         return False
     if not _orientation_done(status):
-        raise _orientation_error(status, payload)
+        raise _error_from_payload(status, payload)
     return bool(payload.get("removed", True))
 
 
@@ -788,7 +763,7 @@ def clear_orientation_samples() -> int:
         timeout_seconds=ORIENTATION_SAMPLE_TIMEOUT,
     )
     if not _orientation_done(status):
-        raise _orientation_error(status, payload)
+        raise _error_from_payload(status, payload)
     try:
         return int(payload.get("removed", 0))
     except (TypeError, ValueError):
@@ -798,14 +773,7 @@ def clear_orientation_samples() -> int:
 def vehicle_orientation_info() -> dict:
     """Dataset size, model and last training report of the orientation classifier."""
 
-    return (
-        _call(
-            "GET",
-            "/vehicle-orientation",
-            timeout_seconds=VEHICLE_RUNTIME_PROBE_TIMEOUT,
-        )
-        or {}
-    )
+    return _probe_get("/vehicle-orientation")
 
 
 def fetch_vehicle_recognition_frame(cam: str, request_id: UUID | str) -> bytes | None:
@@ -817,14 +785,7 @@ def fetch_vehicle_recognition_frame(cam: str, request_id: UUID | str) -> bytes |
     """
 
     camera = camera_id(cam)
-    raw_request_id = str(request_id)
-    try:
-        parsed = UUID(raw_request_id)
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError("request_id must be a canonical UUID") from exc
-    if str(parsed) != raw_request_id:
-        raise ValueError("request_id must be a canonical UUID")
-
+    raw_request_id = _canonical_request_id(request_id)
     try:
         return _fetch_jpeg(
             f"/cameras/{camera}/vehicle-recognition/{raw_request_id}/frame",
@@ -864,7 +825,7 @@ def _fetch_jpeg(path: str, *, timeout: float, max_bytes: int) -> bytes:
         response.close()
     if len(data) > max_bytes:
         raise AiProtocolError("AI-сервис вернул слишком большой кадр")
-    if not data.startswith(_JPEG_MAGIC):
+    if not data.startswith(JPEG_MAGIC):
         raise AiProtocolError("AI-сервис вернул некорректный кадр")
     return bytes(data)
 
@@ -905,7 +866,7 @@ def counting_line_frame(cam: str) -> bytes:
 
 def status(cam: str) -> dict | None:
     """Статус и живой счётчик; None — модель на камере не запущена."""
-    return _call("GET", _path(cam), none_on_404=True)
+    return _call_optional("GET", _path(cam))
 
 
 def assert_order_session_identity(
@@ -930,23 +891,34 @@ def assert_order_session_identity(
         )
 
 
+def is_running_order_session(payload: Mapping) -> bool:
+    """The worker is counting an order session right now."""
+    return payload.get("running") is True and payload.get("mode") == "session"
+
+
+def is_continuous_shipping(payload: Mapping) -> bool:
+    """The payload comes from the uninterrupted shipping processor.
+
+    Order counting may only attach to it: a cold or AI-24/7 session would put
+    the same physical crossing into the wrong business ledger.
+    """
+    return (
+        payload.get("continuous_analytics") is True
+        # Literal, not models.ANALYTICS_SCOPE_SHIPPING: the weighbridge
+        # collector imports this client without Django apps or models.
+        and payload.get("analytics_scope") == "shipping"
+    )
+
+
 def _order_session_ready(
     payload: object,
     *,
     expected_session_id: int | None,
 ) -> bool:
-    if not isinstance(payload, Mapping):
-        return False
-    if payload.get("running") is not True or payload.get("mode") != "session":
+    if not isinstance(payload, Mapping) or not is_running_order_session(payload):
         return False
     assert_order_session_identity(payload, expected_session_id)
-    # Order counting may only attach to the uninterrupted shipping processor.
-    # A cold or AI-24/7 session would put the same physical crossing into the
-    # wrong business ledger.
-    if (
-        payload.get("continuous_analytics") is not True
-        or payload.get("analytics_scope") != "shipping"
-    ):
+    if not is_continuous_shipping(payload):
         raise AiError(
             409,
             "Камера ещё не готова в непрерывном контуре отгрузки; "
@@ -980,89 +952,29 @@ def wait_for_order_session(
 
 def start(cam: str, options: dict | None = None) -> dict:
     """Включить модель. options — source/line/direction, дефолты ai_service."""
-    payload = _call("POST", _path(cam), body=options or {})
-    assert payload is not None  # none_on_404 is false, so errors raise above
-    return payload
-
-
-def reset(cam: str, session_id: int) -> dict:
-    """Обнулить счётчик работающей модели (новая погрузка)."""
-    payload = _call(
-        "POST",
-        f"{_path(cam)}/reset",
-        {"session_id": session_id},
-    )
-    assert payload is not None  # none_on_404 is false, so errors raise above
-    return payload
+    return _call("POST", _path(cam), body=options or {})
 
 
 def delete(cam: str, session_id: int | None = None) -> dict | None:
     """Перевести уже сохранённую сессию в IDLE, не делая предварительный GET."""
     body = {"session_id": session_id} if session_id is not None else None
-    return _call("DELETE", _path(cam), body=body, none_on_404=True)
-
-
-def finish_automatic(cam: str, session_id: int, guard: dict) -> dict:
-    """Conditionally freeze one order while continuous shipping stays running.
-
-    A separate action is essential: older camera services could ignore new
-    fields in the ordinary DELETE body and finish without checking activity.
-    """
-    if type(session_id) is not int or session_id < 1:
-        raise ValueError("Automatic completion requires an exact session_id")
-    if (
-        not isinstance(guard, dict)
-        or type(guard.get("schema_version")) is not int
-        or guard["schema_version"] != 1
-        or not isinstance(guard.get("activity_generation"), str)
-        or not 1 <= len(guard["activity_generation"]) <= 256
-        or type(guard.get("min_clear_seconds")) is not int
-        or not 40 <= guard["min_clear_seconds"] <= 3_600
-        or ("recovery_only" in guard and type(guard["recovery_only"]) is not bool)
-    ):
-        raise ValueError("Automatic completion requires a valid conveyor guard")
-    payload = _call(
-        "POST",
-        f"{_path(cam)}/finish-automatic",
-        body={"session_id": session_id, "automatic_guard": dict(guard)},
-    )
-    assert payload is not None
-    return payload
-
-
-def _normalize_always_on(payload: dict | None) -> dict:
-    """Accept both generations of the Windows always-on API response."""
-    result = dict(payload or {})
-    if "cameras" not in result and isinstance(result.get("camera_sources"), list):
-        result["cameras"] = result["camera_sources"]
-    return result
+    return _call_optional("DELETE", _path(cam), body=body)
 
 
 def always_on_status() -> dict:
     """Desired 24/7 cameras and their live inference-only processors."""
-    payload = _call("GET", "/always-on")
-    return (
-        _normalize_always_on(payload)
-        if payload is not None
-        else {
-            "cameras": [],
-            "source": "sub",
-            "analytics_scopes": {},
-            "processors": [],
-        }
-    )
+    return _call("GET", "/always-on")
 
 
 def count_events(
     cam: str,
     after_id: int,
     limit: int = 500,
-) -> dict | None:
+) -> dict:
     """Read one ordered page from the camera-PC durable count journal.
 
-    ``None`` means an explicit HTTP 404 from an older camera service.  Network
-    failures and every other error remain exceptions so callers never mistake
-    an uncertain event stream for permission to fall back to snapshots.
+    Every HTTP error, including 404, is an ``AiError``: an uncertain event
+    stream is a sync failure, never a reason to skip or guess counts.
     """
 
     camera = normalize(cam)
@@ -1083,47 +995,36 @@ def count_events(
     return _call(
         "GET",
         f"/events?{query}",
-        none_on_404=True,
         max_response_bytes=EVENT_PAGE_MAX_BYTES,
     )
 
 
-def always_on_status_cached() -> dict:
-    cached = cache.get(ALWAYS_ON_CACHE_KEY)
-    if isinstance(cached, Exception):
-        raise cached
-    if cached is not None:
-        return cached
-    try:
-        status = always_on_status()
-    except (AiUnavailable, AiError) as outage:
-        cache.set(ALWAYS_ON_CACHE_KEY, outage, ALWAYS_ON_TTL)
-        raise
-    cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
-    return status
+def _cached(key: str, ttl: int, fetch: Callable[[], dict]) -> dict:
+    """Снимок ПК цеха из кэша на ``ttl`` секунд.
 
-
-def always_on_detections_cached() -> dict:
-    """Только рамки процессоров — лёгкий ответ для частого опроса монитора.
-
-    Отдаётся тем же вызовом ``/always-on``, но со своим коротким TTL: экран
-    тянет рамки раз в секунду, а тяжёлые настройки и аналитика продолжают
-    жить на общем пятисекундном снимке.
-
-    Отрицательный результат кэшируется так же, как в общем снимке: при
-    выключенном ПК цеха частый опрос иначе копил бы полные ``TIMEOUT``.
+    Отказ (AiUnavailable/AiError) кэшируется так же: при выключенном ПК цеха
+    частый опрос иначе копил бы полные ``TIMEOUT``.
     """
-    cached = cache.get(DETECTIONS_CACHE_KEY)
+    cached = cache.get(key)
     if isinstance(cached, Exception):
         raise cached
     if cached is not None:
         return cached
     try:
-        status = always_on_status()
+        result = fetch()
     except (AiUnavailable, AiError) as outage:
-        cache.set(DETECTIONS_CACHE_KEY, outage, DETECTIONS_TTL)
+        cache.set(key, outage, ttl)
         raise
-    payload = {
+    cache.set(key, result, ttl)
+    return result
+
+
+def always_on_status_cached() -> dict:
+    return _cached(ALWAYS_ON_CACHE_KEY, ALWAYS_ON_TTL, always_on_status)
+
+
+def _detections_payload(status: dict) -> dict:
+    return {
         "processors": [
             {
                 "cam": row.get("cam"),
@@ -1147,8 +1048,22 @@ def always_on_detections_cached() -> dict:
             if isinstance(row, dict)
         ],
     }
-    cache.set(DETECTIONS_CACHE_KEY, payload, DETECTIONS_TTL)
-    return payload
+
+
+def always_on_detections_cached() -> dict:
+    """Только рамки процессоров — лёгкий ответ для частого опроса монитора.
+
+    Отдаётся тем же вызовом ``/always-on``, но со своим коротким TTL: экран
+    тянет рамки раз в секунду, а тяжёлые настройки и аналитика продолжают
+    жить на общем пятисекундном снимке.
+
+    Отрицательный результат кэшируется так же, как в общем снимке.
+    """
+    return _cached(
+        DETECTIONS_CACHE_KEY,
+        DETECTIONS_TTL,
+        lambda: _detections_payload(always_on_status()),
+    )
 
 
 def cached_always_on_status() -> dict | None:
@@ -1160,10 +1075,6 @@ def cached_always_on_status() -> dict | None:
     """
     cached = cache.get(ALWAYS_ON_CACHE_KEY)
     return None if isinstance(cached, Exception) else cached
-
-
-def invalidate_always_on_cache() -> None:
-    cache.delete_many([ALWAYS_ON_CACHE_KEY, DETECTIONS_CACHE_KEY])
 
 
 def invalidate_counting_line_caches() -> None:
@@ -1194,7 +1105,7 @@ def configure_always_on(
         raise AiError(400, "Роли камер не совпадают со списком процессоров")
     # Role-aware agents are mandatory. Falling back to the old `cameras`
     # contract would silently merge shipping into AI 24/7 analytics.
-    payload = _call(
+    status = _call(
         "PUT",
         "/always-on",
         {
@@ -1203,64 +1114,17 @@ def configure_always_on(
             "analytics_scopes": normalized_scopes,
         },
     )
-    status = _normalize_always_on(payload)
     cache.set(ALWAYS_ON_CACHE_KEY, status, ALWAYS_ON_TTL)
     cache.delete(DETECTIONS_CACHE_KEY)
     return status
 
 
-def wagon_number_status() -> dict:
-    payload = _call("GET", "/camera-roles/wagon-number")
-    return payload or {
-        "camera": None,
-        "source": "main",
-        "stream": None,
-        "assigned": False,
-        "mode": "wagon_number_24_7",
-    }
-
-
-def wagon_number_status_cached() -> dict:
-    cached = cache.get(WAGON_NUMBER_CACHE_KEY)
-    if isinstance(cached, Exception):
-        raise cached
-    if cached is not None:
-        return cached
-    try:
-        result = wagon_number_status()
-    except (AiUnavailable, AiError) as outage:
-        cache.set(WAGON_NUMBER_CACHE_KEY, outage, WAGON_NUMBER_TTL)
-        raise
-    cache.set(WAGON_NUMBER_CACHE_KEY, result, WAGON_NUMBER_TTL)
-    return result
-
-
-def configure_wagon_number(camera: str | None, source: str = "main") -> dict:
-    normalized = normalize(camera) if camera is not None else None
-    if source not in {"sub", "main"}:
-        raise AiError(400, "Неизвестный источник камеры")
-    payload = _call(
-        "PUT",
-        "/camera-roles/wagon-number",
-        {"camera": normalized, "source": source},
-    )
-    result = payload or {
-        "camera": normalized,
-        "source": source,
-        "stream": None,
-        "assigned": normalized is not None,
-        "mode": "wagon_number_24_7",
-    }
-    cache.set(WAGON_NUMBER_CACHE_KEY, result, WAGON_NUMBER_TTL)
-    return result
-
-
-def delete_recordings(stream: str, starts: list[str]) -> dict:
-    """Delete exact recording segments on the camera PC through its secured API."""
-    return _call("DELETE", "/recordings", {"stream": stream, "starts": starts}) or {}
-
-
-def camera_frame_jpeg(stream: str) -> bytes | None:
+def camera_frame_jpeg(
+    stream: str,
+    *,
+    timeout: float = WAGON_PLATE_TIMEOUT,
+    max_bytes: int = WAGON_PLATE_MAX_BYTES,
+) -> bytes | None:
     """Свежий кадр камеры из go2rtc. ``None`` — кадра нет, это не ошибка.
 
     Периодическая проверка не должна падать из-за недоступной камеры: цикл
@@ -1273,58 +1137,131 @@ def camera_frame_jpeg(stream: str) -> bytes | None:
         f"{GO2RTC_API}/api/frame.jpeg?{query}", method="GET"
     )
     try:
-        with urllib.request.urlopen(request, timeout=WAGON_PLATE_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 return None
-            frame = response.read(WAGON_PLATE_MAX_BYTES + 1)
+            frame = response.read(max_bytes + 1)
     except (OSError, TimeoutError, urllib.error.URLError):
         return None
-    if len(frame) > WAGON_PLATE_MAX_BYTES or not frame.startswith(b"\xff\xd8\xff"):
+    if len(frame) > max_bytes or not frame.startswith(JPEG_MAGIC):
         # Не JPEG или больше лимита сервиса — отправлять такое бессмысленно.
         return None
     return frame
 
 
-def detect_wagon_plate(frame: bytes) -> dict:
-    """Найти табличку вагона на кадре. OCR здесь нет — только координаты."""
-    request = urllib.request.Request(
-        f"{AI_URL}/wagon-number/detect",
-        method="POST",
-        data=frame,
-        headers={"X-Api-Key": AI_KEY, "Content-Type": "image/jpeg"},
-    )
-    try:
-        response = urllib.request.urlopen(request, timeout=WAGON_PLATE_TIMEOUT)
-    except urllib.error.HTTPError as exc:
-        try:
-            raise AiError(exc.code, f"AI-сервис: ошибка {exc.code}") from exc
-        finally:
-            exc.close()
-    except (http.client.HTTPException, TimeoutError, OSError) as exc:
-        raise AiUnavailable(str(exc)) from exc
-    try:
-        return _read_json_object(response, MAX_JSON_RESPONSE_BYTES)
-    finally:
-        response.close()
+# Модели номеров на ПК камер: путь эндпоинта и задача, которую сервис пишет
+# в ответ при включённом OCR.
+NUMBER_MODELS = {
+    "vehicle_number": ("/vehicle-number/detect", "vehicle_plate_recognition"),
+    "wagon_number": ("/wagon-number/detect", "wagon_number_recognition"),
+}
 
 
-def accepted_plate_number(payload: Mapping) -> str:
-    """Номер, которому сервис доверяет сам. Иначе — пустая строка.
+def valid_transport_number(value: object, recognition_model: str) -> str:
+    """Номер машины или вагона в каноническом виде, иначе "".
 
-    OCR отдаёт по каждой табличке флаг ``accepted``: он сводит длину, контроль
-    и уверенность в одно решение. Брать номер мимо него нельзя — в учёт попал
-    бы неверно прочитанный вагон, а это хуже, чем незаполненное поле.
+    Снимаются только пробелы и дефисы (и «KZ» у машины); у вагона сверяется
+    контрольная цифра.
     """
-    for detection in payload.get("detections") or []:
-        if not isinstance(detection, Mapping):
-            continue
-        ocr = detection.get("ocr")
-        if not isinstance(ocr, Mapping) or ocr.get("accepted") is not True:
-            continue
-        number = str(ocr.get("number") or payload.get("number") or "").strip()
-        if number:
-            return number
-    return ""
+    if not isinstance(value, str):
+        return ""
+    number = re.sub(r"[\s-]+", "", value.upper())
+    if recognition_model == "vehicle_number":
+        return kz_vehicle_plate(number)
+    return number if recognition_model == "wagon_number" and wagon_check_digit_ok(number) else ""
+
+
+def detect_number(model: str, frame: bytes) -> dict:
+    """Отправить кадр JPEG модели номеров. Ответ разбирает number_from_payload."""
+    path, _ = NUMBER_MODELS[model]
+    status, payload = _request(
+        "POST",
+        path,
+        raw_body=frame,
+        content_type="image/jpeg",
+        timeout_seconds=WAGON_PLATE_TIMEOUT,
+    )
+    if status != 200:
+        raise AiError(status, "Модель распознавания номера недоступна")
+    return payload
+
+
+def _invalid_number_response() -> AiProtocolError:
+    return AiProtocolError(
+        "Модель вернула некорректный результат распознавания номера"
+    )
+
+
+def _accepted_number(detection: object, recognition_model: str) -> str | None:
+    if not isinstance(detection, Mapping):
+        raise _invalid_number_response()
+    ocr = detection.get("ocr")
+    if not isinstance(ocr, Mapping) or not isinstance(ocr.get("accepted"), bool):
+        raise _invalid_number_response()
+    if not ocr["accepted"]:
+        return None
+
+    # Both upstream services put the canonical number on this detection.
+    # Wagon OCR supplies `digits`, not `number`; the top-level `number` is only
+    # the first detection and must never stand in for another plate's result.
+    number = detection.get("number")
+    if not isinstance(number, str) or not number:
+        raise _invalid_number_response()
+    ocr_number = ocr.get("digits" if recognition_model == "wagon_number" else "number")
+    if not isinstance(ocr_number, str) or ocr_number != number:
+        raise _invalid_number_response()
+    if (
+        unit_interval(detection.get("confidence")) is None
+        or unit_interval(ocr.get("confidence")) is None
+    ):
+        raise _invalid_number_response()
+
+    if recognition_model == "wagon_number":
+        length_valid = ocr.get("length_valid")
+        checksum_valid = ocr.get("checksum_valid")
+        if (
+            not isinstance(length_valid, bool)
+            or "checksum_valid" not in ocr
+            or (checksum_valid is not None and not isinstance(checksum_valid, bool))
+        ):
+            raise _invalid_number_response()
+        # Diagnostic wagon OCR marks any sufficiently confident digit string
+        # accepted. Match its automatic consensus by requiring the declared
+        # length and checksum as well before offering a number to the operator.
+        if not length_valid or checksum_valid is not True:
+            return None
+        if not is_wagon_number(number):
+            raise _invalid_number_response()
+    elif VEHICLE_PLATE_RE.fullmatch(number) is None:
+        raise _invalid_number_response()
+    return number
+
+
+def number_from_payload(payload: object, recognition_model: str) -> str | None:
+    """Единственный номер, который модель приняла сама, иначе ``None``.
+
+    Строгий разбор ответа /…-number/detect для всех потребителей: номер вагона
+    засчитывается только с верной длиной и контрольной суммой. Выключенный OCR
+    — AiError 503, ответ не по контракту — AiProtocolError.
+    """
+    _, expected_task = NUMBER_MODELS[recognition_model]
+    if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+        raise _invalid_number_response()
+    if payload.get("ocr") is False:
+        raise AiError(
+            503, "Распознавание текста номера не включено в выбранной модели"
+        )
+    if payload.get("ocr") is not True or payload.get("task") != expected_task:
+        raise _invalid_number_response()
+    detections = payload.get("detections")
+    if not isinstance(detections, list):
+        raise _invalid_number_response()
+    numbers = {
+        number
+        for detection in detections
+        if (number := _accepted_number(detection, recognition_model)) is not None
+    }
+    return next(iter(numbers)) if len(numbers) == 1 else None
 
 
 def wagon_plate_scan(stream: str) -> dict | None:
@@ -1338,16 +1275,17 @@ def wagon_plate_scan(stream: str) -> dict | None:
     if frame is None:
         return None
     try:
-        payload = detect_wagon_plate(frame)
+        payload = detect_number("wagon_number", frame)
     except (AiUnavailable, AiError):
         return None
     detections = payload.get("detections")
     if not isinstance(detections, list):
         return None
-    return {"seen": bool(detections), "number": accepted_plate_number(payload)}
-
-
-def wagon_plate_seen(stream: str) -> bool | None:
-    """Только факт таблички — совместимость с прежними вызовами."""
-    scan = wagon_plate_scan(stream)
-    return None if scan is None else scan["seen"]
+    try:
+        number = number_from_payload(payload, "wagon_number") or ""
+    except (AiProtocolError, AiError):
+        # OCR выключен или ответ не по контракту: табличка видна, приход
+        # заводится без номера. Непроверенный номер в учёт не пишем — чужой
+        # вагон хуже незаполненного поля.
+        number = ""
+    return {"seen": bool(detections), "number": number}

@@ -2,8 +2,7 @@
 import Link from "next/link";
 import { ChevronRight, ShoppingCart } from "lucide-react";
 import type { CartCurrency } from "@/lib/cart";
-import { formatCurrency } from "@/lib/utils";
-import { bagsLabel } from "./cart-button";
+import { bagsLabel, formatCurrency } from "@/lib/utils";
 
 /** Нижняя панель на телефоне: каталог можно листать дальше, а корзина всегда под пальцем. */
 export function CartBar({ count, total, currency }: { count: number; total: number; currency: CartCurrency }) {

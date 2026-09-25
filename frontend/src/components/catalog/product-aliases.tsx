@@ -1,15 +1,11 @@
 "use client";
 import { useState } from "react";
-import type { AxiosError } from "axios";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, apiErrorCode } from "@/lib/api";
 import type { Product, ProductAlias } from "@/lib/types";
-
-const isTaken = (error: unknown) =>
-  (error as AxiosError<{ code?: unknown }> | undefined)?.response?.data?.code === "alias_taken";
 
 /** Коды товара в отчётах о вагонах только для чтения — колонка списка товаров. */
 export function ProductAliasCodes({ aliases }: { aliases?: ProductAlias[] }) {
@@ -53,7 +49,7 @@ export function ProductAliasesEditor({
       onChange(data);
       setCode("");
     } catch (cause) {
-      if (isTaken(cause)) setTaken(apiError(cause));
+      if (apiErrorCode(cause) === "alias_taken") setTaken(apiError(cause));
       else setError(apiError(cause));
     } finally {
       setBusy(false);

@@ -1,15 +1,15 @@
 """WhatsApp-бот в проде: отдельный процесс с healthcheck, ключи необязательны и только у него."""
 import re
-from pathlib import Path
 
-from config.tests.test_passage_scale_compose import _service_block
+from django.conf import settings
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-COMPOSE = (REPO_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+from config.tests.compose_files import REPO_ROOT, read_compose, service_block
+
+COMPOSE = read_compose("docker-compose.prod.yml")
 
 
 def test_whatsapp_bot_is_a_single_health_checked_backend_process():
-    bot = _service_block(COMPOSE, "whatsapp-bot")
+    bot = service_block(COMPOSE, "whatsapp-bot")
 
     assert COMPOSE.count("\n  whatsapp-bot:\n") == 1
     assert "<<: *backend-environment" in bot
@@ -19,8 +19,10 @@ def test_whatsapp_bot_is_a_single_health_checked_backend_process():
     assert "backend:\n        condition: service_healthy" in bot
     assert "init: true" in bot
     assert 'test: ["CMD", "python", "/app/whatsapp_bot_healthcheck.py"]' in bot
-    assert "- /tmp/whatsapp-bot:rw,noexec,nosuid,nodev,size=1m,mode=1777" in bot
-    assert "WHATSAPP_BOT_HEARTBEAT_FILE: /tmp/whatsapp-bot/heartbeat.json" in bot
+    # Путь heartbeat задают settings; compose только монтирует его каталог.
+    heartbeat_dir = settings.WHATSAPP_BOT_HEARTBEAT_FILE.rsplit("/", 1)[0]
+    assert f"- {heartbeat_dir}:rw,noexec,nosuid,nodev,size=1m,mode=1777" in bot
+    assert "WHATSAPP_BOT_HEARTBEAT_FILE" not in COMPOSE
     assert "restart: unless-stopped" in bot
     assert "logging: *default-logging" in bot
     assert "ports:" not in bot
@@ -29,7 +31,7 @@ def test_whatsapp_bot_is_a_single_health_checked_backend_process():
 
 
 def test_whatsapp_bot_env_is_optional_and_secrets_stay_with_the_bot():
-    bot = _service_block(COMPOSE, "whatsapp-bot")
+    bot = service_block(COMPOSE, "whatsapp-bot")
     anchor = COMPOSE.split("x-default-logging:", 1)[0]
 
     assert not re.search(r"WHATSAPP_BOT_\w+:\?", COMPOSE)

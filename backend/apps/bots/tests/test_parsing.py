@@ -6,13 +6,9 @@ from decimal import Decimal
 import pytest
 
 from apps.bots.parsing import bags_for, format_rail_report, parse_rail_report, wagon_number_status
-from apps.bots.tests.samples import OWNER_REPORT, OWNER_WAGONS, report
+from apps.bots.tests.samples import OWNER_REPORT, OWNER_WAGONS, issue_codes, report
 
-VALID = "28087658"
-
-
-def _codes(parsed):
-    return [issue.code for issue in parsed.issues]
+VALID = OWNER_WAGONS[0]
 
 
 def test_owner_sample_parses_into_twelve_wagons():
@@ -72,7 +68,7 @@ def test_wagon_line_tolerances(line):
 
 
 def test_decimal_comma_tons():
-    parsed = parse_rail_report(report(f"Д1с-{VALID}-67,5 тн", f"Д1с-28087666-67.5 тн"))
+    parsed = parse_rail_report(report(f"Д1с-{VALID}-67,5 тн", "Д1с-28087666-67.5 тн"))
 
     assert parsed.issues == ()
     assert [wagon.tons for wagon in parsed.wagons] == [Decimal("67.5"), Decimal("67.5")]
@@ -129,7 +125,7 @@ def test_blank_lines_and_windows_line_endings_are_ignored():
 def test_declared_count_must_match_wagon_lines():
     parsed = parse_rail_report(report(f"Д1с-{VALID}-68 тн", station="Ст. Раустан 12 вагон"))
 
-    assert _codes(parsed) == ["wagon_count_mismatch"]
+    assert issue_codes(parsed) == ["wagon_count_mismatch"]
     assert "12" in parsed.issues[0].message and "1" in parsed.issues[0].message
     assert not parsed.ok
 
@@ -138,13 +134,13 @@ def test_missing_wagon_count_is_an_issue():
     parsed = parse_rail_report(report(f"Д1с-{VALID}-68 тн", station="Ст. Раустан"))
 
     assert parsed.station == "Раустан"
-    assert _codes(parsed) == ["wagon_count_missing"]
+    assert issue_codes(parsed) == ["wagon_count_missing"]
 
 
 def test_duplicate_wagon_number():
     parsed = parse_rail_report(report(f"Д1с-{VALID}-68 тн", f"Д1с-{VALID}-68 тн"))
 
-    assert _codes(parsed) == ["duplicate_wagon"]
+    assert issue_codes(parsed) == ["duplicate_wagon"]
     assert parsed.issues[0].subject == VALID
     assert parsed.issues[0].line == 4
 
@@ -152,20 +148,8 @@ def test_duplicate_wagon_number():
 def test_wagon_check_digit_is_verified():
     parsed = parse_rail_report(report("Д1с-28087659-68 тн"))
 
-    assert _codes(parsed) == ["wagon_check_digit"]
+    assert issue_codes(parsed) == ["wagon_check_digit"]
     assert parsed.issues[0].subject == "28087659"
-
-
-def test_wagon_number_must_have_eight_digits():
-    parsed = parse_rail_report(report("Д1с-2808765-68 тн"))
-
-    assert _codes(parsed) == ["wagon_number_length"]
-
-
-def test_zero_tons_is_an_issue():
-    parsed = parse_rail_report(report(f"Д1с-{VALID}-0 тн"))
-
-    assert _codes(parsed) == ["bad_tons"]
 
 
 @pytest.mark.parametrize("tons", ["680", "100000", "75,5"])
@@ -173,7 +157,7 @@ def test_more_tons_than_a_wagon_holds_is_a_typo(tons):
     """«680 тн» вместо «68 тн» бот не проводит: 13 600 мешков со склада и в долг."""
     parsed = parse_rail_report(report(f"Д1с-{VALID}-{tons} тн"))
 
-    assert _codes(parsed) == ["bad_tons"]
+    assert issue_codes(parsed) == ["bad_tons"]
     assert parsed.issues[0].message == (
         f"Вагон {VALID}: {tons} т — больше, чем помещается в вагон (до 75 т)")
     assert (parsed.issues[0].line, parsed.issues[0].subject) == (3, VALID)
@@ -186,7 +170,7 @@ def test_full_75_ton_wagon_is_fine():
 def test_unknown_line_goes_to_review():
     parsed = parse_rail_report(report(f"Д1с-{VALID}-68 тн", "Итого 68 тонн"))
 
-    assert "unknown_line" in _codes(parsed)
+    assert "unknown_line" in issue_codes(parsed)
     unknown = next(issue for issue in parsed.issues if issue.code == "unknown_line")
     assert unknown.line == 4
     assert "Итого 68 тонн" in unknown.message
@@ -195,27 +179,28 @@ def test_unknown_line_goes_to_review():
 def test_missing_header_and_station():
     parsed = parse_rail_report(f"Д1с-{VALID}-68 тн")
 
-    assert _codes(parsed) == ["header_missing", "station_missing"]
+    assert issue_codes(parsed) == ["header_missing", "station_missing"]
     assert parsed.day is None and parsed.client_name == ""
 
 
 def test_impossible_date():
     parsed = parse_rail_report(report(f"Д1с-{VALID}-68 тн", header="сб 31.02.26 Узбекистан ООО OSIYO"))
 
-    assert _codes(parsed) == ["bad_date"]
+    assert issue_codes(parsed) == ["bad_date"]
     assert parsed.day is None
 
 
-def test_header_without_client():
-    parsed = parse_rail_report(report(f"Д1с-{VALID}-68 тн", header="сб 19.09.26 Узбекистан"))
-
-    assert _codes(parsed) == ["client_missing"]
-
-
-def test_no_wagons():
-    parsed = parse_rail_report(report(station="Ст. Раустан 12 вагон"))
-
-    assert _codes(parsed) == ["no_wagons"]
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        (report("Д1с-2808765-68 тн"), "wagon_number_length"),
+        (report(f"Д1с-{VALID}-0 тн"), "bad_tons"),
+        (report(f"Д1с-{VALID}-68 тн", header="сб 19.09.26 Узбекистан"), "client_missing"),
+        (report(station="Ст. Раустан 12 вагон"), "no_wagons"),
+    ],
+)
+def test_one_broken_part_is_one_issue(text, code):
+    assert issue_codes(parse_rail_report(text)) == [code]
 
 
 def test_second_report_in_one_message_goes_to_review():
@@ -223,14 +208,14 @@ def test_second_report_in_one_message_goes_to_review():
 
     parsed = parse_rail_report(text)
 
-    assert "several_reports" in _codes(parsed)
+    assert "several_reports" in issue_codes(parsed)
     assert parsed.client_name == "ООО OSIYO NAV NIHOL"
 
 
 def test_empty_message():
     parsed = parse_rail_report("  \n ")
 
-    assert "header_missing" in _codes(parsed)
+    assert "header_missing" in issue_codes(parsed)
     assert not parsed.ok
 
 

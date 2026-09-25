@@ -9,12 +9,11 @@ import { PlateInput, PlateSuggestions } from "@/components/ui/plate-input";
 import { PlatePair } from "@/components/ui/transport-number";
 import { api, apiError } from "@/lib/api";
 import { countryFlag, findCountry } from "@/lib/countries";
-import { shortDate } from "@/lib/loader-groups";
 import { withBack } from "@/lib/navigation";
 import { sameTransportPair, transportChanges, transportPairOf, type TransportPair } from "@/lib/plates";
 import type { TransportQueueRow } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import { cn, todayLocalIsoDate } from "@/lib/utils";
+import { cn, formatIsoDayMonth, todayLocalIsoDate } from "@/lib/utils";
 
 const BACK = "/orders?tab=trucks";
 const COLUMN_LABEL = "text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]";
@@ -138,10 +137,11 @@ export function TruckEntrySection() {
       );
       setStatuses((current) => ({ ...current, [row.id]: { kind: "saved" } }));
     } catch (cause) {
-      setStatuses((current) => ({
-        ...current,
-        [row.id]: { kind: "error", message: apiError(cause) || "Не удалось сохранить номер" },
-      }));
+      // 403 уже показан тостом (apiError отдаёт ""): строка остаётся «Не сохранено».
+      const message = apiError(cause);
+      setStatuses((current) =>
+        message ? { ...current, [row.id]: { kind: "error", message } } : without(current, row.id),
+      );
     }
   }
 
@@ -234,7 +234,7 @@ export function TruckEntrySection() {
                       </span>
                     </div>
                     <div className="mt-0.5 text-xs tabular-nums text-[var(--muted-foreground)]">
-                      {row.planned_on === today ? "Сегодня" : shortDate(row.planned_on)} · {row.bags} меш.
+                      {row.planned_on === today ? "Сегодня" : formatIsoDayMonth(row.planned_on)} · {row.bags} меш.
                     </div>
                   </div>
                   {row.transport_locked ? (

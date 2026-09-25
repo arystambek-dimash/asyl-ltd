@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useRef, useState } from "react";
+import { useId, useState } from "react";
 import {
   COUNT_LINE_COLOR,
   COUNT_LINE_ID,
@@ -9,7 +9,7 @@ import {
   type NormalizedLine,
   type VerificationLine,
 } from "@/lib/camera-counting-line";
-import { useVideoBox } from "@/lib/use-video-box";
+import { clampUnit, useVideoBox, videoBoxStyle } from "@/lib/use-video-box";
 import { cn } from "@/lib/utils";
 
 const VIEWBOX_WIDTH = 1000;
@@ -23,16 +23,11 @@ const LABEL_FONT_SIZE = 22;
 const LABEL_MIN_PX = { editable: 11, readOnly: 9 };
 const HANDLE_MIN_RADIUS_PX = 9;
 
-function clamp(value: number) {
-  return Math.max(0, Math.min(1, value));
-}
-
 function directionalArrow(line: NormalizedLine, direction: LineDirection, height: number) {
-  const start = { x: line.x1 * VIEWBOX_WIDTH, y: line.y1 * height };
-  const end = { x: line.x2 * VIEWBOX_WIDTH, y: line.y2 * height };
-  const middle = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
+  const { x1, y1, x2, y2 } = scaled(line, height);
+  const middle = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+  const dx = x2 - x1;
+  const dy = y2 - y1;
   const length = Math.max(1, Math.hypot(dx, dy));
   let vx = (-dy / length) * 52;
   let vy = (dx / length) * 52;
@@ -49,18 +44,22 @@ function directionalArrow(line: NormalizedLine, direction: LineDirection, height
   };
 }
 
+type Point = { x: number; y: number };
+type Size = { width: number; height: number };
+
+/** Pixel distance between two normalized points on the rendered surface. */
+function pixelDistance(a: Point, b: Point, size: Size) {
+  return Math.hypot((a.x - b.x) * size.width, (a.y - b.y) * size.height);
+}
+
 /** Pixel distance from a point to a segment on the rendered surface. */
-function distanceToSegment(
-  point: { x: number; y: number },
-  line: NormalizedLine,
-  size: { width: number; height: number },
-) {
+function distanceToSegment(point: Point, line: NormalizedLine, size: Size) {
   const [px, py] = [point.x * size.width, point.y * size.height];
   const [ax, ay] = [line.x1 * size.width, line.y1 * size.height];
   const [bx, by] = [line.x2 * size.width, line.y2 * size.height];
   const [dx, dy] = [bx - ax, by - ay];
   const lengthSquared = dx * dx + dy * dy;
-  const t = lengthSquared ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared)) : 0;
+  const t = lengthSquared ? clampUnit(((px - ax) * dx + (py - ay) * dy) / lengthSquared) : 0;
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
@@ -156,7 +155,6 @@ export function CameraCountingLineOverlay({
   onLineChange,
   onVerificationLineChange,
   onActiveLineChange,
-  className,
 }: {
   line: NormalizedLine;
   direction: LineDirection;
@@ -169,9 +167,7 @@ export function CameraCountingLineOverlay({
   onLineChange?: (line: NormalizedLine) => void;
   onVerificationLineChange?: (id: string, line: NormalizedLine) => void;
   onActiveLineChange?: (id: string) => void;
-  className?: string;
 }) {
-  const surfaceRef = useRef<HTMLDivElement>(null);
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const [dragging, setDragging] = useState<
     { id: string; end: "start" | "end" } | { id: string; from: { x: number; y: number }; drawing: boolean } | null
@@ -185,10 +181,6 @@ export function CameraCountingLineOverlay({
   const svgId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const glowId = `counting-line-glow-${svgId}`;
   const arrowId = `counting-line-arrow-${svgId}`;
-  const setSurface = useCallback((node: HTMLDivElement | null) => {
-    surfaceRef.current = node;
-    setContainer(node);
-  }, []);
 
   const segments = [{ id: COUNT_LINE_ID, line }, ...verificationLines];
   const activeId = segments.some((segment) => segment.id === activeLineId) ? activeLineId : COUNT_LINE_ID;
@@ -199,11 +191,11 @@ export function CameraCountingLineOverlay({
   };
 
   const pointAt = (clientX: number, clientY: number) => {
-    const rect = surfaceRef.current?.getBoundingClientRect();
+    const rect = container?.getBoundingClientRect();
     if (!rect || !rect.width || !rect.height) return null;
     return {
-      x: clamp((clientX - rect.left) / rect.width),
-      y: clamp((clientY - rect.top) / rect.height),
+      x: clampUnit((clientX - rect.left) / rect.width),
+      y: clampUnit((clientY - rect.top) / rect.height),
       rect,
     };
   };
@@ -212,8 +204,7 @@ export function CameraCountingLineOverlay({
     if (!box || !editable || disabled || !onLineChange) return;
     const point = pointAt(event.clientX, event.clientY);
     if (!point) return;
-    const distance = (x: number, y: number) =>
-      Math.hypot((point.x - x) * point.rect.width, (point.y - y) * point.rect.height);
+    const distance = (x: number, y: number) => pixelDistance(point, { x, y }, point.rect);
     const active = segments.find((segment) => segment.id === activeId)!;
     const others = segments.filter((segment) => segment.id !== activeId);
 
@@ -251,7 +242,7 @@ export function CameraCountingLineOverlay({
     if ("from" in dragging) {
       const { from } = dragging;
       if (!dragging.drawing) {
-        const moved = Math.hypot((point.x - from.x) * point.rect.width, (point.y - from.y) * point.rect.height);
+        const moved = pixelDistance(point, from, point.rect);
         if (moved < DRAW_START_PX) return;
         setDragging({ ...dragging, drawing: true });
       }
@@ -275,7 +266,7 @@ export function CameraCountingLineOverlay({
       aria-hidden
       data-camera-counting-line
       data-video-box-ready={box ? "true" : "false"}
-      ref={setSurface}
+      ref={setContainer}
       onPointerDown={begin}
       onPointerMove={move}
       onPointerUp={finish}
@@ -285,13 +276,8 @@ export function CameraCountingLineOverlay({
         editable ? "touch-none select-none" : "pointer-events-none",
         editable && (disabled ? "cursor-wait" : "cursor-crosshair"),
         !box && "pointer-events-none opacity-0",
-        className,
       )}
-      style={
-        box
-          ? { left: box.left, top: box.top, width: box.width, height: box.height, right: "auto", bottom: "auto" }
-          : undefined
-      }
+      style={videoBoxStyle(box)}
     >
       <svg
         viewBox={`0 0 ${VIEWBOX_WIDTH} ${viewBoxHeight}`}

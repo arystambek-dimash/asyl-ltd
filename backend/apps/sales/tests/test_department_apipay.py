@@ -2,26 +2,10 @@
 import importlib
 
 import pytest
-from rest_framework.test import APIClient
 
 from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
-
-
-def _api(user):
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
-
-
-@pytest.fixture
-def superuser(make_user):
-    user = make_user("root")
-    user.is_superuser = True
-    user.is_staff = True
-    user.save()
-    return user
 
 
 def test_department_stores_apipay_credentials_encrypted():
@@ -60,9 +44,9 @@ def test_unreadable_token_counts_as_not_configured(settings):
     assert not stored.apipay_configured
 
 
-def test_superuser_sets_key_and_secret_without_echo(superuser):
+def test_superuser_sets_key_and_secret_without_echo(admin_user, auth_client):
     department = Department.objects.create(code="mill", name="Мельница")
-    response = _api(superuser).patch(
+    response = auth_client(admin_user).patch(
         f"/api/departments/{department.id}/",
         {"apipay_api_key": " live-key-1234 ", "apipay_webhook_secret": "hook"},
         format="json",
@@ -80,10 +64,10 @@ def test_superuser_sets_key_and_secret_without_echo(superuser):
     assert department.apipay_webhook_secret == "hook"
 
 
-def test_manager_with_manage_permission_cannot_touch_keys(user_with_perms):
+def test_manager_with_manage_permission_cannot_touch_keys(user_with_perms, auth_client):
     manager = user_with_perms("dept-admin", codes=["sys_permissions.manage"])
     department = Department.objects.create(code="mill", name="Мельница")
-    response = _api(manager).patch(
+    response = auth_client(manager).patch(
         f"/api/departments/{department.id}/",
         {"name": "Мельница 2", "apipay_api_key": "live-key-1234"},
         format="json",
@@ -94,7 +78,7 @@ def test_manager_with_manage_permission_cannot_touch_keys(user_with_perms):
     assert department.name == "Мельница"
     assert not department.apipay_configured
     # Обычное редактирование того же менеджера по-прежнему работает.
-    ok = _api(manager).patch(
+    ok = auth_client(manager).patch(
         f"/api/departments/{department.id}/", {"name": "Мельница 2"}, format="json"
     )
     assert ok.status_code == 200
@@ -102,9 +86,9 @@ def test_manager_with_manage_permission_cannot_touch_keys(user_with_perms):
     assert ok.data["apipay_configured"] is False
 
 
-def test_clearing_key_drops_secret_and_secret_needs_key(superuser):
+def test_clearing_key_drops_secret_and_secret_needs_key(admin_user, auth_client):
     department = Department.objects.create(code="mill", name="Мельница")
-    api = _api(superuser)
+    api = auth_client(admin_user)
     url = f"/api/departments/{department.id}/"
 
     bad = api.patch(url, {"apipay_webhook_secret": "hook"}, format="json")
@@ -135,33 +119,33 @@ def test_clearing_key_drops_secret_and_secret_needs_key(superuser):
     assert department.apipay_webhook_secret == ""
 
 
-def test_staff_list_shows_status_but_hint_only_to_superuser(manager, superuser):
+def test_staff_list_shows_status_but_hint_only_to_superuser(manager, admin_user, auth_client):
     department = Department.objects.create(code="mill", name="Мельница")
     department.set_apipay_api_key("live-key-1234")
     department.save()
 
-    rows = _api(manager).get("/api/departments/").data
+    rows = auth_client(manager).get("/api/departments/").data
     mill = next(row for row in rows if row["code"] == "mill")
     assert mill["apipay_configured"] is True
     assert mill["apipay_webhook_configured"] is False
     assert "apipay_key_hint" not in mill
     assert "live-key-1234" not in str(rows)
 
-    rows = _api(superuser).get("/api/departments/").data
+    rows = auth_client(admin_user).get("/api/departments/").data
     mill = next(row for row in rows if row["code"] == "mill")
     assert mill["apipay_key_hint"] == "••••1234"
     assert "live-key-1234" not in str(rows)
 
 
-def test_create_applies_keys_only_for_superuser(superuser, user_with_perms):
+def test_create_applies_keys_only_for_superuser(admin_user, user_with_perms, auth_client):
     manager = user_with_perms("dept-admin", codes=["sys_permissions.manage"])
-    denied = _api(manager).post(
+    denied = auth_client(manager).post(
         "/api/departments/",
         {"name": "Новый", "color": "#315FD5", "apipay_api_key": "live-key-1234"},
         format="json",
     )
     assert denied.status_code == 403
-    created = _api(superuser).post(
+    created = auth_client(admin_user).post(
         "/api/departments/",
         {"name": "Новый", "color": "#315FD5", "apipay_api_key": "live-key-1234"},
         format="json",

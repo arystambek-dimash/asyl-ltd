@@ -15,7 +15,7 @@ departure is flagged as a gap too.
 
 from collections.abc import Mapping
 
-VALID_SCALE_STATES = {"ready", "unstable"}
+from apps.grain.scale import VALID_SCALE_STATES
 
 
 class StopTracker:

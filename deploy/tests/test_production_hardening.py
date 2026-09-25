@@ -12,7 +12,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKUP_SCRIPT = REPO_ROOT / "deploy" / "backup" / "backup.sh"
 REMOTE_DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "remote-deploy.sh"
+PROD_CI_LIB = REPO_ROOT / "deploy" / "ci" / "prod-lib.sh"
 PROD_COMPOSE = REPO_ROOT / "docker-compose.prod.yml"
+DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
 GO2RTC_CONFIG = REPO_ROOT / "deploy" / "go2rtc" / "go2rtc.yaml"
 CAMERA_HEALTH_GATE = REPO_ROOT / "deploy" / "health" / "wait-for-camera-health.sh"
 WEIGHBRIDGE_COMPOSE = REPO_ROOT / "deploy" / "weighbridge" / "compose.yml"
@@ -156,13 +158,14 @@ for filename in sys.argv[1:]:
 class RemoteDeployTests(unittest.TestCase):
     def _environment(
         self,
-        root: Path,
         *,
-        running_services: str,
+        running_services: str = "db-backup",
         backup_status: int = 0,
         candidate_up_status: int = 0,
-        cutover_status: int = 0,
     ) -> tuple[dict[str, str], Path, Path]:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
         fake_bin = root / "bin"
         fake_bin.mkdir()
         git_head = root / "git-head"
@@ -225,9 +228,6 @@ case "$*" in
   *" exec -T db-backup /backup/backup.sh")
     exit "${FAKE_BACKUP_STATUS:-0}"
     ;;
-  *"run --rm --no-deps --entrypoint python backend manage.py check_camera_cutover")
-    exit "${FAKE_CUTOVER_STATUS:-0}"
-    ;;
   *"manage.py activate_weighbridge_collector")
     exit "${FAKE_WEIGHBRIDGE_STATUS:-0}"
     ;;
@@ -259,6 +259,11 @@ exit 0
             cleanup,
             "#!/bin/sh\nprintf '%s\\n' cleanup >>\"$FAKE_DOCKER_LOG\"\n",
         )
+        # The deploy runs these checked-out helpers unconditionally.
+        _write_executable(app_dir / "deploy" / "sync-openai-secret.py", "")
+        installer = app_dir / "deploy" / "weighbridge" / "install.sh"
+        installer.parent.mkdir()
+        _write_executable(installer, "#!/bin/sh\n")
         docker_log = root / "docker.log"
         docker_env_log = root / "docker-env.log"
         state_file = root / "deploy-release-state"
@@ -277,7 +282,6 @@ exit 0
                 "FAKE_RUNNING_SERVICES": running_services,
                 "FAKE_BACKUP_STATUS": str(backup_status),
                 "FAKE_CANDIDATE_UP_STATUS": str(candidate_up_status),
-                "FAKE_CUTOVER_STATUS": str(cutover_status),
                 "FAKE_CANDIDATE_BACKEND": CANDIDATE_BACKEND,
                 "FAKE_PREVIOUS_BACKEND": PREVIOUS_BACKEND,
                 "FAKE_PREVIOUS_FRONTEND": PREVIOUS_FRONTEND,
@@ -294,8 +298,10 @@ exit 0
         self,
         environment: dict[str, str],
         action: str | None = None,
+        *,
+        script: Path = REMOTE_DEPLOY_SCRIPT,
     ) -> subprocess.CompletedProcess[str]:
-        command = ["/bin/sh", str(REMOTE_DEPLOY_SCRIPT)]
+        command = ["/bin/sh", str(script)]
         if action is not None:
             command.append(action)
         return subprocess.run(
@@ -306,6 +312,14 @@ exit 0
             check=False,
         )
 
+    def _run_runner(
+        self,
+        environment: dict[str, str],
+        state_file: Path,
+        action: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return self._run(environment, action, script=Path(f"{state_file}.runner"))
+
     @staticmethod
     def _state(path: Path) -> dict[str, str]:
         return dict(
@@ -314,176 +328,120 @@ exit 0
         )
 
     def test_deploy_refuses_when_backup_service_is_not_running(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, docker_log, _ = self._environment(
-                Path(temporary),
-                running_services="",
-            )
-            result = self._run(environment)
+        environment, docker_log, _ = self._environment(running_services="")
+        result = self._run(environment)
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("without a running db-backup", result.stderr)
-            self.assertNotIn(" pull ", docker_log.read_text(encoding="utf-8"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("without a running db-backup", result.stderr)
+        self.assertNotIn(" pull ", docker_log.read_text(encoding="utf-8"))
 
     def test_deploy_stops_if_predeploy_backup_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, docker_log, _ = self._environment(
-                Path(temporary),
-                running_services="db-backup",
-                backup_status=42,
-            )
-            result = self._run(environment)
+        environment, docker_log, _ = self._environment(backup_status=42)
+        result = self._run(environment)
 
-            self.assertEqual(result.returncode, 42)
-            self.assertNotIn(" pull ", docker_log.read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 42)
+        self.assertNotIn(" pull ", docker_log.read_text(encoding="utf-8"))
 
     def test_deploy_pulls_only_app_images_and_disables_implicit_pulls(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, docker_log, _ = self._environment(
-                Path(temporary),
-                running_services="db-backup",
-            )
-            result = self._run(environment)
-            self.assertEqual(result.returncode, 0, result.stderr)
+        environment, docker_log, _ = self._environment()
+        result = self._run(environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
-            commands = docker_log.read_text(encoding="utf-8").splitlines()
-            pull_commands = [
-                command for command in commands if " pull " in f" {command} "
-            ]
-            self.assertEqual(
-                pull_commands,
-                ["compose -f docker-compose.prod.yml pull --quiet backend frontend"],
-            )
-            up_command = next(command for command in commands if " up -d " in command)
-            self.assertIn("--pull never", up_command)
+        commands = docker_log.read_text(encoding="utf-8").splitlines()
+        pull_commands = [
+            command for command in commands if " pull " in f" {command} "
+        ]
+        self.assertEqual(
+            pull_commands,
+            ["compose -f docker-compose.prod.yml pull --quiet backend frontend"],
+        )
+        up_command = next(command for command in commands if " up -d " in command)
+        self.assertIn("--pull never", up_command)
 
     def test_both_scale_urls_may_be_explicitly_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, _, _ = self._environment(
-                Path(temporary),
-                running_services="db-backup",
-            )
-            environment["WAGON_SCALE_API_URL_B64"] = ""
-            environment["TRUCK_SCALE_API_URL_B64"] = ""
+        environment, _, _ = self._environment()
+        environment["WAGON_SCALE_API_URL_B64"] = ""
+        environment["TRUCK_SCALE_API_URL_B64"] = ""
 
-            result = self._run(environment)
+        result = self._run(environment)
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_nonempty_scale_url_must_be_absolute_http(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, docker_log, _ = self._environment(
-                Path(temporary),
-                running_services="db-backup",
-            )
-            environment["WAGON_SCALE_API_URL_B64"] = base64.b64encode(
-                b"file:///etc/passwd"
-            ).decode()
-            environment["TRUCK_SCALE_API_URL_B64"] = ""
+        for invalid, valid in (("WAGON", "TRUCK"), ("TRUCK", "WAGON")):
+            with self.subTest(invalid=invalid):
+                environment, docker_log, _ = self._environment()
+                environment[f"{invalid}_SCALE_API_URL_B64"] = base64.b64encode(
+                    b"file:///etc/passwd"
+                ).decode()
+                environment[f"{valid}_SCALE_API_URL_B64"] = ""
 
-            result = self._run(environment)
+                result = self._run(environment)
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(
-                "WAGON_SCALE_API_URL must be empty or an absolute HTTP(S) URL",
-                result.stderr,
-            )
-            self.assertFalse(docker_log.exists())
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    f"{invalid}_SCALE_API_URL must be empty or an absolute HTTP(S) URL",
+                    result.stderr,
+                )
+                self.assertFalse(docker_log.exists())
 
     def test_deploy_records_previous_release_before_candidate_start(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, docker_log, state_file = self._environment(
-                root,
-                running_services="db-backup",
-            )
+        environment, docker_log, state_file = self._environment()
 
-            result = self._run(environment)
+        result = self._run(environment)
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            state = self._state(state_file)
-            self.assertEqual(state["STATE_STATUS"], "PENDING")
-            self.assertEqual(state["PREVIOUS_BACKEND_IMAGE_REF"], PREVIOUS_BACKEND)
-            self.assertEqual(state["PREVIOUS_FRONTEND_IMAGE_REF"], PREVIOUS_FRONTEND)
-            self.assertEqual(state["PREVIOUS_GIT_SHA"], PREVIOUS_SHA)
-            self.assertEqual(state["CANDIDATE_BACKEND_IMAGE_REF"], CANDIDATE_BACKEND)
-            self.assertEqual(state["CANDIDATE_FRONTEND_IMAGE_REF"], CANDIDATE_FRONTEND)
-            self.assertEqual(state["CANDIDATE_GIT_SHA"], CANDIDATE_SHA)
-            self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
-            runner = Path(f"{state_file}.runner")
-            self.assertTrue(runner.exists())
-            self.assertEqual(stat.S_IMODE(runner.stat().st_mode), 0o700)
-            commands = docker_log.read_text(encoding="utf-8")
-            self.assertLess(commands.index("ps -q backend"), commands.index("up -d"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = self._state(state_file)
+        self.assertEqual(state["STATE_STATUS"], "PENDING")
+        self.assertEqual(state["PREVIOUS_BACKEND_IMAGE_REF"], PREVIOUS_BACKEND)
+        self.assertEqual(state["PREVIOUS_FRONTEND_IMAGE_REF"], PREVIOUS_FRONTEND)
+        self.assertEqual(state["PREVIOUS_GIT_SHA"], PREVIOUS_SHA)
+        self.assertEqual(state["CANDIDATE_BACKEND_IMAGE_REF"], CANDIDATE_BACKEND)
+        self.assertEqual(state["CANDIDATE_FRONTEND_IMAGE_REF"], CANDIDATE_FRONTEND)
+        self.assertEqual(state["CANDIDATE_GIT_SHA"], CANDIDATE_SHA)
+        self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
+        runner = Path(f"{state_file}.runner")
+        self.assertTrue(runner.exists())
+        self.assertEqual(stat.S_IMODE(runner.stat().st_mode), 0o700)
+        commands = docker_log.read_text(encoding="utf-8")
+        self.assertLess(commands.index("ps -q backend"), commands.index("up -d"))
 
-            environment_log = Path(
-                environment["FAKE_DOCKER_ENV_LOG"]
-            ).read_text(encoding="utf-8")
-            candidate_start = next(
-                line for line in environment_log.splitlines() if " up -d " in line
-            )
-            self.assertIn(f"release={CANDIDATE_SHA}", candidate_start)
+        environment_log = Path(
+            environment["FAKE_DOCKER_ENV_LOG"]
+        ).read_text(encoding="utf-8")
+        candidate_start = next(
+            line for line in environment_log.splitlines() if " up -d " in line
+        )
+        self.assertIn(f"release={CANDIDATE_SHA}", candidate_start)
 
-    def test_deploy_quiesces_old_camera_writers_before_cutover_and_candidate(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, docker_log, _ = self._environment(
-                Path(temporary),
-                running_services="db-backup",
-            )
+    def test_deploy_quiesces_old_camera_writers_before_candidate(self) -> None:
+        environment, docker_log, _ = self._environment()
 
-            result = self._run(environment)
+        result = self._run(environment)
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            commands = docker_log.read_text(encoding="utf-8")
-            stop = (
-                "stop -t 180 backend camera-monitor ai-stock-monitor "
-                "passage-scale-monitor shipping-transport-monitor"
-            )
-            cutover = "backend manage.py check_camera_cutover"
-            self.assertIn(stop, commands)
-            self.assertLess(commands.index(stop), commands.index(cutover))
-            self.assertLess(commands.index(cutover), commands.index("up -d"))
-
-    def test_cutover_refusal_resumes_previous_camera_writers(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            environment, docker_log, _ = self._environment(
-                Path(temporary),
-                running_services="db-backup",
-                cutover_status=17,
-            )
-
-            result = self._run(environment)
-
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("Camera contour cutover refused", result.stderr)
-            self.assertIn("resuming the previous camera writers", result.stderr)
-            commands = docker_log.read_text(encoding="utf-8")
-            self.assertIn(
-                "start backend camera-monitor ai-stock-monitor "
-                "passage-scale-monitor shipping-transport-monitor",
-                commands,
-            )
-            self.assertNotIn(" up -d ", f" {commands} ")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = docker_log.read_text(encoding="utf-8")
+        stop = (
+            "stop -t 180 backend camera-monitor ai-stock-monitor "
+            "passage-scale-monitor shipping-transport-monitor"
+        )
+        self.assertIn(stop, commands)
+        self.assertLess(commands.index(stop), commands.index("up -d"))
 
     def test_independent_collector_handoff_precedes_candidate_and_refuses_busy(self):
         for handoff_status in (0, 1):
-            with self.subTest(handoff_status=handoff_status), tempfile.TemporaryDirectory() as temporary:
-                environment, docker_log, _ = self._environment(
-                    Path(temporary), running_services="db-backup"
-                )
+            with self.subTest(handoff_status=handoff_status):
+                environment, docker_log, _ = self._environment()
                 installer = Path(environment["APP_DIR"]) / "deploy/weighbridge/install.sh"
-                installer.parent.mkdir()
                 _write_executable(installer, '#!/bin/sh\nprintf "collector prepare\\n" >> "$FAKE_DOCKER_LOG"\n')
                 environment["FAKE_WEIGHBRIDGE_STATUS"] = str(handoff_status)
                 result = self._run(environment)
                 commands = docker_log.read_text()
                 handoff = "manage.py activate_weighbridge_collector"
                 self.assertLess(commands.index("collector prepare"), commands.index("stop -t 180"))
-                self.assertLess(commands.index("check_camera_cutover"), commands.index(handoff))
+                self.assertLess(commands.index("stop -t 180"), commands.index(handoff))
                 if handoff_status:
                     self.assertEqual(result.returncode, 2)
                     self.assertIn("start backend camera-monitor", commands)
@@ -493,244 +451,153 @@ exit 0
                     self.assertLess(commands.index(handoff), commands.index(" up -d "))
 
     def test_same_candidate_retry_preserves_original_rollback_state(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, _, state_file = self._environment(
-                root,
-                running_services="db-backup",
-                backup_status=42,
-            )
-            first = self._run(environment)
-            self.assertEqual(first.returncode, 42)
+        environment, _, state_file = self._environment(backup_status=42)
+        first = self._run(environment)
+        self.assertEqual(first.returncode, 42)
 
-            Path(environment["FAKE_BACKEND_CURRENT_FILE"]).write_text(
-                CANDIDATE_BACKEND,
-                encoding="utf-8",
-            )
-            Path(environment["FAKE_FRONTEND_CURRENT_FILE"]).write_text(
-                PREVIOUS_FRONTEND,
-                encoding="utf-8",
-            )
-            Path(environment["FAKE_GIT_HEAD_FILE"]).write_text(
-                CANDIDATE_SHA,
-                encoding="utf-8",
-            )
-            environment["FAKE_BACKUP_STATUS"] = "0"
+        Path(environment["FAKE_BACKEND_CURRENT_FILE"]).write_text(
+            CANDIDATE_BACKEND,
+            encoding="utf-8",
+        )
+        Path(environment["FAKE_FRONTEND_CURRENT_FILE"]).write_text(
+            PREVIOUS_FRONTEND,
+            encoding="utf-8",
+        )
+        Path(environment["FAKE_GIT_HEAD_FILE"]).write_text(
+            CANDIDATE_SHA,
+            encoding="utf-8",
+        )
+        environment["FAKE_BACKUP_STATUS"] = "0"
 
-            second = self._run(environment)
+        second = self._run(environment)
 
-            self.assertEqual(second.returncode, 0, second.stderr)
-            state = self._state(state_file)
-            self.assertEqual(state["PREVIOUS_BACKEND_IMAGE_REF"], PREVIOUS_BACKEND)
-            self.assertEqual(state["PREVIOUS_FRONTEND_IMAGE_REF"], PREVIOUS_FRONTEND)
-            self.assertEqual(state["PREVIOUS_GIT_SHA"], PREVIOUS_SHA)
-            self.assertIn("Reusing rollback state", second.stdout)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        state = self._state(state_file)
+        self.assertEqual(state["PREVIOUS_BACKEND_IMAGE_REF"], PREVIOUS_BACKEND)
+        self.assertEqual(state["PREVIOUS_FRONTEND_IMAGE_REF"], PREVIOUS_FRONTEND)
+        self.assertEqual(state["PREVIOUS_GIT_SHA"], PREVIOUS_SHA)
+        self.assertIn("Reusing rollback state", second.stdout)
 
     def test_corrupt_pending_state_fails_closed_before_container_start(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, docker_log, state_file = self._environment(
-                root,
-                running_services="db-backup",
-            )
-            state_file.write_text("STATE_VERSION=broken\n", encoding="utf-8")
+        environment, docker_log, state_file = self._environment()
+        state_file.write_text("STATE_VERSION=broken\n", encoding="utf-8")
 
-            result = self._run(environment)
+        result = self._run(environment)
 
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("corrupt pending release state", result.stderr)
-            self.assertNotIn(" up -d ", docker_log.read_text(encoding="utf-8"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("corrupt pending release state", result.stderr)
+        self.assertNotIn(" up -d ", docker_log.read_text(encoding="utf-8"))
 
     def test_candidate_startup_failure_restores_previous_release(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, _, state_file = self._environment(
-                root,
-                running_services="db-backup",
-                candidate_up_status=42,
-            )
+        environment, _, state_file = self._environment(candidate_up_status=42)
 
-            result = self._run(environment)
+        result = self._run(environment)
 
-            self.assertEqual(result.returncode, 42)
-            self.assertIn("Automatic local rollback succeeded", result.stderr)
-            self.assertEqual(
-                Path(environment["FAKE_BACKEND_CURRENT_FILE"]).read_text(
-                    encoding="utf-8"
-                ),
-                PREVIOUS_BACKEND,
-            )
-            self.assertEqual(
-                Path(environment["FAKE_FRONTEND_CURRENT_FILE"]).read_text(
-                    encoding="utf-8"
-                ),
-                PREVIOUS_FRONTEND,
-            )
-            self.assertEqual(
-                Path(environment["FAKE_GIT_HEAD_FILE"]).read_text(encoding="utf-8"),
-                PREVIOUS_SHA + "\n",
-            )
-            self.assertEqual(self._state(state_file)["STATE_STATUS"], "PENDING")
-            env_commands = Path(environment["FAKE_DOCKER_ENV_LOG"]).read_text(
+        self.assertEqual(result.returncode, 42)
+        self.assertIn("Automatic local rollback succeeded", result.stderr)
+        self.assertEqual(
+            Path(environment["FAKE_BACKEND_CURRENT_FILE"]).read_text(
                 encoding="utf-8"
-            )
-            self.assertIn(f"backend={CANDIDATE_BACKEND}", env_commands)
-            self.assertIn(f"backend={PREVIOUS_BACKEND}", env_commands)
-            rollback_start = next(
-                line
-                for line in env_commands.splitlines()
-                if f"backend={PREVIOUS_BACKEND}" in line and " up -d " in line
-            )
-            self.assertIn(f"release={PREVIOUS_SHA}", rollback_start)
-            self.assertIn("--scale ai-stock-monitor=0", rollback_start)
-            self.assertIn(
-                "ai-stock-monitor is intentionally disabled after rollback",
-                result.stderr,
-            )
+            ),
+            PREVIOUS_BACKEND,
+        )
+        self.assertEqual(
+            Path(environment["FAKE_FRONTEND_CURRENT_FILE"]).read_text(
+                encoding="utf-8"
+            ),
+            PREVIOUS_FRONTEND,
+        )
+        self.assertEqual(
+            Path(environment["FAKE_GIT_HEAD_FILE"]).read_text(encoding="utf-8"),
+            PREVIOUS_SHA + "\n",
+        )
+        self.assertEqual(self._state(state_file)["STATE_STATUS"], "PENDING")
+        env_commands = Path(environment["FAKE_DOCKER_ENV_LOG"]).read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(f"backend={CANDIDATE_BACKEND}", env_commands)
+        self.assertIn(f"backend={PREVIOUS_BACKEND}", env_commands)
+        rollback_start = next(
+            line
+            for line in env_commands.splitlines()
+            if f"backend={PREVIOUS_BACKEND}" in line and " up -d " in line
+        )
+        self.assertIn(f"release={PREVIOUS_SHA}", rollback_start)
+        self.assertNotIn("--scale", rollback_start)
 
     def test_rollback_pulls_missing_previous_images_by_digest(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, docker_log, _ = self._environment(
-                root,
-                running_services="db-backup",
-                candidate_up_status=42,
-            )
-            environment["FAKE_PREVIOUS_IMAGES_MISSING"] = "1"
-            environment["GHCR_TOKEN"] = "test-token"
+        environment, docker_log, _ = self._environment(candidate_up_status=42)
+        environment["FAKE_PREVIOUS_IMAGES_MISSING"] = "1"
+        environment["GHCR_TOKEN"] = "test-token"
 
-            result = self._run(environment)
+        result = self._run(environment)
 
-            self.assertEqual(result.returncode, 42)
-            commands = docker_log.read_text(encoding="utf-8")
-            self.assertIn(f"pull {PREVIOUS_BACKEND}", commands)
-            self.assertIn(f"pull {PREVIOUS_FRONTEND}", commands)
+        self.assertEqual(result.returncode, 42)
+        commands = docker_log.read_text(encoding="utf-8")
+        self.assertIn(f"pull {PREVIOUS_BACKEND}", commands)
+        self.assertIn(f"pull {PREVIOUS_FRONTEND}", commands)
 
     def test_explicit_rollback_completes_pending_transaction(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, _, state_file = self._environment(
-                root,
-                running_services="db-backup",
-                candidate_up_status=42,
-            )
-            failed = self._run(environment)
-            self.assertEqual(failed.returncode, 42)
+        environment, _, state_file = self._environment(candidate_up_status=42)
+        failed = self._run(environment)
+        self.assertEqual(failed.returncode, 42)
 
-            runner = Path(f"{state_file}.runner")
-            result = subprocess.run(
-                ["/bin/sh", str(runner), "rollback"],
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        result = self._run_runner(environment, state_file, "rollback")
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(state_file.exists())
-            self.assertEqual(
-                self._state(Path(f"{state_file}.prev"))["STATE_STATUS"],
-                "ROLLED_BACK",
-            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(state_file.exists())
+        self.assertEqual(
+            self._state(Path(f"{state_file}.prev"))["STATE_STATUS"],
+            "ROLLED_BACK",
+        )
 
     def test_cleanup_runs_only_after_finalize(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, docker_log, state_file = self._environment(
-                root,
-                running_services="db-backup",
-            )
-            deployed = self._run(environment)
-            self.assertEqual(deployed.returncode, 0, deployed.stderr)
-            self.assertNotIn("cleanup", docker_log.read_text(encoding="utf-8"))
+        environment, docker_log, state_file = self._environment()
+        deployed = self._run(environment)
+        self.assertEqual(deployed.returncode, 0, deployed.stderr)
+        self.assertNotIn("cleanup", docker_log.read_text(encoding="utf-8"))
 
-            runner = Path(f"{state_file}.runner")
-            finalized = subprocess.run(
-                ["/bin/sh", str(runner), "finalize"],
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        finalized = self._run_runner(environment, state_file, "finalize")
 
-            self.assertEqual(finalized.returncode, 0, finalized.stderr)
-            self.assertIn("cleanup", docker_log.read_text(encoding="utf-8"))
-            self.assertFalse(state_file.exists())
-            self.assertEqual(
-                self._state(Path(f"{state_file}.prev"))["STATE_STATUS"],
-                "FINALIZED",
-            )
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        self.assertIn("cleanup", docker_log.read_text(encoding="utf-8"))
+        self.assertFalse(state_file.exists())
+        self.assertEqual(
+            self._state(Path(f"{state_file}.prev"))["STATE_STATUS"],
+            "FINALIZED",
+        )
 
     def test_finalized_candidate_can_roll_back_from_durable_receipt(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            environment, _, state_file = self._environment(
-                root,
-                running_services="db-backup",
-            )
-            deployed = self._run(environment)
-            self.assertEqual(deployed.returncode, 0, deployed.stderr)
+        environment, _, state_file = self._environment()
+        deployed = self._run(environment)
+        self.assertEqual(deployed.returncode, 0, deployed.stderr)
 
-            runner = Path(f"{state_file}.runner")
-            finalized = subprocess.run(
-                ["/bin/sh", str(runner), "finalize"],
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        finalized = self._run_runner(environment, state_file, "finalize")
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
 
-            rolled_back = subprocess.run(
-                ["/bin/sh", str(runner), "rollback"],
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        rolled_back = self._run_runner(environment, state_file, "rollback")
 
-            self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
-            self.assertIn("Finalized candidate was unhealthy", rolled_back.stdout)
-            self.assertEqual(
-                Path(environment["FAKE_BACKEND_CURRENT_FILE"]).read_text(
-                    encoding="utf-8"
-                ),
-                PREVIOUS_BACKEND,
-            )
-            self.assertEqual(
-                Path(environment["FAKE_FRONTEND_CURRENT_FILE"]).read_text(
-                    encoding="utf-8"
-                ),
-                PREVIOUS_FRONTEND,
-            )
-            self.assertEqual(
-                self._state(Path(f"{state_file}.prev"))["STATE_STATUS"],
-                "ROLLED_BACK",
-            )
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
+        self.assertIn("Finalized candidate was unhealthy", rolled_back.stdout)
+        self.assertEqual(
+            Path(environment["FAKE_BACKEND_CURRENT_FILE"]).read_text(
+                encoding="utf-8"
+            ),
+            PREVIOUS_BACKEND,
+        )
+        self.assertEqual(
+            Path(environment["FAKE_FRONTEND_CURRENT_FILE"]).read_text(
+                encoding="utf-8"
+            ),
+            PREVIOUS_FRONTEND,
+        )
+        self.assertEqual(
+            self._state(Path(f"{state_file}.prev"))["STATE_STATUS"],
+            "ROLLED_BACK",
+        )
 
 
 class ProductionManifestTests(unittest.TestCase):
-    def test_passage_scale_monitor_is_liveness_checked_and_non_public(self) -> None:
-        compose = PROD_COMPOSE.read_text(encoding="utf-8")
-        monitor = compose.split("\n  passage-scale-monitor:\n", 1)[1].split(
-            "\n  celery-payments:\n",
-            1,
-        )[0]
-
-        self.assertIn('APP_SERVICE: passage-scale-monitor', monitor)
-        self.assertIn('entrypoint: []', monitor)
-        self.assertIn(
-            'command: ["python", "manage.py", "monitor_passage_scale"]',
-            monitor,
-        )
-        self.assertIn("backend:\n        condition: service_healthy", monitor)
-        self.assertIn("init: true", monitor)
-        self.assertIn("stop_grace_period: 60s", monitor)
-        self.assertIn("/app/passage_scale_monitor_healthcheck.py", monitor)
-        self.assertIn("restart: unless-stopped", monitor)
-        self.assertIn("logging: *default-logging", monitor)
-        self.assertNotIn("ports:", monitor)
-
     def test_camera_monitor_waits_for_migrated_healthy_backend(self) -> None:
         compose = PROD_COMPOSE.read_text(encoding="utf-8")
         monitor = compose.split("\n  camera-monitor:\n", 1)[1].split(
@@ -743,7 +610,7 @@ class ProductionManifestTests(unittest.TestCase):
     def test_camera_health_gate_reports_last_event_sync_diagnostic(self) -> None:
         gate = CAMERA_HEALTH_GATE.read_text(encoding="utf-8")
 
-        self.assertIn("check_camera_health --human", gate)
+        self.assertIn("check_camera_health --human --require-events", gate)
         self.assertIn('last_output="$output"', gate)
         self.assertIn("Последняя диагностика camera-monitor:", gate)
         self.assertIn("printf '%s\\n' \"$last_output\" >&2", gate)
@@ -751,12 +618,63 @@ class ProductionManifestTests(unittest.TestCase):
     def test_shell_scripts_parse(self) -> None:
         for script in (BACKUP_SCRIPT, REMOTE_DEPLOY_SCRIPT):
             subprocess.run(["/bin/sh", "-n", str(script)], check=True)
+        subprocess.run(["bash", "-n", str(PROD_CI_LIB)], check=True)
+
+    def _prod_lib(self, script: str, **env: str) -> subprocess.CompletedProcess:
+        base = {
+            "PATH": os.environ["PATH"],
+            "HOME": tempfile.mkdtemp(),
+            "PROD_HOST": "prod.example",
+            "PROD_PORT": "22",
+            "PROD_USER": "ubuntu",
+            "PROD_SSH_KEY": "key",
+            "PROD_SSH_KNOWN_HOSTS": "prod.example ssh-ed25519 AAAA",
+        }
+        base.update(env)
+        return subprocess.run(
+            ["bash", "-c", f"set -euo pipefail; . '{PROD_CI_LIB}'; {script}"],
+            env=base,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_prod_lib_rejects_unsafe_or_missing_targets(self) -> None:
+        self.assertEqual(self._prod_lib("validate_prod_target").returncode, 0)
+        for env, message in (
+            ({"PROD_HOST": "prod.example;rm"}, "PROD_HOST contains"),
+            ({"PROD_PORT": "22a"}, "PROD_PORT must be numeric"),
+            ({"PROD_USER": "ubuntu root"}, "PROD_USER contains"),
+            ({"PROD_SSH_KEY": ""}, "PROD_SSH_KEY is required"),
+            ({"PROD_SSH_KNOWN_HOSTS": ""}, "PROD_SSH_KNOWN_HOSTS is required"),
+        ):
+            result = self._prod_lib("validate_prod_target", **env)
+            self.assertNotEqual(result.returncode, 0, env)
+            self.assertIn(message, result.stdout)
+
+    def test_prod_lib_writes_private_ssh_files(self) -> None:
+        home = tempfile.mkdtemp()
+        result = self._prod_lib("setup_ssh_key", HOME=home)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for name, content in (
+            ("asyl_ltd_deploy_key", "key\n"),
+            ("asyl_ltd_known_hosts", "prod.example ssh-ed25519 AAAA\n"),
+        ):
+            path = Path(home) / ".ssh" / name
+            self.assertEqual(path.read_text(encoding="utf-8"), content)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(
+            stat.S_IMODE((Path(home) / ".ssh").stat().st_mode), 0o700
+        )
+
+    def test_prod_lib_b64_keeps_empty_value(self) -> None:
+        result = self._prod_lib('printf "[%s][%s]" "$(b64 "")" "$(b64 "a b")"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "[][YSBi]")
 
     def test_release_state_is_flushed_before_checkout_mutation(self) -> None:
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
-        ).read_text(encoding="utf-8")
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
         persist_runner = deploy_script.index("persist_release_runner()")
         write_state = deploy_script.index("write_state()")
@@ -777,9 +695,7 @@ class ProductionManifestTests(unittest.TestCase):
             workflow,
         )
 
-    def test_compose_keeps_apipay_env_optional_and_serial_celery_topology(
-        self,
-    ) -> None:
+    def test_compose_keeps_apipay_env_optional_and_release_tagged(self) -> None:
         # Ключи ApiPay хранятся у отделов; переменные окружения нужны только
         # разовой миграции и не должны блокировать запуск.
         compose = PROD_COMPOSE.read_text(encoding="utf-8")
@@ -789,25 +705,11 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertIn(
             "APIPAY_WEBHOOK_SECRET: ${APIPAY_WEBHOOK_SECRET:-}", compose
         )
-        self.assertIn(
-            'test: ["CMD", "python", "/app/apipay_monitor_healthcheck.py"]',
-            compose,
-        )
-        self.assertNotIn("\n  payment-monitor:\n", compose)
-        self.assertEqual(compose.count("\n  celery-payments:\n"), 1)
-        self.assertEqual(compose.count("\n  celery-beat:\n"), 1)
-        self.assertIn('"--queues=payments"', compose)
-        self.assertIn('"--concurrency=1"', compose)
-        self.assertIn('"--prefetch-multiplier=1"', compose)
-        self.assertIn(
-            'test: ["CMD", "python", "/app/celery_beat_healthcheck.py"]',
-            compose,
-        )
         self.assertEqual(
             compose.count(
                 "APP_RELEASE: ${APP_RELEASE:-${EXPECTED_SHA:-development}}"
             ),
-            3,
+            1,
         )
 
     def test_deploy_failure_reports_recent_health_probe_output(self) -> None:
@@ -823,9 +725,7 @@ class ProductionManifestTests(unittest.TestCase):
     def test_frontend_build_wires_sentry_without_exposing_auth_token_as_arg(
         self,
     ) -> None:
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
-        ).read_text(encoding="utf-8")
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
         dockerfile = (REPO_ROOT / "frontend" / "Dockerfile").read_text(
             encoding="utf-8"
         )
@@ -852,9 +752,7 @@ class ProductionManifestTests(unittest.TestCase):
     def test_automatic_deploy_accepts_only_this_repository_main_push(
         self,
     ) -> None:
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
-        ).read_text(encoding="utf-8")
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn(
             "github.event.workflow_run.event == 'push'",
@@ -871,9 +769,7 @@ class ProductionManifestTests(unittest.TestCase):
         )
 
     def test_scale_endpoint_secrets_are_forwarded_to_production(self) -> None:
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
-        ).read_text(encoding="utf-8")
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
@@ -894,13 +790,7 @@ class ProductionManifestTests(unittest.TestCase):
         )
         self.assertNotIn('test -n "$WAGON_SCALE_API_URL"', workflow)
         self.assertNotIn('test -n "$TRUCK_SCALE_API_URL"', workflow)
-        self.assertIn("IFS= read -r WAGON_SCALE_API_URL_B64", workflow)
         self.assertIn("IFS= read -r TRUCK_SCALE_API_URL_B64", workflow)
-        self.assertIn(
-            "export GHCR_TOKEN WAGON_SCALE_API_URL_B64 "
-            "TRUCK_SCALE_API_URL_B64",
-            workflow,
-        )
         self.assertNotIn("GHCR_TOKEN='$GHCR_TOKEN'", workflow)
         self.assertNotIn(
             "WAGON_SCALE_API_URL_B64='$WAGON_SCALE_API_URL_B64'",
@@ -913,28 +803,30 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertIn('base64 -d)', deploy_script)
         self.assertIn("export WAGON_SCALE_API_URL", deploy_script)
         self.assertIn("export TRUCK_SCALE_API_URL", deploy_script)
+        # One validator decodes both endpoints; an empty value disables one.
         self.assertIn(
-            'if [ -n "$WAGON_SCALE_API_URL" ]; then', deploy_script
+            'decode_scale_url WAGON_SCALE_API_URL "$WAGON_SCALE_API_URL_B64"',
+            deploy_script,
         )
         self.assertIn(
-            'if [ -n "$TRUCK_SCALE_API_URL" ]; then', deploy_script
+            'decode_scale_url TRUCK_SCALE_API_URL "$TRUCK_SCALE_API_URL_B64"',
+            deploy_script,
         )
-        self.assertGreaterEqual(
+        # Deploy и recovery (единственный путь отката) передают URL весов.
+        self.assertEqual(
             workflow.count("IFS= read -r WAGON_SCALE_API_URL_B64"),
-            3,
+            2,
         )
-        self.assertGreaterEqual(
+        self.assertEqual(
             workflow.count(
                 "export GHCR_TOKEN WAGON_SCALE_API_URL_B64 "
                 "TRUCK_SCALE_API_URL_B64"
             ),
-            3,
+            2,
         )
 
     def test_production_git_fetch_uses_environment_only_github_auth(self) -> None:
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
-        ).read_text(encoding="utf-8")
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
         for text in (workflow, deploy_script):
@@ -968,34 +860,36 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertNotIn(
             'TRUCK_SCALE_API_URL="${WAGON_SCALE_API_URL:-}"', deploy_script
         )
-        self.assertIn(
-            "if ! grep -q 'WAGON_SCALE_API_URL' \"$COMPOSE_FILE\"; then",
-            deploy_script,
-        )
-        self.assertIn('TRUCK_SCALE_API_URL=""', deploy_script)
 
     def test_failed_public_gate_rolls_back_before_success_only_cleanup(self) -> None:
-        workflow = (
-            REPO_ROOT / ".github" / "workflows" / "deploy-production.yml"
-        ).read_text(encoding="utf-8")
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
         deploy_script = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        lib = PROD_CI_LIB.read_text(encoding="utf-8")
 
         deploy = workflow.index("- name: Deploy over SSH")
         camera_gate = workflow.index("./deploy/health/wait-for-camera-health.sh")
         api_gate = workflow.index("- name: Health check")
         frontend_gate = workflow.index("- name: Frontend redirect safety gate")
-        rollback = workflow.index("- name: Roll back failed release")
         finalize = workflow.index(
             "- name: Finalize healthy release and clean Docker artifacts"
         )
+        recovery_start = workflow.index("  recovery:")
         self.assertLess(deploy, camera_gate)
         self.assertLess(camera_gate, api_gate)
         self.assertLess(api_gate, frontend_gate)
-        self.assertLess(frontend_gate, rollback)
-        self.assertLess(rollback, finalize)
+        self.assertLess(frontend_gate, finalize)
+        self.assertLess(finalize, recovery_start)
+        # Откат выполняет только job recovery: второй шаг отката внутри
+        # deploy повторял бы тот же rollback после каждого провала.
+        self.assertNotIn("failure()", workflow)
+        self.assertNotIn(r'\"\$runner\" rollback', workflow)
         self.assertIn("- name: Validate production deployment configuration", workflow)
-        self.assertIn("fail_if_empty PROD_SSH_KEY", workflow)
-        self.assertIn("fail_if_empty PROD_SSH_KNOWN_HOSTS", workflow)
+        self.assertIn("validate_prod_target", workflow)
+        self.assertIn('fail_if_empty BACKEND_IMAGE_REF "$BACKEND_IMAGE_REF"', workflow)
+        self.assertIn('fail_if_empty PROD_SSH_KEY "$PROD_SSH_KEY"', lib)
+        self.assertIn(
+            'fail_if_empty PROD_SSH_KNOWN_HOSTS "$PROD_SSH_KNOWN_HOSTS"', lib
+        )
         self.assertNotIn("skipping production deploy", workflow)
         self.assertIn("PROD_HOST: ${{ secrets.PROD_HOST }}", workflow)
         self.assertNotIn("PROD_HOST: ${{ secrets.PROD_HOST ||", workflow)
@@ -1007,30 +901,47 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertIn("candidate_health_epoch=$(run_ssh date +%s)", workflow)
         self.assertIn("candidate_health_epoch=$((candidate_health_epoch + 1))", workflow)
         self.assertIn("CAMERA_HEALTH_REQUIRE_SINCE_EPOCH", workflow)
-        self.assertIn("CAMERA_HEALTH_REQUIRE_EVENTS=1", workflow)
-        self.assertEqual(workflow.count("APP_DIR='$PROD_APP_DIR'"), 4)
-        self.assertIn("if: ${{ failure() }}", workflow)
-        self.assertGreaterEqual(
-            workflow.count("printf '%s\\n' \"$PROD_SSH_KEY\" > ~/.ssh/asyl_ltd_deploy_key"),
-            3,
+        self.assertEqual(workflow.count("APP_DIR='$PROD_APP_DIR'"), 3)
+
+        # SSH- и health-обвязка живёт в одной копии — deploy/ci/prod-lib.sh.
+        # Jobs без полного checkout берут её из проверенного коммита.
+        self.assertEqual(
+            workflow.count("sparse-checkout: deploy/ci"), 2
         )
-        self.assertGreaterEqual(
-            workflow.count(
-                "printf '%s\\n' \"$PROD_SSH_KNOWN_HOSTS\" > ~/.ssh/asyl_ltd_known_hosts"
-            ),
-            3,
-        )
-        self.assertNotIn("StrictHostKeyChecking=accept-new", workflow)
-        self.assertEqual(workflow.count("StrictHostKeyChecking=yes"), 4)
-        self.assertEqual(workflow.count("UserKnownHostsFile="), 4)
+        self.assertEqual(workflow.count("ref: ${{ env.RELEASE_SHA }}"), 5)
+        self.assertEqual(workflow.count(". deploy/ci/prod-lib.sh"), 6)
+        for helper in (
+            "run_ssh() {",
+            "wait_for_ssh() {",
+            "inspect_response() {",
+            "verify_public_health() {",
+            "install -m 700",
+            "StrictHostKeyChecking",
+        ):
+            self.assertNotIn(helper, workflow)
+            self.assertIn(helper, lib)
+        for manual in ("activate-weighbridge.yml", "verify-weighbridge.yml"):
+            manual_workflow = (
+                REPO_ROOT / ".github" / "workflows" / manual
+            ).read_text(encoding="utf-8")
+            self.assertIn(". deploy/ci/prod-lib.sh", manual_workflow)
+            self.assertIn("validate_prod_target", manual_workflow)
+            self.assertIn("run_ssh", manual_workflow)
+            self.assertNotIn("ssh -i", manual_workflow)
+        self.assertNotIn("StrictHostKeyChecking=accept-new", lib)
+        self.assertIn("-o StrictHostKeyChecking=yes", lib)
+        self.assertIn('-o UserKnownHostsFile="$PROD_KNOWN_HOSTS_FILE"', lib)
+        self.assertIn("SITE_URL: https://asyl-ltd.kz", workflow)
+        self.assertNotIn("SITE_URL:-", workflow)
+
         self.assertIn("runner=./.deploy-state/release-state.runner", workflow)
         self.assertNotIn("runner=./deploy/remote-deploy.sh", workflow)
-        self.assertIn(r'\"\$runner\" rollback', workflow)
-        self.assertIn("if: ${{ success() }}", workflow)
         self.assertIn(r'\"\$runner\" finalize', workflow)
-        self.assertEqual(workflow.count("inspect_response / 307"), 3)
-        self.assertEqual(workflow.count("inspect_response /login 200"), 3)
-        self.assertGreaterEqual(workflow.count("Foreign redirect is forbidden"), 3)
+        self.assertIn(r"\"\$runner\" '$RECOVERY_ACTION'", workflow)
+        self.assertEqual(workflow.count("inspect_login_flow"), 1)
+        self.assertIn("inspect_response / 307", lib)
+        self.assertIn("inspect_response /login 200", lib)
+        self.assertIn("Foreign redirect is forbidden", lib)
         self.assertEqual(workflow.count("packages: read"), 2)
 
         self.assertIn(
@@ -1042,12 +953,9 @@ class ProductionManifestTests(unittest.TestCase):
             workflow,
         )
         self.assertNotIn("git checkout main && git pull", workflow)
-        state_boundary = deploy_script.index("prepare_release_state\n")
-        checkout = deploy_script.index('git checkout "$BRANCH"', state_boundary)
-        self.assertLess(state_boundary, checkout)
         self.assertIn('previous_git_sha="$starting_git_sha"', deploy_script)
-        self.assertIn("timeout-minutes: 120", workflow)
-        self.assertIn("timeout-minutes: 90", workflow)
+        self.assertNotIn("timeout-minutes: 120", workflow)
+        self.assertEqual(workflow.count("timeout-minutes: 90"), 2)
         self.assertIn("needs.deploy.result != 'success'", workflow)
         self.assertIn(
             "needs.deploy.outputs.public_gates_passed == 'true' "
@@ -1063,7 +971,10 @@ class ProductionManifestTests(unittest.TestCase):
         self.assertLess(pre_finalize_gate, recovery_action)
         self.assertIn("if ! verify_public_health; then", recovery)
         self.assertIn("RECOVERY_ACTION=rollback", recovery)
-        self.assertGreaterEqual(recovery.count("verify_public_health"), 3)
+        self.assertEqual(recovery.count("verify_public_health"), 2)
+        self.assertLess(
+            recovery_action, recovery.rindex("verify_public_health")
+        )
 
 
 class SecurityHeaderTests(unittest.TestCase):
@@ -1097,6 +1008,39 @@ class SecurityHeaderTests(unittest.TestCase):
         ):
             self.assertIn(header, headers)
 
+    def test_frames_are_denied(self) -> None:
+        # iframe в CRM нет; SAMEORIGIN рядом с DENY от Next/Django давал два
+        # конфликтующих значения, и браузер мог проигнорировать оба.
+        headers = self._headers()
+        self.assertIn('add_header X-Frame-Options "DENY" always;', headers)
+        self.assertNotIn("SAMEORIGIN", headers)
+
+    def test_nginx_is_the_only_source_of_baseline_headers(self) -> None:
+        # Каждый заголовок, который ставит nginx, у апстрима (Django, Next)
+        # скрывается — иначе в ответе два значения (например, два HSTS).
+        headers = self._headers()
+        for header in (
+            "Strict-Transport-Security",
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+            "Referrer-Policy",
+            "Permissions-Policy",
+        ):
+            self.assertIn(f"proxy_hide_header {header};", headers)
+
+    def test_next_does_not_duplicate_nginx_headers(self) -> None:
+        next_config = (REPO_ROOT / "frontend" / "next.config.ts").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Content-Security-Policy", next_config)
+        self.assertIn("frame-ancestors 'none'", next_config)
+        for header in (
+            "X-Frame-Options",
+            "X-Content-Type-Options",
+            "Referrer-Policy",
+        ):
+            self.assertNotIn(header, next_config)
+
 
 class VehicleRoiStreamAliasTests(unittest.TestCase):
     def test_all_weight_first_camera_slots_have_sub_and_main_browser_aliases(
@@ -1114,6 +1058,31 @@ class VehicleRoiStreamAliasTests(unittest.TestCase):
             self.assertIn(
                 f"@${{CAMERA_HOST}}:8554/{camera}\n",
                 config,
+            )
+
+
+class TruckCollectorDeploymentTests(unittest.TestCase):
+    def test_lane_thresholds_are_reachable_from_env(self) -> None:
+        weighbridge = WEIGHBRIDGE_COMPOSE.read_text(encoding="utf-8")
+        collector = weighbridge.split("\n  collector:\n", 1)[1].split(
+            "\n  wagon-collector:\n",
+            1,
+        )[0]
+
+        self.assertIn("command: [python, -m, weighbridge.collector]", collector)
+        for name, default in (
+            ("VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG", "500"),
+            ("VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG", "50"),
+            ("VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS", "3"),
+            ("VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG", "1000"),
+        ):
+            # The collector polls the truck scale in production; install.sh
+            # passes .env only for ${...} substitution, so a threshold left
+            # out here silently keeps its code default.
+            self.assertIn(
+                f"{name}: ${{{name}:-{default}}}",
+                collector,
+                f"{name} is not passed through to the truck collector",
             )
 
 
@@ -1149,9 +1118,21 @@ class WagonCollectorDeploymentTests(unittest.TestCase):
         self.assertIn(
             "command: [python, -m, weighbridge.wagon_collector]", wagon_collector
         )
-        self.assertIn(
-            "DJANGO_SETTINGS_MODULE: config.weighbridge_settings", wagon_collector
-        )
+        # Image, lifecycle, healthcheck and the shared environment come from
+        # the same anchors as the truck collector.
+        self.assertIn("    <<: *collector\n", wagon_collector)
+        self.assertIn("      <<: *collector-environment\n", wagon_collector)
+        shared = weighbridge.split("\nx-collector: &collector\n", 1)[1].split(
+            "\nservices:\n",
+            1,
+        )[0]
+        self.assertIn("DJANGO_SETTINGS_MODULE: config.weighbridge_settings", shared)
+        self.assertIn("GO2RTC_API_URL: http://video:1984", shared)
+        self.assertIn("init: true", shared)
+        self.assertIn("restart: unless-stopped", shared)
+        self.assertIn("stop_grace_period: 30s", shared)
+        self.assertIn("logging: *logging", shared)
+        self.assertIn("test: [CMD, python, -m, weighbridge.healthcheck]", shared)
         self.assertIn(
             "WEIGHBRIDGE_OUTBOX_DIR: /var/lib/weighbridge-wagon", wagon_collector
         )
@@ -1159,8 +1140,9 @@ class WagonCollectorDeploymentTests(unittest.TestCase):
             "WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-http://vesyv:8000/api/v1/weight}",
             wagon_collector,
         )
+        # The relay (go2rtc.yaml) serves only cam8main for the arch camera.
+        self.assertIn("WAGON_ARCH_CAMERA: cam8\n", wagon_collector)
         for name, default in (
-            ("WAGON_ARCH_CAMERA", "cam8"),
             ("WAGON_ARCH_AUTOMATION_ENABLED", "0"),
             ("WAGON_ARCH_STILL_SECONDS", "10"),
             ("WAGON_ARCH_STABLE_SECONDS", "2"),
@@ -1178,7 +1160,6 @@ class WagonCollectorDeploymentTests(unittest.TestCase):
                 wagon_collector,
                 f"{name} is not passed through to the wagon collector",
             )
-        prod_compose = PROD_COMPOSE.read_text(encoding="utf-8")
         for name, default in (
             ("WAGON_ARCH_CAMERA", "cam8"),
             ("WAGON_ARCH_AUTOMATION_ENABLED", "0"),
@@ -1189,19 +1170,11 @@ class WagonCollectorDeploymentTests(unittest.TestCase):
         ):
             self.assertIn(
                 f"{name}: ${{{name}:-{default}}}",
-                prod_compose,
+                prod,
                 f"{name} is not reachable from the server's .env for the backend",
             )
-        self.assertIn("GO2RTC_API_URL: http://video:1984", wagon_collector)
         self.assertIn(
-            "      - wagon-outbox:/var/lib/weighbridge-wagon\n", wagon_collector
-        )
-        self.assertIn("init: true", wagon_collector)
-        self.assertIn("restart: unless-stopped", wagon_collector)
-        self.assertIn("stop_grace_period: 30s", wagon_collector)
-        self.assertIn("logging: *logging", wagon_collector)
-        self.assertIn(
-            "test: [CMD, python, -m, weighbridge.healthcheck]", wagon_collector
+            "    volumes:\n      - wagon-outbox:/var/lib/weighbridge-wagon", wagon_collector
         )
         self.assertIn(
             "  wagon-outbox:\n    external: true\n    name: asyl-weighbridge-wagon-outbox\n",
@@ -1227,12 +1200,7 @@ class WagonCollectorDeploymentTests(unittest.TestCase):
         )
         self.assertIn("Outbox('/var/lib/weighbridge-wagon')", install)
         self.assertIn(
-            "'Wagon stands under the arch: upgrade deferred'",
-            install,
-        )
-        self.assertIn(
-            "assert not heartbeat.get('pending_writes', 0), "
-            "'Wagon collector storage writes are pending: upgrade deferred'",
+            "raise SystemExit('Wagon collector storage writes are pending: upgrade deferred')",
             install,
         )
         # The wagon outbox stays unacknowledged until the CRM importer is

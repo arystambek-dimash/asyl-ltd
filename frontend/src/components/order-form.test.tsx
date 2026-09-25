@@ -2,7 +2,9 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OrderForm } from "@/components/order-form";
-import type { Client, Department, Order, Product } from "@/lib/types";
+import type { Client, Order } from "@/lib/types";
+import { apiState } from "@/test-utils/api";
+import { makeDepartment } from "@/test-utils/factories";
 
 const useApiMock = vi.hoisted(() => vi.fn());
 const pushMock = vi.hoisted(() => vi.fn());
@@ -32,26 +34,56 @@ const product = {
   id: 2,
   label: "Мука 50 кг",
   available_bags: 20,
-} as Product;
+  stock_by_warehouse: {} as Record<string, number>,
+};
 
-const department = {
-  id: 3,
-  code: "sales",
-  name: "Продажи",
-  color: "#111111",
-  is_default: true,
-} as Department;
+const department = makeDepartment({ id: 3, code: "sales", name: "Продажи", color: "#111111" });
 
-function apiState<T>(
-  data: T | null,
-  {
-    loading = false,
-    error = "",
-    reload = vi.fn(),
-  }: { loading?: boolean; error?: string; reload?: ReturnType<typeof vi.fn> } = {},
-) {
-  return { data, loading, error, reload, setData: vi.fn() };
+const FORM_OPTIONS = "/orders/form-options/";
+const KZT_PRICES = "/client-prices/?client=1&currency=KZT";
+
+function formOptions(overrides: Record<string, unknown> = {}) {
+  return { clients: [client], products: [product], stores: [], departments: [department], ...overrides };
 }
+
+/** Мок useApi по адресу запроса; на остальные адреса — пустой ответ. */
+function mockApi(states: Record<string, unknown>) {
+  useApiMock.mockImplementation((url: string | null) => states[url ?? ""] ?? apiState(null));
+}
+
+/** Шаблон заказа: 3 мешка по 17,50 ₸ тестовому клиенту. */
+function orderTemplate(overrides: Partial<Order> = {}): Order {
+  return {
+    id: 9,
+    client: client.id,
+    department: department.code,
+    currency: "KZT",
+    truck_number: "",
+    items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
+    ...overrides,
+  } as Order;
+}
+
+/** Заказ на вагон с полным номером — для проверок номера транспорта. */
+function numberOrder(overrides: Partial<Order> = {}): Order {
+  return orderTemplate({
+    id: 22,
+    warehouse: 11,
+    warehouse_name: "Склад 1",
+    status: "pending",
+    transport_type: "train",
+    truck_number: "00123456",
+    total_amount: "52.50",
+    paid_total: "0",
+    remaining_amount: "52.50",
+    is_fully_paid: false,
+    bag_estimate_kg: "0.00",
+    created_at: "2026-09-07",
+    ...overrides,
+  });
+}
+
+const MAIN_WAREHOUSE = { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true };
 
 describe("OrderForm reference data resilience", () => {
   beforeEach(() => {
@@ -62,20 +94,12 @@ describe("OrderForm reference data resilience", () => {
     patchMock.mockResolvedValue({ data: {} });
     postMock.mockResolvedValue({ data: { id: 1 } });
     meMock.current = { sales_department: null, permissions: [] };
+    mockApi({ [FORM_OPTIONS]: apiState(formOptions()), [KZT_PRICES]: apiState({ "2": "17.50" }) });
   });
 
   it("shows a lookup error and blocks progression until all required data is available", async () => {
     const reloadFormOptions = vi.fn();
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState(null, {
-          error: "Доступ запрещён",
-          reload: reloadFormOptions,
-        }),
-      ],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    mockApi({ [FORM_OPTIONS]: apiState(null, { error: "Доступ запрещён", reload: reloadFormOptions }) });
 
     const user = userEvent.setup();
     render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
@@ -89,36 +113,13 @@ describe("OrderForm reference data resilience", () => {
 
   it("keeps manual prices editable when the client price list fails and offers retry", async () => {
     const reloadClientPrices = vi.fn();
-    const template = {
-      id: 9,
-      client: client.id,
-      department: department.code,
-      currency: "KZT",
-      truck_number: "",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({
-          clients: [client],
-          products: [product],
-          stores: [],
-          departments: [department],
-        }),
-      ],
-      [
-        "/client-prices/?client=1&currency=KZT",
-        apiState<Record<string, string>>(null, {
-          error: "Сеть недоступна",
-          reload: reloadClientPrices,
-        }),
-      ],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    mockApi({
+      [FORM_OPTIONS]: apiState(formOptions()),
+      [KZT_PRICES]: apiState(null, { error: "Сеть недоступна", reload: reloadClientPrices }),
+    });
 
     const user = userEvent.setup();
-    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+    render(<OrderForm template={orderTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
 
     const price = screen.getByRole("spinbutton", { name: "Цена, позиция 1" });
     expect(price).toHaveValue(17.5);
@@ -133,31 +134,14 @@ describe("OrderForm reference data resilience", () => {
   });
 
   it("does not create an order while changing currency and repricing", async () => {
-    const template = {
-      id: 12,
-      client: client.id,
-      department: department.code,
-      currency: "KZT",
-      truck_number: "",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({
-          clients: [client],
-          products: [product],
-          stores: [],
-          departments: [department],
-        }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({ "2": "17.50" })],
-      ["/client-prices/?client=1&currency=USD", apiState<Record<string, string>>({ "2": "4.25" })],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    mockApi({
+      [FORM_OPTIONS]: apiState(formOptions()),
+      [KZT_PRICES]: apiState({ "2": "17.50" }),
+      "/client-prices/?client=1&currency=USD": apiState({ "2": "4.25" }),
+    });
 
     const user = userEvent.setup();
-    render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
+    render(<OrderForm template={orderTemplate({ id: 12 })} onCancel={vi.fn()} onDone={vi.fn()} />);
 
     await user.click(screen.getByRole("radio", { name: /Доллары/ }));
     expect(postMock).not.toHaveBeenCalled();
@@ -179,44 +163,21 @@ describe("OrderForm reference data resilience", () => {
       id: 4,
       label: "Мука со второго склада 50 кг",
       available_bags: 14,
-      warehouse: 22,
-      warehouse_name: "Склад №2",
-    } as Product;
-    const template = {
-      id: 13,
-      client: client.id,
-      department: department.code,
-      currency: "KZT",
-      warehouse: 11,
-      warehouse_name: "Основной склад",
-      truck_number: "",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({
-          clients: [client],
-          products: [
-            {
-              ...product,
-              warehouse: 11,
-              warehouse_name: "Основной склад",
-              stock_by_warehouse: { "11": 20, "22": 7 },
-            },
-            { ...secondaryProduct, stock_by_warehouse: { "22": 14 } },
-          ],
-          stores: [],
-          departments: [department],
+      stock_by_warehouse: { "22": 14 },
+    };
+    const template = orderTemplate({ id: 13, warehouse: 11, warehouse_name: "Основной склад" });
+    mockApi({
+      [FORM_OPTIONS]: apiState(
+        formOptions({
+          products: [{ ...product, stock_by_warehouse: { "11": 20, "22": 7 } }, secondaryProduct],
           warehouses: [
-            { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
+            MAIN_WAREHOUSE,
             { id: 22, code: "second", name: "Склад №2", address: "Цех 2", is_active: true, is_default: false },
           ],
         }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({ "2": "17.50", "4": "21.00" })],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+      ),
+      [KZT_PRICES]: apiState({ "2": "17.50", "4": "21.00" }),
+    });
 
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
@@ -236,31 +197,17 @@ describe("OrderForm reference data resilience", () => {
   });
 
   it("keeps an inactive pinned warehouse visible while editing an order", async () => {
-    const editing = {
+    const editing = orderTemplate({
       id: 14,
-      client: client.id,
-      department: department.code,
-      currency: "KZT",
       status: "confirmed",
       warehouse: 99,
       warehouse_name: "Старый склад",
       transport_type: "truck",
-      truck_number: "",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/orders/form-options/") {
-        return apiState({
-          clients: [client],
-          products: [{ ...product, warehouse: 99, warehouse_name: "Старый склад" }],
-          stores: [],
-          departments: [department],
-          warehouses: [
-            { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
-          ],
-        });
-      }
-      return apiState(null);
+    });
+    mockApi({
+      [FORM_OPTIONS]: apiState(
+        formOptions({ products: [{ ...product, stock_by_warehouse: { "99": 20 } }], warehouses: [MAIN_WAREHOUSE] }),
+      ),
     });
 
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
@@ -272,29 +219,11 @@ describe("OrderForm reference data resilience", () => {
   });
 
   it("uses the active default instead of an inactive warehouse from a template", async () => {
-    const template = {
-      id: 15,
-      client: client.id,
-      department: department.code,
-      currency: "KZT",
-      warehouse: 99,
-      warehouse_name: "Старый склад",
-      truck_number: "",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/orders/form-options/") {
-        return apiState({
-          clients: [client],
-          products: [{ ...product, warehouse: 99, warehouse_name: "Старый склад" }],
-          stores: [],
-          departments: [department],
-          warehouses: [
-            { id: 11, code: "main", name: "Основной склад", address: "", is_active: true, is_default: true },
-          ],
-        });
-      }
-      return apiState(null);
+    const template = orderTemplate({ id: 15, warehouse: 99, warehouse_name: "Старый склад" });
+    mockApi({
+      [FORM_OPTIONS]: apiState(
+        formOptions({ products: [{ ...product, stock_by_warehouse: { "99": 20 } }], warehouses: [MAIN_WAREHOUSE] }),
+      ),
     });
 
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
@@ -304,30 +233,17 @@ describe("OrderForm reference data resilience", () => {
   });
 
   it("requires an audit reason and sends it when a shipped order is corrected", async () => {
-    const editing = {
+    const editing = orderTemplate({
       id: 10,
-      client: client.id,
       client_name: client.name,
-      department: department.code,
-      currency: "KZT",
       status: "shipped",
       transport_type: "truck",
       truck_number: "123ABC02",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({
-          clients: [client],
-          products: [{ ...product, available_bags: 0 }],
-          stores: [],
-          departments: [department],
-        }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({})],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    });
+    mockApi({
+      [FORM_OPTIONS]: apiState(formOptions({ products: [{ ...product, available_bags: 0 }] })),
+      [KZT_PRICES]: apiState({}),
+    });
 
     const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
@@ -350,25 +266,14 @@ describe("OrderForm reference data resilience", () => {
   });
 
   it("keeps the edit form usable while loading but omits the frozen composition", async () => {
-    const editing = {
+    const editing = orderTemplate({
       id: 11,
-      client: client.id,
       client_name: client.name,
-      department: department.code,
-      currency: "KZT",
       status: "loading",
       transport_type: "truck",
       truck_number: "123ABC02",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-    } as Order;
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({ clients: [client], products: [product], stores: [], departments: [department] }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState<Record<string, string>>({})],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    });
+    mockApi({ [FORM_OPTIONS]: apiState(formOptions()), [KZT_PRICES]: apiState({}) });
 
     const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
@@ -379,33 +284,6 @@ describe("OrderForm reference data resilience", () => {
     expect(body).not.toHaveProperty("items");
     expect(body).not.toHaveProperty("prices");
   });
-
-  function numberOrder(overrides: Partial<Order> = {}): Order {
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({ clients: [client], products: [product], stores: [], departments: [department] }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState({ "2": "17.50" })],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
-    return {
-      id: 22,
-      client: client.id,
-      department: department.code,
-      currency: "KZT",
-      status: "pending",
-      transport_type: "train",
-      truck_number: "00123456",
-      items: [{ product: product.id, quantity: 3, unit_price: "17.50" }],
-      total_amount: "52.50",
-      paid_total: "0",
-      is_fully_paid: false,
-      debt_override: false,
-      created_at: "2026-09-07",
-      ...overrides,
-    };
-  }
 
   it("creates a wagon order with its complete number from a template", async () => {
     const user = userEvent.setup();
@@ -424,19 +302,10 @@ describe("OrderForm reference data resilience", () => {
 
   it("sends the truck and the trailer and hints the plate country of the client", async () => {
     const template = numberOrder({ transport_type: "truck", truck_number: "" });
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({
-          clients: [{ ...client, country: "Кыргызстан" }],
-          products: [product],
-          stores: [],
-          departments: [department],
-        }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState({ "2": "17.50" })],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+    mockApi({
+      [FORM_OPTIONS]: apiState(formOptions({ clients: [{ ...client, country: "Кыргызстан" }] })),
+      [KZT_PRICES]: apiState({ "2": "17.50" }),
+    });
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
 
@@ -523,27 +392,20 @@ describe("OrderForm reference data resilience", () => {
     expect(postMock).not.toHaveBeenCalled();
   });
   it("creates a template order in the selected client's department", async () => {
-    const template = {
+    const template = orderTemplate({
       id: 99,
-      client: client.id,
       department: "old",
-      currency: "KZT",
-      truck_number: "",
       items: [{ product: product.id, quantity: 2, unit_price: "17.50" }],
-    } as Order;
-    const states = new Map<string, unknown>([
-      [
-        "/orders/form-options/",
-        apiState({
+    });
+    mockApi({
+      [FORM_OPTIONS]: apiState(
+        formOptions({
           clients: [{ ...client, department_code: department.code, department_name: department.name }],
-          products: [product],
-          stores: [],
           departments: [department, { ...department, id: 4, code: "old", name: "Другой отдел" }],
         }),
-      ],
-      ["/client-prices/?client=1&currency=KZT", apiState({ "2": "17.50" })],
-    ]);
-    useApiMock.mockImplementation((url: string | null) => states.get(url ?? "") ?? apiState(null));
+      ),
+      [KZT_PRICES]: apiState({ "2": "17.50" }),
+    });
     const user = userEvent.setup();
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
     expect(screen.getByText(/отдел клиента/)).toBeInTheDocument();
@@ -572,7 +434,7 @@ describe("OrderForm reference data resilience", () => {
     await user.type(date, "2026-09-10");
     await user.click(screen.getByRole("radio", { name: /Отгружено/ }));
     await user.click(screen.getByRole("checkbox", { name: /Оплачен полностью/ }));
-    await user.click(screen.getByRole("radio", { name: "Kaspi" }));
+    await user.click(screen.getByRole("radio", { name: "QR" }));
     await user.click(screen.getByRole("button", { name: /Создать задним числом/ }));
 
     expect(postMock).toHaveBeenCalledWith(
@@ -605,7 +467,7 @@ describe("OrderForm reference data resilience", () => {
       await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
       // Сумма по умолчанию — итог заказа: 3 × 17,50.
       expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(52.5);
-      await user.click(screen.getByRole("button", { name: /Kaspi-терминал/ }));
+      await user.click(screen.getByRole("button", { name: "QR" }));
       await user.click(screen.getByRole("button", { name: /Создать и принять оплату/ }));
 
       await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/orders/30"));
@@ -617,7 +479,6 @@ describe("OrderForm reference data resilience", () => {
       expect(postMock).toHaveBeenNthCalledWith(2, "/orders/30/payments/", {
         amount: "52.5",
         method: "kaspi",
-        stage: "received",
       });
     });
 
@@ -640,7 +501,7 @@ describe("OrderForm reference data resilience", () => {
 
       await user.clear(screen.getByLabelText("Сумма оплаты"));
       await user.type(screen.getByLabelText("Сумма оплаты"), "1000");
-      expect(screen.getByText("Сумма больше остатка к оплате.")).toBeInTheDocument();
+      expect(screen.getByText(/^Доступно не более 87,5\.$/)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Создать и принять оплату/ })).toBeDisabled();
       await user.click(screen.getByRole("button", { name: "Весь итог" }));
       expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(87.5);
@@ -768,7 +629,7 @@ describe("OrderForm draft", () => {
     await user.type(screen.getByLabelText("Тягач"), "07kg695adt");
     await user.type(screen.getByLabelText("Прицеп (необязательно)"), "07 kg 837 pb");
     await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
-    await user.click(screen.getByRole("button", { name: /Kaspi-терминал/ }));
+    await user.click(screen.getByRole("button", { name: "QR" }));
     await user.clear(screen.getByLabelText("Сумма оплаты"));
     await user.type(screen.getByLabelText("Сумма оплаты"), "25");
     first.unmount();
@@ -782,7 +643,7 @@ describe("OrderForm draft", () => {
 
     // Включают снова руками — способ и сумма черновика на месте.
     await user.click(screen.getByRole("checkbox", { name: "Оплата сразу" }));
-    expect(screen.getByRole("button", { name: /Kaspi-терминал/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "QR" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByLabelText("Сумма оплаты")).toHaveValue(25);
 
     await user.click(screen.getByRole("button", { name: /Создать и принять оплату/ }));
@@ -795,7 +656,6 @@ describe("OrderForm draft", () => {
     expect(postMock).toHaveBeenNthCalledWith(2, "/orders/30/payments/", {
       amount: "25",
       method: "kaspi",
-      stage: "received",
     });
     // Заказ уже создан — черновик удалён до приёма оплаты, повтор идёт с карточки заказа.
     expect(draftWhenPaying).toBeNull();

@@ -1,12 +1,10 @@
-import logging
 import os
-import time
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from apps.cameras import production
-
-log = logging.getLogger(__name__)
+from apps.common.daemon import RUNNING, every, run_supervised_loop
 
 
 class Command(BaseCommand):
@@ -23,24 +21,24 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         interval = max(10, options["interval"])
-        while True:
-            started = time.monotonic()
-            try:
-                batches = production.post_due_stock()
-                posted = sum(
-                    row["status"] in ("posted", "empty") for row in batches
-                )
-                blocked = sum(row["status"] == "blocked" for row in batches)
-                failed = sum(row["status"] == "failed" for row in batches)
-                self.stdout.write(
-                    f"ai-stock checked={len(batches)} posted={posted} "
-                    f"blocked={blocked} failed={failed}"
-                )
-            except Exception:
-                log.exception("AI 24/7 stock scheduler iteration failed")
-                if options["once"]:
-                    raise
-            if options["once"]:
-                return
-            elapsed = time.monotonic() - started
-            time.sleep(max(1, interval - elapsed))
+        run_supervised_loop(
+            self.tick,
+            once=bool(options["once"]),
+            heartbeat_file=settings.AI_STOCK_MONITOR_HEARTBEAT_FILE,
+            label="AI 24/7 stock scheduler",
+            pause=every(interval),
+            # Сбой одного круга (в т.ч. рестарт PostgreSQL) повторяется на
+            # следующем: соединение открывается заново.
+            retry_errors=(Exception,),
+        )
+
+    def tick(self) -> str:
+        batches = production.post_due_stock()
+        posted = sum(row["status"] in ("posted", "empty") for row in batches)
+        blocked = sum(row["status"] == "blocked" for row in batches)
+        failed = sum(row["status"] == "failed" for row in batches)
+        self.stdout.write(
+            f"ai-stock checked={len(batches)} posted={posted} "
+            f"blocked={blocked} failed={failed}"
+        )
+        return RUNNING

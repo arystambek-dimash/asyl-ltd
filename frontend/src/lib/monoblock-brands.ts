@@ -1,47 +1,11 @@
-export interface BrandMeta {
-  label: string;
-  bar: string;
-  dot: string;
-  recognized: boolean;
-}
+import { normalizedColor } from "@/lib/monoblock-colors";
 
-const BRAND_META: Record<string, BrandMeta> = {
-  korol: {
-    label: "Korol",
-    bar: "bg-cyan-500",
-    dot: "bg-cyan-500",
-    recognized: true,
-  },
-  dikhan_baba: {
-    label: "Дихан Баба",
-    bar: "bg-violet-500",
-    dot: "bg-violet-500",
-    recognized: true,
-  },
-  unknown: {
-    label: "Не распознано",
-    bar: "bg-amber-400",
-    dot: "bg-amber-400",
-    recognized: false,
-  },
-  unclassified: {
-    label: "Нет данных (старые)",
-    bar: "bg-slate-300",
-    dot: "bg-slate-300",
-    recognized: false,
-  },
+const BRAND_LABELS: Record<string, string> = {
+  korol: "Korol",
+  dikhan_baba: "Дихан Баба",
+  unknown: "Не распознано",
+  unclassified: "Нет данных (старые)",
 };
-
-const FALLBACK: BrandMeta = {
-  label: "",
-  bar: "bg-indigo-500",
-  dot: "bg-indigo-500",
-  recognized: true,
-};
-
-export function normalizedBrand(value: string | null | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
 
 function fallbackLabel(value: string): string {
   return value
@@ -51,16 +15,7 @@ function fallbackLabel(value: string): string {
     .join(" ");
 }
 
-export function brandMeta(brand: string): BrandMeta {
-  const normalized = normalizedBrand(brand);
-  return (
-    BRAND_META[normalized] ?? {
-      ...FALLBACK,
-      label: fallbackLabel(normalized) || "Не указано",
-    }
-  );
-}
-
-export function isKnownBrand(brand: string): boolean {
-  return brandMeta(brand).recognized;
+export function brandLabel(brand: string): string {
+  const normalized = normalizedColor(brand);
+  return BRAND_LABELS[normalized] ?? (fallbackLabel(normalized) || "Не указано");
 }

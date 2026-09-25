@@ -12,50 +12,47 @@ class AiSessionBusy(Exception):
             f"Camera {session.camera} is owned by order {session.order_id}")
 
 
-def current_for_camera(camera: str, *, lock: bool = False) -> AiCountingSession | None:
+def _open_session(**lookup) -> AiCountingSession | None:
+    return (
+        AiCountingSession.objects.filter(
+            status__in=AiCountingSession.OPEN_STATUSES, **lookup
+        )
+        .select_related("order")
+        .order_by("started_at")
+        .first()
+    )
+
+
+def current_for_camera(camera: str) -> AiCountingSession | None:
     """Open session (if any) on a specific camera."""
-    qs = AiCountingSession.objects.filter(
-        camera=camera, status__in=AiCountingSession.OPEN_STATUSES
-    ).select_related("order")
-    if lock:
-        qs = qs.select_for_update()
-    return qs.order_by("started_at").first()
+    return _open_session(camera=camera)
 
 
-def current_for_order(order_id: int, *, lock: bool = False) -> AiCountingSession | None:
+def current_for_order(order_id: int) -> AiCountingSession | None:
     """Open session for an order; an order cannot span multiple cameras."""
-    qs = AiCountingSession.objects.filter(
-        order_id=order_id, status__in=AiCountingSession.OPEN_STATUSES
-    ).select_related("order")
-    if lock:
-        qs = qs.select_for_update()
-    return qs.order_by("started_at").first()
+    return _open_session(order_id=order_id)
 
 
 def lock_camera_binding() -> None:
     """Serialize camera assignment changes with creation of AI sessions."""
-    row, _ = MonoblockCameraSettings.objects.get_or_create(singleton=True)
+    row = MonoblockCameraSettings.load()
     MonoblockCameraSettings.objects.select_for_update().get(pk=row.pk)
 
 
-def reserve(
-    order,
-    camera: str,
-    user,
-    *,
-    automatic: bool = False,
-) -> tuple[AiCountingSession, bool]:
+def reserve(order, camera: str, user) -> tuple[AiCountingSession, bool]:
     """Atomically reserve a camera, or return the same owner session on it."""
-    try:
+
+    def _create() -> AiCountingSession:
         with transaction.atomic():
-            session = AiCountingSession.objects.create(
+            return AiCountingSession.objects.create(
                 order=order,
                 camera=camera,
                 status=AiCountingSession.STARTING,
                 started_by=user,
-                automatically_started=automatic,
             )
-        return session, True
+
+    try:
+        return _create(), True
     except IntegrityError:
         # Partial indexes serialize simultaneous POSTs by both camera and order.
         session = current_for_camera(camera)
@@ -66,13 +63,6 @@ def reserve(
         order_session = current_for_order(order.pk)
         if order_session:
             raise AiSessionBusy(order_session) from None
-        # Extremely small race with a transaction that rolled back; retry once.
-        with transaction.atomic():
-            session = AiCountingSession.objects.create(
-                order=order,
-                camera=camera,
-                status=AiCountingSession.STARTING,
-                started_by=user,
-                automatically_started=automatic,
-            )
-        return session, True
+        # The conflicting session was closed between our INSERT and the
+        # lookups above (closing does not take the binding lock); retry once.
+        return _create(), True

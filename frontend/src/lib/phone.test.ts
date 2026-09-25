@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { findCountry } from "./countries";
-import { composePhone, isPhoneComplete, maskHint, missingPhoneDigits, parsePhone, readPhoneInput } from "./phone";
+import {
+  composePhone,
+  isKaspiInvoicePhone,
+  isPhoneComplete,
+  maskHint,
+  missingPhoneDigits,
+  parsePhone,
+  readPhoneInput,
+} from "./phone";
 
 const KZ = findCountry("Казахстан");
 const RU = findCountry("Россия");
@@ -61,6 +69,15 @@ describe("полнота номера", () => {
     expect(isPhoneComplete("+998 90 123-45")).toBe(false);
     expect(isPhoneComplete("+4915123456789")).toBe(true);
     expect(isPhoneComplete("")).toBe(false);
+  });
+
+  it("принимает для счёта Kaspi номер так же, как normalize_phone на сервере", () => {
+    expect(isKaspiInvoicePhone("8 700 000 00 00")).toBe(true);
+    expect(isKaspiInvoicePhone("+7 (705) 565-65-65")).toBe(true);
+    expect(isKaspiInvoicePhone("700 000 00 00")).toBe(true);
+    expect(isKaspiInvoicePhone("97001234567")).toBe(false);
+    expect(isKaspiInvoicePhone("+7 700 000 00")).toBe(false);
+    expect(isKaspiInvoicePhone("")).toBe(false);
   });
 
   it("подсказывает хвост маски", () => {

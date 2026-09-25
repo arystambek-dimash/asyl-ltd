@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import type { Department, Store } from "@/lib/types";
 import { CashFilterFields } from "./cash-filter-fields";
-import { activeFilterCount, type CashFilters } from "./filters";
+import type { CashFilters } from "./filters";
 
 /** Иконка фильтров в топбаре подэкрана; бейдж — сколько групп задано. */
 export function FilterButton({ count, onClick }: { count: number; onClick: () => void }) {
@@ -29,6 +29,7 @@ export function FilterButton({ count, onClick }: { count: number; onClick: () =>
 export function CashFiltersSheet({
   open,
   onClose,
+  count,
   filters,
   stores,
   departments,
@@ -38,6 +39,8 @@ export function CashFiltersSheet({
 }: {
   open: boolean;
   onClose: () => void;
+  /** Сколько групп задано — тот же счётчик, что на бейдже FilterButton. */
+  count: number;
   filters: CashFilters;
   stores: Store[];
   departments: Department[];
@@ -45,8 +48,6 @@ export function CashFiltersSheet({
   showDates?: boolean;
   onChange: (patch: Partial<CashFilters>) => void;
 }) {
-  // Отдел на телефоне выбирается в шапке кассы, а не здесь.
-  const count = activeFilterCount(filters, { dates: showDates, remaining: showRemaining, department: false });
   // Сброс трогает только группы, которые видны в этой шторке — скрытый период
   // отчёта не должен меняться от «Сбросить» на экране без дат.
   const reset = () =>

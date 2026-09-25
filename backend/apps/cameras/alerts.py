@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -20,37 +19,12 @@ TIMEOUT_SECONDS = 8
 
 @dataclass(frozen=True)
 class Delivery:
-    configured: bool
     delivered: bool
     errors: tuple[str, ...] = ()
 
 
-def _post_json(url: str, payload: dict, headers: dict[str, str] | None = None) -> None:
-    request = urllib.request.Request(
-        url,
-        method="POST",
-        data=json.dumps(payload, ensure_ascii=False).encode(),
-        headers={"Content-Type": "application/json", **(headers or {})},
-    )
-    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-        if response.status >= 300:
-            raise OSError(f"HTTP {response.status}")
-        response.read(1024)
-
-
-def _post_telegram(text: str) -> None:
-    # application/x-www-form-urlencoded avoids assumptions about Telegram's
-    # JSON parser and keeps the payload small.
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode(
-        {"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_notification": "false"}
-    ).encode()
-    request = urllib.request.Request(
-        url,
-        method="POST",
-        data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+def _post(url: str, data: bytes, headers: dict[str, str]) -> None:
+    request = urllib.request.Request(url, method="POST", data=data, headers=headers)
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         if response.status >= 300:
             raise OSError(f"HTTP {response.status}")
@@ -77,20 +51,36 @@ def send(event: str, payload: dict) -> Delivery:
 
     if WEBHOOK_URL:
         configured = True
-        headers = {"Authorization": f"Bearer {WEBHOOK_TOKEN}"} if WEBHOOK_TOKEN else {}
+        headers = {"Content-Type": "application/json"}
+        if WEBHOOK_TOKEN:
+            headers["Authorization"] = f"Bearer {WEBHOOK_TOKEN}"
+        body = json.dumps({"event": event, **payload}, ensure_ascii=False).encode()
         try:
-            _post_json(WEBHOOK_URL, {"event": event, **payload}, headers)
+            _post(WEBHOOK_URL, body, headers)
             successes += 1
-        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        except OSError as exc:
             errors.append(f"webhook: {type(exc).__name__}")
             log.exception("Camera alert webhook delivery failed")
 
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         configured = True
+        # application/x-www-form-urlencoded avoids assumptions about Telegram's
+        # JSON parser and keeps the payload small.
+        body = urllib.parse.urlencode(
+            {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "disable_notification": "false",
+            }
+        ).encode()
         try:
-            _post_telegram(message)
+            _post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                body,
+                {"Content-Type": "application/x-www-form-urlencoded"},
+            )
             successes += 1
-        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        except OSError as exc:
             errors.append(f"telegram: {type(exc).__name__}")
             log.exception("Camera Telegram alert delivery failed")
 
@@ -98,4 +88,4 @@ def send(event: str, payload: dict) -> Delivery:
         errors.append("no alert destination configured")
         log.error("Camera incident has no external alert destination configured")
 
-    return Delivery(configured=configured, delivered=successes > 0, errors=tuple(errors))
+    return Delivery(delivered=successes > 0, errors=tuple(errors))

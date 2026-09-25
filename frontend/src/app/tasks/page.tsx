@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { CheckCircle2, Clock, ImageIcon, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { AttachmentChip } from "@/components/task-attachment";
@@ -8,31 +8,37 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Badge } from "@/components/ui/badge";
-import { DataGate, ErrorAlert } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert, FormError } from "@/components/ui/data-state";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Select } from "@/components/ui/select";
+import { Tabs } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { VoiceRecorder } from "@/components/voice-recorder";
 import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
+import { useConfirmAction } from "@/lib/use-confirm-action";
 import { can } from "@/lib/can";
 import type { Task, TaskAssignee } from "@/lib/types";
-import { cn, formatDateTime } from "@/lib/utils";
+import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
+// Лимиты — как в backend/apps/tasks/services.py.
+const MB = 1024 * 1024;
 const MAX_TASK_ATTACHMENTS = 10;
-const MAX_TASK_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-const MAX_TASK_ATTACHMENTS_TOTAL_BYTES = 75 * 1024 * 1024;
+const MAX_TASK_ATTACHMENT_MB = 25;
+const MAX_TASK_ATTACHMENTS_TOTAL_MB = 75;
 
 function attachmentError(files: File[]): string | null {
   if (files.length > MAX_TASK_ATTACHMENTS) {
     return `Можно приложить не больше ${MAX_TASK_ATTACHMENTS} файлов.`;
   }
-  if (files.some((file) => file.size > MAX_TASK_ATTACHMENT_BYTES)) {
-    return "Размер одного файла не должен превышать 25 МБ.";
+  if (files.some((file) => file.size > MAX_TASK_ATTACHMENT_MB * MB)) {
+    return `Размер одного файла не должен превышать ${MAX_TASK_ATTACHMENT_MB} МБ.`;
   }
-  if (files.reduce((total, file) => total + file.size, 0) > MAX_TASK_ATTACHMENTS_TOTAL_BYTES) {
-    return "Общий размер вложений не должен превышать 75 МБ.";
+  if (files.reduce((total, file) => total + file.size, 0) > MAX_TASK_ATTACHMENTS_TOTAL_MB * MB) {
+    return `Общий размер вложений не должен превышать ${MAX_TASK_ATTACHMENTS_TOTAL_MB} МБ.`;
   }
   return null;
 }
@@ -74,8 +80,8 @@ function TaskCard({
     }
   }
 
-  const photos = task.attachments.filter((a) => a.kind === "photo");
-  const rest = task.attachments.filter((a) => a.kind !== "photo");
+  // Фото первыми, остальные вложения — в исходном порядке (сортировка устойчивая).
+  const attachments = [...task.attachments].sort((a, b) => Number(b.kind === "photo") - Number(a.kind === "photo"));
 
   return (
     <div className={cn("rounded-xl border bg-[var(--card)] p-4 shadow-sm transition", done && "opacity-70")}>
@@ -90,7 +96,7 @@ function TaskCard({
             </Badge>
             {task.due_date && !done && (
               <span className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
-                <Clock className="size-3.5" /> до {task.due_date.split("-").reverse().join(".")}
+                <Clock className="size-3.5" /> до {formatIsoDate(task.due_date)}
               </span>
             )}
           </div>
@@ -98,19 +104,9 @@ function TaskCard({
             <p className="mt-1.5 whitespace-pre-wrap text-sm text-[var(--muted-foreground)]">{task.body}</p>
           )}
 
-          {(photos.length > 0 || rest.length > 0) && (
+          {attachments.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {photos.map((a) => (
-                <AttachmentChip
-                  key={a.id}
-                  taskId={task.id}
-                  attachmentId={a.id}
-                  kind={a.kind}
-                  url={a.url}
-                  name={a.original_name}
-                />
-              ))}
-              {rest.map((a) => (
+              {attachments.map((a) => (
                 <AttachmentChip
                   key={a.id}
                   taskId={task.id}
@@ -197,9 +193,11 @@ export default function TasksPage() {
   // Задачу можно поправить или снять: опечатка в заголовке, не тот
   // исполнитель или продублированная постановка — раньше жили навсегда.
   const [editing, setEditing] = useState<Task | null>(null);
-  const [deleting, setDeleting] = useState<Task | null>(null);
-  const [deleteBusy, setDeleteBusy] = useState(false);
-  const [deleteError, setDeleteError] = useState("");
+  const del = useConfirmAction<Task>(async (task) => {
+    await api.delete(`/tasks/${task.id}/`);
+    reload();
+    showSuccess("Задача удалена");
+  });
 
   const {
     data: assignees,
@@ -207,11 +205,6 @@ export default function TasksPage() {
     error: assigneesError,
     reload: reloadAssignees,
   } = useApi<TaskAssignee[]>(canCreate ? "/task-assignees/" : null);
-
-  const counts = useMemo(() => {
-    const rows = data ?? [];
-    return { total: rows.length };
-  }, [data]);
 
   function resetForm() {
     setTitle("");
@@ -234,22 +227,6 @@ export default function TasksPage() {
     setDueDate(task.due_date ?? "");
     setExtrasOpen(Boolean(task.due_date));
     setOpen(true);
-  }
-
-  async function confirmDelete() {
-    if (!deleting) return;
-    setDeleteBusy(true);
-    setDeleteError("");
-    try {
-      await api.delete(`/tasks/${deleting.id}/`);
-      setDeleting(null);
-      reload();
-      showSuccess("Задача удалена");
-    } catch (cause) {
-      setDeleteError(apiError(cause));
-    } finally {
-      setDeleteBusy(false);
-    }
   }
 
   async function submit() {
@@ -312,27 +289,18 @@ export default function TasksPage() {
         ) : undefined
       }
     >
-      <div className="mb-4 flex w-full rounded-xl border bg-[var(--muted)] p-1 sm:w-auto sm:inline-flex">
-        {FILTERS.map((item) => (
-          <button
-            key={item.key}
-            type="button"
-            onClick={() => setFilter(item.key)}
-            className={cn(
-              "flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition sm:flex-none",
-              filter === item.key
-                ? "bg-[var(--card)] shadow-sm"
-                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        variant="segment"
+        label="Статус задач"
+        tabs={FILTERS}
+        active={filter}
+        onChange={(key) => setFilter(key as Filter)}
+        className="mb-4"
+      />
 
       {!data ? (
         <DataGate loading={loading} error={error} onRetry={reload} />
-      ) : counts.total === 0 ? (
+      ) : data.length === 0 ? (
         <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed text-center text-[var(--muted-foreground)]">
           <CheckCircle2 className="mb-2 size-8 opacity-40" />
           <p className="font-semibold">{filter === "done" ? "Выполненных задач нет" : "Задач нет"}</p>
@@ -346,7 +314,7 @@ export default function TasksPage() {
               task={task}
               onChanged={reload}
               onEdit={canCreate ? () => openEdit(task) : undefined}
-              onDelete={me?.is_superuser || (me && task.created_by === me.id) ? () => setDeleting(task) : undefined}
+              onDelete={task.can_delete ? () => del.open(task) : undefined}
             />
           ))}
         </div>
@@ -358,7 +326,7 @@ export default function TasksPage() {
         title={editing ? `Изменить задачу #${editing.id}` : "Новая задача"}
         description={
           editing
-            ? "Заголовок, детали, исполнитель и срок. Вложения меняются в самой задаче."
+            ? "Заголовок, детали, исполнитель и срок. Вложения прикладываются только при постановке задачи."
             : "Опишите текстом или запишите голосом, приложите фото и выберите исполнителя."
         }
         className="max-w-lg"
@@ -399,12 +367,12 @@ export default function TasksPage() {
 
           <div className="grid gap-1.5">
             <Label htmlFor="task-body">Подробности</Label>
-            <textarea
+            <Textarea
               id="task-body"
               value={body}
               onChange={(e) => setBody(e.target.value)}
               placeholder="Необязательно"
-              className="min-h-20 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+              className="min-h-20"
             />
           </div>
 
@@ -413,12 +381,11 @@ export default function TasksPage() {
             {assigneesError ? (
               <ErrorAlert message={assigneesError} onRetry={() => void reloadAssignees()} />
             ) : (
-              <select
+              <Select
                 id="task-assignee"
                 value={assignee}
                 disabled={assigneesLoading}
                 onChange={(e) => setAssignee(e.target.value)}
-                className="h-10 w-full rounded-xl border bg-[var(--background)] px-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15 disabled:cursor-wait disabled:opacity-60"
               >
                 <option value="">{assigneesLoading ? "Загрузка сотрудников…" : "Выберите сотрудника"}</option>
                 {(assignees ?? []).map((person) => (
@@ -427,7 +394,7 @@ export default function TasksPage() {
                     {person.position ? ` · ${person.position}` : ""}
                   </option>
                 ))}
-              </select>
+              </Select>
             )}
           </div>
 
@@ -467,13 +434,14 @@ export default function TasksPage() {
                     className="text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--card)] file:px-3 file:py-1.5 file:text-sm file:font-medium"
                   />
                   <p className="text-xs text-[var(--muted-foreground)]">
-                    До 10 файлов, каждый до 25 МБ, суммарно до 75 МБ.
+                    До {MAX_TASK_ATTACHMENTS} файлов, каждый до {MAX_TASK_ATTACHMENT_MB} МБ, суммарно до{" "}
+                    {MAX_TASK_ATTACHMENTS_TOTAL_MB} МБ.
                   </p>
                   {photos.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
-                      {photos.map((file) => (
+                      {photos.map((file, index) => (
                         <span
-                          key={file.name}
+                          key={`${index}-${file.name}`}
                           className="flex items-center gap-1 rounded-lg bg-[var(--card)] px-2 py-1 text-xs"
                         >
                           <ImageIcon className="size-3.5" /> {file.name}
@@ -493,22 +461,14 @@ export default function TasksPage() {
             </div>
           )}
 
-          {formError && (
-            <p className="rounded-xl border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-              {formError}
-            </p>
-          )}
+          <FormError message={formError} />
         </div>
       </Modal>
 
       <ConfirmDialog
-        open={deleting !== null}
-        onClose={() => !deleteBusy && setDeleting(null)}
+        {...del.dialog}
         title="Удалить задачу?"
-        description={deleting ? `«${deleting.title}» исчезнет у исполнителя вместе с вложениями.` : ""}
-        busy={deleteBusy}
-        error={deleteError}
-        onConfirm={() => void confirmDelete()}
+        description={del.item ? `«${del.item.title}» исчезнет у исполнителя вместе с вложениями.` : ""}
       />
     </AppShell>
   );

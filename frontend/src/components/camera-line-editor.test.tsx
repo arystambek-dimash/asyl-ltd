@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NormalizedLine, VerificationLine } from "@/lib/camera-counting-line";
+import { installVideoGeometry, stubOverlaySurface } from "@/test-utils/video-geometry";
 import { CameraLineEditor, LIVE_FALLBACK_MS } from "./camera-line-editor";
 
 const mocks = vi.hoisted(() => ({
@@ -46,7 +47,6 @@ function Harness({
       src="cam3"
       line={line}
       direction="any"
-      ready
       verificationLines={lines}
       verificationSupported={supported}
       onLineChange={setLine}
@@ -57,22 +57,6 @@ function Harness({
       }}
     />
   );
-}
-
-function installGeometry() {
-  Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", { configurable: true, value: 1920 });
-  Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", { configurable: true, value: 1080 });
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 800 });
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, value: 600 });
-}
-
-function overlaySurface(container: HTMLElement) {
-  const overlay = container.querySelector("[data-camera-counting-line]") as HTMLElement;
-  overlay.getBoundingClientRect = () =>
-    ({ left: 0, top: 75, width: 800, height: 450, right: 800, bottom: 525, x: 0, y: 75, toJSON() {} }) as DOMRect;
-  overlay.setPointerCapture = vi.fn();
-  overlay.hasPointerCapture = vi.fn(() => false);
-  return overlay;
 }
 
 describe("CameraLineEditor verification lines", () => {
@@ -114,12 +98,12 @@ describe("CameraLineEditor verification lines", () => {
   });
 
   it("draws the selected verification line on the image, not the counting line", () => {
-    installGeometry();
+    installVideoGeometry();
     const onLines = vi.fn();
     const { container } = render(<Harness initial={[BEFORE]} onLines={onLines} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Выбрать линию «До механизма»" }));
-    const overlay = overlaySurface(container);
+    const overlay = stubOverlaySurface(container.querySelector("[data-camera-counting-line]") as HTMLElement);
     fireEvent.pointerDown(overlay, { clientX: 600, clientY: 120, pointerId: 1 });
     fireEvent.pointerMove(overlay, { clientX: 600, clientY: 480, pointerId: 1 });
 

@@ -6,10 +6,8 @@ from django.test.utils import CaptureQueriesContext
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.clients.services import client_history
-from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem, Payment
 from apps.sales.models import Department
-from apps.sys_permissions.models import Permission
 from apps.warehouse.models import StockItem
 
 pytestmark = pytest.mark.django_db
@@ -90,46 +88,6 @@ def test_status_override_cannot_bypass_confirmation(
     assert order.status == "pending"
 
 
-def test_review_is_idempotent_scoped_and_separates_queues(
-    auth_client, manager, request_order
-):
-    order, _, dept = request_order
-    api = auth_client(manager)
-    assert api.get("/api/orders/workflow-summary/").data["new"] == 1
-    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
-    assert api.post(f"/api/orders/{order.pk}/review/").data["reviewed_by"] == manager.pk
-    assert EventLog.objects.filter(order=order, event_type="order_review").count() == 1
-    assert api.get("/api/orders/?review_stage=new&page=1").data["count"] == 0
-    assert api.get("/api/orders/?review_stage=review&page=1").data["count"] == 1
-    summary = api.get("/api/orders/workflow-summary/").data
-    assert summary["new"] == 0 and summary["review"] == 1
-    manager.employee.sales_department = dept
-    manager.employee.save()
-    # Заявка клиента без отдела — общая очередь любого отдела.
-    assert api.get("/api/orders/workflow-summary/").data["review"] == 1
-    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
-    # Клиента забрал другой отдел — заявка уходит из сводки отдела; взять её на
-    # рассмотрение может только сотрудник с правом на заявки всех отделов.
-    other = Department.objects.create(code="other", name="Другой отдел")
-    Client.objects.filter(pk=order.client_id).update(department=other)
-    assert api.get("/api/orders/workflow-summary/").data["all"] == 0
-    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 404
-    confirm_all, _ = Permission.objects.get_or_create(
-        code="orders.confirm_all",
-        defaults={"section": "orders", "action": "confirm_all", "label": "orders.confirm_all"},
-    )
-    manager.employee.permissions.add(confirm_all)
-    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
-
-
-def test_review_requires_permission(auth_client, user_with_perms, request_order):
-    order, _, _ = request_order
-    viewer = user_with_perms("viewer", codes=["orders.view"])
-    assert (
-        auth_client(viewer).post(f"/api/orders/{order.pk}/review/").status_code == 403
-    )
-
-
 @pytest.mark.parametrize("assigned", [False, True])
 def test_portal_uses_client_department_without_fallback(
     auth_client, client_user, request_order, assigned
@@ -199,13 +157,11 @@ def test_history_cancel_flags_and_balances(auth_client, accountant, request_orde
     )
 
 
-def test_workflow_and_history_query_count_constant(auth_client, manager, request_order):
+def test_history_query_count_constant(request_order):
     order, _, _ = request_order
-    api = auth_client(manager)
 
     def queries():
         with CaptureQueriesContext(connection) as captured:
-            assert api.get("/api/orders/workflow-summary/").status_code == 200
             client_history(order.client)
         return len(captured)
 
@@ -234,19 +190,3 @@ def test_unassigned_orders_are_counted_and_filterable(
     order.save()
     assert api.patch(f"/api/orders/{order.pk}/", {"department": ""}).status_code == 400
 
-
-def test_analytics_and_arrival_marker_follow_new_request_stage(
-    auth_client, manager, request_order
-):
-    order, _, _ = request_order
-    api = auth_client(manager)
-    Order.objects.create(client=order.client, status="confirmed", department="chosen")
-    assert api.get("/api/orders/workflow-summary/").data["latest_new_id"] == order.pk
-    rows = api.get("/api/orders/department-summary/?review_stage=new").data
-    assert sum(row["orders"] for row in rows) == 1
-    api.post(f"/api/orders/{order.pk}/review/")
-    assert api.get("/api/orders/workflow-summary/").data["latest_new_id"] is None
-    rows = api.get("/api/orders/department-summary/?review_stage=new").data
-    assert sum(row["orders"] for row in rows) == 0
-    rows = api.get("/api/orders/department-summary/?review_stage=review").data
-    assert sum(row["orders"] for row in rows) == 1

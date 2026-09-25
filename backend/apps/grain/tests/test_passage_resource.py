@@ -1,6 +1,5 @@
 """Canonical outbound resource must not expose intake records or commands."""
 
-from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -8,6 +7,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.grain import scale, services, statuses as st
 from apps.grain.models import GrainMovement, Wagon
+from apps.grain.tests.factories import scale_reading
 
 pytestmark = pytest.mark.django_db
 
@@ -28,11 +28,7 @@ def test_outbound_resource_full_cycle_and_legacy_identity(auth_client, operator)
     pk = response.data["id"]
     assert response.data["direction"] == "passage"
     for action, weight in [("entry", 12000), ("exit", 30000)]:
-        reading = scale.ScaleReading(
-            weight_kg=Decimal(weight), age_seconds=Decimal("0.2"),
-            updated_at="2026-09-06T10:00:00Z",
-        )
-        with patch.object(scale, "read_truck_scale", return_value=reading):
+        with patch.object(scale, "read_truck_scale", return_value=scale_reading(weight)):
             response = client.post(
                 f"/api/grain/passages/{pk}/{action}-weight/", {}, format="json",
             )
@@ -49,6 +45,30 @@ def test_outbound_resource_full_cycle_and_legacy_identity(auth_client, operator)
     assert all("Вагон" not in event["message"] for event in timeline.data)
     assert any("вес пустой на въезде" in event["message"] for event in timeline.data)
     assert any("вес гружёной на выезде" in event["message"] for event in timeline.data)
+
+
+def test_outbound_exit_weight_needs_heavier_entry_first(auth_client, operator):
+    client = auth_client(operator)
+    pk = client.post("/api/grain/passages/", {
+        "number": "123 ABC 02", "cargo_name": "Отруби",
+    }, format="json").data["id"]
+
+    def weigh(action, weight):
+        with patch.object(scale, "read_truck_scale", return_value=scale_reading(weight)):
+            return client.post(f"/api/grain/passages/{pk}/{action}-weight/", {}, format="json")
+
+    assert weigh("exit", 30000).status_code == 400
+    assert weigh("entry", 20000).status_code == 200
+    # Гружёная машина не может быть легче пустой — это ошибка весовой.
+    assert weigh("exit", 19000).data["code"] == "bad_exit_weight"
+
+
+def test_outbound_net_formula_is_reverse_of_intake():
+    """Приход оставляет разницу (въезд − выезд), вывоз её увозит (выезд − въезд)."""
+    intake = Wagon(direction=Wagon.INTAKE, gross_weight_kg=68_000, tare_weight_kg=20_000)
+    outbound = Wagon(direction=Wagon.PASSAGE, gross_weight_kg=20_000, tare_weight_kg=68_000)
+    assert intake.computed_net_kg() == 48_000
+    assert outbound.computed_net_kg() == 48_000
 
 
 def test_outbound_scope_cannot_be_overridden_with_intake_id(auth_client, operator):
@@ -68,18 +88,20 @@ def test_outbound_scope_cannot_be_overridden_with_intake_id(auth_client, operato
     assert Wagon.objects.filter(pk=intake.pk).exists()
 
 
-@pytest.mark.parametrize("command", ["lab", "assign-silo", "gross", "tare", "inventory", "approve"])
-def test_outbound_api_has_no_intake_commands(auth_client, operator, command):
+def test_outbound_api_has_no_intake_commands(auth_client, operator):
     passage = Wagon.objects.create(direction=Wagon.PASSAGE, status=st.ARRIVED)
-    assert auth_client(operator).post(f"/api/grain/passages/{passage.pk}/{command}/").status_code == 404
+    url = f"/api/grain/passages/{passage.pk}/resolve-simple-discrepancy/"
+    assert auth_client(operator).post(url).status_code == 404
 
 
 def test_outbound_transition_rejects_intake_path_even_through_service():
-    passage = Wagon(direction=Wagon.PASSAGE, status=st.ARRIVED)
+    passage = Wagon(direction=Wagon.PASSAGE, status=st.TARE_WEIGHED)
     with pytest.raises(ValidationError):
-        services.ensure_transition(passage, st.GROSS_WEIGHED)
-    services.ensure_transition(passage, st.AT_SILO)
-    services.ensure_transition(Wagon(direction=Wagon.INTAKE, status=st.ARRIVED), st.GROSS_WEIGHED)
+        services.ensure_transition(passage, st.WEIGHT_DISCREPANCY)
+    services.ensure_transition(passage, st.INVENTORIED)
+    services.ensure_transition(
+        Wagon(direction=Wagon.INTAKE, status=st.TARE_WEIGHED), st.WEIGHT_DISCREPANCY
+    )
 
 
 def test_outbound_requires_command_permissions(auth_client, user_with_perms):

@@ -106,7 +106,7 @@ export function detectPlateCountry(compact: string): PlateCountry | null {
   return countries.size === 1 ? [...countries][0] : null;
 }
 
-export function isKnownPlate(compact: string): boolean {
+function isKnownPlate(compact: string): boolean {
   return matches(normalizePlate(compact)).length > 0;
 }
 
@@ -126,6 +126,11 @@ export function isValidWagonNumber(raw: string): boolean {
   return WAGON_RE.test(normalizePlate(raw));
 }
 
+/** Набор номера вагона: оформление (пробелы, дефисы) отбрасывается, больше 8 знаков не вводится. */
+export function typedWagonNumber(raw: string): string {
+  return raw.replace(SEPARATORS, "").slice(0, 8);
+}
+
 /** Почему API не примет номер (400), или null. Пустой номер — «номера нет», его примут. */
 export function transportNumberError(raw: string, transportType: string | undefined): string | null {
   if (!normalizePlate(raw)) return null;
@@ -141,10 +146,18 @@ export function formatPlate(value: string | null | undefined): string {
 }
 
 /** Тягач и прицеп одной строкой: «07 KG 695 ADT / 07 KG 837 PB». */
-export function formatPlatePair(truck: string, trailer = "", joiner = " / "): string {
+export function formatPlatePair(truck: string, trailer = ""): string {
   const truckText = formatPlate(truck);
   if (!trailer) return truckText;
-  return `${truckText || "—"}${joiner}${formatPlate(trailer)}`;
+  return `${truckText || "—"} / ${formatPlate(trailer)}`;
+}
+
+/** Уверенность OCR номера в процентах. API отдаёт долю 0…1; значение больше 1 уже в процентах. */
+export function formatOcrConfidence(value: number | string | null | undefined): string {
+  if (value == null || value === "") return "—";
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return "—";
+  return `${Math.round(confidence <= 1 ? confidence * 100 : confidence)}%`;
 }
 
 /* ── Поле ввода: маски стран ─────────────────────────────────────────────── */

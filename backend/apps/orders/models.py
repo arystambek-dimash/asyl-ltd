@@ -3,6 +3,12 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Coalesce
+
+from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY
+
+from .debt import DEBT_STATUS, counts_as_debt
+from .statuses import CAMERA_BINDING_STATUSES
 
 
 class OrderQuerySet(models.QuerySet):
@@ -19,6 +25,19 @@ class OrderQuerySet(models.QuerySet):
         )
 
 
+def money_ledger_q(prefix: str = "") -> Q:
+    """Заказы денежной ленты — журнала кассы и выписок: живые и отгруженные из корзины.
+
+    Отгруженный заказ — состоявшаяся продажа: товар уехал, деньги получены.
+    Корзина прячет его из списков и аналитики, но продажу, оплаты и возвраты
+    лента не теряет. У неотгруженного заказа в корзине денег нет: удалить его
+    с деньгами не даёт ``services.assert_order_has_no_money``. ``prefix`` —
+    путь до заказа от модели выборки (``"order__"``, ``"payment__order__"``).
+    """
+    live = Q(**{f"{prefix}deleted_at__isnull": True, f"{prefix}purged_at__isnull": True})
+    return live | Q(**{f"{prefix}status": "shipped"})
+
+
 class LiveOrderManager(models.Manager):
     """Менеджер по умолчанию: удалённые (в корзине) заказы не видны нигде —
     ни в списках, ни в агрегатах, ни через related (client.orders/store.orders)."""
@@ -30,18 +49,18 @@ class LiveOrderManager(models.Manager):
 
 
 class Order(models.Model):
-    CURRENCIES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
     STATUSES = ["draft", "pending", "confirmed", "arrived",
                 "loading", "loaded", "shipped", "rejected", "cancelled"]
-    PAYMENT_STATUSES = ["unpaid", "partial", "settled"]
-    SETTLEMENT_INTENTS = ["pending", "debt", "instant"]
-    PAYMENT_METHODS = ["pending", "invoice", "kaspi", "cash", "debt", "mixed"]
     TRANSPORT_TYPES = ["truck", "train"]
+    # День продажи — фактическая отгрузка; у старых заказов без даты отгрузки
+    # (или без Shipment) — создание заказа. SQL-форма правила для фильтров
+    # периода, ниже ``sale_at`` — то же правило для уже загруженного заказа.
+    SALE_AT = Coalesce("shipment__shipped_at", "created_at")
 
     client = models.ForeignKey(
         "clients.Client", on_delete=models.PROTECT, related_name="orders"
     )
-    currency = models.CharField(max_length=3, choices=CURRENCIES, default="KZT")
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default=DEFAULT_CURRENCY)
     # Код динамического отдела продаж. Отдел выбирается непосредственно у заказа.
     department = models.CharField(max_length=50, default="main")
     transport_type = models.CharField(max_length=10, default="truck")
@@ -50,19 +69,12 @@ class Order(models.Model):
         on_delete=models.SET_NULL, related_name="orders",
     )
     # The source warehouse is independent from ``store`` (the client's delivery
-    # location).  Keep the column nullable throughout the rollback window: an
-    # older application image does not know about it and must still be able to
-    # insert orders after the additive migration has run.
+    # location).
     warehouse = models.ForeignKey(
         "warehouse.Warehouse",
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="orders",
     )
-    reviewed_at = models.DateTimeField(null=True, blank=True)
-    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
-                                    on_delete=models.SET_NULL, related_name="reviewed_orders")
     status = models.CharField(max_length=20, default="draft")
     rejection_reason = models.CharField(
         max_length=500, blank=True, default="", db_default=""
@@ -91,11 +103,6 @@ class Order(models.Model):
     # Короткая внутренняя заметка для оператора на детальной странице заказа.
     notes = models.TextField(blank=True, default="")
     debt_requested = models.BooleanField(default=False)
-    debt_override = models.BooleanField(default=False)
-    debt_override_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="debt_overrides",
-    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="created_orders",
@@ -112,8 +119,9 @@ class Order(models.Model):
     # Пустая строка = камера не выбрана. Несколько заказов грузятся параллельно
     # на разных камерах.
     loading_camera = models.CharField(max_length=32, blank=True, default="")
-    # Мягкое удаление: заказ уезжает в «Корзину», из отчётов исчезает,
-    # но данные сохраняются и его можно восстановить.
+    # Мягкое удаление: заказ уезжает в «Корзину», из отчётов исчезает (кроме
+    # денежной ленты отгруженного — money_ledger_q), данные сохраняются и его
+    # можно восстановить.
     deleted_at = models.DateTimeField(null=True, blank=True)
     deleted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
@@ -168,12 +176,22 @@ class Order(models.Model):
                 fields=["loading_camera"],
                 condition=(
                     ~Q(loading_camera="")
-                    & Q(status__in=["confirmed", "arrived", "loading"])
+                    & Q(status__in=list(CAMERA_BINDING_STATUSES))
                     & Q(deleted_at__isnull=True)
                 ),
                 name="orders_one_active_order_per_loading_camera",
             ),
         ]
+
+    @property
+    def sale_at(self):
+        shipment = getattr(self, "shipment", None)
+        return getattr(shipment, "shipped_at", None) or self.created_at
+
+    @property
+    def ordered_bags(self) -> int:
+        """Заказанное число мешков по всем позициям."""
+        return sum(item.quantity for item in self.items.all())
 
     @property
     def total_amount(self) -> Decimal:
@@ -206,7 +224,11 @@ class Order(models.Model):
         # Долг — непогашенный остаток отгруженного заказа (orders/debt.py):
         # способ расчёта не важен, товар уже у клиента. Черновик, заявка и заказ
         # в работе долгом не считаются.
-        return self.status == "shipped" and self.remaining_amount > 0
+        if self.status != DEBT_STATUS:
+            # Позиции и оплаты не читаем: без prefetch это два лишних запроса
+            # на каждый неотгруженный заказ выборки.
+            return False
+        return counts_as_debt(self.status, self.total_amount, self.paid_total)
 
 
 class OrderItem(models.Model):
@@ -221,7 +243,6 @@ class OrderItem(models.Model):
     product_cv_class_snapshot = models.CharField(max_length=32, blank=True, default="")
     product_weight_kg_snapshot = models.DecimalField(
         max_digits=6, decimal_places=2, null=True, blank=True)
-    product_ask_truck_weight_snapshot = models.BooleanField(default=False)
     quantity = models.PositiveIntegerField()
     # Договорная цена за мешок, зафиксированная при подтверждении заказа.
     unit_price = models.DecimalField(
@@ -245,20 +266,17 @@ class OrderItem(models.Model):
             return self.product_cv_class_snapshot
         return self.product.cv_class if self.product_id else ""
 
-    @property
-    def product_ask_truck_weight(self):
-        if self.product_label_snapshot:
-            return self.product_ask_truck_weight_snapshot
-        return self.product.ask_truck_weight if self.product_id else False
-
-    def save(self, *args, **kwargs):
-        # Заполняем снимок один раз: последующее переименование/удаление товара
-        # не переписывает исторический заказ.
+    def fill_snapshot(self):
+        """Заполнить снимок товара один раз: последующее переименование или
+        удаление товара не переписывает исторический заказ. Вызывается из
+        ``save()`` и перед ``bulk_create``, который ``save()`` не вызывает."""
         if self.product_id and not self.product_label_snapshot:
             self.product_label_snapshot = str(self.product)
             self.product_cv_class_snapshot = self.product.cv_class
             self.product_weight_kg_snapshot = self.product.weight_kg
-            self.product_ask_truck_weight_snapshot = self.product.ask_truck_weight
+
+    def save(self, *args, **kwargs):
+        self.fill_snapshot()
         super().save(*args, **kwargs)
 
 
@@ -267,10 +285,17 @@ class Payment(models.Model):
     # Деньги уже у кассы: приём таким способом закрывается сразу, без очереди.
     # «remote» — отметка о ранее полученной удалённой оплате: счёт не выставляется.
     SETTLED_ON_RECORD = ("cash", "kaspi", "remote")
+    # Служебный способ старых записей «в долг» — не деньги: в кассу, выписки
+    # и отчёт бухгалтерии не входит.
+    NON_MONEY_METHODS = ("debt",)
     # Цепочка подтверждения: запрошена → принята (менеджер/оператор) →
     # подтверждена бухгалтером-кассой (только тогда деньги учтены).
     STATUSES = ["requested", "received", "confirmed", "rejected"]
     IN_PROGRESS_STATUSES = ["requested", "received"]
+    # День признания оплаты — подтверждение кассой; старые записи без отметки
+    # подтверждения признаются днём внесения. Одно правило для выписок, отчёта
+    # бухгалтерии и квитанции: SQL-форма здесь, ``recognized_at`` — для строки.
+    RECOGNIZED_AT = Coalesce("confirmed_at", "paid_at")
 
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=12, decimal_places=2)
@@ -321,6 +346,15 @@ class Payment(models.Model):
         ]
 
     @property
+    def recognized_at(self):
+        return self.confirmed_at or self.paid_at
+
+    @property
+    def author(self):
+        """Кто отвечает за оплату: подтвердивший, принявший или внёсший её."""
+        return self.confirmed_by or self.received_by or self.recorded_by
+
+    @property
     def net_amount(self) -> Decimal:
         return max(Decimal("0"), self.amount - self.refunded_amount)
 
@@ -347,9 +381,6 @@ class ApiPayInvoice(models.Model):
     qr_token_url = models.URLField(max_length=1000, blank=True, default="")
     qr_image_url = models.URLField(max_length=1000, blank=True, default="")
     qr_expires_at = models.DateTimeField(null=True, blank=True)
-    total_refunded = models.DecimalField(
-        max_digits=12, decimal_places=2, default=0
-    )
     error_code = models.CharField(max_length=100, blank=True, default="")
     error_message = models.TextField(blank=True, default="")
     response_payload = models.JSONField(default=dict, blank=True)
@@ -389,17 +420,30 @@ class ApiPayRefund(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class PaymentRefundQuerySet(models.QuerySet):
+    def unlinked_apipay_pending(self):
+        """Резервы возврата ApiPay, ещё не сопоставленные с возвратом провайдера."""
+        return self.filter(
+            method="apipay",
+            status="pending",
+            provider_refund__isnull=True,
+        )
+
+
 class PaymentRefund(models.Model):
     """Единый журнал возвратов: ApiPay или выдача из кассы."""
-
-    # apipay_qr — возврат по Kaspi QR через ссылку покупателю (ApiPayQrRefund).
-    METHODS = ["apipay", "apipay_qr", "cash"]
-    STATUSES = ["pending", "completed", "failed"]
 
     payment = models.ForeignKey(
         Payment, on_delete=models.CASCADE, related_name="payment_refunds"
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # День признания возврата — завершение; запасные поля оставляют видимыми
+    # перенесённые старые возвраты. Одно правило для выписок и отчёта
+    # бухгалтерии: SQL-форма здесь, ``recognized_at`` — для строки.
+    RECOGNIZED_AT = Coalesce("completed_at", "updated_at", "created_at")
+
+    # apipay | apipay_qr | cash. apipay_qr — возврат по Kaspi QR через ссылку
+    # покупателю (ApiPayQrRefund).
     method = models.CharField(max_length=20)
     status = models.CharField(max_length=20, default="pending")
     reason = models.CharField(max_length=500)
@@ -414,6 +458,12 @@ class PaymentRefund(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    objects = PaymentRefundQuerySet.as_manager()
+
+    @property
+    def recognized_at(self):
+        return self.completed_at or self.updated_at or self.created_at
 
 
 class ApiPayQrRefund(models.Model):
@@ -490,8 +540,6 @@ class ApiPayWebhookEvent(models.Model):
 
 
 class StatusChangeRequest(models.Model):
-    STATUSES = ["pending", "approved", "rejected"]
-
     order = models.ForeignKey(
         Order, on_delete=models.CASCADE, related_name="status_requests")
     to_status = models.CharField(max_length=20)

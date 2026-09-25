@@ -10,21 +10,16 @@ import whatsapp_bot_healthcheck as healthcheck
 from apps.bots.models import BotMessage, WhatsAppBotSettings
 from apps.bots.runner import DEGRADED, DISABLED, RUNNING, BotRunner
 from apps.bots.tests.samples import OWNER_REPORT
-from apps.bots.tests.whatsapp_fakes import GROUP, JIN, FakeGreenApi, incoming, webhook_body
+from apps.bots.tests.whatsapp_fakes import GROUP, FakeGreenApi, text_webhook
 from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def enabled(settings):
+def enabled(settings, bot_settings):
     settings.WHATSAPP_BOT_ENABLED = True
-    row = WhatsAppBotSettings.load()
-    row.enabled = True
-    row.allowed_chat_ids = [GROUP]
-    row.allowed_sender_ids = [JIN]
-    row.save()
-    return row
+    return bot_settings
 
 
 class Clock:
@@ -52,7 +47,7 @@ def test_without_the_flag_the_process_idles_and_never_calls_the_provider(setting
 def test_switched_off_in_the_journal_keeps_the_queue(enabled):
     enabled.enabled = False
     enabled.save()
-    api = FakeGreenApi(webhook_body(incoming(OWNER_REPORT)))
+    api = FakeGreenApi(text_webhook(OWNER_REPORT))
 
     assert _runner(api).poll_once() == DISABLED
 
@@ -62,7 +57,7 @@ def test_switched_off_in_the_journal_keeps_the_queue(enabled):
 
 
 def test_one_round_stores_acknowledges_conducts_and_answers(enabled, client, product, price):
-    api = FakeGreenApi(webhook_body(incoming(OWNER_REPORT)))
+    api = FakeGreenApi(text_webhook(OWNER_REPORT))
 
     assert _runner(api).poll_once() == RUNNING
 
@@ -79,18 +74,17 @@ def test_first_start_keeps_the_groups_reports_while_the_admin_picks_the_group(en
     # боту» → выбрать её. Отчёты до этого не теряются — они в «Пропущено».
     enabled.allowed_chat_ids = []
     enabled.save()
-    api = FakeGreenApi(webhook_body(incoming(OWNER_REPORT)))
+    api = FakeGreenApi(text_webhook(OWNER_REPORT))
 
     assert _runner(api).poll_once() == RUNNING
 
-    message = BotMessage.objects.get()
-    assert (message.status, message.issues[0]["code"]) == ("ignored", "chat_not_allowed")
+    # Что отчёт «Пропущено» и группа видна в настройках — test_whatsapp; здесь — круг опроса.
+    assert BotMessage.objects.get().status == "ignored"
     assert (api.deleted, api.sent, Order.objects.count()) == ([1], [], 0)
-    assert GROUP in WhatsAppBotSettings.load().seen_chats
 
 
 def test_redelivered_notification_is_acknowledged_without_a_second_order(enabled, client, product, price):
-    body = webhook_body(incoming(OWNER_REPORT))
+    body = text_webhook(OWNER_REPORT)
     runner = _runner(FakeGreenApi(body))
     runner.poll_once()
 
@@ -103,7 +97,7 @@ def test_redelivered_notification_is_acknowledged_without_a_second_order(enabled
 
 
 def test_provider_outage_is_degraded_and_nothing_is_lost(enabled):
-    api = FakeGreenApi(webhook_body(incoming(OWNER_REPORT)), fail_receive=True)
+    api = FakeGreenApi(text_webhook(OWNER_REPORT), fail_receive=True)
 
     assert _runner(api).poll_once() == DEGRADED
 
@@ -114,7 +108,7 @@ def test_provider_outage_is_degraded_and_nothing_is_lost(enabled):
 
 
 def test_notification_is_acknowledged_only_after_it_is_stored(enabled):
-    api = FakeGreenApi(webhook_body(incoming(OWNER_REPORT)))
+    api = FakeGreenApi(text_webhook(OWNER_REPORT))
 
     with patch("apps.bots.runner.ingest", side_effect=RuntimeError("db")), pytest.raises(RuntimeError):
         _runner(api).poll_once()
@@ -181,22 +175,10 @@ def test_command_once_writes_a_healthy_disabled_heartbeat(settings, tmp_path, mo
 def test_command_once_runs_a_round(enabled, settings, tmp_path, client, product, price):
     heartbeat = tmp_path / "heartbeat.json"
     settings.WHATSAPP_BOT_HEARTBEAT_FILE = str(heartbeat)
-    api = FakeGreenApi(webhook_body(incoming(OWNER_REPORT)))
+    api = FakeGreenApi(text_webhook(OWNER_REPORT))
 
     with patch("apps.bots.management.commands.run_whatsapp_bot.BotRunner", lambda: _runner(api)):
         call_command("run_whatsapp_bot", "--once", stdout=StringIO())
 
     assert json.loads(heartbeat.read_text(encoding="utf-8"))["status"] == "running"
     assert BotMessage.objects.get().status == "applied"
-
-
-def test_healthcheck_fails_a_stale_or_missing_heartbeat(tmp_path, monkeypatch):
-    heartbeat = tmp_path / "heartbeat.json"
-    monkeypatch.setenv("WHATSAPP_BOT_HEARTBEAT_FILE", str(heartbeat))
-    assert healthcheck.main() == 1
-
-    heartbeat.write_text(json.dumps({"status": "running", "updated_at": 1}), encoding="utf-8")
-    assert healthcheck.main() == 1
-
-    heartbeat.write_text(json.dumps({"status": "stopped", "updated_at": 9e9}), encoding="utf-8")
-    assert healthcheck.main() == 1

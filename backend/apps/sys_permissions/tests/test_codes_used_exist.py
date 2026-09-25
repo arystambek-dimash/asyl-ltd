@@ -5,14 +5,14 @@
 import re
 from pathlib import Path
 
-from apps.sys_permissions.perms import ALL_CODES, SECTION_ORDER
+from apps.sys_permissions.perms import ALL_CODES, SECTION_LABELS
+from apps.sys_permissions.tests.test_catalog import RETIRED_CODES
 
 ROOT = Path(__file__).resolve().parents[4]
 # Разделы и действия каталога плюс снятые: так сканер ловит права, а не имена задач
 # celery («orders.reconcile_apipay») и полей сериализаторов («warehouse.name»).
-RETIRED_SECTIONS = ["shipping", "train", "ai_247"]
-RETIRED_ACTIONS = ["load", "ship", "debt_override", "lab", "dispatch", "unload", "exit"]
-ACTIONS = {code.split(".", 1)[1] for code in ALL_CODES} | set(RETIRED_ACTIONS)
+SECTIONS = set(SECTION_LABELS) | {code.split(".", 1)[0] for code in RETIRED_CODES}
+ACTIONS = {code.split(".", 1)[1] for code in ALL_CODES | RETIRED_CODES}
 
 
 def _alternation(words):
@@ -20,7 +20,7 @@ def _alternation(words):
 
 
 CODE = re.compile(
-    rf"""["']((?:{_alternation([*SECTION_ORDER, *RETIRED_SECTIONS])})\.(?:{_alternation(ACTIONS)}))["']"""
+    rf"""["']((?:{_alternation(SECTIONS)})\.(?:{_alternation(ACTIONS)}))["']"""
 )
 
 
@@ -44,3 +44,17 @@ def test_every_permission_code_used_in_code_is_in_the_catalog():
             if code not in ALL_CODES:
                 missing.setdefault(code, set()).add(str(path.relative_to(ROOT)))
     assert missing == {}
+
+
+def test_role_presets_use_only_catalog_codes():
+    """Шаблоны ролей пикера: сканер выше не ловит опечатку в разделе («payment.view»)."""
+    presets = ROOT / "frontend" / "src" / "lib" / "permission-presets.ts"
+    if not presets.exists():
+        return
+    codes = {
+        code
+        for block in re.findall(r"codes:\s*\[([^\]]*)\]", presets.read_text(encoding="utf-8"))
+        for code in re.findall(r"""["']([^"']+)["']""", block)
+    }
+    assert codes, "в шаблонах ролей не нашлось ни одного кода"
+    assert codes - ALL_CODES == set()

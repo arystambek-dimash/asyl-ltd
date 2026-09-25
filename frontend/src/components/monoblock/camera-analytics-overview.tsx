@@ -4,25 +4,29 @@ import { useId } from "react";
 import { ArrowDown, CalendarDays, ChevronRight, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PillToggle } from "@/components/ui/segmented";
 import { ColorDot, Panel } from "@/components/monoblock/ui";
 import {
   AlwaysOnReceiptDestinationLabel,
+  receiptItemLabel,
   resolveAlwaysOnReceiptDestination,
   type AlwaysOnReceiptMappingContext,
 } from "@/components/monoblock/always-on-production-panel";
-import { fullDay, shortDay } from "@/lib/day-analytics";
 import { colorMeta } from "@/lib/monoblock-colors";
 import { InferredBadge } from "@/components/monoblock/unknown-color";
 import type { AlwaysOnDailyCameraAnalytics } from "@/lib/types";
-import { cn, pluralRu } from "@/lib/utils";
+import { periodPresetOf, periodRange, type PeriodOption } from "@/lib/date-range";
+import { analyticsRange, bagsWord, cn, formatIsoDate, formatIsoDayMonth } from "@/lib/utils";
 
 export type AnalyticsDateRange = { from: string; to: string };
 
-function previousDay(day: string, offset: number) {
-  const date = new Date(`${day}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() - offset);
-  return date.toISOString().slice(0, 10);
-}
+/** «Сегодня» — живой режим (диапазон сбрасывается), остальные пресеты задают даты. */
+const ANALYTICS_PERIODS: PeriodOption<"today" | "yesterday" | "week" | "last30">[] = [
+  { key: "today", label: "Сегодня" },
+  { key: "yesterday", label: "Вчера" },
+  { key: "week", label: "7 дней" },
+  { key: "last30", label: "30 дней" },
+];
 
 const number = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 
@@ -56,8 +60,7 @@ export function CameraAnalyticsOverview({
   onSelectDay: (day: string | null) => void;
 }) {
   const rangeErrorId = useId();
-  const days = (Date.parse(dateTo) - Date.parse(dateFrom)) / 86_400_000 + 1;
-  const valid = Number.isFinite(days) && days >= 1 && days <= 366;
+  const { days, valid } = analyticsRange(dateFrom, dateTo);
   const isToday = dateFrom === today && dateTo === today;
   const singleDay = days === 1;
   const history = daily?.history ?? [];
@@ -68,12 +71,7 @@ export function CameraAnalyticsOverview({
   const ready = valid && available && typeof total === "number";
   const chartMax = Math.max(1, ...history.map((point) => point.total));
   const daysWithBags = history.filter((point) => point.total > 0).length;
-  const presets = [
-    { label: "Сегодня", from: today, to: today },
-    { label: "Вчера", from: previousDay(today, 1), to: previousDay(today, 1) },
-    { label: "7 дней", from: previousDay(today, 6), to: today },
-    { label: "30 дней", from: previousDay(today, 29), to: today },
-  ];
+  const activePreset = periodPresetOf({ dateFrom, dateTo }, ANALYTICS_PERIODS, today);
   const dayPoint = singleDay ? history.find((point) => point.day === dateFrom) : undefined;
 
   return (
@@ -81,29 +79,15 @@ export function CameraAnalyticsOverview({
       <div className="flex flex-wrap items-end justify-between gap-4" aria-label="Период аналитики">
         <div>
           <div className="mb-2 text-xs font-medium text-[var(--muted-foreground)]">Период</div>
-          <div className="inline-flex flex-wrap gap-1 rounded-lg bg-[var(--muted)]/70 p-1">
-            {presets.map((preset) => {
-              const active = dateFrom === preset.from && dateTo === preset.to;
-              return (
-                <button
-                  key={preset.label}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() =>
-                    onRangeChange(preset.label === "Сегодня" ? null : { from: preset.from, to: preset.to })
-                  }
-                  className={cn(
-                    "min-h-9 rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]",
-                    active
-                      ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-                      : "text-[var(--muted-foreground)] hover:bg-[var(--card)]/60 hover:text-[var(--foreground)]",
-                  )}
-                >
-                  {preset.label}
-                </button>
-              );
-            })}
-          </div>
+          <PillToggle
+            ariaLabel="Быстрый выбор периода"
+            value={activePreset === "custom" ? null : activePreset}
+            onChange={(preset) => {
+              const range = periodRange(preset, today);
+              onRangeChange(preset === "today" ? null : { from: range.dateFrom, to: range.dateTo });
+            }}
+            options={ANALYTICS_PERIODS.map(({ key, label }) => ({ value: key, label }))}
+          />
         </div>
         <div className="grid w-full grid-cols-2 gap-3 sm:w-auto">
           <label className="min-w-0 text-xs text-[var(--muted-foreground)]">
@@ -160,15 +144,15 @@ export function CameraAnalyticsOverview({
             <span className="text-4xl font-semibold tracking-tight tabular-nums sm:text-5xl">
               {ready ? number.format(total) : "—"}
             </span>
-            {ready && (
-              <span className="text-sm text-[var(--muted-foreground)]">
-                {pluralRu(total, ["мешок", "мешка", "мешков"])}
-              </span>
-            )}
+            {ready && <span className="text-sm text-[var(--muted-foreground)]">{bagsWord(total)}</span>}
           </div>
           <p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
             <CalendarDays className="size-3.5" />
-            {valid ? (singleDay ? fullDay(dateFrom) : `${fullDay(dateFrom)} — ${fullDay(dateTo)}`) : "Выберите даты"}
+            {valid
+              ? singleDay
+                ? formatIsoDate(dateFrom)
+                : `${formatIsoDate(dateFrom)} — ${formatIsoDate(dateTo)}`
+              : "Выберите даты"}
           </p>
         </div>
         {ready && !singleDay && (
@@ -230,7 +214,7 @@ export function CameraAnalyticsOverview({
                       <button
                         key={point.day}
                         type="button"
-                        aria-label={`Аналитика за ${fullDay(point.day)}: ${point.total} мешков`}
+                        aria-label={`Аналитика за ${formatIsoDate(point.day)}: ${point.total} мешков`}
                         aria-pressed={active}
                         onClick={() => onSelectDay(active ? null : point.day)}
                         className="group flex h-full min-w-0 flex-1 flex-col items-center rounded-md px-1 pt-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
@@ -258,7 +242,7 @@ export function CameraAnalyticsOverview({
                             active ? "font-semibold" : "text-[var(--muted-foreground)]",
                           )}
                         >
-                          {shortDay(point.day)}
+                          {formatIsoDayMonth(point.day)}
                         </span>
                       </button>
                     );
@@ -279,14 +263,12 @@ export function CameraAnalyticsOverview({
             <div className="mt-4 divide-y divide-[var(--border)]">
               {colors.map((item) => {
                 const destination = !isShipping ? resolveAlwaysOnReceiptDestination(receiptMapping, item.color) : null;
-                const hasProduct = destination?.state === "bound";
+                const { title, colorLabel } = receiptItemLabel(destination, item.color);
                 return (
                   <div key={item.color} className="py-3 first:pt-0 last:pb-0">
                     <div className="flex items-start gap-2.5">
                       <ColorDot className={cn("mt-1.5", colorMeta(item.color).dot)} />
-                      <span className="min-w-0 flex-1 break-words text-sm font-medium leading-5">
-                        {hasProduct ? destination.productLabel : colorMeta(item.color).label}
-                      </span>
+                      <span className="min-w-0 flex-1 break-words text-sm font-medium leading-5">{title}</span>
                       <div className="shrink-0 text-right">
                         <span className="text-sm font-semibold tabular-nums">{number.format(item.total)}</span>
                         <span className="ml-2 text-xs tabular-nums text-[var(--muted-foreground)]">
@@ -303,8 +285,8 @@ export function CameraAnalyticsOverview({
                     {destination && (
                       <AlwaysOnReceiptDestinationLabel
                         destination={destination}
-                        colorLabel={hasProduct ? undefined : colorMeta(item.color).label}
-                        showProduct={!hasProduct}
+                        colorLabel={colorLabel}
+                        showProduct={destination.state !== "bound"}
                         className="ml-5 mt-2"
                       />
                     )}
@@ -323,7 +305,7 @@ export function CameraAnalyticsOverview({
                 variant="outline"
                 className="mt-5 w-full justify-between"
                 aria-pressed={selectedDay === dayPoint.day}
-                aria-label={`${isShipping ? "Подсчёт по времени" : "Выпуск по времени"}: ${fullDay(dayPoint.day)}, ${dayPoint.total} мешков`}
+                aria-label={`${isShipping ? "Подсчёт по времени" : "Выпуск по времени"}: ${formatIsoDate(dayPoint.day)}, ${dayPoint.total} мешков`}
                 onClick={() => onSelectDay(selectedDay === dayPoint.day ? null : dayPoint.day)}
               >
                 {isShipping ? "Подсчёт по времени" : "Выпуск по времени"}

@@ -1,52 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { api, apiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { Order } from "@/lib/types";
+import { useConfirmAction, type ConfirmAction } from "@/lib/use-confirm-action";
 
-export function OrderPurgeDialog({
-  order,
-  onClose,
-  onPurged,
-}: {
-  order: Order | null;
-  onClose: () => void;
-  onPurged: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const orderId = order?.id ?? null;
+/** Окончательное удаление заказа из архива: окно открывают из архива страницы и из панели архива. */
+export function useOrderPurge(onPurged: () => void): ConfirmAction<Order> {
+  return useConfirmAction<Order>(async (order) => {
+    await api.delete(`/orders/${order.id}/purge/`);
+    onPurged();
+  });
+}
 
-  useEffect(() => {
-    if (orderId === null) return;
-    setError("");
-  }, [orderId]);
-
-  async function purge() {
-    if (!order || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.delete(`/orders/${order.id}/purge/`);
-      onClose();
-      onPurged();
-    } catch (cause) {
-      // Keep the confirmation open on a real API failure so the user sees
-      // why the order is still present in the archive.
-      setError(apiError(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
-
+export function OrderPurgeDialog({ action }: { action: ConfirmAction<Order> }) {
+  const order = action.item;
   return (
     <ConfirmDialog
-      open={order !== null}
-      onClose={() => {
-        if (!busy) onClose();
-      }}
+      {...action.dialog}
       title="Удалить заказ из архива?"
       description={
         order
@@ -54,9 +25,6 @@ export function OrderPurgeDialog({
           : ""
       }
       confirmLabel="Удалить из архива"
-      busy={busy}
-      error={error}
-      onConfirm={() => void purge()}
     />
   );
 }

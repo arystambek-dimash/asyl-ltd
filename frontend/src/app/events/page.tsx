@@ -1,10 +1,11 @@
 "use client";
-import { useMemo, useState, type ComponentType } from "react";
+import { useMemo, useState } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -14,62 +15,12 @@ import { useDebounced } from "@/lib/use-debounced";
 import { groupByDay } from "@/lib/day-groups";
 import { useLocalDay } from "@/lib/use-local-day";
 import { translateOrderStatusMessage } from "@/lib/constants";
-import {
-  Search,
-  X,
-  CircleDot,
-  Wallet,
-  PackageCheck,
-  Truck,
-  Forklift,
-  Warehouse,
-  ArrowDownToLine,
-  Scale,
-  Activity,
-  TrainFront,
-  Package,
-  UsersRound,
-  MessageCircle,
-} from "lucide-react";
+import { formatTime } from "@/lib/utils";
+import { EVENT_TYPE_GROUPS, eventTypeMeta } from "@/lib/event-types";
+import { X } from "lucide-react";
 import type { EventLog } from "@/lib/types";
 
-type EventMeta = {
-  label: string;
-  icon: ComponentType<{ className?: string }>;
-  /** базовый цвет события как CSS-переменная темы */
-  color: string;
-};
-
-const EVENT_META: Record<string, EventMeta> = {
-  status: { label: "Статус", icon: CircleDot, color: "var(--ring)" },
-  status_override: { label: "Статус", icon: CircleDot, color: "var(--ring)" },
-  status_request: { label: "Запрос статуса", icon: CircleDot, color: "var(--warning)" },
-  payment: { label: "Оплата", icon: Wallet, color: "var(--success)" },
-  receipt: { label: "Приёмка", icon: PackageCheck, color: "var(--ring)" },
-  arrival: { label: "Прибытие", icon: Truck, color: "var(--ring)" },
-  loading: { label: "Загрузка", icon: Forklift, color: "var(--warning)" },
-  shipment: { label: "Отгрузка", icon: ArrowDownToLine, color: "var(--ring)" },
-  shipment_rollback: { label: "Откат отгрузки", icon: ArrowDownToLine, color: "var(--destructive)" },
-  debt_override: { label: "Долг", icon: Scale, color: "var(--destructive)" },
-  stock_adjust: { label: "Склад", icon: Warehouse, color: "var(--warning)" },
-  rail_report: { label: "Отчёт о вагонах", icon: TrainFront, color: "var(--ring)" },
-  // Словари отчётов о вагонах: коды товара и клиенты с валютой.
-  catalog: { label: "Товары", icon: Package, color: "var(--muted-foreground)" },
-  clients: { label: "Клиенты", icon: UsersRound, color: "var(--muted-foreground)" },
-  // WhatsApp-бот: проведение сообщения человеком и настройки бота.
-  whatsapp_bot: { label: "WhatsApp-бот", icon: MessageCircle, color: "var(--ring)" },
-};
-
-const FALLBACK_META: EventMeta = { label: "Событие", icon: Activity, color: "var(--muted-foreground)" };
-const EVENT_TIME_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
-  hour: "2-digit",
-  minute: "2-digit",
-});
 const EVENTS_PER_PAGE = 100;
-
-function metaFor(eventType: string): EventMeta {
-  return EVENT_META[eventType] ?? { ...FALLBACK_META, label: eventType };
-}
 
 function EventsPageInner() {
   const currentDay = useLocalDay();
@@ -137,10 +88,14 @@ function EventsPageInner() {
                 }}
               >
                 <option value="">Все типы</option>
-                {Object.entries(EVENT_META).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v.label}
-                  </option>
+                {EVENT_TYPE_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {Object.entries(group.types).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </Select>
             </div>
@@ -180,18 +135,14 @@ function EventsPageInner() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="event-search">Поиск</Label>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-                <Input
-                  id="event-search"
-                  className="pl-8"
-                  placeholder="по сообщению"
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                  }}
-                />
-              </div>
+              <SearchInput
+                id="event-search"
+                placeholder="по сообщению"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                }}
+              />
             </div>
           </div>
           {hasFilters && (
@@ -227,7 +178,7 @@ function EventsPageInner() {
                   </div>
                   <ol className="relative ml-3 border-l border-[var(--border)]">
                     {g.items.map((e) => {
-                      const m = metaFor(e.event_type);
+                      const m = eventTypeMeta(e.event_type);
                       const Icon = m.icon;
                       return (
                         <li key={e.id} className="relative pb-4 pl-6 last:pb-0">
@@ -246,11 +197,11 @@ function EventsPageInner() {
                               {m.label}
                             </span>
                             <p className="text-sm font-medium text-[var(--foreground)]">
-                              {translateOrderStatusMessage(e.message, e.payload)}
+                              {translateOrderStatusMessage(e.message)}
                             </p>
                           </div>
                           <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-                            {EVENT_TIME_FORMATTER.format(new Date(e.created_at))}
+                            {formatTime(e.created_at)}
                             {e.order ? ` · заказ #${e.order}` : ""}
                             {e.user_name ? ` · ${e.user_name}` : ""}
                           </p>

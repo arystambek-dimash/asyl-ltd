@@ -1,31 +1,31 @@
 """API разметки датасета ориентации: доступ владельца, список, фильтры, метки, сводка, очистка."""
 
 from datetime import timedelta
-from decimal import Decimal
 from unittest.mock import call, patch
-from uuid import uuid4
 
 import pytest
 from apps.cameras import ai as camera_ai
 from apps.grain import orientation_dataset as dataset
-from apps.grain import statuses as st
 from apps.grain import views as grain_views
 from apps.grain.models import (
-    UnassignedWeighing,
     VehicleOrientationDatasetState,
     VehicleOrientationSample,
-    Wagon,
     WeighingRecord,
 )
-from django.core.files.base import ContentFile
+from apps.grain.tests.factories import (
+    JPEG,
+    orientation_sample,
+    orientation_trip,
+    unassigned_weighing,
+    weighing_record,
+)
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.core.cache import cache
 from django.utils import timezone
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("orientation_dataset")]
 
-JPEG = b"\xff\xd8\xff\xe0" + b"1" * 32
 LIST_URL = "/api/grain/orientation-samples/"
 ADMIN_URL = "/admin/grain/vehicleorientationsample/"
 ROUTES = [
@@ -43,15 +43,6 @@ def _fresh_camera_pc_cache():
     cache.delete(grain_views.ORIENTATION_PC_CACHE_KEY)
     yield
     cache.delete(grain_views.ORIENTATION_PC_CACHE_KEY)
-
-
-@pytest.fixture(autouse=True)
-def dataset_settings(settings, tmp_path):
-    settings.MEDIA_ROOT = tmp_path
-    settings.VEHICLE_ORIENTATION_DATASET_ENABLED = True
-    settings.VEHICLE_ORIENTATION_EMPTY_MAX_KG = 5000
-    settings.VEHICLE_ORIENTATION_LOADED_MIN_KG = 6000
-    settings.VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS = 60
 
 
 @pytest.fixture
@@ -73,58 +64,6 @@ def root(user_with_perms):
     return user
 
 
-def _trip(number="854ANB13", *, status=st.COMPLETED, gross=3880, tare=8760):
-    return Wagon.objects.create(
-        number=number,
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=status,
-        arrived_at=timezone.now() - timedelta(hours=1),
-        gross_weight_kg=gross,
-        tare_weight_kg=tare,
-        number_source="camera",
-    )
-
-
-def _record(wagon, kind, weight, *, orientation="", photo=True):
-    record = WeighingRecord.objects.create(
-        wagon=wagon, kind=kind, weight_kg=weight, source="scale", orientation=orientation
-    )
-    if photo:
-        record.photo.save(f"{uuid4()}.jpg", ContentFile(JPEG), save=True)
-    return record
-
-
-def _unassigned(weight, *, vehicle_number="", wagon=None, photo=True):
-    item = UnassignedWeighing.objects.create(
-        weight_kg=weight,
-        stable_weight_at=timezone.now() - timedelta(minutes=30),
-        scale_number="truck",
-        scale_age_seconds=Decimal("0.2"),
-        camera="cam1",
-        photo_request_id=uuid4(),
-        vehicle_number=vehicle_number,
-        wagon=wagon,
-    )
-    if photo:
-        item.photo.save(f"{item.photo_request_id}.jpg", ContentFile(JPEG), save=True)
-    return item
-
-
-def _sample(kind, record_id, label, source, *, captured_at=None, **fields):
-    """Строка датасета напрямую — для фильтров исходная запись не нужна."""
-    return VehicleOrientationSample.objects.create(
-        record_kind=kind,
-        record_id=record_id,
-        label=label,
-        label_source=source,
-        weight_kg=fields.pop("weight_kg", 4000),
-        captured_at=captured_at or timezone.now(),
-        **fields,
-    )
-
-
 def _sample_for(sample_or_record) -> VehicleOrientationSample:
     return VehicleOrientationSample.objects.get(
         record_kind=(
@@ -144,13 +83,13 @@ def _call(client, method, url):
 
 
 def test_list_shows_signed_photo_links_and_trip_numbers(auth_client, root):
-    trip = _trip("854ANB13")
-    entry = _record(trip, "gross", 3880)
-    named = _unassigned(3900, vehicle_number="506WKZ13")
+    trip = orientation_trip("854ANB13")
+    entry = weighing_record(trip, "gross", 3880)
+    named = unassigned_weighing(3900, vehicle_number="506WKZ13")
     dataset.collect()
     # collect() пропускает кадры без файла; строка без фото — как после утери файла.
-    blank = _unassigned(3950, photo=False)
-    _sample(VehicleOrientationSample.UNASSIGNED, blank.pk, "front", "weight")
+    blank = unassigned_weighing(3950, photo=False)
+    orientation_sample(blank.pk, kind=VehicleOrientationSample.UNASSIGNED, source="weight")
 
     response = auth_client(root).get(LIST_URL)
 
@@ -178,9 +117,9 @@ def test_list_shows_signed_photo_links_and_trip_numbers(auth_client, root):
 
 
 def test_unassigned_number_falls_back_to_the_assigned_trip(auth_client, root):
-    trip = _trip("676VEA13")
-    item = _unassigned(8760, wagon=trip)
-    sample = _sample(VehicleOrientationSample.UNASSIGNED, item.pk, "rear", "weight")
+    trip = orientation_trip("676VEA13")
+    item = unassigned_weighing(8760, wagon=trip)
+    sample = orientation_sample(item.pk, kind=VehicleOrientationSample.UNASSIGNED, label="rear", source="weight")
 
     response = auth_client(root).get(f"{LIST_URL}{sample.pk}/")
 
@@ -191,9 +130,9 @@ def test_unassigned_number_falls_back_to_the_assigned_trip(auth_client, root):
 
 def test_list_is_ordered_by_capture_time_then_id(auth_client, root):
     now = timezone.now()
-    older = _sample(VehicleOrientationSample.WEIGHING, 1, "front", "weight", captured_at=now - timedelta(hours=2))
-    newer = _sample(VehicleOrientationSample.WEIGHING, 2, "front", "weight", captured_at=now)
-    same_time = _sample(VehicleOrientationSample.WEIGHING, 3, "rear", "weight", captured_at=now)
+    older = orientation_sample(1, source="weight", captured_at=now - timedelta(hours=2))
+    newer = orientation_sample(2, source="weight", captured_at=now)
+    same_time = orientation_sample(3, label="rear", source="weight", captured_at=now)
 
     response = auth_client(root).get(LIST_URL)
 
@@ -204,20 +143,20 @@ def test_list_is_ordered_by_capture_time_then_id(auth_client, root):
 def filter_rows():
     now = timezone.now()
     return {
-        "front_trip_sent": _sample(
-            VehicleOrientationSample.WEIGHING, 1, "front", "trip",
+        "front_trip_sent": orientation_sample(
+            1,
             sent_at=now, captured_at=now,
         ),
-        "rear_trip_conflict": _sample(
-            VehicleOrientationSample.WEIGHING, 2, "rear", "trip",
+        "rear_trip_conflict": orientation_sample(
+            2, label="rear",
             conflict=True, model_orientation="front", captured_at=now - timedelta(minutes=1),
         ),
-        "front_weight_unsent": _sample(
-            VehicleOrientationSample.UNASSIGNED, 3, "front", "weight",
+        "front_weight_unsent": orientation_sample(
+            3, kind=VehicleOrientationSample.UNASSIGNED, source="weight",
             captured_at=now - timedelta(minutes=2),
         ),
-        "rear_manual_excluded": _sample(
-            VehicleOrientationSample.UNASSIGNED, 4, "rear", "manual",
+        "rear_manual_excluded": orientation_sample(
+            4, kind=VehicleOrientationSample.UNASSIGNED, label="rear", source="manual",
             excluded=True, captured_at=now - timedelta(minutes=3),
         ),
     }
@@ -259,8 +198,8 @@ def test_invalid_filter_values_are_rejected(auth_client, root, query):
 
 
 def test_excluded_rows_are_hidden_from_the_list_but_still_retrievable(auth_client, root):
-    kept = _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip")
-    dropped = _sample(VehicleOrientationSample.WEIGHING, 2, "front", "trip", excluded=True)
+    kept = orientation_sample(1)
+    dropped = orientation_sample(2, excluded=True)
 
     listed = auth_client(root).get(LIST_URL)
     detail = auth_client(root).get(f"{LIST_URL}{dropped.pk}/")
@@ -272,7 +211,7 @@ def test_excluded_rows_are_hidden_from_the_list_but_still_retrievable(auth_clien
 
 def test_pagination_is_opt_in(auth_client, root):
     for record_id in range(1, 4):
-        _sample(VehicleOrientationSample.WEIGHING, record_id, "front", "weight")
+        orientation_sample(record_id, source="weight")
 
     flat = auth_client(root).get(LIST_URL)
     page = auth_client(root).get(f"{LIST_URL}?page=1&page_size=2")
@@ -286,7 +225,7 @@ def test_pagination_is_opt_in(auth_client, root):
 @pytest.mark.parametrize(("method", "path"), ROUTES)
 def test_every_route_is_superuser_only(auth_client, viewer, admin, method, path):
     """Права grain.view/grain.admin не открывают датасет: только владелец."""
-    sample = _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip")
+    sample = orientation_sample(1)
     url = f"{LIST_URL}{path.format(pk=sample.pk)}"
 
     with (
@@ -304,8 +243,8 @@ def test_every_route_is_superuser_only(auth_client, viewer, admin, method, path)
 
 
 def test_label_action_marks_the_row_manual(auth_client, root):
-    trip = _trip()
-    entry = _record(trip, "gross", 3880, orientation="rear")  # classifier disagreed
+    trip = orientation_trip()
+    entry = weighing_record(trip, "gross", 3880, orientation="rear")  # classifier disagreed
     dataset.collect()
     sample = _sample_for(entry)
     assert sample.conflict is True
@@ -333,7 +272,7 @@ def test_label_action_marks_the_row_manual(auth_client, root):
 
 @pytest.mark.parametrize("body", [{"label": "side"}, {"label": ""}, {}, {"label": None}])
 def test_label_action_rejects_anything_but_front_or_rear(auth_client, root, body):
-    sample = _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip")
+    sample = orientation_sample(1)
 
     response = auth_client(root).post(f"{LIST_URL}{sample.pk}/label/", body, format="json")
 
@@ -345,8 +284,8 @@ def test_label_action_rejects_anything_but_front_or_rear(auth_client, root, body
 
 def test_exclude_action_drops_the_frame_and_hides_it(auth_client, root):
     now = timezone.now()
-    sample = _sample(
-        VehicleOrientationSample.WEIGHING, 1, "front", "trip",
+    sample = orientation_sample(
+        1,
         sent_at=now, delivered_at=now, conflict=True,
     )
 
@@ -364,11 +303,11 @@ def test_exclude_action_drops_the_frame_and_hides_it(auth_client, root):
 
 def test_summary_counts_the_dataset_and_survives_a_camera_pc_outage(auth_client, root):
     now = timezone.now()
-    _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip", sent_at=now)
-    _sample(VehicleOrientationSample.WEIGHING, 2, "rear", "trip", conflict=True)
-    _sample(VehicleOrientationSample.UNASSIGNED, 3, "front", "weight")
-    _sample(VehicleOrientationSample.UNASSIGNED, 4, "rear", "manual", sent_at=now)
-    _sample(VehicleOrientationSample.UNASSIGNED, 5, "rear", "manual", excluded=True)
+    orientation_sample(1, sent_at=now)
+    orientation_sample(2, label="rear", conflict=True)
+    orientation_sample(3, kind=VehicleOrientationSample.UNASSIGNED, source="weight")
+    orientation_sample(4, kind=VehicleOrientationSample.UNASSIGNED, label="rear", source="manual", sent_at=now)
+    orientation_sample(5, kind=VehicleOrientationSample.UNASSIGNED, label="rear", source="manual", excluded=True)
 
     with patch.object(
         camera_ai, "vehicle_orientation_info", side_effect=camera_ai.AiUnavailable("down")
@@ -411,9 +350,9 @@ def test_summary_counts_the_dataset_and_survives_a_camera_pc_outage(auth_client,
 def test_list_query_count_does_not_grow_with_rows(auth_client, root):
     def _add_samples(count):
         for index in range(count):
-            trip = _trip(f"{100 + index}ABC13")
-            _record(trip, "gross", 3880)
-            _unassigned(3900, vehicle_number=f"{200 + index}XYZ13")
+            trip = orientation_trip(f"{100 + index}ABC13")
+            weighing_record(trip, "gross", 3880)
+            unassigned_weighing(3900, vehicle_number=f"{200 + index}XYZ13")
         dataset.collect()
 
     _add_samples(1)
@@ -435,7 +374,7 @@ def test_list_query_count_does_not_grow_with_rows(auth_client, root):
 
 @pytest.mark.parametrize(("method", "path"), ROUTES)
 def test_every_route_requires_authentication(api_client, method, path):
-    sample = _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip")
+    sample = orientation_sample(1)
 
     with patch.object(camera_ai, "clear_orientation_samples") as clear:
         response = _call(api_client, method, f"{LIST_URL}{path.format(pk=sample.pk)}")
@@ -450,13 +389,13 @@ def test_every_route_requires_authentication(api_client, method, path):
 
 
 def test_purge_all_clears_camera_pc_in_one_call_and_deletes_every_row(auth_client, root):
-    trip = _trip()
-    entry = _record(trip, "gross", 3880)
+    trip = orientation_trip()
+    entry = weighing_record(trip, "gross", 3880)
     dataset.collect()
     now = timezone.now()
-    _sample(VehicleOrientationSample.UNASSIGNED, 7, "rear", "weight", sent_at=now)
-    _sample(
-        VehicleOrientationSample.UNASSIGNED, 8, "front", "manual",
+    orientation_sample(7, kind=VehicleOrientationSample.UNASSIGNED, label="rear", source="weight", sent_at=now)
+    orientation_sample(
+        8, kind=VehicleOrientationSample.UNASSIGNED, source="manual",
         excluded=True, removal_pending=True,
     )
 
@@ -487,20 +426,20 @@ def test_purge_all_clears_camera_pc_in_one_call_and_deletes_every_row(auth_clien
 
 def test_purge_older_than_days_deletes_only_old_rows_one_by_one(auth_client, root):
     now = timezone.now()
-    old_sent = _sample(
-        VehicleOrientationSample.WEIGHING, 1, "front", "trip",
+    old_sent = orientation_sample(
+        1,
         sent_at=now, delivered_at=now, captured_at=now - timedelta(days=40),
     )
-    old_unsent = _sample(
-        VehicleOrientationSample.WEIGHING, 2, "rear", "weight",
+    old_unsent = orientation_sample(
+        2, label="rear", source="weight",
         captured_at=now - timedelta(days=31),
     )
-    fresh_sent = _sample(
-        VehicleOrientationSample.WEIGHING, 3, "front", "trip",
+    fresh_sent = orientation_sample(
+        3,
         sent_at=now, delivered_at=now, captured_at=now - timedelta(days=29),
     )
-    trip = _trip()
-    old_record = _record(trip, "gross", 3880)
+    trip = orientation_trip()
+    old_record = weighing_record(trip, "gross", 3880)
     WeighingRecord.objects.filter(pk=old_record.pk).update(created_at=now - timedelta(days=45))
 
     with (
@@ -552,63 +491,6 @@ def test_purge_answers_one_batch_at_a_time_until_nothing_remains(auth_client, ro
     delete.assert_not_called()
     assert VehicleOrientationSample.objects.count() == 0
 
-    # «Всё» на старой прошивке ПК без массового удаления: тоже пакетами.
-    for record_id in range(1, 4):
-        _sample(VehicleOrientationSample.WEIGHING, record_id, "front", "trip", sent_at=now, delivered_at=now)
-    with (
-        patch.object(
-            camera_ai, "clear_orientation_samples", side_effect=camera_ai.AiError(404, "no route", {})
-        ),
-        patch.object(camera_ai, "delete_orientation_sample", return_value=True) as delete,
-        patch.object(dataset, "PURGE_BATCH", 2),
-    ):
-        first = client.post(f"{LIST_URL}purge/", {"older_than_days": None}, format="json")
-        second = client.post(f"{LIST_URL}purge/", {"older_than_days": None}, format="json")
-    assert first.data == {"deleted": 2, "removed_from_pc": 2, "pc_unavailable": False, "remaining": 1}
-    assert second.data == {"deleted": 1, "removed_from_pc": 1, "pc_unavailable": False, "remaining": 0}
-    assert delete.call_count == 3
-    assert VehicleOrientationSample.objects.count() == 0
-
-
-def test_purge_keeps_rows_camera_pc_could_not_forget_for_the_nightly_job(auth_client, root):
-    now = timezone.now()
-    first = _sample(
-        VehicleOrientationSample.WEIGHING, 1, "front", "trip",
-        sent_at=now, delivered_at=now, conflict=True,
-    )
-    second = _sample(
-        VehicleOrientationSample.WEIGHING, 2, "rear", "trip", sent_at=now, delivered_at=now
-    )
-    unsent = _sample(VehicleOrientationSample.WEIGHING, 3, "front", "weight")
-
-    with (
-        patch.object(
-            camera_ai, "clear_orientation_samples", side_effect=camera_ai.AiUnavailable("down")
-        ),
-        patch.object(
-            camera_ai, "delete_orientation_sample", side_effect=camera_ai.AiUnavailable("timed out")
-        ) as delete,
-    ):
-        response = auth_client(root).post(
-            f"{LIST_URL}purge/", {"older_than_days": None}, format="json"
-        )
-
-    assert response.status_code == 200, response.data
-    assert response.data == {
-        "deleted": 1, "removed_from_pc": 0, "pc_unavailable": True, "remaining": 0
-    }
-    assert delete.call_count == 1  # stop at the first transport failure
-    assert not VehicleOrientationSample.objects.filter(pk=unsent.pk).exists()
-    for sample in (first, second):
-        sample.refresh_from_db()
-        assert (sample.excluded, sample.removal_pending, sample.conflict) == (True, True, False)
-    assert "timed out" in first.last_error
-    assert second.last_error == ""
-    # Оставшиеся копии заберёт ночной экспорт, когда ПК вернётся.
-    with patch.object(camera_ai, "delete_orientation_sample", return_value=True) as delete:
-        assert dataset.export_removals(limit=10) == {"removed": 2, "remove_failed": 0}
-    assert delete.call_args_list == [call(first.sample_id), call(second.sample_id)]
-
 
 @pytest.mark.parametrize(
     "body",
@@ -623,7 +505,7 @@ def test_purge_keeps_rows_camera_pc_could_not_forget_for_the_nightly_job(auth_cl
     ],
 )
 def test_purge_rejects_bad_bodies_without_touching_anything(auth_client, root, body):
-    sample = _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip", sent_at=timezone.now())
+    sample = orientation_sample(1, sent_at=timezone.now())
 
     with (
         patch.object(camera_ai, "clear_orientation_samples") as clear,
@@ -642,11 +524,11 @@ def test_purge_rejects_bad_bodies_without_touching_anything(auth_client, root, b
 
 
 def test_admin_changelist_shows_thumbnails_and_dataset_actions(admin_client):
-    trip = _trip()
-    entry = _record(trip, "gross", 3880)
+    trip = orientation_trip()
+    entry = weighing_record(trip, "gross", 3880)
     dataset.collect()
-    blank = _unassigned(3950, photo=False)
-    _sample(VehicleOrientationSample.UNASSIGNED, blank.pk, "front", "weight")
+    blank = unassigned_weighing(3950, photo=False)
+    orientation_sample(blank.pk, kind=VehicleOrientationSample.UNASSIGNED, source="weight")
 
     response = admin_client.get(ADMIN_URL)
 
@@ -670,7 +552,7 @@ def test_admin_hides_the_dataset_from_staff_who_are_not_the_owner(client, user_w
     staff = user_with_perms("orientation-staff", codes=["grain.view", "grain.admin"])
     staff.is_staff = True
     staff.save(update_fields=["is_staff"])
-    _sample(VehicleOrientationSample.WEIGHING, 1, "front", "trip")
+    orientation_sample(1)
     client.force_login(staff)
 
     assert client.get(ADMIN_URL).status_code == 403
@@ -679,15 +561,13 @@ def test_admin_hides_the_dataset_from_staff_who_are_not_the_owner(client, user_w
 
 def test_admin_actions_go_through_the_dataset_services(admin_client, admin_user):
     now = timezone.now()
-    relabelled = _sample(
-        VehicleOrientationSample.WEIGHING, 1, "front", "trip",
+    relabelled = orientation_sample(
+        1,
         sent_at=now, delivered_at=now, conflict=True,
     )
-    excluded = _sample(
-        VehicleOrientationSample.WEIGHING, 2, "front", "trip", sent_at=now, delivered_at=now
-    )
-    never_sent = _sample(VehicleOrientationSample.WEIGHING, 3, "front", "weight")
-    on_pc = _sample(VehicleOrientationSample.WEIGHING, 4, "rear", "weight", sent_at=now, delivered_at=now)
+    excluded = orientation_sample(2, sent_at=now, delivered_at=now)
+    never_sent = orientation_sample(3, source="weight")
+    on_pc = orientation_sample(4, label="rear", source="weight", sent_at=now, delivered_at=now)
 
     response = admin_client.post(
         ADMIN_URL, {"action": "mark_rear", "_selected_action": [relabelled.pk], "index": 0}

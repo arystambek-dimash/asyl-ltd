@@ -2,13 +2,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { api, apiError } from "@/lib/api";
 import type { ClientDebtDetail } from "@/lib/debt-orders";
+import { eraseAmount, pressAmountDigit } from "@/lib/payment-amount";
 import type { Payment } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import {
   INITIAL_POS_STATE,
-  appendDigit,
-  eraseDigit,
   freshState,
   paymentOutcome,
   posOrderBlock,
@@ -20,7 +19,7 @@ import {
 } from "./pos-logic";
 
 /** Как часто спрашиваем статус выданного QR или счёта. */
-export const POS_POLL_MS = 3_000;
+const POS_POLL_MS = 3_000;
 
 /**
  * Сценарий POS: клиент → заказ → сумма → QR или счёт, опрос статуса до «Оплачено».
@@ -56,25 +55,13 @@ export function usePosFlow({
   const outcome = payment ? paymentOutcome(payment) : null;
 
   const issue = useCallback(
-    async (body: Record<string, string>, expected: "qr" | "phone") => {
+    async (body: Record<string, string>) => {
       // Ref, а не только state: второй тап в том же тике не должен создать второй QR/резерв.
       if (!state.orderId || inFlight.current) return;
       inFlight.current = true;
       setBusy(true);
       try {
         const response = await api.post<Payment>(`/orders/${state.orderId}/payments/`, body);
-        // Старый бэкенд без POS-канала записал бы кассовую оплату без QR — «Оплачено» не показываем.
-        if (response.data.provider?.channel !== expected) {
-          dispatch({
-            type: "error",
-            error:
-              expected === "qr"
-                ? "Сервер не выдал Kaspi QR — проверьте оплату в «Истории»."
-                : "Сервер не отправил счёт — проверьте оплату в «Истории».",
-          });
-          void reloadDetail();
-          return;
-        }
         dispatch({ type: "issued", payment: response.data });
       } catch (e) {
         dispatch({ type: "error", error: apiError(e) });
@@ -137,13 +124,13 @@ export function usePosFlow({
       const max = target ? wholeTengeLimit(target).max : 0;
       whenIdle({ type: "order", id, amount: max > 0 ? String(max) : "" });
     },
-    digit: (digit: string) => dispatch({ type: "amount", amount: appendDigit(state.amount, digit, limit) }),
-    erase: () => dispatch({ type: "amount", amount: eraseDigit(state.amount) }),
+    digit: (digit: string) => dispatch({ type: "amount", amount: pressAmountDigit(state.amount, digit, limit) }),
+    erase: () => dispatch({ type: "amount", amount: eraseAmount(state.amount) }),
     fillAll: () => dispatch({ type: "amount", amount: limit > 0 ? String(limit) : "" }),
     toPhone: () => dispatch({ type: "phone-step", phone: detail.data?.client.phone ?? "" }),
     setPhone: (phone: string) => dispatch({ type: "phone", phone }),
-    issueQr: () => void issue({ method: "kaspi", channel: "qr", amount: state.amount }, "qr"),
-    sendInvoice: () => void issue({ method: "invoice", amount: state.amount, phone_number: state.phone }, "phone"),
+    issueQr: () => void issue({ method: "kaspi", channel: "qr", amount: state.amount }),
+    sendInvoice: () => void issue({ method: "invoice", amount: state.amount, phone_number: state.phone }),
     // «‹» из «Истории» возвращает к начатой оплате, со ступени — на ступень назад.
     back: () => whenIdle(state.tab === "history" ? { type: "tab", tab: state.flow } : { type: "back" }),
     retry: () => whenIdle({ type: "retry" }),

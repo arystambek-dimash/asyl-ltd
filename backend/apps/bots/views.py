@@ -8,8 +8,7 @@ from typing import ClassVar
 
 from django.conf import settings
 from django.db.models import Q
-from django.shortcuts import get_object_or_404
-from rest_framework import viewsets
+from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,7 +21,6 @@ from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
 from .models import BotMessage, WhatsAppBotSettings
-from .parsing import parse_rail_report
 from .preview import preview_report, resolution_options
 from .rail import RAIL_TRANSPORT, remember_report_client, remember_report_product
 from .serializers import (
@@ -31,16 +29,9 @@ from .serializers import (
     RailProductCodeSerializer,
     RailReportSerializer,
     WhatsAppBotSettingsSerializer,
+    rail_report_input,
 )
-from .whatsapp import EVENT_TYPE, apply_message, ignore_message, report_options, status_counts
-
-# Вкладки журнала → статусы сообщений.
-STATUS_FILTERS = {
-    "review": BotMessage.REVIEW_STATUSES,
-    "applied": (BotMessage.APPLIED,),
-    "ignored": (BotMessage.IGNORED,),
-}
-
+from .whatsapp import EVENT_TYPE, apply_message, ignore_message, status_counts
 
 # Короткое число — номер заказа или сообщения; длинное (номер вагона) ищется в тексте.
 _SHORT_NUMBER_DIGITS = 7
@@ -83,7 +74,7 @@ class WhatsAppBotStatusView(PermAPIViewMixin, APIView):
 class WhatsAppBotSettingsView(PermAPIViewMixin, APIView):
     """Настройки бота меняет администратор (как настройки камер и накладной)."""
 
-    required_perms: ClassVar[dict] = {"put": "sys_permissions.manage", "patch": "sys_permissions.manage"}
+    required_perms: ClassVar[dict] = {"put": "sys_permissions.manage"}
 
     def put(self, request):
         row = WhatsAppBotSettings.load()
@@ -94,24 +85,20 @@ class WhatsAppBotSettingsView(PermAPIViewMixin, APIView):
             EVENT_TYPE,
             "Настройки WhatsApp-бота: " + ("проводит отчёты" if row.enabled else "выключен"),
             user=request.user,
-            payload={key: serializer.data[key] for key in (
-                "enabled", "allowed_chat_ids", "allowed_sender_ids", "show_amounts_in_reply",
-                "duplicate_window_days", "price_tolerance_pct", "report_recipient_name", "report_recipient_phone")},
+            payload={key: serializer.data[key] for key in WhatsAppBotSettings.SETTINGS_FIELDS},
         )
         # Экран применяет ответ, а не перечитывает опрашиваемую шапку.
         return Response(_status_payload(request))
 
-    patch = put
 
-
-class BotMessageViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class BotMessageViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
     """Сообщения бота: вкладки «На проверке / Проведено / Пропущено / Все» и разбор."""
 
     serializer_class = BotMessageSerializer
     pagination_class = OptInPageNumberPagination
+    lookup_value_regex = r"\d+"
     required_perms: ClassVar[dict[str, str]] = {
         "list": "bots.view",
-        "retrieve": "bots.view",
         "preview": "bots.view",
         "rail_options": "bots.view",
         "product_codes": "bots.manage",
@@ -124,7 +111,7 @@ class BotMessageViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
         queryset = BotMessage.objects.select_related("resolved_by")
         if self.action != "list":
             return queryset
-        statuses = STATUS_FILTERS.get(self.request.query_params.get("status") or "review")
+        statuses = BotMessage.TAB_STATUSES.get(self.request.query_params.get("status") or "review")
         if statuses is not None:
             queryset = queryset.filter(status__in=statuses)
         search = parse_search_param(self.request.query_params.get("search"))
@@ -134,19 +121,12 @@ class BotMessageViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     def _input(self, serializer_class):
         """Текст отчёта (исправленный человеком или как пришёл) и заказ «Отгрузить по отчёту»."""
-        serializer = serializer_class(data=self.request.data, context=self.get_serializer_context())
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-        order = None
-        if data.get("order") is not None:
-            orders = scope_by_client_department(
-                Order.objects.filter(transport_type=RAIL_TRANSPORT), self.request.user, client_path="client")
-            order = get_object_or_404(orders, pk=data["order"])
-        return data, parse_rail_report(data["text"]), order
+        orders = scope_by_client_department(
+            Order.objects.filter(transport_type=RAIL_TRANSPORT), self.request.user, client_path="client")
+        return rail_report_input(self, serializer_class, orders)
 
     def _preview(self, report, order):
-        options = report_options(WhatsAppBotSettings.load())
-        return Response(preview_report(report, self.request.user, order=order, **options))
+        return Response(preview_report(report, self.request.user, order=order))
 
     @action(detail=True, methods=["post"], url_path="preview")
     def preview(self, request, pk=None):

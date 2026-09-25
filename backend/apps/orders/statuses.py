@@ -29,6 +29,19 @@ REVIEWABLE_STATUSES = ("draft", "pending")
 # Мешки таких заказов уже обещаны клиентам, хотя со склада ещё не списаны.
 AWAITING_SHIPMENT_STATUSES = ("confirmed", "arrived", "loading", "loaded")
 
+# Живой заказ держит камеру погрузки: одна камера — один такой заказ
+# (частичный UNIQUE ``orders_one_active_order_per_loading_camera``).
+CAMERA_BINDING_STATUSES = ("confirmed", "arrived", "loading")
+
+# Машина на посту: заехала, грузится или ждёт выезда. Погрузка идёт, пока
+# заказ не выедет или его не вернут, — сколько бы дней она ни длилась. Такую
+# отгрузку сначала завершают или возвращают — голой сменой статуса её не бросают.
+ON_POST_STATUSES = ("arrived", "loading", "loaded")
+
+# Машина уже заехала: на посту или выехала. Номер, вид транспорта и отдел
+# попали на пост, камеры и накладную — менять их поздно.
+ENTERED_POST_STATUSES = (*ON_POST_STATUSES, "shipped")
+
 # Заказ в этих статусах ещё (или уже) не является финансовым документом:
 # черновик и «на рассмотрении» не подтверждены, отказ и отмена аннулированы.
 # Ни один из них не входит в оборот, выручку и долги.
@@ -62,6 +75,16 @@ def is_payment_open(status: str, *, method: str | None = None, by_client: bool =
     if by_client:
         return False
     return status in AWAITING_SHIPMENT_STATUSES and method in Payment.SETTLED_ON_RECORD
+
+
+def is_payment_method_allowed(currency: str, method: str | None) -> bool:
+    """Допускает ли валюта заказа деньги этим способом.
+
+    Kaspi (свой терминал, QR, счёт на телефон) и удалённая оплата — только в
+    тенге: долларовый заказ касса принимает только наличными. ``method=None`` —
+    запрос денег (QR, счёт), как в :func:`is_payment_open`.
+    """
+    return currency == "KZT" or method == "cash"
 
 
 def payment_open_method(method: str, stage: str) -> str | None:

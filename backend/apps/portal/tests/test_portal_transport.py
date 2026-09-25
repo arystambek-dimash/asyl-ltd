@@ -17,7 +17,7 @@ def portal(make_user):
     user = make_user(username="cli", client=True)
     client = Client.objects.create_with_user(
         user=user, first_name="A", last_name="B", phone="portal-plates", country="Кыргызстан")
-    product = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100"))
+    product = Product.objects.create(name="F", color="Red", weight_kg=Decimal("50"))
     order = Order.objects.create(client=client, status="confirmed")
     OrderItem.objects.create(order=order, product=product, quantity=1, unit_price=Decimal("100"))
     return user, order
@@ -39,6 +39,14 @@ def test_client_sets_truck_and_trailer(portal, auth_client):
     assert response.data["client_country"] == "Кыргызстан"
     order.refresh_from_db()
     assert (order.truck_number, order.trailer_number, order.truck_number_set_by) == ("07KG695ADT", "07KG837PB", user)
+
+
+def test_truck_blocked_before_confirmed(portal, auth_client):
+    # Номер вводится на статусе «confirmed»; до этого (pending) — нельзя.
+    user, order = portal
+    Order.objects.filter(pk=order.pk).update(status="pending")
+
+    assert _patch(auth_client, user, order, {"truck_number": "777"}).status_code == 409
 
 
 @pytest.mark.parametrize(

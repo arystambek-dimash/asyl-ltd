@@ -1,18 +1,15 @@
-import type { LineDirection, NormalizedLine } from "@/lib/camera-counting-line";
-import type { VehicleRoiConfig } from "@/components/grain/vehicle-roi-overlay";
+import type { LineDirection, NormalizedLine, VerificationLine } from "@/lib/camera-counting-line";
 import type { TransportPair } from "@/lib/plates";
 
 export interface Me {
   id: number;
   username: string;
-  /** Added to /auth/me without breaking older rolling-deploy responses. */
   first_name?: string;
   last_name?: string;
   is_client: boolean;
   is_superuser: boolean;
   permissions: string[];
   position: string | null;
-  client_id: number | null;
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
 }
 
@@ -38,13 +35,7 @@ export interface Product {
   weight_kg: string;
   is_active: boolean;
   label: string;
-  cv_class?: string;
   available_bags?: number;
-  /** Per-warehouse balances; omitted by older API versions. */
-  stock_by_warehouse?: Record<string, number>;
-  warehouse?: number | null;
-  warehouse_name?: string | null;
-  ask_truck_weight?: boolean;
   /** Подписанная ссылка на фото (см. apiFileUrl); null — фото нет. */
   photo_url?: string | null;
   /** Коды товара в отчётах о вагонах. */
@@ -106,18 +97,33 @@ export interface DepartmentSummary {
   shipped: number;
   /** Выручка в основной валюте отдела; полная раскладка — revenue_by_currency. */
   revenue: string;
-  revenue_currency?: "KZT" | "USD";
-  revenue_by_currency?: Record<string, string>;
+  revenue_currency: "KZT" | "USD";
+  revenue_by_currency: Record<string, string>;
   /** Непогашенный остаток отгруженных заказов «в долг». */
   debt: string;
-  debt_by_currency?: Record<string, string>;
+  debt_by_currency: Record<string, string>;
   /** Сколько из выручки уже получено деньгами. */
   paid: string;
-  paid_by_currency?: Record<string, string>;
+  paid_by_currency: Record<string, string>;
   paid_orders: number;
   partial_orders: number;
   unpaid_orders: number;
   debt_orders: number;
+}
+
+/**
+ * Итоги «Общей» аналитики заказов (`/orders/list-summary/`) по всей выборке
+ * списка с теми же фильтрами и поиском. Без отменённых и отклонённых.
+ */
+export interface OrderListSummary {
+  orders: number;
+  /** Не отгружены и не закрыты. */
+  active: number;
+  /** Основная валюта: в ней крупная сумма и доли статусов. */
+  total_currency: string;
+  total_by_currency: Record<string, string>;
+  /** Стоимость заказов по публичным группам статусов, в основной валюте. */
+  by_status_group: Record<string, string>;
 }
 
 export interface ReportDay {
@@ -127,13 +133,10 @@ export interface ReportDay {
   revenue: string;
   /** Сколько стоимости отгрузок этого дня уже погашено на момент запроса. */
   paid_amount: string;
-  /** Текущий остаток именно заказов, оформленных в долг. */
+  /** Текущий непогашенный остаток отгрузок этого дня. */
   debt_amount: string;
-  /** Непогашенный остаток заказов без отсрочки (не является дебиторкой). */
-  awaiting_amount: string;
   cash: string;
   cashless: string;
-  gross_received: string;
   refunded: string;
   received: string;
   payments: number;
@@ -141,10 +144,8 @@ export interface ReportDay {
   revenue_by_currency: Record<string, string>;
   paid_amount_by_currency: Record<string, string>;
   debt_amount_by_currency: Record<string, string>;
-  awaiting_amount_by_currency: Record<string, string>;
   cash_by_currency: Record<string, string>;
   cashless_by_currency: Record<string, string>;
-  gross_received_by_currency: Record<string, string>;
   refunded_by_currency: Record<string, string>;
   received_by_currency: Record<string, string>;
 }
@@ -155,12 +156,8 @@ export interface ReportClientOrder {
   bags: number;
   total: string;
   currency: string;
-  paid_amount: string;
   remaining_amount: string;
   payment_status: "unpaid" | "partial" | "settled";
-  is_debt: boolean;
-  /** @deprecated Совместимый alias is_debt, это не исторический intent. */
-  on_debt: boolean;
 }
 
 export interface ReportClientRow {
@@ -170,9 +167,8 @@ export interface ReportClientRow {
   bags: number;
   revenue_by_currency: Record<string, string>;
   paid_amount_by_currency: Record<string, string>;
-  /** Снимок текущего остатка по debt-заказам, отгруженным в период. */
+  /** Снимок текущего непогашенного остатка отгрузок периода. */
   debt_amount_by_currency: Record<string, string>;
-  awaiting_amount_by_currency: Record<string, string>;
   order_list: ReportClientOrder[];
 }
 
@@ -186,12 +182,12 @@ export interface DepartmentReport {
   received_by_currency: Record<string, string>;
   refunded_by_currency: Record<string, string>;
   net_by_currency: Record<string, string>;
-  /** Число подтверждённых оплат отдела; нет у старого бэкенда во время раскатки. */
-  payments?: number;
+  /** Число подтверждённых оплат отдела. */
+  payments: number;
 }
 
 export interface ReportSummary {
-  departments?: DepartmentReport[];
+  departments: DepartmentReport[];
   from: string | null;
   to: string | null;
   income: {
@@ -208,9 +204,11 @@ export interface ReportSummary {
     cashless_by_currency: Record<string, string>;
     gross_by_currency: Record<string, string>;
     refunded_by_currency: Record<string, string>;
-    /** {валюта: {способ: нетто}} — нет у старого бэкенда во время раскатки. */
-    by_method_by_currency?: Record<string, Record<string, string>>;
-    payments_by_method?: Record<string, number>;
+    /** {валюта: {способ: нетто}}. */
+    by_method_by_currency: Record<string, Record<string, string>>;
+    payments_by_method: Record<string, number>;
+    /** Подписи способов из by_method_by_currency. */
+    method_labels: Record<string, string>;
   };
   shipped: {
     revenue: string;
@@ -220,12 +218,10 @@ export interface ReportSummary {
     paid_amount: string;
     /** Текущий долг выбранных отгрузок, а не первоначальный способ расчёта. */
     debt_amount: string;
-    awaiting_amount: string;
     currency: string;
     revenue_by_currency: Record<string, string>;
     paid_amount_by_currency: Record<string, string>;
     debt_amount_by_currency: Record<string, string>;
-    awaiting_amount_by_currency: Record<string, string>;
   };
   debt_now: {
     total: string;
@@ -236,13 +232,15 @@ export interface ReportSummary {
     overdue_currency: string;
     overdue_clients: number;
   };
-  /** Может отсутствовать в ответе старого бэкенда во время раскатки. */
-  clients?: ReportClientRow[];
+  clients: ReportClientRow[];
   days: ReportDay[];
 }
 
 export type PortalPaymentMethod = "pending" | "invoice" | "kaspi" | "cash" | "debt";
-type PaymentMethod = PortalPaymentMethod | "card";
+/** Order.payment_method: выбор клиента по заказу, «mixed» — несколько способов сразу. */
+type OrderPaymentMethod = PortalPaymentMethod | "mixed";
+/** Способ конкретной оплаты (Payment.method): касса + легаси «card». */
+type PaymentMethod = "cash" | "kaspi" | "remote" | "invoice" | "card";
 
 export interface Client {
   id: number;
@@ -261,7 +259,6 @@ export interface Client {
   department_name: string | null;
   user: number;
   portal_access_enabled: boolean;
-  password_change_required: boolean;
   /** Долг в основной валюте клиента (debt_currency). Валюты не складываются. */
   debt_total?: string;
   debt_currency?: "KZT" | "USD";
@@ -278,7 +275,6 @@ export interface Store {
   phone: string;
   payment_schedule_type: "none" | "monthly" | "weekly";
   payment_days: number[];
-  contract_signed_at: string | null;
 }
 export interface Notification {
   id: number;
@@ -290,23 +286,17 @@ interface OrderItem {
   id?: number;
   product: number | null;
   product_label?: string;
-  cv_class?: string;
   quantity: number;
-  price?: string | null;
   unit_price?: string | null;
   client_price?: string | null;
   weight_kg?: string | null;
-  ask_truck_weight?: boolean;
 }
 interface StatusChangeRequest {
   id: number;
   order: number;
   to_status: string;
-  to_status_label?: string;
   status: string;
-  requested_by?: number | null;
   requested_by_name?: string | null;
-  decided_by?: number | null;
   created_at: string;
   decided_at?: string | null;
 }
@@ -314,13 +304,11 @@ export interface Order {
   rejection_reason?: string;
   client_department?: string;
   client_department_name?: string;
-  reviewed_at?: string | null;
-  reviewed_by?: number | null;
   id: number;
   client: number;
   store?: number | null;
-  warehouse?: number | null;
-  warehouse_name?: string | null;
+  warehouse: number;
+  warehouse_name: string;
   client_name?: string;
   client_phone?: string;
   department?: string;
@@ -330,12 +318,12 @@ export interface Order {
   status: string;
   payment_status?: string;
   settlement_intent?: string;
-  payment_method?: PaymentMethod;
-  transport_type?: "truck" | "train";
+  payment_method?: OrderPaymentMethod;
+  payment_method_label?: string;
+  transport_type: "truck" | "train";
   truck_number: string;
   /** Полуприцеп фуры; у вагона пусто. */
   trailer_number?: string;
-  truck_number_set_by?: number | null;
   /** Станция назначения вагонного заказа (пишет отгрузка по отчёту). */
   rail_station?: string;
   /** Вагоны отгрузки по отчёту о вагонах. */
@@ -345,7 +333,7 @@ export interface Order {
   items: OrderItem[];
   total_amount: string;
   paid_total: string;
-  remaining_amount?: string;
+  remaining_amount: string;
   /** Окно оплаты для сотрудника считает сервер (statuses.is_payment_open): до
    * отгрузки — предоплата только деньгами у кассы, после — любым способом. */
   payment_open?: boolean;
@@ -358,20 +346,16 @@ export interface Order {
   has_pending_payment?: boolean;
   is_fully_paid: boolean;
   is_debt?: boolean;
-  debt_override: boolean;
   debt_requested?: boolean;
   pending_status_requests?: StatusChangeRequest[];
   payments?: Payment[];
   pending_payments?: Payment[];
   weigh_in_kg?: string | null;
   bags_loaded?: number;
-  bag_estimate_kg?: string;
-  bag_weight_kg?: string;
-  debt_override_by_name?: string | null;
+  bag_estimate_kg: string;
   created_at: string;
   shipped_at?: string | null;
   loading_camera?: string;
-  repeated_from?: number | null;
   deleted_at?: string | null;
   deleted_by_name?: string | null;
 }
@@ -402,7 +386,6 @@ export interface DashboardOperationalSummary {
   attention: {
     pending_payments: number;
     awaiting_review: number;
-    stuck_in_loading: number;
   };
   days: {
     date: string;
@@ -420,7 +403,7 @@ export interface PortalOrder {
   status: string;
   payment_status?: string;
   settlement_intent: string;
-  payment_method: PortalPaymentMethod | "mixed";
+  payment_method: OrderPaymentMethod;
   currency: "KZT" | "USD";
   transport_type: "truck" | "train";
   store: number | null;
@@ -434,32 +417,12 @@ export interface PortalOrder {
   payment_parts: {
     id: number;
     amount: string;
-    method: "invoice" | "kaspi" | "cash";
+    method: "invoice" | "kaspi" | "cash" | "remote";
+    method_label: string;
     status: PaymentStage;
     can_release: boolean;
-    apipay_invoice: {
-      id: number | null;
-      status: string;
-      channel: "phone" | "qr";
-      phone_number: string | null;
-      qr_token_url: string | null;
-      qr_image_url: string | null;
-      qr_expires_at: string | null;
-    } | null;
+    apipay_invoice: ApiPayInvoiceView | null;
   }[];
-  apipay_invoice: {
-    payment_id: number;
-    id: number | null;
-    status: string;
-    error_code: string | null;
-    paid_at: string | null;
-    channel: "phone" | "qr";
-    phone_number: string | null;
-    qr_token_url: string | null;
-    qr_image_url: string | null;
-    qr_expires_at: string | null;
-    total_refunded: string;
-  } | null;
   client_phone: string;
   /** Страна клиента — страна номера по умолчанию. */
   client_country?: string;
@@ -473,10 +436,20 @@ export interface PortalOrder {
   /** Номер указал менеджер или машина уже заехала: только для чтения. */
   transport_locked?: boolean;
   debt_requested: boolean;
-  debt_override: boolean;
   created_at: string;
 }
-type PaymentStage = "requested" | "received" | "accountant_ok" | "confirmed" | "rejected";
+type PaymentStage = "requested" | "received" | "confirmed" | "rejected";
+
+/** Счёт ApiPay в ответе API (`apipay_invoice_data` на бэке) — один вид для кассы и кабинета клиента. */
+export interface ApiPayInvoiceView {
+  invoice_id: number | null;
+  status: string;
+  channel: "phone" | "qr";
+  phone_number: string | null;
+  qr_token_url: string | null;
+  qr_image_url: string | null;
+  qr_expires_at: string | null;
+}
 
 export interface Payment {
   id: number;
@@ -484,17 +457,20 @@ export interface Payment {
   currency?: "KZT" | "USD";
   amount: string;
   method: PaymentMethod;
-  method_label?: string;
+  /** Подписи способа и статуса — из labels.py на бэке, своих словарей фронт не держит. */
+  method_label: string;
   note?: string;
   status: PaymentStage;
+  status_label: string;
   paid_at: string;
-  recorded_by: number | null;
   recorded_by_name?: string | null;
   received_by_name?: string | null;
   received_at?: string | null;
   confirmed_by_name?: string | null;
   confirmed_at?: string | null;
   effective_status?: string;
+  /** Подпись effective_status: этап кассы или состояние счёта провайдера. */
+  effective_status_label: string;
   refunded_amount?: string;
   pending_refund_amount?: string;
   available_for_refund?: string;
@@ -514,25 +490,7 @@ export interface Payment {
     created_at: string;
   }[];
   client_name?: string;
-  provider?: {
-    invoice_id: number | null;
-    channel: "phone" | "qr";
-    status: string;
-    phone_number: string | null;
-    qr_token_url: string | null;
-    qr_image_url: string | null;
-    qr_expires_at: string | null;
-    total_refunded: string;
-    available_for_refund: string;
-    refunds: {
-      id: number;
-      amount: string;
-      status: string;
-      reason: string;
-      error_code: string | null;
-      created_at: string;
-    }[];
-  } | null;
+  provider?: ApiPayInvoiceView | null;
 }
 
 export interface PaymentQueueItem extends Payment {
@@ -540,8 +498,6 @@ export interface PaymentQueueItem extends Payment {
   department: string;
   department_name?: string;
   department_color?: string;
-  order_status: string;
-  store?: number | null;
   store_name?: string | null;
 }
 export interface StockItem {
@@ -564,13 +520,69 @@ export interface ClientDebt {
   client_phone: string;
   /** Долг в основной валюте клиента. Полная разбивка — в debt_by_currency. */
   debt_total: string;
-  debt_currency?: "KZT" | "USD";
-  debt_by_currency?: Record<string, string>;
+  debt_currency: "KZT" | "USD";
+  debt_by_currency: Record<string, string>;
   orders_count: number;
   unpaid_count: number;
   partial_count: number;
   stores_count: number;
   overdue_count: number;
+}
+/** Строка продаж GET /clients/{id}/history/. */
+export interface ClientHistorySale {
+  id: number;
+  date: string;
+  status: string;
+  /** Входит в «Сумму продаж» (правило бэка): заявки, отказы и отмены — нет. */
+  is_financial: boolean;
+  settlement_intent: string;
+  items: { label: string; qty: number }[];
+  bags: number;
+  amount: string;
+  paid: string;
+  currency: string;
+}
+/** Платёж клиента из /clients/{id}/history/ — вся история, включая погашенные заказы. */
+export interface ClientHistoryPayment {
+  id: number;
+  order_id: number;
+  date: string;
+  employee: string | null;
+  method: string;
+  method_label: string;
+  status: string;
+  status_label: string;
+  amount: string;
+  /** Сколько платёж даёт в «Оплачено»: нетто подтверждённой оплаты, иначе 0. */
+  counted_amount: string;
+  currency: string;
+  can_reopen: boolean;
+  can_reject: boolean;
+  provider: boolean;
+  refunded_amount: string;
+}
+export interface ClientHistoryDebt {
+  id: number;
+  date: string;
+  bags: number;
+  amount: string;
+  paid: string;
+  remaining: string;
+  currency: string;
+}
+/** Итоги клиента за всё время: выручка и оплачено — по финансовым заказам, долг — остаток отгруженных. */
+export type ClientSummaryMoney = { revenue: string; paid: string; debt: string };
+/** Ответ GET /clients/{id}/history/ — карточка клиента. */
+export interface ClientHistory {
+  client: { id: number; name: string; phone: string; country: string };
+  summary: ClientSummaryMoney & {
+    currency: string;
+    by_currency: Record<string, ClientSummaryMoney>;
+    orders_count: number;
+  };
+  sales: ClientHistorySale[];
+  payments: ClientHistoryPayment[];
+  debts: ClientHistoryDebt[];
 }
 export interface AiCountingSnapshot {
   total?: number;
@@ -583,92 +595,67 @@ export interface AiCountingSession {
   id: number;
   order_id: number;
   order_client_name: string;
-  order_truck_number: string;
-  /** Older API versions omit the transport type. */
-  order_transport_type?: "truck" | "train";
+  order_transport_type: "truck" | "train";
   camera: string;
   status: "starting" | "active";
   started_at: string;
-  started_by_id: number | null;
   started_by_name: string;
   automatically_started?: boolean;
-  can_stop: boolean;
   last_status: AiCountingSnapshot;
-}
-export interface AiCountingHistory {
-  id: number;
-  order_id: number;
-  order_client_name: string;
-  order_truck_number: string;
-  order_transport_type?: "truck" | "train";
-  camera: string;
-  camera_name: string;
-  status: string;
-  started_at: string;
-  ended_at: string | null;
-  started_by_id: number | null;
-  started_by_name: string;
-  final_total: number | null;
-  last_status: AiCountingSnapshot;
-  has_recording: boolean;
-  recording_available_until: string | null;
-}
-interface AiRecordingSegment {
-  start: string;
-  duration: number;
-  video_url: string;
-}
-export interface AiRecording {
-  available: boolean;
-  detail?: string;
-  retention_days?: number;
-  segments: AiRecordingSegment[];
 }
 export interface ShippingBoardSettings {
   completed_orders_days: number;
   video_retention_days: number;
   updated_at: string | null;
 }
+/** Линия подсчёта камеры в ответе AI-сервиса (GET/PUT /cameras/{src}/counting-line). */
+export interface CameraCountingLine {
+  configured: boolean;
+  coordinate_space: "normalized";
+  line: NormalizedLine | null;
+  line_spec?: string | null;
+  direction: LineDirection;
+  updated_at?: string | null;
+  /** Линии проверки мешков: классифицируют, но не считают. */
+  verification_lines?: VerificationLine[] | null;
+  /** false — AI-сервис старый и не хранит линии проверки. */
+  verification_lines_supported?: boolean;
+  /** Только в ответе на «Обновить статус»: работает ли камера с этими линиями. */
+  line_applied?: "applied" | "not_applied" | "not_running";
+}
+/** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
+export interface CameraFeed {
+  /** Стабильный ключ: kind + MAC (не меняется при перетасовке каналов NVR). */
+  id: string;
+  name: string;
+  zone: string;
+  /** Имя потока в go2rtc (cam2, cam_8c26); null у locked-камер. */
+  src: string | null;
+  kind: "nvr-channel" | "direct" | "locked";
+  /** Живость источника по данным инвентаря (у locked всегда false). */
+  online: boolean;
+  /** Пояснение для locked: обнаружена, но пароль неизвестен. */
+  note?: string;
+  /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
+  line_config?: CameraCountingLine | null;
+}
 export interface MonoblockCameraSettings {
   camera_sources: string[];
   /** Cameras explicitly owned by the separate AI 24/7 contour. */
   blocked_camera_sources?: string[];
-  /** Currently active cameras in the other contour; permanent reservations do not consume capacity. */
-  active_other_camera_sources?: string[];
-  /** Отгрузочные камеры, непрерывно запущенные на camera-PC. */
-  continuous_camera_sources?: string[];
-  continuous_source?: "sub";
-  continuous_sync_status?: "synced" | "pending";
-  continuous_detail?: string;
-  camera_readiness?: Record<string, CameraContinuousReadiness>;
-  processors?: AlwaysOnProcessorStatus[];
-  /** Legacy aliases retained while older clients are rolling forward. */
-  always_on_camera_sources?: string[];
-  always_on_source?: "sub";
-  always_on_sync_status?: "synced" | "pending";
-  always_on_detail?: string;
   updated_at: string | null;
 }
 /**
  * Рамка мешка на последнем кадре.
  *
- * Поля необязательные: ПК цеха обновляется вручную и отдаёт то нормализованные
- * доли кадра (`x/y/w/h`, `label`), то пиксели (`bbox`, `class_name`). Оба
- * варианта приводит к общему виду `normalizeDetections`.
+ * Поля необязательные: ответ приходит с ПК цеха как есть, поэтому
+ * `normalizeDetections` отбрасывает неполные записи, а не падает на них.
  */
 export interface AlwaysOnDetection {
-  /** Доли кадра (0..1) — современный формат. */
-  x?: number;
-  y?: number;
-  w?: number;
-  h?: number;
-  /** Пиксели кадра `[x1, y1, x2, y2]` — формат постарше. */
+  /** Пиксели кадра модели `[x1, y1, x2, y2]`; масштаб — `detection_frame`. */
   bbox?: [number, number, number, number];
-  label?: string;
   class_name?: string;
   confidence?: number;
-  /** Мешок пересёк линию и попал в счётчик. */
-  counted?: boolean;
 }
 
 export interface AlwaysOnProcessorStatus {
@@ -694,6 +681,36 @@ export interface AlwaysOnProcessorStatus {
   error?: string | null;
   metrics?: { inference_fps?: number; dropped_frames?: number };
 }
+export interface CameraCountingLine {
+  configured: boolean;
+  coordinate_space: "normalized";
+  line: NormalizedLine | null;
+  line_spec?: string | null;
+  direction: LineDirection;
+  updated_at?: string | null;
+  /** Линии проверки мешков: классифицируют, но не считают. */
+  verification_lines?: VerificationLine[] | null;
+  /** false — AI-сервис старый и не хранит линии проверки. */
+  verification_lines_supported?: boolean;
+  /** Только в ответе на «Обновить статус»: работает ли камера с этими линиями. */
+  line_applied?: "applied" | "not_applied" | "not_running";
+}
+/** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
+export interface CameraFeed {
+  /** Стабильный ключ: kind + MAC (не меняется при перетасовке каналов NVR). */
+  id: string;
+  name: string;
+  zone: string;
+  /** Имя потока в go2rtc (cam2, cam_8c26); null у locked-камер. */
+  src: string | null;
+  kind: "nvr-channel" | "direct" | "locked";
+  /** Живость источника по данным инвентаря (у locked всегда false). */
+  online: boolean;
+  /** Пояснение для locked: обнаружена, но пароль неизвестен. */
+  note?: string;
+  /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
+  line_config?: CameraCountingLine | null;
+}
 export interface CameraContinuousReadiness {
   status: "synced" | "pending";
   detail: string;
@@ -709,14 +726,10 @@ export interface AnalyticsSyncState {
 export interface AlwaysOnCameraSettings {
   camera_sources: string[];
   analytics_scope: "shipping" | "ai_247";
-  /** Kept for wire compatibility; AI 24/7 no longer owns shipment cameras. */
-  automatic_camera_sources?: string[];
-  /** Explicit cameras owned by this contour. */
-  manual_camera_sources?: string[];
   /** Cameras owned by the other contour and unavailable in this picker. */
   blocked_camera_sources?: string[];
   /** Currently active cameras in the other contour; used only for the shared runtime capacity. */
-  active_other_camera_sources?: string[];
+  active_other_camera_sources: string[];
   source: "sub" | "main";
   processors: AlwaysOnProcessorStatus[];
   capacity: number | null;
@@ -725,13 +738,6 @@ export interface AlwaysOnCameraSettings {
   detail: string;
   camera_readiness?: Record<string, CameraContinuousReadiness>;
   updated_at: string | null;
-}
-export interface WagonNumberCameraStatus {
-  camera: string | null;
-  source: "sub" | "main";
-  stream: string | null;
-  assigned: boolean;
-  mode: "wagon_number_24_7";
 }
 export type TransportRecognitionModel = "vehicle_number" | "wagon_number";
 export type ShippingLoadingZone = [number, number, number, number];
@@ -751,74 +757,10 @@ export interface ShippingTransportRecognition {
   number: string | null;
   observed_at: string;
 }
-export interface ShippingTransportTracking {
-  schema_version: 1;
-  basis: "transport_body";
-  presence: "present" | "absent" | "unknown";
-  motion: "stationary" | "moving" | "unknown";
-  visit_id: string | null;
-  observed_at: string | null;
-  present_since: string | null;
-  last_seen_at: string | null;
-  stationary_since: string | null;
-  absent_since: string | null;
-  detection_count: number;
-  reason: string;
-  number_associated: boolean;
-}
-export interface ShippingAutoFinish {
-  state: "idle" | "waiting" | "blocked" | "finishing" | "completed";
-  remaining_seconds: number | null;
-  observed_at: string | null;
-  detail: string;
-}
-export interface ShippingTransportAutomation {
-  conveyor_camera: string;
-  number_camera: string | null;
-  recognition_model: TransportRecognitionModel | null;
-  state:
-    | "waiting_number"
-    | "confirming"
-    | "no_order"
-    | "multiple_orders"
-    | "starting"
-    | "loading"
-    | "completed"
-    | "busy"
-    | "error";
-  detail: string;
-  number: string | null;
-  observed_at: string | null;
-  order_id: number | null;
-  session_id: number | null;
-  tracking?: ShippingTransportTracking | null;
-  tracking_alert?: string | null;
-  auto_finish?: ShippingAutoFinish | null;
-}
-export interface ShippingTransportHistory {
-  id: number;
-  conveyor_camera: string;
-  number_camera: string;
-  recognition_model: TransportRecognitionModel;
-  number: string;
-  first_seen_at: string;
-  last_seen_at: string;
-  status: "matched" | "no_order" | "multiple_orders" | "tracking_alert" | "observed";
-  order_id: number | null;
-  session_id: number | null;
-  image_url: string | null;
-  tracking?: ShippingTransportTracking | null;
-  tracking_alert?: string | null;
-  visit_id?: string | null;
-  auto_finish?: ShippingAutoFinish | null;
-}
+/** Камера номеров вагонов: настройка CRM, действует сразу после сохранения. */
 export interface WagonNumberCameraSettings {
   camera_source: string | null;
   source: "main";
-  live: WagonNumberCameraStatus | null;
-  service_available: boolean;
-  sync_status: "synced" | "pending";
-  detail: string;
   updated_at: string | null;
 }
 export interface WagonArchMotion {
@@ -828,7 +770,7 @@ export interface WagonArchMotion {
   status: string;
   sample_age_seconds: number | null;
 }
-export interface WagonArchCollector {
+interface WagonArchCollector {
   total: number;
   pending: number;
   status: string;
@@ -837,7 +779,7 @@ export interface WagonArchCollector {
   heartbeat_at: number | null;
 }
 export type WagonArchStopStatus = "open" | "closed" | "attention" | "superseded";
-export interface WagonArchLastStop {
+interface WagonArchLastStop {
   id: number;
   stop_id: string;
   number: string;
@@ -858,6 +800,15 @@ export interface WagonArchRuntime {
   last_stop: WagonArchLastStop | null;
   updated_at: string | null;
 }
+/** Зона камеры (ROI) — с ПК цеха, его обновляют отдельно от CRM. */
+export type VehicleRoiConfig = {
+  configured: boolean;
+  enabled: boolean;
+  source: string;
+  coordinate_space: string;
+  points: unknown;
+  updated_at?: string | null;
+};
 export interface WagonArchCameraRuntime {
   camera: string;
   source: "main";
@@ -867,6 +818,53 @@ export interface WagonArchCameraRuntime {
   motion: WagonArchMotion | null;
   runtime: WagonArchRuntime;
   diagnostic: string;
+}
+export interface VehiclePlateMonitor {
+  status: string;
+  scanned_frames: number;
+  plate_detections: number;
+  stationary_admissions: number;
+  ocr_attempts: number;
+  confirmed_events: number;
+  has_error: boolean;
+}
+export interface ScaleAutomationRuntime {
+  enabled: boolean;
+  stable_weight_seconds: number;
+  state:
+    | "disabled"
+    | "idle"
+    | "candidate"
+    | "recognizing"
+    | "applying"
+    | "awaiting_clear"
+    | "manual_required"
+    | "unavailable";
+  last_checked_at: string | null;
+  heartbeat_stale: boolean;
+  active: {
+    request_id: string;
+    stage: "claimed" | "recognizing" | "applying" | "done";
+    action: "entry" | "exit" | null;
+    wagon_id: number | null;
+    retryable: boolean;
+    error_code: string | null;
+  } | null;
+}
+export interface VehiclePlateRuntime {
+  camera: string;
+  enabled: boolean;
+  ready: boolean;
+  automation_enabled: boolean;
+  camera_configured: boolean;
+  weight_first_enabled: boolean;
+  on_demand_enabled: boolean;
+  on_demand_camera_configured: boolean;
+  source: "main" | "sub";
+  stream: string;
+  server_push_configured: boolean;
+  monitor: VehiclePlateMonitor | null;
+  roi: VehicleRoiConfig;
 }
 export interface WagonArchStop {
   id: number;
@@ -905,49 +903,15 @@ export interface AlwaysOnColorAnalytics {
   percent: number;
   inferred?: AlwaysOnInferred;
 }
-export interface AlwaysOnBrandAnalytics {
-  brand: string;
-  total: number;
-  percent: number;
-  inferred?: AlwaysOnInferred;
-}
 export interface AlwaysOnHistoryPoint {
   day: string;
   model_total: number;
   model_per_color: Record<string, number>;
-  model_per_brand: Record<string, number>;
   /** Готовая разбивка по цветам за этот день — считает бэкенд. */
   colors: AlwaysOnColorAnalytics[];
-  /** Бренды модели; legacy-данные приходят отдельным `unclassified`. */
-  brands: AlwaysOnBrandAnalytics[];
   adjustment: number;
   total: number;
   updated_at: string | null;
-}
-interface AlwaysOnArchiveDay {
-  day: string;
-  model_total: number;
-  adjustment: number;
-  total: number;
-  colors: AlwaysOnColorAnalytics[];
-  brands: AlwaysOnBrandAnalytics[];
-}
-export interface AlwaysOnCountArchive {
-  id: number;
-  camera: string;
-  period_start: string;
-  period_end: string;
-  model_total: number;
-  adjustment: number;
-  total: number;
-  days: number;
-  colors: AlwaysOnColorAnalytics[];
-  brands: AlwaysOnBrandAnalytics[];
-  /** Разбивка периода по дням — раскрывается по клику на строку архива. */
-  day_rows: AlwaysOnArchiveDay[];
-  note: string;
-  archived_by_name: string | null;
-  created_at: string;
 }
 export interface AlwaysOnDailyCameraAnalytics {
   /** Inclusive calendar range, present when date_from/date_to were requested. */
@@ -958,15 +922,11 @@ export interface AlwaysOnDailyCameraAnalytics {
   day: string;
   model_total: number;
   model_per_color: Record<string, number>;
-  model_per_brand: Record<string, number>;
   adjustment: number;
   total: number;
   all_time_total: number;
   history: AlwaysOnHistoryPoint[];
   colors: AlwaysOnColorAnalytics[];
-  brands: AlwaysOnBrandAnalytics[];
-  dominant_color: string | null;
-  dominant_brand: string | null;
   updated_at: string | null;
   analytics_sync?: AnalyticsSyncState;
 }
@@ -976,16 +936,6 @@ export interface AlwaysOnDailyAnalytics {
   day: string;
   total: number;
   all_time_total: number;
-  /** Распознано моделью без ручных поправок — сумма цветов сходится с ним. */
-  model_all_time_total: number;
-  adjustment: number;
-  history: AlwaysOnHistoryPoint[];
-  colors: AlwaysOnColorAnalytics[];
-  dominant_color: string | null;
-  model_per_brand: Record<string, number>;
-  brands: AlwaysOnBrandAnalytics[];
-  /** Не выбирает `unknown`/`unclassified` как основной бренд. */
-  dominant_brand: string | null;
   cameras: AlwaysOnDailyCameraAnalytics[];
 }
 export interface AlwaysOnProductionRun {
@@ -1010,15 +960,10 @@ export interface AlwaysOnProductionRun {
   /** Номер части периода `unknown`, разбитого по определённым цветам (тот же `id`). */
   segment?: number;
 }
-export interface AlwaysOnRunSmoothing {
+interface AlwaysOnRunSmoothing {
   n_min: number;
-  changed: boolean;
-  raw_run_count: number;
-  algorithm_run_count: number;
   raw_model_total: number;
   algorithm_model_total: number;
-  raw_model_per_color: Record<string, number>;
-  algorithm_model_per_color: Record<string, number>;
   raw_colors: AlwaysOnColorAnalytics[];
   algorithm_colors: AlwaysOnColorAnalytics[];
 }
@@ -1044,17 +989,16 @@ export interface AlwaysOnStockPosting {
 export interface AlwaysOnStockBatch {
   id: number;
   camera: string;
-  warehouse?: number | null;
-  warehouse_name?: string | null;
+  warehouse: number;
+  warehouse_name: string;
   business_day: string;
   scheduled_for: string;
   status: "scheduled" | "blocked" | "posted" | "empty" | "failed";
   total_bags: number;
   /** Мешки смены без цвета: не оприходованы, ждут «Указать цвет». */
-  pending_bags?: number;
+  pending_bags: number;
   last_error: string;
   attempts: number;
-  posted_at: string | null;
   items: AlwaysOnStockPosting[];
 }
 export interface AlwaysOnProductionProduct {
@@ -1063,20 +1007,14 @@ export interface AlwaysOnProductionProduct {
   color: string;
   color_label: string;
   weight_kg: string;
-  available_bags?: number;
-  /** Every warehouse with a stock card; omitted by older API versions. */
-  warehouse_ids?: number[];
-  /** null means the catalogue item has not been assigned to a warehouse yet. */
-  warehouse?: number | null;
-  warehouse_name?: string | null;
+  /** Every warehouse with a stock card. */
+  warehouse_ids: number[];
 }
 export interface AlwaysOnStockPreview {
   color: string;
   detected_bags: number;
   /** Мешки без цвета от камеры, которым CRM определила этот цвет. */
   resolved_bags?: number;
-  /** Часть resolved_bags по соседям/голосам: может измениться до 19:00, вычитать её нельзя. */
-  provisional_bags?: number;
   inferred?: AlwaysOnInferred;
   correction_bags: number;
   net_bags: number;
@@ -1085,19 +1023,14 @@ export interface AlwaysOnStockPreview {
   configured: boolean;
 }
 /** Read-only day detail shared by shipment and production cameras. */
-export interface CameraDayHistory {
+interface CameraDayHistory {
   camera: string;
   timezone: string;
   selected_day: string | null;
   day_runs: AlwaysOnProductionRun[];
-  algorithm_day_runs?: AlwaysOnProductionRun[];
-  run_smoothing?: AlwaysOnRunSmoothing;
+  algorithm_day_runs: AlwaysOnProductionRun[];
+  run_smoothing: AlwaysOnRunSmoothing;
   dominant_brand_by_color?: Record<string, string | null>;
-  /** Только AI 24/7: сколько мешков выбранного дня CRM определила сама и сколько осталось без цвета. */
-  color_resolution?: {
-    inferred: Record<string, AlwaysOnInferred>;
-    unresolved_bags: number;
-  };
 }
 export interface ShippingCameraDayHistory extends CameraDayHistory {
   selected_day: string;
@@ -1105,10 +1038,9 @@ export interface ShippingCameraDayHistory extends CameraDayHistory {
   history_detail: string;
 }
 export interface AlwaysOnProductionPayload extends CameraDayHistory {
-  /** Optional while the frontend and backend are rolled out independently. */
-  warehouse?: number;
-  warehouse_name?: string;
-  warehouses?: Array<Omit<Warehouse, "address"> & { address?: string }>;
+  warehouse: number;
+  warehouse_name: string;
+  warehouses: Array<Omit<Warehouse, "address"> & { address?: string }>;
   close_time: string;
   current_business_day: string;
   next_run_at: string;
@@ -1116,10 +1048,9 @@ export interface AlwaysOnProductionPayload extends CameraDayHistory {
   available_colors: string[];
   mappings: AlwaysOnProductMapping[];
   products: AlwaysOnProductionProduct[];
-  runs: AlwaysOnProductionRun[];
   preview: AlwaysOnStockPreview[];
   /** Мешки текущей смены без цвета — не блокируют приход, ждут «Указать цвет». */
-  unresolved?: { business_day: string; bags: number };
+  unresolved: { business_day: string; bags: number };
   batches: AlwaysOnStockBatch[];
 }
 /** POST /cameras/always-on-production/unknown-colors/ — «Указать цвет». */
@@ -1135,6 +1066,8 @@ export interface Permission {
   section: string;
   action: string;
   label: string;
+  /** Подпись раздела = страница меню (с бэкенда). */
+  section_label: string;
 }
 export interface Employee {
   id: number;
@@ -1161,18 +1094,11 @@ export interface EventLog {
   created_at: string;
 }
 
-export interface EventLogPage {
-  count: number;
-  next: string | null;
-  previous: string | null;
-  results: EventLog[];
-}
-
 type TaskStatus = "pending" | "done";
 
 interface TaskAttachment {
   id: number;
-  kind: "photo" | "voice" | "file";
+  kind: "photo" | "voice";
   url: string | null;
   original_name: string;
   size_bytes: number;
@@ -1195,6 +1121,8 @@ export interface Task {
   attachments: TaskAttachment[];
   /** Закрыть может исполнитель, постановщик или суперадмин — решает бэкенд. */
   can_complete: boolean;
+  /** Удалить может только постановщик или суперадмин — решает бэкенд. */
+  can_delete: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1219,7 +1147,6 @@ export interface TruckScalePreview {
   age_seconds: string | null;
   updated_at: string | null;
   observed_at: string;
-  refresh_mode: "manual";
 }
 
 export interface GrainWeighing {
@@ -1248,7 +1175,6 @@ export type VehicleOrientation = "" | "front" | "rear";
 /** Сохранённое взвешивание в автоматической обработке либо на резервной ручной проверке. */
 export interface GrainUnassignedWeighing {
   identity_check?: {
-    review_reason?: string;
     status:
       "pending" | "processing" | "retrying" | "review" | "matched" | "disabled" | "waiting_photo" | "waiting_budget";
     reason: string;
@@ -1261,7 +1187,7 @@ export interface GrainUnassignedWeighing {
   scale_number: string;
   camera: string;
   photo_url: string | null;
-  /** open_passages_exist — номер не прочитан; entry_missing — выезд с номером без заезда. */
+  /** Почему вес не привязался к рейсу: plate_unreadable, entry_missing и т. п. (подписи — weighingReasonLabel). */
   reason: string;
   /** Номер, прочитанный камерой или подтверждённый автоматической проверкой. */
   vehicle_number: string;
@@ -1312,7 +1238,8 @@ export interface GrainOrientationTrainingReport {
   status: string;
   ran_at: string | null;
   promoted: boolean;
-  samples?: number | Record<string, number> | null;
+  /** Кадров по классам на момент запуска; нет, пока обучение не запускалось (ПК отдаёт `{}`). */
+  samples?: { front: number; rear: number };
   baseline?: { accuracy: number | null } | null;
   candidate?: { accuracy: number | null } | null;
   reason: string;
@@ -1321,8 +1248,8 @@ export interface GrainOrientationTrainingReport {
 
 export interface GrainOrientationCameraPc {
   enabled: boolean;
-  /** Описание активной модели в формате ПК; поля не фиксированы. */
-  model?: Record<string, unknown> | null;
+  /** Описание активной модели в формате ПК; `self_trained` — загружен ли дообученный файл. */
+  model?: ({ self_trained?: boolean } & Record<string, unknown>) | null;
   dataset?: { front: number; rear: number } | null;
   training?: GrainOrientationTrainingReport | null;
 }
@@ -1346,20 +1273,6 @@ export interface GrainOrientationPurgeResult {
   pc_unavailable: boolean;
   /** Сколько кадров под тот же фильтр ещё осталось после этого пакета. */
   remaining: number;
-}
-
-export interface GrainLabCheck {
-  id: number;
-  moisture: string | null;
-  impurity: string | null;
-  nature: string | null;
-  grain_class: string;
-  infestation: boolean;
-  damage: string;
-  note: string;
-  decision: "accepted" | "accepted_with_restrictions" | "rejected" | "quarantine";
-  checked_by_name: string | null;
-  created_at: string;
 }
 
 export interface GrainAllocation {
@@ -1443,12 +1356,10 @@ export interface GrainWagon {
   unloading_started_at?: string | null;
   silo_arrived_at: string | null;
   unloading_finished_at?: string | null;
-  unloading_paused?: boolean;
   exited_at: string | null;
   note?: string;
   created_at: string;
   weighings?: GrainWeighing[];
-  lab_checks?: GrainLabCheck[];
   allocations?: GrainAllocation[];
   vehicle_recognition_captures?: PassageWeightCapture[];
   /** Фото машины на въезде/выезде (последнее взвешивание с кадром). */
@@ -1464,14 +1375,9 @@ export interface GrainSupply {
   grain_type_color: string | null;
   assigned_silo: number | null;
   assigned_silo_name: string | null;
-  simple_flow: boolean;
-  contract: string;
   culture: string;
   grain_class: string;
-  expected_date: string | null;
   expected_total_kg: number | null;
-  document_weight_kg: number | null;
-  wagons_expected: number | null;
   note: string;
   status: "draft" | "expected" | "closed" | "cancelled";
   created_at: string;
@@ -1492,13 +1398,11 @@ export interface GrainSilo {
   is_quarantine: boolean;
   status: "active" | "blocked" | "maintenance";
   unloading_line: string;
-  sensor_estimated_kg: number | null;
   current_balance_kg: number;
   reserved_kg: number;
   free_capacity_kg: number;
   fill_percent: number;
   active_wagons: { id: number; number: string; status: string }[];
-  sensor_difference_kg: number | null;
 }
 
 export interface GrainSiloType {
@@ -1513,8 +1417,6 @@ export interface GrainSiloType {
   silo_count: number;
   created_at: string;
 }
-
-export type GrainType = GrainSiloType;
 
 export interface GrainMovement {
   id: number;
@@ -1554,6 +1456,8 @@ export interface QrRefundState {
     | "execution_uncertain"
     | "expired"
     | "failed";
+  /** Сессия ещё может дойти до денег (ApiPayQrRefund.ACTIVE_STATUSES): ждём покупателя или исход возврата. */
+  active: boolean;
   amount: string;
   refunded_amount: string | null;
   client_name: string | null;

@@ -1,6 +1,11 @@
 "use client";
 import * as React from "react";
-import { ChevronDown, Globe } from "lucide-react";
+import {
+  COUNTRY_MASK_INPUT,
+  CountryMaskField,
+  isAriaInvalid,
+  useCaretRestore,
+} from "@/components/ui/country-mask-field";
 import { MARKET_COUNTRIES, OTHER_COUNTRY, countryFlag, findCountry } from "@/lib/countries";
 import {
   DEFAULT_PHONE_COUNTRY,
@@ -32,14 +37,16 @@ export interface PhoneInputProps extends Omit<
 const displayText = ({ country, digits }: PhoneParts) =>
   country ? formatNational(country.mask, digits) : `+${digits}`;
 
-function caretAfterDigits(text: string, count: number): number {
-  let seen = 0;
-  for (let index = 0; index < text.length; index++) {
-    if (seen === count) return index;
-    if (/\d/.test(text[index])) seen++;
-  }
-  return text.length;
-}
+const isDigit = (char: string) => /\d/.test(char);
+
+const COUNTRY_OPTIONS = [
+  ...MARKET_COUNTRIES.map((country) => ({
+    value: country.name,
+    label: `${countryFlag(country.iso)} ${country.name} +${country.dial}`,
+  })),
+  { value: OTHER_COUNTRY, label: "🌐 Другая страна" },
+];
+const TEXT = "text-base tabular-nums sm:text-sm";
 
 export const PhoneInput = React.forwardRef<HTMLInputElement, PhoneInputProps>(
   ({ value, onChange, defaultCountry, onCountryChange, className, disabled, id, ...props }, ref) => {
@@ -48,7 +55,6 @@ export const PhoneInput = React.forwardRef<HTMLInputElement, PhoneInputProps>(
     const [preferred, setPreferred] = React.useState<PhoneCountry>(() =>
       defaultCountry === OTHER_COUNTRY ? null : (findCountry(defaultCountry) ?? DEFAULT_PHONE_COUNTRY),
     );
-    const pendingCaret = React.useRef<number | null>(null);
 
     const parts = parsePhone(value, preferred);
     const text = displayText(parts);
@@ -57,15 +63,7 @@ export const PhoneInput = React.forwardRef<HTMLInputElement, PhoneInputProps>(
       : parts.digits
         ? ""
         : "код страны и номер";
-    const invalid = props["aria-invalid"] === true || props["aria-invalid"] === "true";
-
-    React.useLayoutEffect(() => {
-      const input = inputRef.current;
-      if (pendingCaret.current === null || !input || document.activeElement !== input) return;
-      const position = caretAfterDigits(text, pendingCaret.current);
-      pendingCaret.current = null;
-      input.setSelectionRange(position, position);
-    });
+    const pendingCaret = useCaretRestore(inputRef, text, isDigit);
 
     function emit(next: PhoneParts) {
       if (next.country?.name !== parts.country?.name) {
@@ -96,68 +94,44 @@ export const PhoneInput = React.forwardRef<HTMLInputElement, PhoneInputProps>(
     }
 
     return (
-      <div
-        className={cn(
-          "flex h-10 w-full overflow-hidden rounded-md border border-[var(--input)] bg-[var(--background)] shadow-sm transition-[border-color,box-shadow] focus-within:border-[var(--ring)] focus-within:ring-2 focus-within:ring-[var(--ring)]/20",
-          invalid &&
-            "border-[var(--destructive)] focus-within:border-[var(--destructive)] focus-within:ring-[var(--destructive)]/20",
-          disabled && "cursor-not-allowed bg-[var(--muted)] opacity-70",
-          className,
-        )}
-      >
-        <div className="relative flex shrink-0 items-center gap-1.5 border-r border-[var(--input)] pl-3 pr-2 text-sm transition-colors hover:bg-[var(--accent)]">
-          {parts.country ? (
+      <CountryMaskField
+        badge={
+          parts.country && (
             <>
               <span aria-hidden className="text-base leading-none">
                 {countryFlag(parts.country.iso)}
               </span>
               <span className="tabular-nums">+{parts.country.dial}</span>
             </>
-          ) : (
-            <Globe aria-hidden className="size-4 text-[var(--muted-foreground)]" />
-          )}
-          <ChevronDown aria-hidden className="size-3.5 text-[var(--muted-foreground)]" />
-          <select
-            id={id ? `${id}-country` : undefined}
-            aria-label="Страна телефона"
-            value={parts.country?.name ?? OTHER_COUNTRY}
-            onChange={handleCountry}
-            disabled={disabled}
-            className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-not-allowed"
-          >
-            {MARKET_COUNTRIES.map((country) => (
-              <option key={country.name} value={country.name}>
-                {countryFlag(country.iso)} {country.name} +{country.dial}
-              </option>
-            ))}
-            <option value={OTHER_COUNTRY}>🌐 Другая страна</option>
-          </select>
-        </div>
-        {/* 16px на телефоне: iOS не зумит страницу при фокусе. Подсказка того же размера, иначе съедет. */}
-        <div className="relative min-w-0 flex-1">
-          {hint && (
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 flex items-center overflow-hidden whitespace-pre px-3 text-base tabular-nums sm:text-sm"
-            >
-              <span className="invisible">{text}</span>
-              <span className="text-[var(--muted-foreground)]/60">{hint}</span>
-            </div>
-          )}
-          <input
-            ref={inputRef}
-            id={id}
-            type="tel"
-            inputMode="tel"
-            autoComplete="tel"
-            {...props}
-            value={text}
-            onChange={handleInput}
-            disabled={disabled}
-            className="relative h-full w-full bg-transparent px-3 text-base tabular-nums outline-none disabled:cursor-not-allowed sm:text-sm"
-          />
-        </div>
-      </div>
+          )
+        }
+        country={{
+          id: id ? `${id}-country` : undefined,
+          label: "Страна телефона",
+          value: parts.country?.name ?? OTHER_COUNTRY,
+          options: COUNTRY_OPTIONS,
+          onChange: handleCountry,
+        }}
+        text={text}
+        hint={hint}
+        textClassName={TEXT}
+        invalid={isAriaInvalid(props["aria-invalid"])}
+        disabled={disabled}
+        className={className}
+      >
+        <input
+          ref={inputRef}
+          id={id}
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          {...props}
+          value={text}
+          onChange={handleInput}
+          disabled={disabled}
+          className={cn(COUNTRY_MASK_INPUT, TEXT)}
+        />
+      </CountryMaskField>
     );
   },
 );

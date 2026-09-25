@@ -5,30 +5,21 @@ import { ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { LoadMore } from "@/components/ui/load-more";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { finiteMoney } from "@/lib/currency-map";
 import type { ReportClientRow } from "@/lib/types";
-import { cn, formatCurrency, formatMoney } from "@/lib/utils";
+import { cn, formatCurrency, formatIsoDate, formatMoney, toggledSet } from "@/lib/utils";
 
-function orderDayLabel(iso: string): string {
-  const [y, m, d] = iso.split("-");
-  return `${d}.${m}.${y}`;
-}
-
-function OrderPaymentBadge({ order }: { order: ReportClientRow["order_list"][number] }) {
+/** Оплата заказа в отчёте: статус с сервера, неоплаченный отгруженный заказ — «В долгу» с остатком. */
+function ReportOrderPaymentBadge({ order }: { order: ReportClientRow["order_list"][number] }) {
+  const status = order.payment_status;
   const remaining = finiteMoney(order.remaining_amount);
-  const paid = finiteMoney(order.paid_amount);
-  if (remaining <= 0) return <Badge tone="success">Оплачен</Badge>;
-  if (order.is_debt) {
-    return (
-      <Badge tone={paid > 0 ? "warning" : "destructive"}>
-        {paid > 0 ? "Частично оплачен" : "В долгу"} · осталось {formatCurrency(remaining, order.currency)}
-      </Badge>
-    );
-  }
+  const label = status === "unpaid" ? "В долгу" : PAYMENT_STATUS_LABELS[status];
   return (
-    <Badge tone="warning">
-      {paid > 0 ? "Частично оплачен" : "Ожидает оплаты"} · осталось {formatCurrency(remaining, order.currency)}
+    <Badge tone={PAYMENT_STATUS_TONE[status]}>
+      {label}
+      {remaining > 0 && ` · осталось ${formatCurrency(remaining, order.currency)}`}
     </Badge>
   );
 }
@@ -42,12 +33,7 @@ export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
   const visible = clients.slice(0, limit);
 
   function toggle(id: number) {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpanded((current) => toggledSet(current, id));
   }
 
   return (
@@ -61,16 +47,11 @@ export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
             <TH className="text-right">Отгружено</TH>
             <TH className="text-right">Погашено</TH>
             <TH className="text-right">Остаток долга</TH>
-            <TH className="text-right">К оплате без отсрочки</TH>
           </TR>
         </THead>
         <TBody>
           {clients.length === 0 ? (
-            <TR>
-              <TD colSpan={7} className="py-14 text-center text-sm text-[var(--muted-foreground)]">
-                Здесь пусто
-              </TD>
-            </TR>
+            <EmptyRow colSpan={6} />
           ) : (
             visible.map((client) => {
               const open = expanded.has(client.id);
@@ -110,13 +91,10 @@ export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
                     <TD className="text-right tabular-nums text-[var(--destructive)]">
                       <CurrencyAmounts byCurrency={client.debt_amount_by_currency} fallbackAmount="0" />
                     </TD>
-                    <TD className="text-right tabular-nums text-[var(--warning)]">
-                      <CurrencyAmounts byCurrency={client.awaiting_amount_by_currency} fallbackAmount="0" />
-                    </TD>
                   </TR>
                   {open && (
                     <TR className="bg-[var(--muted)]/30">
-                      <TD colSpan={7} className="p-0">
+                      <TD colSpan={6} className="p-0">
                         <div className="flex flex-col gap-1 px-4 py-3 pl-10">
                           {client.order_list.map((order) => (
                             <div
@@ -130,13 +108,13 @@ export function ClientsTable({ clients }: { clients: ReportClientRow[] }) {
                                 №{order.id}
                               </Link>
                               <span className="tabular-nums text-[var(--muted-foreground)]">
-                                {orderDayLabel(order.date)}
+                                {formatIsoDate(order.date)}
                               </span>
                               <span className="tabular-nums">{formatMoney(order.bags)} меш.</span>
                               <span className="ml-auto font-semibold tabular-nums">
                                 {formatCurrency(order.total, order.currency)}
                               </span>
-                              <OrderPaymentBadge order={order} />
+                              <ReportOrderPaymentBadge order={order} />
                             </div>
                           ))}
                           <Link

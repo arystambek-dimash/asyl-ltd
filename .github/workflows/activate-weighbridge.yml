@@ -28,18 +28,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          umask 077
-          [[ "$PROD_HOST" =~ ^[A-Za-z0-9.:-]+$ ]]
-          [[ "$PROD_PORT" =~ ^[0-9]+$ ]]
-          [[ "$PROD_USER" =~ ^[A-Za-z0-9_.-]+$ ]]
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/collector_key
-          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/collector_hosts
-          trap 'rm -f ~/.ssh/collector_key ~/.ssh/collector_hosts' EXIT
+          . deploy/ci/prod-lib.sh
+          validate_prod_target
+          setup_ssh_key
+          trap 'rm -f "$PROD_SSH_KEY_FILE" "$PROD_KNOWN_HOSTS_FILE"' EXIT
           collector_action=""
           if [ "$UPGRADE_COLLECTOR" = "true" ]; then collector_action="upgrade"; fi
-          ssh -i ~/.ssh/collector_key -p "$PROD_PORT" -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/collector_hosts" \
-            -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 \
-            "$PROD_USER@$PROD_HOST" \
-            "cd '/home/$PROD_USER/asyl-ltd' && sh -s -- $collector_action" < deploy/weighbridge/install.sh
+          run_ssh "cd '/home/$PROD_USER/asyl-ltd' && sh -s -- $collector_action" < deploy/weighbridge/install.sh

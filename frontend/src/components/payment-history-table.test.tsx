@@ -1,22 +1,29 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { PaymentHistoryTable, type HistoryPayment } from "./payment-history-table";
+import type { ClientHistoryPayment } from "@/lib/types";
+import { PaymentHistoryTable } from "./payment-history-table";
 const mocks = vi.hoisted(() => ({ post: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   api: { post: (...args: unknown[]) => mocks.post(...args) },
   apiError: () => "Платёж уже изменён",
 }));
-const payment: HistoryPayment = {
+const payment: ClientHistoryPayment = {
   id: 1,
   order_id: 12,
   date: "2026-09-08T10:00:00Z",
   employee: "Кассир",
   method: "cash",
+  method_label: "Наличные",
   status: "confirmed",
+  status_label: "Оплачено",
   amount: "500",
+  counted_amount: "500",
   currency: "KZT",
   can_reopen: true,
+  can_reject: false,
+  provider: false,
+  refunded_amount: "0",
 };
 beforeEach(() => {
   mocks.post.mockReset();

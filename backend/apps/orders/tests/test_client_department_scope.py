@@ -11,7 +11,6 @@ from apps.eventlog.models import EventLog
 from apps.orders import apipay as apipay_services
 from apps.orders.apipay import (
     cancel_invoice,
-    create_cash_refund,
     create_invoice,
     create_refund,
 )
@@ -23,16 +22,11 @@ from apps.orders.models import (
     PaymentRefund,
     StatusChangeRequest,
 )
+from apps.orders.refunds import create_cash_refund
 from apps.sales.models import Department
 from apps.warehouse.models import StockItem
 
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
 
 @pytest.fixture
@@ -76,9 +70,8 @@ def ownership_scope(user_with_perms):
             "loader.confirm",
             "orders.rollback",
         ],
+        department=first_department,
     )
-    user.employee.sales_department = first_department
-    user.employee.save(update_fields=["sales_department"])
     return {
         "user": user,
         "first_department": first_department,
@@ -154,9 +147,9 @@ def test_order_scope_covers_list_detail_and_trash(
 
 def test_unassigned_and_superuser_keep_global_order_access(
     auth_client,
-    make_user,
     ownership_scope,
     user_with_perms,
+    admin_user,
 ):
     scope = ownership_scope
     first = _order(
@@ -168,12 +161,8 @@ def test_unassigned_and_superuser_keep_global_order_access(
         department=scope["second_department"].code,
     )
     unassigned = user_with_perms("global-orders", codes=["orders.view"])
-    superuser = make_user(username="global-superuser")
-    superuser.is_staff = True
-    superuser.is_superuser = True
-    superuser.save(update_fields=["is_staff", "is_superuser"])
 
-    for user in (unassigned, superuser):
+    for user in (unassigned, admin_user):
         response = auth_client(user).get("/api/orders/")
         assert response.status_code == 200
         assert {row["id"] for row in response.data} == {first.pk, second.pk}
@@ -313,7 +302,6 @@ def test_reports_transactions_queue_log_and_department_summary_are_scoped(
         {"department": scope["first_department"].code},
     )
     queue = api.get("/api/orders/payments-queue/")
-    cashier_log = api.get("/api/orders/cashier-log/")
     department_summary = api.get("/api/orders/department-summary/")
 
     assert report.status_code == 200
@@ -329,9 +317,8 @@ def test_reports_transactions_queue_log_and_department_summary_are_scoped(
     assert filtered_transactions.data["count"] == 2
     assert wrong_order_department.data["count"] == 0
     # Очередь подтверждения общая для всех отделов (test_shared_confirm_queue.py);
-    # отчёт, транзакции, журнал и сводка — только свой отдел.
+    # отчёт, транзакции и сводка — только свой отдел.
     assert [row["id"] for row in queue.data] == [first_pending.pk, second_pending.pk]
-    assert [row["order"] for row in cashier_log.data] == [first_order.pk]
     # Закреплённый сотрудник видит одну карточку — своего отдела, куда идут все его заказы.
     assert [row["code"] for row in department_summary.data] == [scope["first_department"].code]
     assert department_summary.data[0]["orders"] == 1
@@ -353,12 +340,6 @@ def test_top_level_payment_actions_hide_foreign_department_ids(
         amount=Decimal("50.00"),
         method="cash",
         status="confirmed",
-    )
-    received = Payment.objects.create(
-        order=order,
-        amount=Decimal("20.00"),
-        method="cash",
-        status="received",
     )
     rejected = Payment.objects.create(
         order=order,
@@ -382,11 +363,6 @@ def test_top_level_payment_actions_hide_foreign_department_ids(
             format="json",
         ),
         api.post(
-            f"/api/payment-transactions/{received.pk}/reject/",
-            {"reason": "Проверка"},
-            format="json",
-        ),
-        api.post(
             f"/api/payment-transactions/{rejected.pk}/restore/",
             {},
             format="json",
@@ -398,13 +374,11 @@ def test_top_level_payment_actions_hide_foreign_department_ids(
         ),
     ]
 
-    assert [response.status_code for response in responses] == [404] * 5
+    assert [response.status_code for response in responses] == [404] * 4
     confirmed.refresh_from_db()
-    received.refresh_from_db()
     rejected.refresh_from_db()
     issuable.refresh_from_db()
     assert confirmed.refunded_amount == Decimal("0.00")
-    assert received.status == "received"
     assert rejected.status == "rejected"
     assert issuable.status == "received"
 
@@ -435,28 +409,52 @@ def test_post_board_and_dashboard_projection_are_ownership_scoped(
     assert [row["id"] for row in post_board.data] == [own.pk]
     assert dashboard.status_code == 200
     assert [row["id"] for row in dashboard.data["queue"]] == [own.pk]
-    assert dashboard.data["attention"]["pending_payments"] == 1
+    # «Подтвердить оплаты» ведёт в «Кассу», а её очередь общая для всех
+    # отделов: число на дашборде совпадает с очередью, а не со своими заказами.
+    queue = api.get("/api/orders/payments-queue/")
+    assert queue.status_code == 200
+    assert dashboard.data["attention"]["pending_payments"] == len(queue.data) == 2
+
+
+def test_dashboard_pending_payments_counts_the_cashier_queue(auth_client, ownership_scope):
+    """Онлайн-оплата ждёт клиента, а не кассу; заявка на наличные — наоборот."""
+    scope = ownership_scope
+    order = _order(
+        scope["first_client"],
+        department=scope["first_department"].code,
+        status="shipped",
+    )
+    online = Payment.objects.create(order=order, amount="10.00", method="kaspi", status="received")
+    ApiPayInvoice.objects.create(
+        payment=online, invoice_id=770001, channel="qr", status="pending",
+        idempotency_key=f"asyl-payment-{online.pk}",
+    )
+    cash_requests = [
+        Payment.objects.create(order=order, amount="20.00", method="cash", status="requested"),
+        Payment.objects.create(order=order, amount="30.00", method="remote", status="requested"),
+    ]
+    api = auth_client(scope["user"])
+
+    dashboard = api.get("/api/orders/dashboard-operational/")
+    queue = api.get("/api/orders/payments-queue/")
+
+    assert sorted(row["id"] for row in queue.data) == [row.pk for row in cash_requests]
+    assert dashboard.data["attention"]["pending_payments"] == 2
 
 
 @pytest.mark.parametrize(
     ("method", "suffix", "payload"),
     [
         ("patch", "", {"notes": "cross-tenant edit"}),
-        ("post", "repeat/", {}),
         ("post", "correct-price/", {"total_amount": "1.00"}),
-        ("post", "train/", {"action": "start"}),
-        ("post", "loading-camera/", {"camera": ""}),
         ("post", "payments/", {"amount": "1.00", "method": "cash"}),
-        ("get", "invoice-pdf/", None),
         ("post", "payments/{payment}/receive/", {}),
         ("post", "payments/{payment}/confirm/", {}),
         ("post", "payments/{payment}/reopen/", {}),
-        ("post", "payments/{payment}/restore/", {}),
         ("post", "payments/{payment}/reject/", {"reason": "no"}),
         # confirm/ и reject/ заявки — общая очередь кассы: test_shared_confirm_queue.py.
         ("post", "set-status/", {"status": "confirmed"}),
         ("post", "rollback-shipment/", {"reason": "no"}),
-        ("get", "status-requests/", None),
         ("post", "status-requests/{status_request}/approve/", {}),
         ("post", "status-requests/{status_request}/reject/", {}),
     ],
@@ -515,7 +513,6 @@ def test_foreign_order_detail_actions_are_hidden_before_action_logic(
         "payments/{payment}/receive/",
         "payments/{payment}/confirm/",
         "payments/{payment}/reopen/",
-        "payments/{payment}/restore/",
         "payments/{payment}/reject/",
         "status-requests/{status_request}/approve/",
         "status-requests/{status_request}/reject/",
@@ -662,7 +659,7 @@ def test_provider_side_effect_rechecks_scope_after_local_reservation(
             channel="phone",
         )
 
-    original_fence = apipay_services._provider_scope_fence
+    original_fence = apipay_services.provider_scope_fence
 
     @contextmanager
     def transfer_after_reservation(order_id, user, **kwargs):
@@ -685,7 +682,7 @@ def test_provider_side_effect_rechecks_scope_after_local_reservation(
 
     monkeypatch.setattr(
         apipay_services,
-        "_provider_scope_fence",
+        "provider_scope_fence",
         transfer_after_reservation,
     )
     monkeypatch.setattr(

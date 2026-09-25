@@ -7,35 +7,27 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.bots.models import OutgoingMessage, WhatsAppBotSettings
-from apps.bots.tests.whatsapp_fakes import GROUP, bot_alive
+from apps.bots.tests.samples import train_order
+from apps.bots.tests.whatsapp_fakes import DINARA
 from apps.bots.wagon_report import REPORT_QUEUE_TIMEOUT
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.orders.backdate import backdate_moment
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order
 from apps.sales.models import Department
-from apps.shipments.models import Shipment, ShipmentWagon
 
 pytestmark = pytest.mark.django_db
 
 COMPOSE = "/api/loader/wagon-report/compose/"
 SEND = "/api/loader/wagon-report/send/"
 HISTORY = "/api/loader/history/"
-DINARA = "77011234567"
 
 
 def _shipped(client, product, *, truck_number="12345678", bags=8160, day=None, hour=12, wagons=(), station=""):
     """Вагонный заказ, отгруженный кнопкой (без вагонов) или по отчёту (с вагонами)."""
-    order = Order.objects.create(
-        client=client, currency="USD", department="export", transport_type="train", status="shipped",
-        truck_number=truck_number, rail_station=station)
-    OrderItem.objects.create(order=order, product=product, quantity=bags, unit_price="7.50")
     at = backdate_moment(day or timezone.localdate()).replace(hour=hour)
-    shipment = Shipment.objects.create(order=order, bags_loaded=bags, shipped_at=at)
-    for position, number in enumerate(wagons, start=1):
-        ShipmentWagon.objects.create(
-            shipment=shipment, number=number, product=product, bags=1360, weight_kg="68000", position=position)
-    return order
+    return train_order(
+        client, product, bags=bags, shipped_at=at, wagons=wagons, truck_number=truck_number, rail_station=station)
 
 
 def _send(api, orders, *, text="отчёт", delivery="link", key="key-00000001"):
@@ -44,24 +36,8 @@ def _send(api, orders, *, text="отчёт", delivery="link", key="key-00000001"
 
 
 @pytest.fixture
-def wagon_loader(user_with_perms):
-    return user_with_perms("wagon-loader", codes=["loader.view", "loader.wagons"])
-
-
-@pytest.fixture
-def api(auth_client, wagon_loader):
-    return auth_client(wagon_loader)
-
-
-@pytest.fixture
-def bot_on(settings):
-    settings.WHATSAPP_BOT_ENABLED = True
-    row = WhatsAppBotSettings.load()
-    row.enabled = True
-    row.allowed_chat_ids = [GROUP]
-    row.report_recipient_phone = DINARA
-    bot_alive(row).save()
-    return row
+def api(auth_client, wagon_viewer):
+    return auth_client(wagon_viewer)
 
 
 def test_compose_one_order_shipped_by_the_button(api, client, product):
@@ -98,8 +74,8 @@ def test_compose_the_history_filter_groups_the_period(api, client, product):
     assert [block.splitlines()[1] for block in blocks] == ["Ст. 2 вагон", "Ст. Раустан 2 вагон"]
     assert blocks[0].splitlines()[2:] == ["Д1с-28087658-408 тн", "Д1с-28087666-408 тн"]
 
-    yesterday = (today - timedelta(days=2)).isoformat()
-    assert len(api.get(COMPOSE, {"date_from": yesterday, "date_to": today.isoformat()}).data["order_ids"]) == 4
+    two_days_ago = (today - timedelta(days=2)).isoformat()
+    assert len(api.get(COMPOSE, {"date_from": two_days_ago, "date_to": today.isoformat()}).data["order_ids"]) == 4
     assert api.get(COMPOSE, {"search": "28087682"}).data["order_ids"] == [report.pk]
 
 
@@ -131,9 +107,7 @@ def test_trucks_only_loader_cannot_compose_or_send(auth_client, user_with_perms,
 
 def test_other_department_orders_are_not_reported(auth_client, user_with_perms, client, product):
     retail = Department.objects.create(code="retail", name="Розница")
-    loader = user_with_perms("retail-loader", codes=["loader.view", "loader.wagons"])
-    loader.employee.sales_department = retail
-    loader.employee.save()
+    loader = user_with_perms("retail-loader", codes=["loader.view", "loader.wagons"], department=retail)
     api = auth_client(loader)
     order = _shipped(client, product)
 
@@ -149,7 +123,7 @@ def test_compose_one_order_must_be_a_shipped_wagon_order(api, client, product):
     assert api.get(COMPOSE, {"order": "abc"}).status_code == 400
 
 
-def test_send_by_link_marks_the_history_rows(api, client, product, wagon_loader):
+def test_send_by_link_marks_the_history_rows(api, client, product, wagon_viewer):
     orders = [_shipped(client, product, hour=9), _shipped(client, product, truck_number="28087658", hour=10)]
 
     response = _send(api, orders, text="сб 19.09.26 Узбекистан ООО OSIYO\nСт. 1 вагон\nД1с-12345678-408 тн")
@@ -164,7 +138,7 @@ def test_send_by_link_marks_the_history_rows(api, client, product, wagon_loader)
         row = rows[order.pk]
         assert (row["report_status"], row["report_sent_to"], row["report_error"]) == ("link", "Динаре", "")
         assert row["report_sent_at"] is not None
-    assert EventLog.objects.filter(event_type="rail_report", user=wagon_loader).count() == 2
+    assert EventLog.objects.filter(event_type="rail_report", user=wagon_viewer).count() == 2
 
 
 def test_send_by_bot_queues_once_per_press(api, client, product, bot_on):
@@ -309,7 +283,7 @@ def test_loader_cannot_change_the_recipient(api):
     assert response.status_code == 403
 
 
-def test_uzbek_client_name_in_the_report(api, department, product):
+def test_country_outside_the_header_list_is_omitted(api, department, product):
     """Страна не из списка шапки опускается, клиент — по карточке."""
     far = Client.objects.create_with_user(
         first_name="Ли", phone="+86 138 0000 0000", company_name="LI TRADING", currency="USD",

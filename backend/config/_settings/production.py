@@ -2,12 +2,6 @@ import os
 
 from django.core.exceptions import ImproperlyConfigured
 
-# ``base`` initializes Sentry while it is imported. Establish production
-# defaults first so management commands and non-Compose launches cannot tag
-# events as development merely because DEBUG/APP_ENVIRONMENT were omitted.
-os.environ.setdefault("DEBUG", "0")
-os.environ.setdefault("APP_ENVIRONMENT", "production")
-
 from .base import *  # noqa: F403
 from .base import (
     APP_ENVIRONMENT,
@@ -16,6 +10,7 @@ from .base import (
     LOG_LEVEL,
     REST_FRAMEWORK,
     build_logging_config,
+    env_list,
 )
 
 DEBUG = False
@@ -52,7 +47,10 @@ CSRF_COOKIE_SECURE = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
-SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "31536000"))
+# Снаружи эти заголовки (и X-Frame-Options) отдаёт только nginx
+# (deploy/nginx/conf.d/snippets/security-headers.conf), копии Django он
+# скрывает. Здесь они остаются на случай запроса к бэкенду в обход nginx.
+SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -68,14 +66,6 @@ LOCAL_DEV_ORIGINS = [
 ]
 
 
-def _origins_from_env(name):
-    return [
-        value.strip()
-        for value in os.environ.get(name, "").split(",")
-        if value.strip()
-    ]
-
-
 def _merge_origins(*groups):
     merged = []
     for group in groups:
@@ -87,27 +77,19 @@ def _merge_origins(*groups):
 
 CORS_ALLOWED_ORIGINS = _merge_origins(
     LOCAL_DEV_ORIGINS,
-    _origins_from_env("CORS_ALLOWED_ORIGINS"),
+    env_list("CORS_ALLOWED_ORIGINS"),
 )
-
-CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = _merge_origins(
     LOCAL_DEV_ORIGINS,
-    _origins_from_env("CSRF_TRUSTED_ORIGINS"),
+    env_list("CSRF_TRUSTED_ORIGINS"),
 )
 
-ALLOWED_HOSTS = [
-    value.strip()
-    for value in os.environ.get("ALLOWED_HOSTS", "").split(",")
-    if value.strip()
-]
+ALLOWED_HOSTS = env_list("ALLOWED_HOSTS")
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:
     raise ImproperlyConfigured(
         "ALLOWED_HOSTS must contain explicit production hosts"
     )
 
-REST_FRAMEWORK["NUM_PROXIES"] = int(
-    os.environ.get("THROTTLE_NUM_PROXIES", "1")
-)
+REST_FRAMEWORK["NUM_PROXIES"] = 1
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

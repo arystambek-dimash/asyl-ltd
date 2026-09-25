@@ -1,20 +1,17 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import type { AxiosError } from "axios";
 import { Check, PencilLine, X } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
 import {
   VehicleRoiOverlay,
   isDrawableVehicleRoi,
-  normalizeVehicleRoi,
+  useRoiEditor,
   type NormalizedRoiPoint,
-  type VehicleRoiConfig,
 } from "@/components/grain/vehicle-roi-overlay";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { api, apiError } from "@/lib/api";
 import { formatKg } from "@/lib/grain";
 import { showSuccess } from "@/lib/toast";
 import type { WagonArchCameraRuntime } from "@/lib/types";
@@ -32,42 +29,6 @@ const DEFAULT_ZONE: NormalizedRoiPoint[] = [
   [0.9, 0.7],
   [0.1, 0.7],
 ];
-
-type SaveResponse = { saved: boolean; applied_to_monitor: boolean; zone: VehicleRoiConfig; code?: string };
-
-function draftZone(points: NormalizedRoiPoint[]): VehicleRoiConfig {
-  return {
-    configured: true,
-    enabled: true,
-    source: "main",
-    coordinate_space: "normalized",
-    points: points.map(([x, y]) => ({ x, y })),
-  };
-}
-
-function polygonArea(points: NormalizedRoiPoint[]) {
-  let area = 0;
-  for (let i = 0; i < points.length; i += 1) {
-    const [x1, y1] = points[i];
-    const [x2, y2] = points[(i + 1) % points.length];
-    area += x1 * y2 - x2 * y1;
-  }
-  return Math.abs(area) / 2;
-}
-
-function validDraft(points: NormalizedRoiPoint[]) {
-  return points.length >= 3 && points.length <= 12 && polygonArea(points) >= 0.0001;
-}
-
-function acceptedSave(value: unknown): value is SaveResponse {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as SaveResponse).saved === true &&
-    typeof (value as SaveResponse).applied_to_monitor === "boolean" &&
-    isDrawableVehicleRoi((value as SaveResponse).zone, "main")
-  );
-}
 
 function motionLabel(runtime: WagonArchCameraRuntime | null) {
   const motion = runtime?.motion;
@@ -91,30 +52,37 @@ function collectorLabel(runtime: WagonArchCameraRuntime | null) {
 type WagonArchCameraPanelProps = {
   /** Камера, закреплённая за проходной вагонов (настройка «Назначить камеру»). */
   assignedCamera?: string | null;
-  syncStatus?: string | null;
   /** Кнопка «Назначить камеру» — рендерится рядом с действиями зоны. */
   assignAction?: ReactNode;
 };
 
-export function WagonArchCameraPanel({
-  assignedCamera = null,
-  syncStatus = null,
-  assignAction = null,
-}: WagonArchCameraPanelProps = {}) {
+export function WagonArchCameraPanel({ assignedCamera = null, assignAction = null }: WagonArchCameraPanelProps = {}) {
   const canManage = useAuth((state) => Boolean(state.me?.is_superuser));
   const { data: runtime, error, reload, setData } = useApi<WagonArchCameraRuntime>(RUNTIME_URL);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<NormalizedRoiPoint[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState("");
-  const [notice, setNotice] = useState<{ message: string; tone: "success" | "warning" } | null>(null);
   const [streamOnline, setStreamOnline] = useState(false);
+  const editor = useRoiEditor({
+    saveUrl: canManage && runtime ? `/cameras/${runtime.camera}/wagon-arch-runtime/` : null,
+    source: "main",
+    responseKey: "zone",
+    defaultPoints: DEFAULT_ZONE,
+    onSaved: (savedZone, appliedToMonitor) => {
+      if (runtime) setData({ ...runtime, zone: savedZone });
+      if (!appliedToMonitor) {
+        return {
+          message: "Зона сохранена, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
+          tone: "warning",
+        };
+      }
+      showSuccess("Зона арки сохранена");
+      return { message: "Зона сохранена. ПК камер применит её в течение пары секунд.", tone: "success" };
+    },
+  });
+  const { editing, saving } = editor;
   useVisiblePolling(reload, POLL_MS, !editing && !saving);
 
   const zone = runtime?.zone ?? null;
-  const overlay = editing ? draftZone(draft) : zone;
+  const overlay = editing ? editor.draftRoi : zone;
   const zoneConfigured = Boolean(zone && isDrawableVehicleRoi(zone, "main"));
-  const canSave = validDraft(draft) && !saving;
   const lastStop = runtime?.runtime.last_stop ?? null;
   // Пока прокси не ответил, показываем поток закреплённой камеры — оператор видит видео сразу.
   const streamSrc = runtime?.stream ?? assignedCamera;
@@ -122,50 +90,7 @@ export function WagonArchCameraPanel({
 
   function startEditing() {
     if (!canManage || !runtime) return;
-    const points = normalizeVehicleRoi(runtime.zone.points);
-    setDraft(points.length ? points : DEFAULT_ZONE);
-    setSaveError("");
-    setNotice(null);
-    setEditing(true);
-  }
-
-  function accept(payload: SaveResponse) {
-    if (runtime) setData({ ...runtime, zone: payload.zone });
-    setEditing(false);
-    setDraft([]);
-    setSaveError("");
-    setNotice(
-      payload.applied_to_monitor
-        ? { message: "Зона сохранена. ПК камер применит её в течение пары секунд.", tone: "success" }
-        : {
-            message:
-              "Зона сохранена, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
-            tone: "warning",
-          },
-    );
-    if (payload.applied_to_monitor) showSuccess("Зона арки сохранена");
-  }
-
-  async function save() {
-    if (!canManage || !runtime || !canSave) return;
-    setSaving(true);
-    setSaveError("");
-    const body = { points: draft.map(([x, y]) => ({ x, y })), enabled: true, source: "main" };
-    try {
-      const response = await api.put<SaveResponse>(`/cameras/${runtime.camera}/wagon-arch-runtime/`, body, {
-        timeout: 12_000,
-      });
-      if (!acceptedSave(response.data)) throw new Error("Некорректный ответ сохранения зоны");
-      accept(response.data);
-    } catch (cause) {
-      // A 503 may mean the polygon was persisted while the live monitor refresh
-      // failed. Keep that authoritative value instead of rolling back.
-      const response = (cause as AxiosError<unknown>).response;
-      if (response?.status === 503 && acceptedSave(response.data)) accept(response.data);
-      else setSaveError(apiError(cause));
-    } finally {
-      setSaving(false);
-    }
+    editor.start(runtime.zone.points);
   }
 
   return (
@@ -182,18 +107,10 @@ export function WagonArchCameraPanel({
           {assignAction}
           {canManage && editing ? (
             <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора зоны">
-              <Button
-                variant="outline"
-                disabled={saving}
-                onClick={() => {
-                  setEditing(false);
-                  setDraft([]);
-                  setSaveError("");
-                }}
-              >
+              <Button variant="outline" disabled={saving} onClick={editor.cancel}>
                 <X className="size-4" /> Отмена
               </Button>
-              <Button disabled={!canSave} onClick={() => void save()}>
+              <Button disabled={!editor.canSave} onClick={() => void editor.save()}>
                 <Check className="size-4" /> {saving ? "Сохранение…" : "Сохранить зону"}
               </Button>
             </div>
@@ -218,17 +135,20 @@ export function WagonArchCameraPanel({
           Перетащите точки мышью или выберите точку клавишей Tab и двигайте стрелками. Shift + стрелка — крупный шаг.
         </p>
       )}
-      {saveError && (
+      {editor.error && (
         <p role="alert" className="text-sm text-[var(--destructive)]">
-          {saveError}
+          {editor.error}
         </p>
       )}
-      {notice && (
+      {editor.notice && (
         <p
           role="status"
-          className={cn("text-sm", notice.tone === "success" ? "text-[var(--success)]" : "text-[var(--warning)]")}
+          className={cn(
+            "text-sm",
+            editor.notice.tone === "success" ? "text-[var(--success)]" : "text-[var(--warning)]",
+          )}
         >
-          {notice.message}
+          {editor.notice.message}
         </p>
       )}
       <div className="grid gap-4 lg:grid-cols-[1.55fr_0.85fr]">
@@ -245,7 +165,7 @@ export function WagonArchCameraPanel({
             roi={overlay}
             expectedSource="main"
             editable={editing}
-            onPointsChange={setDraft}
+            onPointsChange={editor.setDraft}
             label="ЗОНА АРКИ"
             editorLabel="Редактор зоны арки"
             pointLabel="Точка зоны"
@@ -257,11 +177,7 @@ export function WagonArchCameraPanel({
         <dl className="grid content-start gap-3 text-sm">
           <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
             <dt className="text-[var(--muted-foreground)]">Камера</dt>
-            <dd className="font-medium">
-              {assignedCamera
-                ? `${assignedCamera} · ${syncStatus === "synced" ? "синхронизирована" : "ожидает связь"}`
-                : "не назначена"}
-            </dd>
+            <dd className="font-medium">{assignedCamera ?? "не назначена"}</dd>
           </div>
           <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
             <dt className="text-[var(--muted-foreground)]">Зона</dt>

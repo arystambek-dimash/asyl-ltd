@@ -6,17 +6,14 @@ import OrdersPage from "./page";
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   replace: vi.fn(),
+  push: vi.fn(),
   me: { permissions: ["orders.view"] } as Record<string, unknown>,
 }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: mocks.replace }),
+  useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
   useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock("@/lib/api", () => ({
@@ -28,6 +25,7 @@ vi.mock("@/lib/api", () => ({
 beforeEach(() => {
   mocks.me = { permissions: ["orders.view"] };
   mocks.replace.mockReset();
+  mocks.push.mockReset();
   mocks.get.mockReset();
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
@@ -134,6 +132,14 @@ it("gives staff who confirm orders a «Заявки» tab and keeps a department
             revenue: "100",
             revenue_currency: "KZT",
             revenue_by_currency: { KZT: "100" },
+            debt: "0",
+            debt_by_currency: {},
+            paid: "0",
+            paid_by_currency: {},
+            paid_orders: 0,
+            partial_orders: 0,
+            unpaid_orders: 1,
+            debt_orders: 0,
           },
         ],
       };
@@ -249,4 +255,97 @@ it("shows a prepayment badge before shipment and «Не оплачен» only af
   rerender(<></>);
   rerender(<OrdersPage />);
   expect((await screen.findAllByText("Не оплачен")).length).toBeGreaterThan(0);
+});
+
+it("opens the confirmation window of a request chosen as «Ожидает загрузки» in the list", async () => {
+  const user = userEvent.setup();
+  mocks.me = { permissions: ["orders.view", "orders.edit"] };
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/" && url.searchParams.get("confirm_queue") !== "1")
+      return {
+        data: {
+          results: [
+            {
+              id: 7,
+              client_name: "Клиент",
+              department: "",
+              currency: "KZT",
+              status: "pending",
+              total_amount: "100",
+              paid_total: "0",
+              items: [],
+              created_at: "2026-09-01T10:00:00Z",
+            },
+          ],
+          count: 1,
+          next: null,
+        },
+      };
+    return baseGet(raw);
+  });
+  render(<OrdersPage />);
+
+  const [select] = await screen.findAllByRole("combobox", { name: "Статус заказа" });
+  await user.selectOptions(select, "confirmed");
+
+  // Подтверждение живёт в карточке: она сама откроет окно по ?confirm=1.
+  expect(mocks.push).toHaveBeenCalledWith("/orders/7?confirm=1");
+});
+
+it("takes «Общая» totals of the whole selection from the server, not from the loaded page", async () => {
+  const user = userEvent.setup();
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/list-summary/")
+      return {
+        data: {
+          orders: 70,
+          active: 12,
+          total_currency: "KZT",
+          total_by_currency: { KZT: "7000.00", USD: "5.00" },
+          by_status_group: { confirmed: "6000.00", shipped: "1000.00" },
+        },
+      };
+    return baseGet(raw);
+  });
+  render(<OrdersPage />);
+  const urls = (path: string) =>
+    mocks.get.mock.calls
+      .map(([raw]) => new URL(String(raw), "http://localhost"))
+      .filter((url) => url.pathname === path);
+  await user.type(screen.getByPlaceholderText("Поиск по клиенту, номеру или #ID"), "934");
+  await waitFor(() => expect(urls("/orders/").at(-1)?.searchParams.get("search")).toBe("934"));
+  await user.click(screen.getByRole("button", { name: /Аналитика/ }));
+  const analytics = await screen.findByRole("dialog", { name: "Аналитика заказов" });
+  await user.click(within(analytics).getByRole("tab", { name: /Общая/ }));
+
+  // Список загрузил одну страницу, а итоги — по всем 70 заказам выборки.
+  expect(await within(analytics).findByText("70")).toBeInTheDocument();
+  expect(within(analytics).getByText("12")).toBeInTheDocument();
+  expect(within(analytics).getByText(/7\s000 ₸/)).toBeInTheDocument();
+  expect(within(analytics).getByText(/ещё 5 \$/)).toBeInTheDocument();
+  const [summaryUrl] = urls("/orders/list-summary/");
+  // Итоги — по тем же фильтрам и поиску, что и список, без страниц и сортировки.
+  expect(summaryUrl?.searchParams.get("search")).toBe("934");
+  expect(summaryUrl?.searchParams.has("page")).toBe(false);
+  expect(summaryUrl?.searchParams.has("ordering")).toBe(false);
+});
+
+it("stretches the empty row over the actions column for staff who only correct prices", async () => {
+  mocks.me = { permissions: ["orders.view", "orders.correct_price"] };
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/" && !url.searchParams.has("confirm_queue")) {
+      return { data: { results: [], count: 0, next: null, previous: null } };
+    }
+    return baseGet(raw);
+  });
+  render(<OrdersPage />);
+  const emptyCell = (await screen.findAllByText("Заказов пока нет.")).find((el) => el.tagName === "TD")!;
+  const headerCells = emptyCell.closest("table")!.querySelectorAll("thead th");
+  expect(emptyCell).toHaveAttribute("colspan", String(headerCells.length));
 });

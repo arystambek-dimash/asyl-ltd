@@ -3,10 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ensureCameraStreamToken } from "@/lib/camera-stream-auth";
 
-// Backwards-compatible export for existing camera-wall consumers. The cache
-// itself lives in lib so authentication teardown can invalidate it.
-export { ensureCameraStreamToken } from "@/lib/camera-stream-auth";
-
 const TOKEN_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const STARTUP_TIMEOUT_MS = 15 * 1000;
 const DISCONNECTED_GRACE_MS = 4 * 1000;

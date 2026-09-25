@@ -6,10 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { api, apiError } from "@/lib/api";
 import type { LoaderOrder } from "@/lib/loader";
 import {
   RAIL_REPORT_API,
+  RAIL_REPORT_MAX_LENGTH,
   railReportBody,
   reportDayLabel,
   WAGON_NUMBER_PROBLEMS,
@@ -18,7 +20,7 @@ import {
   type RailPreview,
 } from "@/lib/rail-report";
 import { useApi } from "@/lib/use-api";
-import { cn, formatCurrency, formatMoney, PHONE_INPUT_TEXT, pluralRu } from "@/lib/utils";
+import { bagsWord, cn, formatCurrency, formatMoney, PHONE_INPUT_TEXT } from "@/lib/utils";
 import { wagonsWord } from "@/lib/wagons";
 
 type Busy = "check" | "remember" | "apply" | null;
@@ -183,11 +185,12 @@ export function RailReportSheet<T = LoaderOrder>({
       <div className="flex min-w-0 flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="rail-report-text">Текст отчёта</Label>
-          <textarea
+          <Textarea
+            mono
             id="rail-report-text"
             autoFocus
             rows={preview ? 4 : 8}
-            maxLength={8192}
+            maxLength={RAIL_REPORT_MAX_LENGTH}
             spellCheck={false}
             value={text}
             placeholder={PLACEHOLDER}
@@ -204,10 +207,6 @@ export function RailReportSheet<T = LoaderOrder>({
                 void check();
               }
             }}
-            className={cn(
-              "w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 font-mono leading-snug outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15",
-              PHONE_INPUT_TEXT,
-            )}
           />
         </div>
 
@@ -228,6 +227,8 @@ export function RailReportSheet<T = LoaderOrder>({
             preview={preview}
             options={options.data}
             optionsError={options.error}
+            needsProducts={needsProducts}
+            needsClient={needsClient}
             rememberError={rememberError}
             busy={busy}
             editingClient={editingClient}
@@ -245,6 +246,8 @@ function PreviewBody({
   preview,
   options,
   optionsError,
+  needsProducts,
+  needsClient,
   rememberError,
   busy,
   editingClient,
@@ -255,6 +258,9 @@ function PreviewBody({
   preview: RailPreview;
   options: RailOptions | null;
   optionsError: string;
+  /** Выбор товара или клиента: от тех же условий лист загружает словари. */
+  needsProducts: boolean;
+  needsClient: boolean;
   rememberError: { path: RememberPath; message: string } | null;
   busy: Busy;
   editingClient: boolean;
@@ -266,6 +272,7 @@ function PreviewBody({
   // Отгрузить по отчёту можно только ручной заказ, который ещё ждёт отгрузки.
   const duplicates = preview.order_id === null ? preview.shippable_orders : [];
   const errorOf = (path: RememberPath) => optionsError || (rememberError?.path === path ? rememberError.message : "");
+  const optionsLoading = !options && !optionsError;
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <section aria-label="Итог отчёта" className="rounded-xl border bg-[var(--muted)]/30 p-4">
@@ -297,7 +304,7 @@ function PreviewBody({
             <b>{formatMoney(totals.tons)}</b> т
           </span>
           <span className="tabular-nums">
-            <b>{formatMoney(totals.bags)}</b> {pluralRu(totals.bags, ["мешок", "мешка", "мешков"])}
+            <b>{formatMoney(totals.bags)}</b> {bagsWord(totals.bags)}
           </span>
           {totals.amount !== null && (
             <span className="font-semibold tabular-nums">{formatCurrency(totals.amount, totals.currency)}</span>
@@ -325,42 +332,43 @@ function PreviewBody({
       ))}
       {preview.warnings.length > 0 && <IssueList tone="warning" title="Обратите внимание" issues={preview.warnings} />}
 
-      {preview.unresolved.products.length > 0 &&
-        (preview.can_remember_products ? (
-          <ProductCodes
-            codes={preview.unresolved.products}
-            products={options?.products ?? []}
-            loading={!options && !optionsError}
-            error={errorOf("product-codes")}
-            busy={busy}
-            onRemember={(code, product) => onRemember("product-codes", { code, product })}
-          />
-        ) : (
+      {needsProducts ? (
+        <ProductCodes
+          codes={preview.unresolved.products}
+          products={options?.products ?? []}
+          loading={optionsLoading}
+          error={errorOf("product-codes")}
+          busy={busy}
+          onRemember={(code, product) => onRemember("product-codes", { code, product })}
+        />
+      ) : (
+        preview.unresolved.products.length > 0 && (
           <p className="text-sm text-[var(--muted-foreground)]">
             Код товара запоминает сотрудник, который правит товары или создаёт заказы.
           </p>
-        ))}
-      {(preview.unresolved.client || editingClient) &&
-        (preview.can_remember_clients ? (
-          <ClientPicker
-            name={preview.client_name}
-            current={preview.client?.id ?? null}
-            currency={preview.currency}
-            clients={options?.clients ?? []}
-            loading={!options && !optionsError}
-            error={errorOf("client-names")}
-            busy={busy}
-            onRemember={(client, currency) =>
-              onRemember("client-names", { client_name: preview.client_name, client, currency })
-            }
-          />
-        ) : (
-          preview.order_id === null && (
-            <p className="text-sm text-[var(--muted-foreground)]">
-              Клиента отчёта выбирает сотрудник, который создаёт заказы.
-            </p>
-          )
-        ))}
+        )
+      )}
+      {needsClient ? (
+        <ClientPicker
+          name={preview.client_name}
+          current={preview.client?.id ?? null}
+          currency={preview.currency}
+          clients={options?.clients ?? []}
+          loading={optionsLoading}
+          error={errorOf("client-names")}
+          busy={busy}
+          onRemember={(client, currency) =>
+            onRemember("client-names", { client_name: preview.client_name, client, currency })
+          }
+        />
+      ) : (
+        preview.unresolved.client &&
+        preview.order_id === null && (
+          <p className="text-sm text-[var(--muted-foreground)]">
+            Клиента отчёта выбирает сотрудник, который создаёт заказы.
+          </p>
+        )
+      )}
 
       <WagonsTable preview={preview} />
 

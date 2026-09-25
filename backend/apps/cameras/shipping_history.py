@@ -8,14 +8,15 @@ one-bag events and do not create production or stock records.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 
 from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
 from .analytics import EVENT_ANALYTICS_STALE_AGE
-from .event_protocol import _event_color
+from .color_resolution import camera_color_key
+from .event_protocol import event_color_delta, event_color_key
 from .models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -26,7 +27,7 @@ from .models import (
     ShippingDailyAnalytics,
 )
 from .production_queries import _run_smoothing_payload
-from .production_runs import RUN_GAP
+from .production_runs import RUN_GAP, local_day_window
 
 MAX_DAY_EVENTS = 100_000
 MAX_DAY_RUNS = 1_000
@@ -51,8 +52,8 @@ def _daily_colors(row) -> dict[str, int] | None:
             or count < 0
         ):
             return None
-        color = key.split("_", 1)[0].strip().lower()
-        if count and (not color or len(color) > 32):
+        color = event_color_key(key, None)
+        if count and not color:
             return None
         if count:
             colors[color] += count
@@ -62,7 +63,7 @@ def _daily_colors(row) -> dict[str, int] | None:
 def _matches_daily(events: list[AlwaysOnImportedEvent], row) -> bool:
     colors: Counter[str] = Counter()
     for event in events:
-        colors.update(_event_color(event))
+        colors.update(event_color_delta(event))
     return len(events) == (row.model_total if row else 0) and dict(
         colors
     ) == _daily_colors(row)
@@ -82,7 +83,7 @@ def _runs(events: list[AlwaysOnImportedEvent], *, day: date, now: datetime, live
             raise HistoryUnavailable(
                 "В событиях камеры обнаружено несогласованное время. Периоды нельзя показать достоверно."
             )
-        color = next(iter(_event_color(event)), "unclassified")
+        color = camera_color_key(event.color, event.class_name)
         if not runs or runs[-1]["color"] != color or observed - previous_at > RUN_GAP:
             if len(runs) >= MAX_DAY_RUNS:
                 raise HistoryUnavailable(
@@ -116,11 +117,11 @@ def _runs(events: list[AlwaysOnImportedEvent], *, day: date, now: datetime, live
 def day_payload(camera: str, *, day: date) -> dict:
     """Return exact periods, or explain why aggregate history has no exact log.
 
-    Read the bootstrap fence and cursor before projections. Bounding the event
-    query to that committed cursor keeps a concurrent importer from introducing
-    future evidence. If the daily row advanced meanwhile, the final cursor
-    check reports a retryable snapshot instead of a permanent coverage gap.
-    No row locks or remote requests delay ingestion on this read path.
+    Read the cursor before projections. Bounding the event query to that
+    committed cursor keeps a concurrent importer from introducing future
+    evidence. If the daily row advanced meanwhile, the final cursor check
+    reports a retryable snapshot instead of a permanent coverage gap. No row
+    locks or remote requests delay ingestion on this read path.
     """
 
     payload = {
@@ -137,11 +138,10 @@ def day_payload(camera: str, *, day: date) -> dict:
     def unavailable(status: str, detail: str) -> dict:
         return {**payload, "history_status": status, "history_detail": detail}
 
-    bootstrap = ShippingAnalyticsBootstrap.objects.filter(camera=camera).first()
-    if bootstrap is not None and bootstrap.completed_at is None:
-        return unavailable(
-            "pending", "История камеры ещё синхронизируется. Повторите позже."
-        )
+    # Дни до разделения контуров (02.09) перенесены из AI 24/7 миграцией 0028.
+    bootstrap = ShippingAnalyticsBootstrap.objects.filter(
+        camera=camera, completed_at__isnull=False
+    ).first()
     cursor = AlwaysOnCounterCursor.objects.filter(camera=camera).first()
     if cursor is not None and cursor.event_sync_supported is False:
         return unavailable(
@@ -168,10 +168,7 @@ def day_payload(camera: str, *, day: date) -> dict:
         if bootstrap is not None
         else None
     )
-    start = timezone.make_aware(
-        datetime.combine(day, time.min), timezone.get_default_timezone()
-    )
-    end = start + timedelta(days=1)
+    start, end = local_day_window(day)
     eligible = Q(analytics_scope=ANALYTICS_SCOPE_SHIPPING, applied_to_analytics=True)
     if legacy is not None:
         eligible |= Q(
@@ -222,15 +219,7 @@ def day_payload(camera: str, *, day: date) -> dict:
     # Take the display clock after reading evidence: an import committed while
     # querying may legitimately contain a crossing newer than request start.
     now = timezone.localtime(timezone.now(), timezone.get_default_timezone())
-    live = bool(
-        cursor.event_sync_supported is True
-        and cursor.event_caught_up_at is not None
-        and timedelta(0) <= now - cursor.event_caught_up_at <= EVENT_ANALYTICS_STALE_AGE
-        and not cursor.event_sync_error
-        and cursor.event_sync_failed_at is None
-        and cursor.event_drain_required_at is None
-        and cursor.event_stop_drain_requested_at is None
-    )
+    live = cursor.is_caught_up(now=now, max_age=EVENT_ANALYTICS_STALE_AGE)
     try:
         raw_runs = _runs(events, day=day, now=now, live=live)
     except HistoryUnavailable as exc:

@@ -21,20 +21,20 @@ from django.core.cache import cache
 from django.db import DatabaseError, IntegrityError, models, transaction
 from django.db.transaction import TransactionManagementError
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import ValidationError
 
+from apps.common.datetimes import parse_aware_datetime
 from weighbridge.outbox import Outbox
 
 from . import services, statuses as st, weighing_photos
 from .models import Wagon, WagonArchStop, WeighingPhotoDelivery
-from .outbox_importer import _store_evidence
+from .outbox_importer import poll_unless_busy
+from .scale import WAGON_SCALE_KEY
 
 log = logging.getLogger(__name__)
 
 RUNTIME_CACHE_KEY = "grain:wagon-arch:runtime:v1"
 RUNTIME_CACHE_SECONDS = 120
-SCALE_KEY = "wagon"
 # Код сервиса «выход не ниже входа» — в журнале рейса это отдельная причина.
 EXIT_CODE_MAP = {"bad_tare": "exit_not_lower"}
 # Причины, которые сами не рассосутся: автоматике здесь больше делать нечего,
@@ -56,8 +56,8 @@ def enabled() -> bool:
 
 
 def _aware(value, *, field="timestamp"):
-    parsed = parse_datetime(value) if isinstance(value, str) else None
-    if parsed is None or timezone.is_naive(parsed):
+    parsed = parse_aware_datetime(value)
+    if parsed is None:
         raise ValueError(f"wagon event {field} must be an aware ISO datetime")
     # Как в грузовом импортёре: измерение не может быть из будущего.
     if parsed > timezone.now() + MAX_CLOCK_SKEW:
@@ -199,7 +199,7 @@ def open_trip(stop):
             else "Вагон переставлен под аркой: номер не распознан, "
                  "рейс продолжен по весу"
         )
-        services._log(
+        services.log_wagon_event(
             stop.wagon, "arch", message, None, stop_id=str(stop.stop_id), auto=True,
         )
         return stop
@@ -214,12 +214,10 @@ def open_trip(stop):
             .first()
         )
         if expected is not None:
-            wagon = services._arrive_expected_wagon(expected, None, stop.camera)
+            wagon = services.arrive_expected_wagon(expected, None, stop.camera)
             # Сервис ставит время «сейчас»; время рейса должно равняться стопу.
             wagon.arrived_at = stop.arrived_at
-            wagon.number_source = "camera"
-            wagon.number_camera_source = stop.camera
-            wagon.save(update_fields=["arrived_at", "number_source", "number_camera_source"])
+            wagon.save(update_fields=["arrived_at"])
             stop.wagon = wagon
             stop.opened_wagon_id = wagon.pk
             stop.save(update_fields=["wagon", "opened_wagon_id", "updated_at"])
@@ -235,7 +233,7 @@ def open_trip(stop):
         status=st.ARRIVED, arrived_at=stop.arrived_at,
         number_source="camera", number_camera_source=stop.camera,
     )
-    services._log(
+    services.log_wagon_event(
         wagon, "arrival",
         f"Вагон встал под арку: полный вес {stop.full_weight_kg} кг"
         + (f", номер {stop.number}" if stop.number else ", номер не распознан — укажите его вручную"),
@@ -247,23 +245,6 @@ def open_trip(stop):
     return stop
 
 
-def entry_root(stop):
-    """Стоп, чей вес и кадр и есть вход рейса.
-
-    Вагон могли переставить под аркой несколько раз: вес второй и последующих
-    стоянок — это середина выгрузки, брутто рейса задаёт только первая.
-    """
-    root = stop
-    seen = {stop.pk}
-    while root.continues_id is not None and root.continues_id not in seen:
-        seen.add(root.continues_id)
-        parent = root.continues
-        if parent is None:
-            break
-        root = parent
-    return root
-
-
 def apply_entry(stop):
     """Записать входной вес. Без силоса приход ждёт оператора."""
     if stop.entry_applied_at is not None and stop.wagon_id is not None:
@@ -273,28 +254,27 @@ def apply_entry(stop):
         # Рейс либо ещё не открыт (тогда нам сюда не попасть), либо удалён.
         _wagon_deleted(stop)
         return
-    if stop.entry_applied_at is not None:
-        return
     if wagon.gross_weight_kg is not None:
         # Оператор успел взвесить рейс руками — второй записи быть не должно.
         stop.entry_applied_at = timezone.now()
         stop.save(update_fields=["entry_applied_at", "updated_at"])
         _clear_block(stop, detail=MANUAL_DETAIL)
         return
-    if services.assign_default_silo(wagon) is None and not wagon.assigned_silo_id:
-        raise ValidationError({"detail": "Для прихода не назначен силос", "code": "silo_required"})
-    wagon.refresh_from_db()
-    root = entry_root(stop)
+    # Без силоса запись входа откажет сама («silo_required») и стоп подождёт оператора.
+    services.assign_default_silo(wagon)
+    # Вагон могли переставить под аркой: вес следующих стоянок — середина
+    # выгрузки, брутто и кадр рейса задаёт только корень цепочки (open_trip).
+    root = stop.continues or stop
     services.record_simple_entry_weight(
         wagon, root.full_weight_kg, None,
-        source="scale", scale_number=SCALE_KEY, scale_age_seconds=root.scale_age_seconds,
+        source="scale", scale_number=WAGON_SCALE_KEY, scale_age_seconds=root.scale_age_seconds,
         scale_updated_at=root.scale_updated_at, occurred_at=root.arrived_at,
         photo_request_id=root.photo_request_id, photo_camera=root.camera,
     )
     delivery = WeighingPhotoDelivery.objects.filter(request_id=root.photo_request_id).first()
     if delivery is not None:
         # Кадр уже сохранён при импорте; здесь он привязывается к взвешиванию.
-        weighing_photos._link_photo(delivery)
+        weighing_photos.link_photo(delivery)
     stop.entry_applied_at = timezone.now()
     stop.save(update_fields=["entry_applied_at", "updated_at"])
 
@@ -354,7 +334,7 @@ def _import_arrival(event):
             delivery, _ = WeighingPhotoDelivery.objects.get_or_create(
                 request_id=key, defaults={"camera": stop.camera}
             )
-            _store_evidence(delivery, event)
+            weighing_photos.store_collector_evidence(delivery, event)
     except IntegrityError:
         # Пересекающиеся итерации импортёра: стоп уже создан — он и есть результат.
         log.warning("Стоп вагона %s уже импортирован параллельно", key)
@@ -437,7 +417,7 @@ def apply_departure(stop, *, force=False, now=None):
             wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=stop.wagon_id)
             services.record_simple_exit_weight(
                 wagon, stop.exit_weight_kg, None,
-                source="scale", scale_number=SCALE_KEY, scale_age_seconds=None,
+                source="scale", scale_number=WAGON_SCALE_KEY, scale_age_seconds=None,
                 scale_updated_at="", occurred_at=stop.exit_stable_at or stop.departed_at,
             )
             # Расхождение веса — обычный разбор оператора в CRM, а не ошибка
@@ -500,7 +480,7 @@ def _guarded(stop, work) -> bool:
         return bool(work(stop))
     except (DatabaseError, TransactionManagementError):
         raise
-    except Exception as exc:  # noqa: BLE001 — намеренный конверт вокруг одного стопа
+    except Exception as exc:  # намеренный конверт вокруг одного стопа
         log.exception("Стоп вагона %s не удалось обработать", stop.stop_id)
         _terminal(stop, reason="import_error", detail=str(exc)[:300])
         return False
@@ -509,8 +489,8 @@ def _guarded(stop, work) -> bool:
 def apply_pending(*, now=None):
     """Повторить заблокированные приходы и применить созревшие отъезды.
 
-    Рассчитано на один импортёр за раз (монитор Части 4 не должен запускать
-    несколько тиков параллельно): порядок стопов и блокировки строк здесь
+    Рассчитано на один импортёр за раз (monitor_passage_scale держит не больше
+    одного тика вагонной дорожки): порядок стопов и блокировки строк здесь
     предполагают единственного писателя.
     """
     now = now or timezone.now()
@@ -550,7 +530,7 @@ def dismiss(stop, user=None):
     _mark(stop, reason="", detail="закрыто оператором", status=WagonArchStop.CLOSED)
     wagon = _wagon_of(stop)
     if wagon is not None:
-        services._log(
+        services.log_wagon_event(
             wagon, "arch", f"Стоянка {stop.stop_id} закрыта оператором", user,
             stop_id=str(stop.stop_id), auto=False,
         )
@@ -586,7 +566,17 @@ def _runtime_payload(box, *, imported, discarded):
 
 
 def poll_once(*, limit=10):
-    """Импортировать до `limit` событий. Нечитаемое тело не держит очередь."""
+    """Импортировать до `limit` событий. Нечитаемое тело не держит очередь.
+
+    Пока сборщик держит блокировку SQLite, тик пропускается: неподтверждённые
+    события придут следующим тиком, а UI до тех пор видит прошлый снимок.
+    """
+    return poll_unless_busy(
+        directory(), lambda: _poll(limit), lambda: {"imported": 0, "discarded": 0, "busy": True},
+    )
+
+
+def _poll(limit):
     box = Outbox(directory())
     imported = discarded = 0
     for _ in range(limit):

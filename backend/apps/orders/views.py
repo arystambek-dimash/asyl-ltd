@@ -1,7 +1,7 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, NotFound, ValidationError
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.http import FileResponse
@@ -10,35 +10,43 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import re
-from django.db.models import Count, Exists, F, Max, OuterRef, Q, Sum
+from django.core.paginator import Paginator
+from django.db.models import Count, Exists, F, OuterRef, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import HasPerm, PermViewSetMixin
-from apps.common.money import as_money_strings, money_string, primary_currency
-from apps.common.query_params import (
-    filter_date_range, parse_date_range, parse_store_id, parse_search_param,
+from apps.common.permissions import HasPerm, PermAPIViewMixin, PermViewSetMixin
+from apps.common.money import (
+    CURRENCY_CODES,
+    DEFAULT_CURRENCY,
+    as_money_strings,
+    money_string,
+    primary_currency,
 )
+from apps.common.query_params import filter_date_range, parse_date_range, parse_search_param
 from apps.sales.access import assigned_department_id, scope_by_client_department
+from apps.sales.labels import UNASSIGNED_CODE, UNASSIGNED_COLOR, UNASSIGNED_NAME
 from apps.sales.models import Department
 from apps.eventlog.models import EventLog
-from apps.eventlog.services import log_event
-from apps.notifications.services import notify
-from apps.shipments.services import (
-    finish_train_loading, record_count, set_loading_camera, start_train_loading)
+from apps.shipments.services import rollback_shipment
 from apps.shipments.serializers import LoadSerializer
 from django.db import transaction
-from .models import ApiPayInvoice, ApiPayQrRefund, Order, Payment, StatusChangeRequest
+from .models import (
+    ApiPayInvoice, ApiPayQrRefund, Order, Payment, StatusChangeRequest, money_ledger_q,
+)
 from .qr_refunds import execute_qr_refund, revoke_qr_refund, serialize_qr_refund, start_qr_refund
 from .apipay import (
-    ApiPayAPIError, ApiPayConfigurationError, cancel_invoice,
-    create_cash_refund, create_invoice, create_refund,
-    MONEY_RECEIVED_INVOICE_STATUSES, normalize_phone,
+    ApiPayAPIError, ApiPayConfigurationError, assert_apipay_currency, cancel_invoice,
+    CLOSED_INVOICE_STATUSES, create_invoice, create_refund, MONEY_RECEIVED_INVOICE_STATUSES,
+    normalize_phone,
+    provider_error, reject_unissued_payment,
 )
-from .invoices import build_invoice_pdf, build_payment_receipt_pdf
-from .debt import DEBT_STATUS, order_remaining
+from .refunds import create_cash_refund
+from .invoices import build_payment_receipt_pdf
+from .debt import counts_as_debt, payment_status
 from .querysets import (
     shipping_calendar_days,
     CASHIER_QUEUE_PAYMENT,
+    cashier_queue_payments,
     awaiting_payment_orders,
     awaiting_shipment_orders,
     order_overpaid_by_id,
@@ -49,12 +57,14 @@ from .querysets import (
     with_order_api_relations,
     with_payment_api_relations,
     with_order_amounts, filter_order_search, order_page_sort,
+    client_search_q, department_q, filter_order_scope, filter_status_group, order_department,
     TRANSPORT_QUEUE_FILTERS, transport_queue, transport_rows,
 )
+from .labels import payment_method_label, payment_status_label
 from .reports import summary_report
 from .references import build_order_form_options
 from .statuses import (
-    PUBLIC_STATUS_LABELS, REVIEWABLE_STATUSES, is_financial, is_in_progress, statuses_in_group,
+    REVIEWABLE_STATUSES, is_financial, is_in_progress, public_status_key, statuses_in_group,
 )
 from .serializers import (ConfirmOrderSerializer, OrderSerializer, OrderTransportRowSerializer,
                           PaymentSerializer, PaymentQueueSerializer, StatusChangeRequestSerializer,
@@ -62,16 +72,15 @@ from .serializers import (ConfirmOrderSerializer, OrderSerializer, OrderTranspor
 from .transport import set_order_transport, suggestion_pairs, transport_locked
 from .services import (add_payment, confirm_order, confirm_stock_context, reject_order,
                        accountant_confirm_payment, assert_payment_status_open,
-                       confirm_received_staff_payments,
                        correct_order_prices,
                        receive_and_confirm_payment,
-                       record_staff_mixed_payments, record_staff_payment,
+                       record_staff_payment,
                        reopen_confirmed_payment, reject_payment,
-                       restore_rejected_payment, soft_delete_order, restore_order,
+                       restore_rejected_payment,
+                       soft_delete_order, restore_order,
                        purge_order,
-                       repeat_order, lock_live_order, move_order_to_debt,
+                       lock_live_order, move_order_to_debt,
                        request_status_change, approve_status_change, reject_status_change)
-from apps.shipments.services import rollback_shipment
 
 
 # Способы, по которым КАССА выставляет счёт платёжному сервису.
@@ -88,39 +97,42 @@ from apps.shipments.services import rollback_shipment
 # Kaspi QR касса выставляет только явным channel="qr" (POS на телефоне,
 # см. _issue_staff_qr_payment); без channel kaspi — отметка своего терминала.
 PROVIDER_METHOD_CHANNELS = {"invoice": "phone"}
-PROVIDER_CLOSED_STATUSES = {"cancelled", "expired", "error", "superseded"}
+
+# Счётчики сводки отделов по статусу оплаты (orders/debt.py: payment_status).
+_PAYMENT_STATUS_COUNTERS = {
+    "unpaid": "unpaid_orders",
+    "partial": "partial_orders",
+    "settled": "paid_orders",
+}
 
 
-def _provider_error(exc):
-    if isinstance(exc, ApiPayConfigurationError):
-        # Сообщение уже называет отдел: кассиру нужно знать, где именно
-        # не подключён Kaspi.
-        return ValidationError({
-            "detail": str(exc) or "Счёт на оплату временно недоступен.",
-            "code": "payment_provider_not_configured",
-        })
-    if isinstance(exc, ApiPayAPIError):
-        return ValidationError({"detail": exc.message, "code": exc.error_code})
-    return exc
-
-
-def _notify_document_invoice(order, payment: Payment) -> None:
-    """Сказать клиенту в портале, что выставлен наш PDF-счёт.
-
-    Только для документа: у счёта «клиенту онлайн» провайдер сам шлёт
-    уведомление на телефон, и второе сообщение в портале дублировало бы его.
-    Клиент скачивает PDF там же, в карточке заказа портала.
-    """
-    notify(
-        order.client,
-        f"Вам выставлен счёт на оплату №{order.id} на сумму "
-        f"{money_string(payment.amount)} {order.currency}. "
-        f"Скачайте счёт в карточке заказа.",
-    )
+def _department_summary_row(row_id, code, name, color, is_active) -> dict:
+    """Пустая карточка отдела для сводки ``department_summary``."""
+    return {
+        "id": row_id,
+        "code": code,
+        "name": name,
+        "color": color,
+        "is_active": is_active,
+        "orders": 0,
+        "active": 0,
+        "shipped": 0,
+        # Валюты не складываются: у отдела могут быть заказы и в тенге,
+        # и в долларах, а «выручка» одним числом смешала бы их.
+        "revenue_by_currency": defaultdict(lambda: Decimal("0")),
+        "debt_by_currency": defaultdict(lambda: Decimal("0")),
+        "paid_by_currency": defaultdict(lambda: Decimal("0")),
+        # Счётчики по расчётам. Считаются только по финансовым заказам:
+        # черновик и «на рассмотрении» ещё ничего не должны.
+        "paid_orders": 0,
+        "partial_orders": 0,
+        "unpaid_orders": 0,
+        "debt_orders": 0,
+    }
 
 
 def _issue_provider_payment(payment: Payment, *, user, phone_number=None):
-    """Создать обязательный внешний счёт для QR/счёта на оплату."""
+    """Создать обязательный внешний счёт провайдеру для счёта на оплату."""
     channel = PROVIDER_METHOD_CHANNELS.get(payment.method)
     if channel is None:
         return None
@@ -132,21 +144,8 @@ def _issue_provider_payment(payment: Payment, *, user, phone_number=None):
         assert_payment_status_open(payment.order, method=None)
     if (
         current is not None
-        and current.channel == "qr"
-        and current.invoice_id is None
-        and current.status == "creating"
-    ):
-        raise ValidationError({
-            "detail": (
-                "Создание QR ещё сверяется с платёжным сервисом. "
-                "Повторный QR может списать деньги дважды."
-            ),
-            "code": "qr_issue_recovery_pending",
-        })
-    if (
-        current is not None
         and current.invoice_id is not None
-        and current.status in PROVIDER_CLOSED_STATUSES
+        and current.status in CLOSED_INVOICE_STATUSES
     ):
         raise ValidationError({
             "detail": "Этот счёт уже закрыт. Создайте новую платёжную операцию.",
@@ -155,79 +154,9 @@ def _issue_provider_payment(payment: Payment, *, user, phone_number=None):
     return create_invoice(
         payment,
         channel=channel,
-        phone_number=phone_number if channel == "phone" else None,
+        phone_number=phone_number,
         user=user,
     )
-
-
-def _provider_issue_is_unresolved(payment: Payment) -> bool:
-    return ApiPayInvoice.objects.filter(
-        payment=payment,
-        invoice_id__isnull=True,
-        status="creating",
-    ).exists()
-
-
-def _reject_created_payments(payments, user, *, keep_payment_ids=None):
-    keep_payment_ids = set(keep_payment_ids or ())
-    for payment in payments:
-        if payment.pk in keep_payment_ids:
-            continue
-        payment.refresh_from_db()
-        if (
-            payment.status in Payment.IN_PROGRESS_STATUSES
-            and not _provider_issue_is_unresolved(payment)
-        ):
-            reject_payment(payment, user)
-
-
-def _issue_mixed_provider_payments(payments, parts, user):
-    """Выдать онлайн-счета сервером; QR создаётся последним для компенсации."""
-    part_by_method = {
-        str(part.get("method") or ""): part
-        for part in parts if isinstance(part, dict)
-    }
-    online = sorted(
-        (payment for payment in payments
-         if payment.method in PROVIDER_METHOD_CHANNELS
-         # Счёт «нашим документом» провайдеру не выставляется.
-         and part_by_method.get(payment.method, {}).get("channel") != "document"),
-        key=lambda payment: 1 if payment.method == "kaspi" else 0,
-    )
-    issued = []
-    try:
-        for payment in online:
-            part = part_by_method.get(payment.method, {})
-            record = _issue_provider_payment(
-                payment,
-                phone_number=part.get("phone_number"),
-                user=user,
-            )
-            if record is not None:
-                issued.append(record)
-    except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
-        # Телефонный счёт можно попытаться закрыть. QR создаётся последним,
-        # поэтому после успешного QR следующих потенциально падающих шагов нет.
-        still_payable = set()
-        for record in issued:
-            if (
-                record.channel == "phone"
-                and record.status not in PROVIDER_CLOSED_STATUSES
-            ):
-                try:
-                    cancel_invoice(record, user=user)
-                except (ApiPayAPIError, ValidationError):
-                    pass
-            record.refresh_from_db()
-            if record.status not in PROVIDER_CLOSED_STATUSES:
-                still_payable.add(record.payment_id)
-        # A phone invoice in cancelling/unknown state continues to reserve its
-        # amount until a webhook or reconciliation proves it is closed.
-        _reject_created_payments(
-            payments, user, keep_payment_ids=still_payable
-        )
-        raise _provider_error(exc)
-    return issued
 
 
 def _issue_staff_qr_payment(order, amount_raw, user) -> Payment:
@@ -237,11 +166,7 @@ def _issue_staff_qr_payment(order, amount_raw, user) -> Payment:
     портальным create_client_payment — тот переводит заказ в моментальную
     оплату, и долг пропал бы из списка. Деньги подтверждает вебхук или сверка.
     """
-    if order.currency != "KZT":
-        raise ValidationError({
-            "detail": "QR доступен только в тенге.",
-            "code": "apipay_kzt_only",
-        })
+    assert_apipay_currency(order)
     try:
         amount = Decimal(str(amount_raw))
     except (InvalidOperation, TypeError, ValueError):
@@ -260,8 +185,8 @@ def _issue_staff_qr_payment(order, amount_raw, user) -> Payment:
     try:
         create_invoice(payment, channel="qr", user=user)
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
-        _reject_created_payments([payment], user)
-        raise _provider_error(exc) from exc
+        reject_unissued_payment(payment, user)
+        raise provider_error(exc) from exc
     payment.refresh_from_db()
     return payment
 
@@ -271,13 +196,8 @@ def _restore_payment_and_provider(payment: Payment, user):
     try:
         _issue_provider_payment(payment, user=user)
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
-        payment.refresh_from_db()
-        if (
-            payment.status in Payment.IN_PROGRESS_STATUSES
-            and not _provider_issue_is_unresolved(payment)
-        ):
-            reject_payment(payment, user)
-        raise _provider_error(exc)
+        reject_unissued_payment(payment, user)
+        raise provider_error(exc) from exc
     payment.refresh_from_db()
     return payment
 
@@ -299,9 +219,7 @@ def _reject_payment_with_provider(
             "detail": "Платёж уже оплачен и будет подтверждён автоматически.",
             "code": "payment_already_paid",
         })
-    if invoice is not None and invoice.status not in (
-        "cancelled", "expired", "error", "superseded",
-    ):
+    if invoice is not None and invoice.status not in CLOSED_INVOICE_STATUSES:
         if invoice.channel == "qr":
             raise ValidationError({
                 "detail": (
@@ -323,7 +241,7 @@ def _reject_payment_with_provider(
                 ),
                 "code": "payment_already_paid",
             })
-        if invoice.status not in PROVIDER_CLOSED_STATUSES:
+        if invoice.status not in CLOSED_INVOICE_STATUSES:
             payment.note = (
                 f"{payment.note}\n" if payment.note else ""
             ) + f"Запрошена отмена: {reason}"
@@ -340,11 +258,10 @@ def _reject_payment_with_provider(
     return payment, False
 
 
-class ReportSummaryView(APIView):
+class ReportSummaryView(PermAPIViewMixin, APIView):
     """Сводный отчёт за период: касса (нал/безнал), отгрузки, долги, кассиры."""
 
-    def get_permissions(self):
-        return [HasPerm("reports.view")]
+    required_perms = {"get": "reports.view"}
 
     def get(self, request):
         date_from, date_to = parse_date_range(request.query_params)
@@ -353,28 +270,21 @@ class ReportSummaryView(APIView):
             request.user,
             client_path="client",
         )
-        department = request.query_params.get("department")
-        if department:
-            qs = qs.filter(department=department)
-        store = parse_store_id(request.query_params.get("store"))
-        if store:
-            qs = qs.filter(store_id=store)
+        qs = filter_order_scope(qs, request.query_params)
         section = request.query_params.get("section", "all")
         if section not in ("all", "income"):
             raise ValidationError({"detail": "Неизвестный раздел отчёта", "code": "invalid_report_section"})
         return Response(summary_report(qs, date_from, date_to, income_only=section == "income"))
 
 
-class PaymentTransactionListView(APIView):
-    def get_permissions(self):
-        return [HasPerm("payments.view")]
+class PaymentTransactionListView(PermAPIViewMixin, APIView):
+    required_perms = {"get": "payments.view"}
 
     def get(self, request):
-        # Оплаты корзины деньгами не считаются: у Payment своего мягкого
-        # удаления нет, а order__ не проходит через LiveOrderManager — скоуп
-        # задаём явно, иначе итог кассы включает удалённые заказы.
+        # order__ не проходит через LiveOrderManager — корзину отсекаем явно,
+        # но деньги отгруженного заказа из корзины в кассе остаются.
         payments = scope_by_client_department(
-            Payment.objects.filter(order__deleted_at__isnull=True),
+            Payment.objects.filter(money_ledger_q("order__")),
             request.user,
             client_path="order__client",
         )
@@ -383,21 +293,11 @@ class PaymentTransactionListView(APIView):
             order_context=True,
         ).order_by("-paid_at")
         status = request.query_params.get("status")
-        method = request.query_params.get("method")
         search = request.query_params.get("search")
-        department = request.query_params.get("department")
-        if department:
-            qs = qs.filter(order__department=department)
-        if method:
-            qs = qs.filter(method=method)
+        qs = filter_order_scope(qs, request.query_params, prefix="order__")
         if search:
             normalized_search = search.strip()
-            search_query = (
-                Q(order__client__user__first_name__icontains=normalized_search)
-                | Q(order__client__user__last_name__icontains=normalized_search)
-                | Q(order__client__company_name__icontains=normalized_search)
-                | Q(order__client__phone__icontains=normalized_search)
-            )
+            search_query = client_search_q(normalized_search, "order__client__")
             operation_match = re.fullmatch(
                 r"(?:PAY[-\s]*)?0*(\d+)", normalized_search, flags=re.IGNORECASE
             )
@@ -434,21 +334,16 @@ class PaymentTransactionListView(APIView):
                 })
             qs = qs.filter(condition)
         try:
-            page = max(1, int(request.query_params.get("page") or 1))
             page_size = min(
                 100, max(10, int(request.query_params.get("page_size") or 50))
             )
         except ValueError as exc:
             raise ValidationError({
-                "detail": "Некорректный номер страницы.",
+                "detail": "Некорректный размер страницы.",
                 "code": "invalid_page",
             }) from exc
-        count = qs.count()
-        pages = max(1, (count + page_size - 1) // page_size)
-        if page > pages:
-            page = pages
-        start = (page - 1) * page_size
-        rows = qs[start:start + page_size]
+        # Лента всегда постраничная; номер за пределами — последняя страница.
+        page = Paginator(qs, page_size).get_page(request.query_params.get("page"))
         # One grouped aggregate instead of a query per currency and metric.
         # ``values()`` also drops the row prefetches, which the totals never use.
         # ``order_by()`` is cleared deliberately: the default "-paid_at"
@@ -480,28 +375,26 @@ class PaymentTransactionListView(APIView):
                 by_method[row["method"]] = (
                     by_method.get(row["method"], Decimal("0")) + net
                 )
-        for currency in ("KZT", "USD"):
+        for currency in CURRENCY_CODES:
             paid_by_currency.setdefault(currency, Decimal("0"))
             refunded_by_currency.setdefault(currency, Decimal("0"))
         return Response({
             "results": PaymentSerializer(
-                rows,
+                page.object_list,
                 many=True,
                 context={"request": request},
             ).data,
-            "count": count,
-            "page": page,
-            "pages": pages,
+            "count": page.paginator.count,
+            "page": page.number,
+            "pages": page.paginator.num_pages,
             "status_counts": status_counts,
+            # Подписи пилюль статус-фильтра — из того же словаря, что и строки.
+            "status_labels": {
+                key: payment_status_label(key) for key in public_status_filters
+            },
             "summary": {
-                "paid_by_currency": {
-                    currency: money_string(amount)
-                    for currency, amount in paid_by_currency.items()
-                },
-                "refunded_by_currency": {
-                    currency: money_string(amount)
-                    for currency, amount in refunded_by_currency.items()
-                },
+                "paid_by_currency": as_money_strings(paid_by_currency),
+                "refunded_by_currency": as_money_strings(refunded_by_currency),
                 # {валюта: {способ: сумма}} — суммы уже чистые, поэтому их
                 # сложение по способам совпадает с paid_by_currency.
                 "paid_by_method": {
@@ -513,13 +406,17 @@ class PaymentTransactionListView(APIView):
                     }
                     for currency, methods in paid_by_method.items()
                 },
+                "method_labels": {
+                    method: payment_method_label(method)
+                    for methods in paid_by_method.values()
+                    for method in methods
+                },
             },
         })
 
 
-class PaymentReceiptView(APIView):
-    def get_permissions(self):
-        return [HasPerm("payments.view")]
+class PaymentReceiptView(PermAPIViewMixin, APIView):
+    required_perms = {"get": "payments.view"}
 
     def get(self, request, payment_id):
         payments = scope_by_client_department(
@@ -540,9 +437,8 @@ class PaymentReceiptView(APIView):
         )
 
 
-class PaymentRefundView(APIView):
-    def get_permissions(self):
-        return [HasPerm("payments.confirm")]
+class PaymentRefundView(PermAPIViewMixin, APIView):
+    required_perms = {"post": "payments.confirm"}
 
     def post(self, request, payment_id):
         payments = scope_by_client_department(
@@ -615,17 +511,14 @@ class PaymentRefundView(APIView):
                     "method": "cash",
                 }
         except ApiPayAPIError as exc:
-            raise ValidationError({
-                "detail": exc.message, "code": exc.error_code
-            }) from exc
+            raise provider_error(exc) from exc
         return Response(response_data, status=201)
 
 
-class PaymentQrRefundView(APIView):
+class PaymentQrRefundView(PermAPIViewMixin, APIView):
     """Последний возврат по Kaspi QR оплаты: состояние, отзыв ссылки, ручной выбор покупки."""
 
-    def get_permissions(self):
-        return [HasPerm("payments.confirm")]
+    required_perms = {"get": "payments.confirm", "post": "payments.confirm"}
 
     def _session(self, request, payment_id):
         payments = scope_by_client_department(Payment.objects.all(), request.user, client_path="order__client")
@@ -640,7 +533,10 @@ class PaymentQrRefundView(APIView):
             raise NotFound("Возврат по ссылке не найден")
         return session
 
-    def get(self, request, payment_id):
+    def get(self, request, payment_id, action=None):
+        # Действия (revoke/execute) — только POST; GET на их путь — не 500, а 405.
+        if action is not None:
+            raise MethodNotAllowed(request.method)
         return Response(serialize_qr_refund(self._session(request, payment_id)))
 
     def post(self, request, payment_id, action=None):
@@ -655,16 +551,15 @@ class PaymentQrRefundView(APIView):
             else:
                 raise NotFound()
         except ApiPayAPIError as exc:
-            raise ValidationError({"detail": exc.message, "code": exc.error_code}) from exc
+            raise provider_error(exc) from exc
         session = ApiPayQrRefund.objects.select_related("refund").get(pk=session.pk)
         return Response(serialize_qr_refund(session))
 
 
-class PaymentProviderIssueView(APIView):
+class PaymentProviderIssueView(PermAPIViewMixin, APIView):
     """Повторно выдать отсутствующий QR или счёт для активной операции."""
 
-    def get_permissions(self):
-        return [HasPerm("payments.create")]
+    required_perms = {"post": "payments.create"}
 
     def post(self, request, payment_id):
         payments = scope_by_client_department(
@@ -686,16 +581,15 @@ class PaymentProviderIssueView(APIView):
                 user=request.user,
             )
         except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
-            raise _provider_error(exc) from exc
+            raise provider_error(exc) from exc
         payment.refresh_from_db()
-        return Response(PaymentSerializer(payment).data, status=201)
+        return Response(PaymentSerializer(payment, context={"request": request}).data, status=201)
 
 
-class PaymentRestoreView(APIView):
+class PaymentRestoreView(PermAPIViewMixin, APIView):
     """Вернуть отклонённую операцию и снова выдать онлайн-счёт при необходимости."""
 
-    def get_permissions(self):
-        return [HasPerm("payments.confirm")]
+    required_perms = {"post": "payments.confirm"}
 
     def post(self, request, payment_id):
         payments = scope_by_client_department(
@@ -708,46 +602,7 @@ class PaymentRestoreView(APIView):
             pk=payment_id,
         )
         payment = _restore_payment_and_provider(payment, request.user)
-        return Response(PaymentSerializer(payment).data)
-
-
-class PaymentRejectView(APIView):
-    def get_permissions(self):
-        return [HasPerm("payments.confirm")]
-
-    def post(self, request, payment_id):
-        payments = scope_by_client_department(
-            Payment.objects.select_related("order", "apipay_invoice"),
-            request.user,
-            client_path="order__client",
-        )
-        payment = get_object_or_404(
-            payments,
-            pk=payment_id,
-        )
-        if payment.status not in Payment.IN_PROGRESS_STATUSES:
-            raise ValidationError({
-                "detail": "Отклонить можно только ожидающий платёж.",
-                "code": "invalid_payment_stage",
-            })
-        reason = str(request.data.get("reason") or "").strip()
-        if not reason:
-            raise ValidationError({
-                "detail": "Укажите причину отклонения.",
-                "code": "rejection_reason_required",
-            })
-        try:
-            payment, pending = _reject_payment_with_provider(
-                payment, request.user, reason=reason
-            )
-        except ApiPayAPIError as exc:
-            raise ValidationError({
-                "detail": exc.message, "code": exc.error_code
-            }) from exc
-        return Response(
-            PaymentSerializer(payment).data,
-            status=202 if pending else 200,
-        )
+        return Response(PaymentSerializer(payment, context={"request": request}).data)
 
 
 class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
@@ -772,14 +627,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "correct_price": "orders.correct_price",
         "set_status": "orders.view",
         "rollback_shipment": "orders.rollback",
-        "status_requests": "orders.view",
         "approve_status": "orders.edit",
         "reject_status": "orders.edit",
         "reject": "orders.confirm",
         "receive_payment": "payments.confirm",
         "confirm_payment": "payments.confirm",
         "reopen_payment": "payments.confirm",
-        "restore_payment": "payments.confirm",
         "reject_payment": "payments.confirm",
         "payments_queue": "payments.confirm",
         # «Оплаты» кассы: принять оплату или перевести в долг отгруженный заказ.
@@ -789,21 +642,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "to_refund": ("payments.confirm", "payments.create"),
         "to_debt": ("payments.confirm", "payments.create"),
         "fixate": "orders.edit",
-        "cashier_log": "payments.confirm",
-        "train": "loader.confirm",
-        "loading_camera": "loader.confirm",
         "department_summary": "orders.view",
-        "workflow_summary": "orders.view",
-        "review": "orders.confirm",
+        "list_summary": "orders.view",
         "dashboard_operational": "orders.view",
-        "repeat": "orders.create",
         # Быстрый ввод номеров «Фуры»: та же правка заказа, что и в форме.
         "transport_queue": "orders.edit",
         "transport": "orders.edit",
         "form_options": ("orders.create", "orders.edit"),
         # Календарь отгрузки открыт тем же, кому открыта очередь поста.
         "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
-        "invoice_pdf": ("payments.create", "payments.view"),
     }
 
     def get_permissions(self):
@@ -819,22 +666,22 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     # Новая заявка клиента без отдела — общая очередь: её видит и разбирает
     # любой отдел, подтверждение закрепляет клиента за отделом.
     UNASSIGNED_REQUEST_ACTIONS = frozenset(
-        {"list", "retrieve", "workflow_summary", "review", "confirm", "confirm_context", "reject"}
+        {"list", "list_summary", "retrieve", "confirm", "confirm_context", "reject"}
     )
+    # Итоги списка считаются по той же выборке, что и сам список.
+    LIST_ACTIONS = frozenset({"list", "list_summary"})
     # Общие очереди для сотрудника, закреплённого за отделом. Оплаты в ручной
     # очереди кассы видны и разбираются всеми отделами. Заявки всех отделов
     # («Заказы» → «Заявки») — только с правом orders.confirm_all; список заявок
-    # входит в очередь только с ``?confirm_queue=1``. Журнал (cashier-log,
-    # reopen/restore), долги, отчёты, транзакции и POS остаются в его отделе.
-    SHARED_REQUEST_ACTIONS = frozenset({"retrieve", "review", "confirm", "confirm_context", "reject"})
+    # входит в очередь только с ``?confirm_queue=1``. Отмена подтверждения и
+    # восстановление оплаты, долги, отчёты, транзакции и POS остаются в его отделе.
+    SHARED_REQUEST_ACTIONS = frozenset({"retrieve", "confirm", "confirm_context", "reject"})
     SHARED_PAYMENT_ACTIONS = frozenset(
         {"receive_payment", "confirm_payment", "reject_payment"}
     )
 
     def _confirm_queue_requested(self) -> bool:
-        params = self.request.query_params
-        # with_unassigned=1 — прежнее имя флага у касс, открытых до обновления.
-        return params.get("confirm_queue") == "1" or params.get("with_unassigned") == "1"
+        return self.request.query_params.get("confirm_queue") == "1"
 
     def _shared_queue(self):
         """Условие на заказы других отделов, открытые общей очередью кассы."""
@@ -844,7 +691,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 CASHIER_QUEUE_PAYMENT, order=OuterRef("pk"), pk=self.kwargs.get("pid"),
             ))
         in_queue = (
-            self._confirm_queue_requested() if self.action == "list"
+            self._confirm_queue_requested() if self.action in self.LIST_ACTIONS
             else self.action in self.SHARED_REQUEST_ACTIONS
         )
         user = self.request.user
@@ -863,7 +710,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             ),
             shared=self._shared_queue(),
         )
-        if self.action == "list":
+        if self.action in self.LIST_ACTIONS:
             params = self.request.query_params
             if params.get("post_board") == "1":
                 # Живой пост не должен тянуть всю историю заказов. Политика
@@ -875,77 +722,20 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 ).first()
                 days = row.completed_orders_days if row else 1
                 qs = for_post_board(qs, days, **post_board_params(params))
-            department = params.get("department")
-            if department == "__unassigned":
-                qs = qs.filter(department="")
-            elif department:
-                # Заказ без своего отдела учитывается в отделе клиента.
-                match = Q(department=department) | Q(department="", client__department__code=department)
-                if self._confirm_queue_requested():
-                    # Касса отдела видит и заявки клиентов без отдела, чтобы забрать их к себе.
-                    match |= Q(
-                        department="",
-                        client__department__isnull=True,
-                        status__in=REVIEWABLE_STATUSES,
-                    )
-                qs = qs.filter(match)
-            for field in ("status", "payment_status"):
-                value = params.get(field)
-                if value:
-                    qs = qs.filter(**{field: value})
-            # Фильтр по публичной группе: «Ожидает загрузки» покрывает
-            # confirmed/arrived/loading — точечный status для этого не годится.
-            group = params.get("status_group")
-            if group:
-                if group not in PUBLIC_STATUS_LABELS:
-                    raise ValidationError(
-                        {"detail": "Неизвестная группа статусов",
-                         "code": "bad_status_group"})
-                qs = qs.filter(status__in=statuses_in_group(group))
-            stage = params.get("review_stage")
-            if stage in ("new", "review"):
-                qs = qs.filter(status__in=("draft", "pending"), reviewed_at__isnull=stage == "new")
-            date_from, date_to = parse_date_range(params)
-            qs = filter_date_range(qs, "created_at", date_from, date_to)
-            store = parse_store_id(params.get("store"))
-            if store:
-                qs = qs.filter(store_id=store)
+            qs = filter_order_scope(
+                qs, params, date_field="created_at",
+                # Касса отдела видит и заявки клиентов без отдела, чтобы забрать их к себе.
+                department_extra=(
+                    department_q(UNASSIGNED_CODE) & Q(status__in=REVIEWABLE_STATUSES)
+                    if self._confirm_queue_requested() else None
+                ),
+            )
+            qs = filter_status_group(qs, params.get("status_group"))
             if params.get("post_board") != "1":
                 qs = filter_order_search(qs, parse_search_param(params.get("search")))
             if params.get("ordering"):
                 qs = order_page_sort(qs, params["ordering"])
         return qs
-
-    @action(detail=False, methods=["get"], url_path="workflow-summary")
-    def workflow_summary(self, request):
-        # One aggregate, no history/item/payment serialization. Counts span all pages.
-        qs = self.get_queryset().select_related(None).prefetch_related(None)
-        pending = Q(status__in=("draft", "pending"))
-        return Response(qs.aggregate(
-            all=Count("pk"),
-            new=Count("pk", filter=pending & Q(reviewed_at__isnull=True)),
-            review=Count("pk", filter=pending & Q(reviewed_at__isnull=False)),
-            confirmed=Count("pk", filter=Q(status__in=("confirmed", "arrived", "loading"))),
-            loaded=Count("pk", filter=Q(status="loaded")),
-            shipped=Count("pk", filter=Q(status="shipped")),
-            cancelled=Count("pk", filter=Q(status__in=("rejected", "cancelled"))),
-            latest_new_id=Max("pk", filter=pending & Q(reviewed_at__isnull=True)),
-        ))
-
-    @action(detail=True, methods=["post"], url_path="review")
-    def review(self, request, pk=None):
-        from django.db import transaction
-        from .services import lock_live_order
-        with transaction.atomic():
-            order = lock_live_order(self.get_object(), request.user, any_department=True)
-            if order.status not in REVIEWABLE_STATUSES:
-                raise ValidationError({"detail": "На рассмотрение можно взять только новую заявку"})
-            if order.reviewed_at is None:
-                order.reviewed_at = timezone.now()
-                order.reviewed_by = request.user
-                order.save(update_fields=["reviewed_at", "reviewed_by"])
-                log_event("order_review", "Заявка взята на рассмотрение", user=request.user, order=order)
-        return Response(OrderSerializer(order, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="form-options")
     def form_options(self, request):
@@ -994,10 +784,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
         pending_payments = 0
         if request.user.has_perm_code("payments.confirm"):
-            pending_payments = Payment.objects.filter(
-                order__in=qs,
-                status="received",
-            ).count()
+            # Ссылка ведёт в «Кассу» — число то же, что в её очереди.
+            pending_payments = cashier_queue_payments(request.user).count()
 
         return Response({
             "queue": OrderSerializer(
@@ -1010,27 +798,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "awaiting_review": qs.filter(
                     status__in=statuses_in_group("pending")
                 ).count(),
-                "stuck_in_loading": qs.filter(status="loading").count(),
             },
             "days": [
                 {"date": date, **values}
                 for date, values in sorted(days.items())
             ],
         })
-
-    @action(detail=True, methods=["post"], url_path="repeat")
-    def repeat(self, request, pk=None):
-        order = repeat_order(self.get_object(), request.user)
-        repeated = scope_by_client_department(
-            Order.objects.all(),
-            request.user,
-            client_path="client",
-        )
-        order = with_order_api_relations(repeated).get(pk=order.pk)
-        return Response(
-            OrderSerializer(order, context={"request": request}).data,
-            status=201,
-        )
 
     @action(detail=True, methods=["post"], url_path="correct-price")
     def correct_price(self, request, pk=None):
@@ -1133,58 +906,29 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         )
         date_from, date_to = parse_date_range(params)
         qs = filter_date_range(qs, "created_at", date_from, date_to)
-        group = params.get("status_group")
-        if group:
-            if group not in PUBLIC_STATUS_LABELS:
-                raise ValidationError({"detail": "Неизвестная группа статусов",
-                                       "code": "bad_status_group"})
-            qs = qs.filter(status__in=statuses_in_group(group))
-
-        stage = params.get("review_stage")
-        if stage in ("new", "review"):
-            qs = qs.filter(status__in=("draft", "pending"), reviewed_at__isnull=stage == "new")
+        qs = filter_status_group(qs, params.get("status_group"))
 
         # Закреплённый за отделом сотрудник видит одну карточку — своего отдела:
         # в неё идут все его заказы, даже записанные на другой код отдела.
         department_id = assigned_department_id(request.user)
         own = Department.objects.filter(pk=department_id).first() if department_id else None
         departments = [own] if own else Department.objects.all()
-        rows = {department.code: {
-            "id": department.id,
-            "code": department.code,
-            "name": department.name,
-            "color": department.color,
-            "is_active": department.is_active,
-            "orders": 0,
-            "active": 0,
-            "shipped": 0,
-            "revenue": Decimal("0"),
-            # Валюты не складываются: у отдела могут быть заказы и в тенге,
-            # и в долларах, а «выручка» одним числом смешала бы их.
-            "revenue_by_currency": defaultdict(lambda: Decimal("0")),
-            "debt_by_currency": defaultdict(lambda: Decimal("0")),
-            "paid_by_currency": defaultdict(lambda: Decimal("0")),
-            # Счётчики по расчётам. Считаются только по финансовым заказам:
-            # черновик и «на рассмотрении» ещё ничего не должны.
-            "paid_orders": 0,
-            "partial_orders": 0,
-            "unpaid_orders": 0,
-            "debt_orders": 0,
-        } for department in departments}
-        rows[""] = {
-            "id": 0, "code": "__unassigned", "name": "Нет отдела",
-            "color": "#64748B", "is_active": False,
-            "orders": 0, "active": 0, "shipped": 0, "revenue": Decimal("0"),
-            "revenue_by_currency": defaultdict(lambda: Decimal("0")),
-            "debt_by_currency": defaultdict(lambda: Decimal("0")),
-            "paid_by_currency": defaultdict(lambda: Decimal("0")),
-            "paid_orders": 0, "partial_orders": 0, "unpaid_orders": 0, "debt_orders": 0,
+        rows = {
+            department.code: _department_summary_row(
+                department.id, department.code, department.name,
+                department.color, department.is_active,
+            )
+            for department in departments
         }
-        totals = with_order_amounts(qs).values(
-            "department", "status", "currency", "amount_total", "amount_paid"
+        # Заказ без своего отдела — в карточке отдела клиента, как в фильтре списка.
+        rows[""] = _department_summary_row(
+            0, UNASSIGNED_CODE, UNASSIGNED_NAME, UNASSIGNED_COLOR, False,
+        )
+        totals = with_order_amounts(qs).annotate(department_code=order_department()).values(
+            "department_code", "status", "currency", "amount_total", "amount_paid"
         )
         for order in totals.iterator(chunk_size=2000):
-            row = rows[own.code] if own else rows.get(order["department"])
+            row = rows[own.code] if own else rows.get(order["department_code"])
             if row is None:
                 continue
             row["orders"] += 1
@@ -1196,23 +940,18 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             # рассмотрении» ещё не подтверждены и оборотом не являются.
             if not is_financial(order["status"]):
                 continue
-            currency = order["currency"] or "KZT"
+            currency = order["currency"] or DEFAULT_CURRENCY
             total, paid = order["amount_total"], order["amount_paid"]
             row["revenue_by_currency"][currency] += total
             row["paid_by_currency"][currency] += paid
             # Дебиторка — по тому же правилу, что и везде (Order.is_debt),
             # иначе цифра в дашборде разойдётся с «Кассой» и выпиской.
-            if order["status"] == DEBT_STATUS and total > paid:
+            if counts_as_debt(order["status"], total, paid):
                 row["debt_orders"] += 1
                 row["debt_by_currency"][currency] += total - paid
             if total <= 0:
                 continue
-            if paid <= 0:
-                row["unpaid_orders"] += 1
-            elif paid >= total:
-                row["paid_orders"] += 1
-            else:
-                row["partial_orders"] += 1
+            row[_PAYMENT_STATUS_COUNTERS[payment_status(total, paid)]] += 1
         result = []
         for row in rows.values():
             if not (row["is_active"] or row["orders"]):
@@ -1235,32 +974,46 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             })
         return Response(result)
 
+    @action(detail=False, methods=["get"], url_path="list-summary")
+    def list_summary(self, request):
+        """Итоги «Общей» аналитики по всей выборке списка, а не по его странице.
+
+        Фильтры и поиск те же, что у списка. Отменённые и отклонённые в итоги
+        не входят. Это стоимость заказов, а не выручка: «на рассмотрении»
+        считается отдельной долей. Валюты не складываются.
+        """
+        qs = self.get_queryset().select_related(None).prefetch_related(None).order_by()
+        qs = qs.exclude(status__in=statuses_in_group("cancelled"))
+        orders = active = 0
+        totals: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        by_group: dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
+        rows = with_order_amounts(qs).values("status", "currency", "amount_total")
+        for order in rows.iterator(chunk_size=2000):
+            orders += 1
+            if is_in_progress(order["status"]):
+                active += 1
+            currency = order["currency"] or DEFAULT_CURRENCY
+            totals[currency] += order["amount_total"]
+            by_group[(currency, public_status_key(order["status"]))] += order["amount_total"]
+        currency = primary_currency(totals)
+        return Response({
+            "orders": orders,
+            "active": active,
+            "total_currency": currency,
+            "total_by_currency": as_money_strings(dict(totals)),
+            # Доли статусов — только в основной валюте: ₸ и $ в один бар не идут.
+            "by_status_group": as_money_strings({
+                group: amount for (code, group), amount in by_group.items() if code == currency
+            }),
+        })
+
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):
         """Очередь ручной обработки кассиром (requested и received)."""
-        stage = request.query_params.get("stage")
-        stages = [stage] if stage in Payment.STATUSES else Payment.IN_PROGRESS_STATUSES
-        payments = scope_by_client_department(
-            Payment.objects.filter(
-                # Без счёта провайдера — как в CASHIER_QUEUE_PAYMENT.
-                apipay_invoice__isnull=True,
-                status__in=stages,
-                order__deleted_at__isnull=True,
-            ),
-            request.user,
-            client_path="order__client",
-            # Оплаты в очереди видны кассе любого отдела; прочие стадии — своему.
-            shared=CASHIER_QUEUE_PAYMENT,
+        qs = filter_order_scope(
+            cashier_queue_payments(request.user).order_by("paid_at", "id"),
+            request.query_params, prefix="order__", date_field="paid_at",
         )
-        qs = payments.order_by("paid_at", "id")
-        department = request.query_params.get("department")
-        if department:
-            qs = qs.filter(order__department=department)
-        store = parse_store_id(request.query_params.get("store"))
-        if store:
-            qs = qs.filter(order__store_id=store)
-        date_from, date_to = parse_date_range(request.query_params)
-        qs = filter_date_range(qs, "paid_at", date_from, date_to)
         if request.query_params.get("summary") == "1":
             return Response([
                 {"currency": row["order__currency"], "method": row["method"],
@@ -1284,22 +1037,13 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         каждому заказу выборки отдаёт ``amounts``: остаток к оплате, а для
         «К возврату» — переплата (``order_overpaid_by_id``).
         """
-        params = request.query_params
-        department = params.get("department")
-        if department:
-            # Заказ без своего отдела учитывается в отделе клиента — как в списке заказов.
-            qs = qs.filter(Q(department=department) | Q(department="", client__department__code=department))
-        store = parse_store_id(params.get("store"))
-        if store:
-            qs = qs.filter(store_id=store)
-        date_from, date_to = parse_date_range(params)
-        qs = filter_date_range(qs, date_field, date_from, date_to)
-        if params.get("summary") == "1":
+        qs = filter_order_scope(qs, request.query_params, date_field=date_field)
+        if request.query_params.get("summary") == "1":
             rows = list(qs.order_by().values("pk", "currency"))
             by_id = amounts(qs)
             totals: dict[str, dict] = {}
             for row in rows:
-                entry = totals.setdefault(row["currency"] or "KZT", {"amount": Decimal("0"), "count": 0})
+                entry = totals.setdefault(row["currency"] or DEFAULT_CURRENCY, {"amount": Decimal("0"), "count": 0})
                 entry["amount"] += by_id.get(row["pk"], Decimal("0"))
                 entry["count"] += 1
             return Response([
@@ -1361,170 +1105,11 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         order = self.get_queryset().get(pk=order.pk)
         return Response(OrderSerializer(order, context={"request": request}).data)
 
-    @action(detail=False, methods=["get"], url_path="cashier-log")
-    def cashier_log(self, request):
-        """Неизменяемый журнал действий с оплатами для экрана кассы."""
-        def public_message(message: str) -> str:
-            """Скрыть технические названия провайдера и коды способов оплаты."""
-            replacements = (
-                ("ApiPay: счёт", "Счёт на оплату"),
-                ("Счёт ApiPay", "Счёт на оплату"),
-                ("Возврат ApiPay", "Возврат по счёту"),
-                ("Статус возврата ApiPay", "Статус возврата по счёту"),
-                ("(invoice)", "(счёт на оплату)"),
-            )
-            for source, target in replacements:
-                message = message.replace(source, target)
-            return message
-
-        events = scope_by_client_department(
-            EventLog.objects.filter(
-                event_type="payment",
-                order__isnull=False,
-                order__deleted_at__isnull=True,
-            ),
-            request.user,
-            client_path="order__client",
-        )
-        qs = events.select_related(
-            "user", "order__client__user", "order__store"
-        )
-        department = request.query_params.get("department")
-        if department:
-            qs = qs.filter(order__department=department)
-        store = parse_store_id(request.query_params.get("store"))
-        if store:
-            qs = qs.filter(order__store_id=store)
-        date_from, date_to = parse_date_range(request.query_params)
-        qs = filter_date_range(qs, "created_at", date_from, date_to)
-
-        paginator = OptInPageNumberPagination()
-        page_events = paginator.paginate_queryset(qs, request, view=self)
-        # Без явного ?page журнал остаётся ограниченной лентой последних
-        # событий — так его читали до появления страниц.
-        events = page_events if page_events is not None else list(qs[:200])
-        payment_ids = {
-            event.payload.get("payment_id") for event in events
-            if event.payload.get("payment_id") is not None
-        }
-        visible_payments = scope_by_client_department(
-            Payment.objects.filter(pk__in=payment_ids),
-            request.user,
-            client_path="order__client",
-        )
-        payment_states = {row.pk: row for row in visible_payments.only(
-            "pk", "status", "refunded_amount", "pending_refund_amount",
-        ).prefetch_related("payment_refunds")}
-        current_statuses = {pk: row.status for pk, row in payment_states.items()}
-        payments_with_refunds = {
-            pk for pk, row in payment_states.items()
-            if row.refunded_amount > 0 or row.pending_refund_amount > 0
-            or any(refund.status in ("pending", "completed") for refund in row.payment_refunds.all())
-        }
-        closed_provider_payments = set(
-            ApiPayInvoice.objects.filter(
-                payment_id__in=payment_ids,
-                status__in=("cancelled", "expired", "error", "superseded"),
-            ).values_list("payment_id", flat=True)
-        )
-        provider_payments = set(
-            ApiPayInvoice.objects.filter(
-                payment_id__in=payment_ids,
-            ).values_list("payment_id", flat=True)
-        )
-        # Resolve across the complete history, not only this page/date window.
-        # PostgreSQL DISTINCT ON returns one latest event per payment and stage.
-        latest_events = EventLog.objects.filter(
-            event_type="payment", payload__payment_id__in=payment_ids,
-            payload__payment_stage__in=("confirmed", "rejected"),
-            order_id__in={event.order_id for event in events},
-        ).order_by("payload__payment_id", "payload__payment_stage", "-created_at", "-id").distinct(
-            "payload__payment_id", "payload__payment_stage",
-        )
-        latest_confirmation = {}
-        latest_rejection = {}
-        for payload, event_id in latest_events.values_list("payload", "id"):
-            target = latest_confirmation if payload["payment_stage"] == "confirmed" else latest_rejection
-            target[payload["payment_id"]] = event_id
-        rows = [{
-            "id": event.id,
-            "message": public_message(event.message),
-            "user_name": event.user.username if event.user else None,
-            "order": event.order_id,
-            "client_name": event.order.client.name if event.order_id else None,
-            "store_name": (event.order.store.name
-                           if event.order_id and event.order.store_id else None),
-            "payload": event.payload,
-            "created_at": event.created_at,
-            "can_reopen": (
-                event.payload.get("payment_stage") == "confirmed"
-                and current_statuses.get(event.payload.get("payment_id")) == "confirmed"
-                and latest_confirmation.get(event.payload.get("payment_id")) == event.id
-                and event.payload.get("payment_id") not in provider_payments
-                and event.payload.get("payment_id") not in payments_with_refunds
-            ),
-            "can_restore": (
-                event.payload.get("payment_stage") == "rejected"
-                and current_statuses.get(event.payload.get("payment_id")) == "rejected"
-                and latest_rejection.get(event.payload.get("payment_id")) == event.id
-                and event.payload.get("payment_id") not in closed_provider_payments
-            ),
-        } for event in events]
-        if page_events is not None:
-            return paginator.get_paginated_response(rows)
-        return Response(rows)
-
-    @action(detail=True, methods=["post"], url_path="train")
-    def train(self, request, pk=None):
-        """Единый эндпоинт загрузки вагона: action = start | count | finish."""
-        order = self.get_object()
-        what = request.data.get("action")
-        if what == "start":
-            start_train_loading(order, request.user)
-        elif what == "count":
-            serializer = LoadSerializer(data={"bags": request.data.get("bags")})
-            serializer.is_valid(raise_exception=True)
-            record_count(order, serializer.validated_data["bags"], request.user)
-        elif what == "finish":
-            finish_train_loading(order, request.user)
-        else:
-            raise ValidationError({"detail": "Неизвестное действие", "code": "bad_action"})
-        # The action may create/update the select_related Shipment row. Clear
-        # relation caches before serializing the new state.
-        order.refresh_from_db()
-        return Response(OrderSerializer(order, context={"request": request}).data)
-
-    @action(detail=True, methods=["post"], url_path="loading-camera")
-    def loading_camera(self, request, pk=None):
-        """Занять/освободить камеру под погрузку этого заказа. Пустая — освободить."""
-        from apps.cameras import ai
-        from apps.cameras.models import MonoblockCameraSettings
-        order = self.get_object()
-        camera = (request.data.get("camera") or "").strip()
-        if camera:
-            try:
-                camera = ai.normalize(camera)  # переиспользуем валидатор имени камеры
-            except ai.AiError:
-                raise ValidationError({"detail": "Неизвестная камера", "code": "bad_camera"})
-            if camera not in MonoblockCameraSettings.allowed_sources():
-                raise ValidationError({
-                    "detail": "Эта камера не разрешена администратором для Моноблока",
-                    "code": "camera_not_allowed",
-                })
-            if order.status not in ("arrived", "loading"):
-                raise ValidationError({
-                    "detail": "Предварительное назначение камеры недоступно: начните заказ через Моноблок",
-                    "code": "invalid_status",
-                })
-        order = set_loading_camera(order, camera, request.user)
-        return Response(OrderSerializer(order, context={"request": request}).data)
-
     def destroy(self, request, *args, **kwargs):
         """Удаление = отправка в корзину (soft-delete). Заказ исчезает из отчётов
         и списков, но сохраняется и может быть восстановлен."""
         soft_delete_order(self.get_object(), request.user)
-        from rest_framework import status
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(status=204)
 
     def _deleted_scoped(self):
         """Удалённые заказы (корзина), доступные редактору заказов."""
@@ -1539,9 +1124,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     def trash(self, request):
         """Корзина: удалённые заказы, доступные для восстановления."""
         qs = self._deleted_scoped().order_by("-deleted_at")
-        department = request.query_params.get("department")
-        if department:
-            qs = qs.filter(department=department)
         return Response(OrderSerializer(qs, many=True, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="trash-preview")
@@ -1574,54 +1156,12 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         if order is None:
             raise ValidationError({"detail": "Заказ не найден в корзине", "code": "not_found"})
         purge_order(order, request.user)
-        from rest_framework import status
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(status=204)
 
     @action(detail=True, methods=["post"], url_path="payments")
     def payments(self, request, pk=None):
-        """Начало цепочки: stage=requested (счёт выставлен) или received (деньги приняты)."""
+        """Начало цепочки: счёт — requested, прочие способы — received (деньги приняты)."""
         order = self.get_object()
-        parts = request.data.get("parts")
-        if parts is not None:
-            if isinstance(parts, list):
-                normalized_parts = []
-                for raw_part in parts:
-                    part = dict(raw_part) if isinstance(raw_part, dict) else raw_part
-                    if isinstance(part, dict) and part.get("method") == "invoice":
-                        if part.get("channel") == "document":
-                            # Наш PDF-счёт: провайдер не участвует, телефон
-                            # не нужен — кассир подтверждает оплату вручную.
-                            part.pop("phone_number", None)
-                        else:
-                            part["phone_number"] = normalize_phone(
-                                part.get("phone_number") or order.client.phone
-                            )
-                    normalized_parts.append(part)
-                parts = normalized_parts
-            payments = record_staff_mixed_payments(
-                order,
-                parts,
-                request.user,
-                note=request.data.get("note") or "",
-                # Provider issuance can fail.  Keep every split part reversible
-                # until all external invoices have been created successfully.
-                settle_received=False,
-            )
-            _issue_mixed_provider_payments(payments, parts, request.user)
-            confirm_received_staff_payments(payments, request.user)
-            for payment in payments:
-                payment.refresh_from_db()
-            # Части и оплаты идут одним списком в одном порядке, поэтому
-            # документный счёт узнаётся по своей части, а не по способу:
-            # в смешанной оплате счетов может быть несколько с разными каналами.
-            for part, payment in zip(parts, payments):
-                if (
-                    isinstance(part, dict)
-                    and part.get("method") == "invoice"
-                    and part.get("channel") == "document"
-                ):
-                    _notify_document_invoice(order, payment)
-            return Response(PaymentSerializer(payments, many=True).data, status=201)
         method = request.data.get("method") or "cash"
         # POS кассы: Kaspi QR через ApiPay. Без channel кассовый kaspi — это
         # отметка о собственном терминале и подтверждается сразу, как раньше.
@@ -1635,22 +1175,17 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             payment = _issue_staff_qr_payment(
                 order, request.data.get("amount"), request.user
             )
-            return Response(PaymentSerializer(payment).data, status=201)
-        # Канал счёта един для обоих путей API: document — наш PDF без провайдера.
-        document_invoice = (
-            method == "invoice" and request.data.get("channel") == "document"
-        )
+            return Response(PaymentSerializer(payment, context={"request": request}).data, status=201)
         phone_number = request.data.get("phone_number")
-        if method == "invoice" and not document_invoice:
+        if method == "invoice":
             phone_number = normalize_phone(
                 phone_number or order.client.phone
             )
         payment = record_staff_payment(
             order, request.data.get("amount"), request.user,
             method=method,
-            stage=request.data.get("stage") or "received",
             note=request.data.get("note") or "")
-        if method in PROVIDER_METHOD_CHANNELS and not document_invoice:
+        if method in PROVIDER_METHOD_CHANNELS:
             try:
                 _issue_provider_payment(
                     payment,
@@ -1658,56 +1193,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                     user=request.user,
                 )
             except (ApiPayAPIError, ApiPayConfigurationError, ValidationError) as exc:
-                _reject_created_payments([payment], request.user)
-                raise _provider_error(exc) from exc
+                reject_unissued_payment(payment, request.user)
+                raise provider_error(exc) from exc
             payment.refresh_from_db()
-        elif document_invoice:
-            # Уведомляем только после успешного создания оплаты: при ошибке
-            # выше клиент не должен получить сообщение о несуществующем счёте.
-            _notify_document_invoice(order, payment)
-        return Response(PaymentSerializer(payment).data, status=201)
-
-    @action(detail=True, methods=["get"], url_path="invoice-pdf")
-    def invoice_pdf(self, request, pk=None):
-        """PDF «Счёт на оплату» для кассы — то же, что видит клиент в портале.
-
-        Документ имеет смысл только когда счёт-часть уже создана: сумма и
-        реквизиты берутся из заказа, а факт формирования пишется в журнал.
-        """
-        order = self.get_object()
-        missing = []
-        if not order.client.iin.strip():
-            missing.append("ИИН/БИН")
-        if not order.client.display_name:
-            missing.append("название ТОО / ИП")
-        if missing:
-            raise ValidationError({
-                "detail": "Для счета заполните реквизиты клиента: "
-                          + ", ".join(missing),
-                "code": "client_requisites_missing",
-            })
-        payment = order.payments.filter(
-            method="invoice", status__in=("requested", "received", "confirmed")
-        ).order_by("-paid_at").first()
-        if payment is None:
-            raise ValidationError({
-                "detail": "Сначала добавьте способ «Счёт на оплату»",
-                "code": "invoice_payment_missing",
-            })
-        # Счёт — на сумму созданной части, а не всего заказа: касса может
-        # выставлять частичные счета.
-        pdf = build_invoice_pdf(order, amount=payment.amount)
-        log_event(
-            "payment", f"Счет на оплату №{order.id} сформирован кассой",
-            user=request.user, order=order,
-            payload={"payment_id": payment.id, "method": "invoice",
-                     "action": "invoice_generated"},
-        )
-        filename = (
-            f"schet_na_oplatu_{order.id}_ot_{timezone.localdate():%d.%m.%Y}.pdf"
-        )
-        return FileResponse(BytesIO(pdf), content_type="application/pdf",
-                            as_attachment=True, filename=filename)
+        return Response(PaymentSerializer(payment, context={"request": request}).data, status=201)
 
     @action(detail=True, methods=["get"], url_path=r"payments/(?P<pid>\d+)")
     def payment_detail(self, request, pk=None, pid=None):
@@ -1792,14 +1281,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         payment = reopen_confirmed_payment(payment, request.user)
         return Response(OrderSerializer(payment.order, context={"request": request}).data)
 
-    @action(detail=True, methods=["post"],
-            url_path=r"payments/(?P<pid>\d+)/restore")
-    def restore_payment(self, request, pk=None, pid=None):
-        """Восстановление случайно отклонённой оплаты: rejected → очередь."""
-        payment = get_object_or_404(Payment, pk=pid, order=self.get_object())
-        payment = _restore_payment_and_provider(payment, request.user)
-        return Response(OrderSerializer(payment.order, context={"request": request}).data)
-
     @action(detail=True, methods=["post"], url_path=r"payments/(?P<pid>\d+)/reject")
     def reject_payment(self, request, pk=None, pid=None):
         payment, in_queue = self._order_payment(
@@ -1818,9 +1299,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 any_department=in_queue,
             )
         except ApiPayAPIError as exc:
-            raise ValidationError({
-                "detail": exc.message, "code": exc.error_code
-            }) from exc
+            raise provider_error(exc) from exc
         return Response(
             OrderSerializer(payment.order, context={"request": request}).data,
             status=202 if pending else 200,
@@ -1861,11 +1340,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response({
             "order": OrderSerializer(order, context={"request": request}).data,
         })
-
-    @action(detail=True, methods=["get"], url_path="status-requests")
-    def status_requests(self, request, pk=None):
-        qs = self.get_object().status_requests.filter(status="pending")
-        return Response(StatusChangeRequestSerializer(qs, many=True).data)
 
     @action(detail=True, methods=["post"],
             url_path=r"status-requests/(?P<rid>\d+)/approve")

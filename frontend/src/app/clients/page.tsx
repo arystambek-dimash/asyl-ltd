@@ -2,60 +2,91 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import * as z from "zod";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { PhoneInput } from "@/components/ui/phone-input";
+import { Segmented } from "@/components/ui/segmented";
 import { Modal } from "@/components/ui/modal";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { SortableHeader, useSortState } from "@/components/ui/sortable-header";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { ErrorAlert, FormError } from "@/components/ui/data-state";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
+import { StatCard } from "@/components/ui/stat-card";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "@/components/ui/form";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
+import { Field, fieldErrorId } from "@/components/ui/field";
+import { Select } from "@/components/ui/select";
 import { useApi } from "@/lib/use-api";
+import { useConfirmAction } from "@/lib/use-confirm-action";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
-import { cn, currencySymbol, formatMoney, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
-import { isPhoneComplete } from "@/lib/phone";
+import { cn, formatCurrency, formatDateTime, sumDebtByCurrency } from "@/lib/utils";
+import { isPhoneComplete, onlyDigits } from "@/lib/phone";
 import { COUNTRIES } from "@/lib/countries";
-import { BarChart3, FileSpreadsheet, KeyRound, Pencil, Phone, Plus, Search, Tags, Trash2 } from "lucide-react";
+import { BarChart3, FileSpreadsheet, KeyRound, Pencil, Phone, Plus, Tags, Trash2 } from "lucide-react";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DepartmentDot } from "@/components/ui/department-badge";
 import { Badge } from "@/components/ui/badge";
 import { UnassignedClients } from "@/components/clients/unassigned-clients";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import type { Client, ClientDebt, Department, Me } from "@/lib/types";
 
-const NO_DEPARTMENT = "none";
+type ClientFormValues = {
+  first_name: string;
+  last_name: string;
+  company_name: string;
+  phone: string;
+  country: string;
+  iin: string;
+  bank: string;
+  bank_account: string;
+  currency: "KZT" | "USD";
+  department: string;
+};
+type ClientFormKey = keyof ClientFormValues;
+type ClientFormErrors = Partial<Record<ClientFormKey, string>>;
 
-const schema = z.object({
-  first_name: z.string().min(2, "Введите имя (мин. 2 символа)"),
-  last_name: z.string().trim().max(100, "Не более 100 символов"),
-  company_name: z.string().optional(),
-  phone: z.string().refine(isPhoneComplete, "Введите номер полностью"),
-  country: z.string().optional(),
-  iin: z
-    .string()
-    .optional()
-    .refine((v) => !v || /^\d{12}$/.test(v), "ИИН/БИН — 12 цифр"),
-  bank: z.string().optional(),
-  bank_account: z.string().optional(),
-  currency: z.enum(["KZT", "USD"]),
-  department: z.string(),
-});
-type FormValues = z.infer<typeof schema>;
+// Порядок полей на экране: фокус уходит на первое ошибочное.
+const CLIENT_FIELD_ORDER: ClientFormKey[] = ["first_name", "last_name", "phone", "iin"];
+const clientFieldId = (key: ClientFormKey) => `client-${key.replace("_", "-")}`;
+
+function validateClient(values: ClientFormValues): ClientFormErrors {
+  const errors: ClientFormErrors = {};
+  if (values.first_name.length < 2) errors.first_name = "Введите имя (мин. 2 символа)";
+  if (values.last_name.trim().length > 100) errors.last_name = "Не более 100 символов";
+  if (!isPhoneComplete(values.phone)) errors.phone = "Введите номер полностью";
+  if (values.iin && !/^\d{12}$/.test(values.iin)) errors.iin = "ИИН/БИН — 12 цифр";
+  return errors;
+}
+
+function initialClientValues(editing: Client | null | undefined, assignedDepartment: Me["sales_department"]) {
+  const department = assignedDepartment
+    ? String(assignedDepartment.id)
+    : editing?.department
+      ? String(editing.department)
+      : "";
+  return {
+    first_name: editing?.first_name ?? "",
+    last_name: editing?.last_name ?? "",
+    company_name: editing?.company_name ?? "",
+    phone: editing?.phone ?? "",
+    country: editing?.country ?? "",
+    iin: editing?.iin ?? "",
+    bank: editing?.bank ?? "",
+    bank_account: editing?.bank_account ?? "",
+    currency: editing?.currency ?? "KZT",
+    department,
+  } satisfies ClientFormValues;
+}
 
 function ClientForm({
   onDone,
@@ -68,7 +99,10 @@ function ClientForm({
   editing?: Client | null;
   assignedDepartment: Me["sales_department"];
 }) {
+  const [values, setValues] = useState<ClientFormValues>(() => initialClientValues(editing, assignedDepartment));
+  const [errors, setErrors] = useState<ClientFormErrors>({});
   const [serverError, setServerError] = useState("");
+  const [busy, setBusy] = useState(false);
   const departmentChoiceTouched = useRef(Boolean(editing || assignedDepartment));
   const {
     data: departments,
@@ -76,39 +110,20 @@ function ClientForm({
     error: departmentsError,
     reload: reloadDepartments,
   } = useApi<Department[]>(assignedDepartment ? null : "/departments/?all=1");
-  const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: editing
-      ? {
-          first_name: editing.first_name,
-          last_name: editing.last_name,
-          company_name: editing.company_name ?? "",
-          phone: editing.phone,
-          country: editing.country ?? "",
-          iin: editing.iin ?? "",
-          bank: editing.bank ?? "",
-          bank_account: editing.bank_account ?? "",
-          currency: editing.currency ?? "KZT",
-          department: assignedDepartment
-            ? String(assignedDepartment.id)
-            : editing.department
-              ? String(editing.department)
-              : "",
-        }
-      : {
-          first_name: "",
-          last_name: "",
-          company_name: "",
-          phone: "",
-          country: "",
-          iin: "",
-          bank: "",
-          bank_account: "",
-          currency: "KZT",
-          department: assignedDepartment ? String(assignedDepartment.id) : "",
-        },
-  });
 
+  function set<K extends ClientFormKey>(key: K, value: ClientFormValues[K]) {
+    setValues((current) => ({ ...current, [key]: value }));
+    setErrors((current) => (current[key] ? { ...current, [key]: undefined } : current));
+  }
+  const upd = (key: ClientFormKey) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    set(key, e.target.value);
+
+  // Общие атрибуты ошибки для контрола поля.
+  const invalidProps = (key: ClientFormKey) =>
+    errors[key] ? { "aria-invalid": true, "aria-describedby": fieldErrorId(clientFieldId(key)) } : {};
+
+  // Пока отделы грузятся (или не загрузились), текущий отдел клиента некому
+  // показать в поле. Архивные отделы приходят в основном списке (?all=1).
   const currentDepartmentMissing =
     editing?.department != null && !(departments ?? []).some((row) => row.id === editing.department);
 
@@ -117,16 +132,26 @@ function ClientForm({
     const defaultDepartment =
       departments.find((department) => department.is_active && department.is_default) ??
       departments.find((department) => department.is_active);
-    if (defaultDepartment) form.setValue("department", String(defaultDepartment.id));
+    if (defaultDepartment) setValues((current) => ({ ...current, department: String(defaultDepartment.id) }));
     departmentChoiceTouched.current = true;
-  }, [assignedDepartment, departments, editing, form]);
+  }, [assignedDepartment, departments, editing]);
 
-  async function onSubmit(values: FormValues) {
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
     setServerError("");
+    const invalid = validateClient(values);
+    const first = CLIENT_FIELD_ORDER.find((key) => invalid[key]);
+    if (first) {
+      setErrors(invalid);
+      requestAnimationFrame(() => document.getElementById(clientFieldId(first))?.focus());
+      return;
+    }
+    setBusy(true);
     try {
       const { department, ...clientValues } = values;
       const payload = {
         ...clientValues,
+        last_name: clientValues.last_name.trim(),
         department: assignedDepartment?.id ?? (department ? Number(department) : null),
       };
       if (editing) await api.patch(`/clients/${editing.id}/`, payload);
@@ -134,288 +159,195 @@ function ClientForm({
       onDone();
     } catch (e) {
       setServerError(apiError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
-        <FormField
-          control={form.control}
-          name="first_name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Имя</FormLabel>
-              <FormControl>
-                <Input autoFocus placeholder="Иван" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+    <form onSubmit={submit} noValidate className="grid grid-cols-1 gap-x-5 gap-y-5 sm:grid-cols-2">
+      <Field label="Имя" htmlFor={clientFieldId("first_name")} error={errors.first_name}>
+        <Input
+          id={clientFieldId("first_name")}
+          autoFocus
+          placeholder="Иван"
+          value={values.first_name}
+          onChange={upd("first_name")}
+          {...invalidProps("first_name")}
         />
+      </Field>
 
-        <FormField
-          control={form.control}
-          name="last_name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>
-                Фамилия <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>
-              </FormLabel>
-              <FormControl>
-                <Input placeholder="Петров" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+      <Field
+        label={
+          <>
+            Фамилия <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>
+          </>
+        }
+        htmlFor={clientFieldId("last_name")}
+        error={errors.last_name}
+      >
+        <Input
+          id={clientFieldId("last_name")}
+          placeholder="Петров"
+          value={values.last_name}
+          onChange={upd("last_name")}
+          {...invalidProps("last_name")}
         />
+      </Field>
 
-        <FormField
-          control={form.control}
-          name="company_name"
-          render={({ field }) => (
-            <FormItem className="sm:col-span-2">
-              <FormLabel>Название ТОО / ИП</FormLabel>
-              <FormControl>
-                <Input placeholder={'ТОО "Сайрам нан"'} {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+      <Field label="Название ТОО / ИП" htmlFor={clientFieldId("company_name")} className="sm:col-span-2">
+        <Input
+          id={clientFieldId("company_name")}
+          placeholder={'ТОО "Сайрам нан"'}
+          value={values.company_name}
+          onChange={upd("company_name")}
         />
+      </Field>
 
-        <FormField
-          control={form.control}
-          name="phone"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Номер телефона</FormLabel>
-              <FormControl>
-                <PhoneInput
-                  value={field.value}
-                  onChange={field.onChange}
-                  defaultCountry={editing?.country}
-                  onCountryChange={(country) => {
-                    if (!form.getValues("country")) form.setValue("country", country);
-                  }}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
+      <Field label="Номер телефона" htmlFor={clientFieldId("phone")} error={errors.phone}>
+        <PhoneInput
+          id={clientFieldId("phone")}
+          value={values.phone}
+          onChange={(value) => set("phone", value)}
+          defaultCountry={editing?.country}
+          onCountryChange={(country) => setValues((current) => (current.country ? current : { ...current, country }))}
+          {...invalidProps("phone")}
         />
+      </Field>
 
-        <FormField
-          control={form.control}
-          name="country"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Страна</FormLabel>
-              <Select value={field.value} onValueChange={field.onChange}>
-                <FormControl>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Выберите страну" />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  {COUNTRIES.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+      <Field label="Страна" htmlFor={clientFieldId("country")}>
+        <Select id={clientFieldId("country")} value={values.country} onChange={upd("country")}>
+          <option value="">Выберите страну</option>
+          {COUNTRIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </Select>
+      </Field>
 
-        <FormField
-          control={form.control}
-          name="department"
-          render={({ field }) => (
-            <FormItem className="sm:col-span-2">
-              <FormLabel>
-                Отдел продаж{" "}
-                {!assignedDepartment && (
-                  <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>
-                )}
-              </FormLabel>
-              {assignedDepartment ? (
-                <div className="flex h-9 items-center gap-2 rounded-md border bg-[var(--muted)]/35 px-3 text-sm font-medium">
-                  <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
-                  {assignedDepartment.name}
-                </div>
-              ) : (
-                <Select
-                  value={field.value || NO_DEPARTMENT}
-                  onValueChange={(value) => {
-                    departmentChoiceTouched.current = true;
-                    field.onChange(value === NO_DEPARTMENT ? "" : value);
-                  }}
-                  disabled={departmentsLoading && !departments}
-                >
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder={departmentsLoading ? "Загружаем отделы…" : "Выберите отдел"} />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    <SelectItem value={NO_DEPARTMENT}>Без отдела</SelectItem>
-                    {currentDepartmentMissing && editing?.department && (
-                      <SelectItem value={String(editing.department)}>
-                        {editing.department_name || `Отдел #${editing.department}`} (архивный)
-                      </SelectItem>
-                    )}
-                    {(departments ?? []).map((department) => (
-                      <SelectItem
-                        key={department.id}
-                        value={String(department.id)}
-                        disabled={!department.is_active && department.id !== editing?.department}
-                      >
-                        <span className="flex items-center gap-2">
-                          <span className="size-2 rounded-full" style={{ backgroundColor: department.color }} />
-                          {department.name}
-                          {!department.is_active && " (архивный)"}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              <p className="text-xs text-[var(--muted-foreground)]">
-                {assignedDepartment
-                  ? "Клиент закрепляется за вашим отделом."
-                  : "Клиента можно оставить без ответственного отдела."}
-              </p>
-              {departmentsError && (
-                <div className="flex items-center justify-between gap-3 text-xs text-[var(--destructive)]">
-                  <span>{departmentsError}</span>
-                  <Button type="button" size="sm" variant="link" className="h-auto px-0" onClick={reloadDepartments}>
-                    Повторить
-                  </Button>
-                </div>
-              )}
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <div className="sm:col-span-2 mt-1 border-t border-[var(--border)] pt-4 text-[12px] font-medium text-[var(--muted-foreground)]">
-          Реквизиты
-        </div>
-
-        <FormField
-          control={form.control}
-          name="currency"
-          render={({ field }) => (
-            <FormItem className="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/55 p-4">
-              <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-start sm:gap-6">
-                <div>
-                  <FormLabel>Валюта по умолчанию</FormLabel>
-                  <p className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">
-                    Предвыбирается в новом заказе. В личном прайсе цены в ₸ и $ хранятся отдельно.
-                  </p>
-                </div>
-                <FormControl>
-                  <div className="grid shrink-0 grid-cols-2 gap-1 rounded-xl border border-blue-100 bg-white p-1 shadow-sm">
-                    {(["KZT", "USD"] as const).map((code) => (
-                      <button
-                        key={code}
-                        type="button"
-                        onClick={() => field.onChange(code)}
-                        aria-pressed={field.value === code}
-                        className={cn(
-                          "min-w-28 rounded-lg px-3 py-2 text-left transition",
-                          field.value === code
-                            ? "bg-slate-900 text-white shadow-sm"
-                            : "text-slate-500 hover:bg-slate-50 hover:text-slate-800",
-                        )}
-                      >
-                        <span className="block text-xs font-bold">{code}</span>
-                        <span
-                          className={cn("block text-[10px]", field.value === code ? "text-white/60" : "text-slate-400")}
-                        >
-                          {code === "KZT" ? "тенге · ₸" : "доллар · $"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </FormControl>
-              </div>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="iin"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>ИИН / БИН</FormLabel>
-              <FormControl>
-                <Input
-                  inputMode="numeric"
-                  placeholder="12 цифр"
-                  maxLength={12}
-                  value={field.value}
-                  onChange={(e) => field.onChange(e.target.value.replace(/\D/g, "").slice(0, 12))}
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="bank"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Банк</FormLabel>
-              <FormControl>
-                <Input placeholder="напр. Halyk Bank" {...field} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="bank_account"
-          render={({ field }) => (
-            <FormItem className="sm:col-span-2">
-              <FormLabel>Расчётный счёт (IBAN)</FormLabel>
-              <FormControl>
-                <Input placeholder="KZ…" {...field} onChange={(e) => field.onChange(e.target.value.toUpperCase())} />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {serverError && (
-          <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)] sm:col-span-2">
-            {serverError}
-          </p>
+      <Field
+        label={
+          <>
+            Отдел продаж{" "}
+            {!assignedDepartment && <span className="font-normal text-[var(--muted-foreground)]">(необязательно)</span>}
+          </>
+        }
+        htmlFor={assignedDepartment ? undefined : clientFieldId("department")}
+        className="sm:col-span-2"
+      >
+        {assignedDepartment ? (
+          <div className="flex h-10 items-center gap-2 rounded-md border bg-[var(--muted)]/35 px-3.5 text-sm font-medium">
+            <DepartmentDot color={assignedDepartment.color} className="size-2" />
+            {assignedDepartment.name}
+          </div>
+        ) : (
+          <Select
+            id={clientFieldId("department")}
+            value={values.department}
+            onChange={(e) => {
+              departmentChoiceTouched.current = true;
+              set("department", e.target.value);
+            }}
+            disabled={departmentsLoading && !departments}
+          >
+            <option value="">Без отдела</option>
+            {currentDepartmentMissing && editing?.department && (
+              <option value={String(editing.department)}>
+                {editing.department_name || `Отдел #${editing.department}`}
+              </option>
+            )}
+            {(departments ?? []).map((department) => (
+              <option
+                key={department.id}
+                value={String(department.id)}
+                disabled={!department.is_active && department.id !== editing?.department}
+              >
+                {department.name}
+                {!department.is_active && " (архивный)"}
+              </option>
+            ))}
+          </Select>
         )}
+        <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+          {assignedDepartment
+            ? "Клиент закрепляется за вашим отделом."
+            : "Клиента можно оставить без ответственного отдела."}
+        </p>
+        {departmentsError && (
+          <div className="mt-1.5 flex items-center justify-between gap-3 text-xs text-[var(--destructive)]">
+            <span>{departmentsError}</span>
+            <Button type="button" size="sm" variant="link" className="h-auto px-0" onClick={reloadDepartments}>
+              Повторить
+            </Button>
+          </div>
+        )}
+      </Field>
 
-        <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:col-span-2 sm:flex-row sm:justify-end">
-          <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={onCancel}>
-            Отмена
-          </Button>
-          <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={form.formState.isSubmitting}>
-            {form.formState.isSubmitting ? "Сохранение…" : "Сохранить"}
-          </Button>
+      <div className="sm:col-span-2 mt-1 border-t border-[var(--border)] pt-4 text-[12px] font-medium text-[var(--muted-foreground)]">
+        Реквизиты
+      </div>
+
+      <div className="sm:col-span-2 rounded-2xl border border-blue-100 bg-blue-50/55 p-4">
+        <div className="flex flex-col justify-between gap-1 sm:flex-row sm:items-start sm:gap-6">
+          <div>
+            <p className="text-[12px] font-medium text-[var(--foreground)]">Валюта по умолчанию</p>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">
+              Предвыбирается в новом заказе. В личном прайсе цены в ₸ и $ хранятся отдельно.
+            </p>
+          </div>
+          <div className="shrink-0 sm:w-60">
+            <Segmented
+              ariaLabel="Валюта по умолчанию"
+              value={values.currency}
+              onChange={(currency) => set("currency", currency)}
+              options={[
+                { value: "KZT", label: "KZT", caption: "тенге · ₸" },
+                { value: "USD", label: "USD", caption: "доллар · $" },
+              ]}
+            />
+          </div>
         </div>
-      </form>
-    </Form>
+      </div>
+
+      <Field label="ИИН / БИН" htmlFor={clientFieldId("iin")} error={errors.iin}>
+        <Input
+          id={clientFieldId("iin")}
+          inputMode="numeric"
+          placeholder="12 цифр"
+          maxLength={12}
+          value={values.iin}
+          onChange={(e) => set("iin", onlyDigits(e.target.value).slice(0, 12))}
+          {...invalidProps("iin")}
+        />
+      </Field>
+
+      <Field label="Банк" htmlFor={clientFieldId("bank")}>
+        <Input id={clientFieldId("bank")} placeholder="напр. Halyk Bank" value={values.bank} onChange={upd("bank")} />
+      </Field>
+
+      <Field label="Расчётный счёт (IBAN)" htmlFor={clientFieldId("bank_account")} className="sm:col-span-2">
+        <Input
+          id={clientFieldId("bank_account")}
+          placeholder="KZ…"
+          value={values.bank_account}
+          onChange={(e) => set("bank_account", e.target.value.toUpperCase())}
+        />
+      </Field>
+
+      <FormError message={serverError} className="sm:col-span-2" />
+
+      <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:col-span-2 sm:flex-row sm:justify-end">
+        <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={onCancel}>
+          Отмена
+        </Button>
+        <Button type="submit" className="w-full sm:w-auto sm:min-w-28" disabled={busy}>
+          {busy ? "Сохранение…" : "Сохранить"}
+        </Button>
+      </div>
+    </form>
   );
 }
-
-const digits = (s: string) => s.replace(/\D/g, "");
 
 const WaitingDepartmentBadge = () => (
   <Badge tone="warning" dot>
@@ -491,11 +423,7 @@ function ClientPortalAccessForm({
         </label>
       </div>
 
-      {error && (
-        <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-          {error}
-        </p>
-      )}
+      <FormError message={error} />
 
       <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
         <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
@@ -528,8 +456,7 @@ function ClientsPageInner() {
   const [iinQ, setIinQ] = useState("");
   const [phoneQ, setPhoneQ] = useState("");
   const [department, setDepartment] = useState("all");
-  const [sortKey, setSortKey] = useState("created");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const { sortKey, sortDir, toggleSort } = useSortState("created", "desc");
   const effectiveDepartment = assignedDepartment?.code ?? department;
   const clientsUrl =
     effectiveDepartment === "all" ? "/clients/" : `/clients/?department=${encodeURIComponent(effectiveDepartment)}`;
@@ -542,7 +469,8 @@ function ClientsPageInner() {
   const clients = usePaging ? paged.items : flat.data;
   const error = usePaging ? paged.error : flat.error;
   const reload = usePaging ? paged.reload : flat.reload;
-  const { data: departments } = useApi<Department[]>("/departments/");
+  // Фильтр по отделу виден только сотруднику без закреплённого отдела.
+  const { data: departments } = useApi<Department[]>(assignedDepartment ? null : "/departments/");
   // Клиентский отдел и отдел заказа независимы. Поэтому шапку считаем по
   // ownership клиента, а не через reports/summary?department=...
   const clientDebtsUrl =
@@ -554,46 +482,21 @@ function ClientsPageInner() {
     error: clientDebtsError,
     reload: reloadClientDebts,
   } = useApi<ClientDebt[]>(canMoney ? clientDebtsUrl : null);
-  const [delItem, setDelItem] = useState<Client | null>(null);
-  const [delError, setDelError] = useState("");
-  const [delBusy, setDelBusy] = useState(false);
-  const [purgeItem, setPurgeItem] = useState<Client | null>(null);
-  const [purgeError, setPurgeError] = useState("");
-  const [purgeBusy, setPurgeBusy] = useState(false);
   const [portalClient, setPortalClient] = useState<Client | null>(null);
   const [statementOpen, setStatementOpen] = useState(false);
 
-  async function confirmDelete() {
-    if (!delItem) return;
-    setDelBusy(true);
-    setDelError("");
-    try {
-      await api.delete(`/clients/${delItem.id}/`);
-      setDelItem(null);
-      reload();
-      void reloadClientDebts();
-    } catch (e) {
-      setDelError(apiError(e));
-    } finally {
-      setDelBusy(false);
-    }
+  function reloadClients() {
+    reload();
+    void reloadClientDebts();
   }
-
-  async function confirmPurge() {
-    if (!purgeItem) return;
-    setPurgeBusy(true);
-    setPurgeError("");
-    try {
-      await api.post(`/clients/${purgeItem.id}/purge/`);
-      setPurgeItem(null);
-      reload();
-      void reloadClientDebts();
-    } catch (e) {
-      setPurgeError(apiError(e));
-    } finally {
-      setPurgeBusy(false);
-    }
-  }
+  const del = useConfirmAction<Client>(async (client) => {
+    await api.delete(`/clients/${client.id}/`);
+    reloadClients();
+  });
+  const purge = useConfirmAction<Client>(async (client) => {
+    await api.post(`/clients/${client.id}/purge/`);
+    reloadClients();
+  });
 
   const list = clients ?? [];
   // Валюта долга берётся из заказов, а не из карточки клиента: у KZT-клиента
@@ -603,33 +506,23 @@ function ClientsPageInner() {
   const filtered = list.filter(
     (c) =>
       (!q || c.name.toLowerCase().includes(q.toLowerCase())) &&
-      (!iinQ || (c.iin ?? "").includes(digits(iinQ))) &&
-      (!phoneQ || digits(c.phone).includes(digits(phoneQ))),
+      (!iinQ || c.iin.includes(onlyDigits(iinQ))) &&
+      (!phoneQ || onlyDigits(c.phone).includes(onlyDigits(phoneQ))),
   );
 
-  const toggleSort = (k: string) => {
-    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      setSortDir("asc");
-    }
-  };
   const sorted = [...filtered].sort((a, b) => {
     if (sortKey === "debt") {
-      const aCurrency = a.debt_currency ?? a.currency ?? "KZT";
-      const bCurrency = b.debt_currency ?? b.currency ?? "KZT";
+      const aCurrency = a.debt_currency ?? a.currency;
+      const bCurrency = b.debt_currency ?? b.currency;
       const currencyCmp = aCurrency.localeCompare(bCurrency);
       const amountCmp = Number(a.debt_total ?? 0) - Number(b.debt_total ?? 0);
       const cmp = currencyCmp || amountCmp;
       return sortDir === "asc" ? cmp : -cmp;
     }
-    let av: string | number = a.created_at ?? "";
-    let bv: string | number = b.created_at ?? "";
-    if (sortKey === "name") {
-      av = a.name;
-      bv = b.name;
-    }
-    const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "ru");
+    const cmp =
+      sortKey === "name"
+        ? a.name.localeCompare(b.name, "ru")
+        : (a.created_at ?? "").localeCompare(b.created_at ?? "", "ru");
     return sortDir === "asc" ? cmp : -cmp;
   });
 
@@ -677,10 +570,7 @@ function ClientsPageInner() {
             label: "Удалить",
             icon: Trash2,
             tone: "destructive" as const,
-            onSelect: () => {
-              setDelError("");
-              setDelItem(c);
-            },
+            onSelect: () => del.open(c),
           },
         ]
       : []),
@@ -692,10 +582,7 @@ function ClientsPageInner() {
             label: "Удалить с историей",
             icon: Trash2,
             tone: "destructive" as const,
-            onSelect: () => {
-              setPurgeError("");
-              setPurgeItem(c);
-            },
+            onSelect: () => purge.open(c),
           },
         ]
       : []),
@@ -738,19 +625,14 @@ function ClientsPageInner() {
     >
       {canMoney && (
         /* Общая задолженность доступна только финансовой роли. */
-        <div className="mb-5 flex flex-wrap gap-3">
+        <div className="mb-5 grid grid-cols-2 gap-3 sm:max-w-xl">
           {(["KZT", "USD"] as const).map((currency) => (
-            <div
+            <StatCard
               key={currency}
-              className="inline-flex min-w-56 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-card"
-            >
-              <span className="text-[13px] font-medium text-[var(--muted-foreground)]">
-                Общая задолженность · {currency}
-              </span>
-              <span className="text-[26px] font-bold leading-none tracking-tight tabular-nums text-[var(--destructive)]">
-                {formatMoney(debtByCurrency[currency] ?? 0)} {currencySymbol(currency)}
-              </span>
-            </div>
+              label={`Общая задолженность · ${currency}`}
+              value={formatCurrency(debtByCurrency[currency] ?? 0, currency)}
+              tone="destructive"
+            />
           ))}
         </div>
       )}
@@ -758,6 +640,7 @@ function ClientsPageInner() {
       {canAssignDepartment && (
         <UnassignedClients
           ownDepartment={assignedDepartment}
+          departments={departments ?? []}
           onAssigned={() => {
             void reload();
             if (canMoney) void reloadClientDebts();
@@ -773,10 +656,12 @@ function ClientsPageInner() {
 
       {/* Фильтры — отдельные поля, как в референсе. */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative w-full sm:w-64">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input className="pl-9" placeholder="Поиск по имени" value={q} onChange={(e) => setQ(e.target.value)} />
-        </div>
+        <SearchInput
+          wrapperClassName="w-full sm:w-64"
+          placeholder="Поиск по имени"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
         <Input
           className="w-full sm:w-44"
           placeholder="ИИН/БИН"
@@ -794,7 +679,7 @@ function ClientsPageInner() {
         {assignedDepartment ? (
           <div className="flex h-9 items-center gap-2 rounded-md border bg-[var(--primary)]/5 px-3 text-[13px]">
             <span className="text-[var(--muted-foreground)]">Отдел:</span>
-            <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
+            <DepartmentDot color={assignedDepartment.color} className="size-2" />
             <span className="font-medium">{assignedDepartment.name}</span>
           </div>
         ) : (
@@ -811,7 +696,7 @@ function ClientsPageInner() {
         )}
       </div>
 
-      {error && !clients && (
+      {error && (
         <div className="mb-4">
           <ErrorAlert message={error} onRetry={reload} />
         </div>
@@ -828,7 +713,6 @@ function ClientsPageInner() {
               primaryAction={
                 canMoney
                   ? {
-                      kind: "link",
                       href: `/clients/${c.id}`,
                       label: `Открыть клиента ${c.name}`,
                     }
@@ -954,13 +838,7 @@ function ClientsPageInner() {
                     </TD>
                   </TR>
                 ))}
-                {sorted.length === 0 && (
-                  <TR>
-                    <TD colSpan={canMoney ? 7 : 6} className="py-14 text-center text-[var(--muted-foreground)]">
-                      Здесь пусто
-                    </TD>
-                  </TR>
-                )}
+                {sorted.length === 0 && <EmptyRow colSpan={canMoney ? 7 : 6} />}
               </TBody>
             </Table>
             {usePaging && (
@@ -991,35 +869,26 @@ function ClientsPageInner() {
             onCancel={() => setOpen(false)}
             onDone={() => {
               setOpen(false);
-              reload();
-              void reloadClientDebts();
+              reloadClients();
             }}
           />
         )}
       </Modal>
 
       <ConfirmDialog
-        open={!!delItem}
-        onClose={() => setDelItem(null)}
+        {...del.dialog}
         title="Удалить клиента?"
-        description={delItem ? `«${delItem.name}» будет удалён. Действие необратимо.` : ""}
-        busy={delBusy}
-        error={delError}
-        onConfirm={confirmDelete}
+        description={del.item ? `«${del.item.name}» будет удалён. Действие необратимо.` : ""}
       />
       <ConfirmDialog
-        open={!!purgeItem}
-        onClose={() => setPurgeItem(null)}
+        {...purge.dialog}
         title="Удалить клиента со всей историей?"
         description={
-          purgeItem
-            ? `«${purgeItem.name}» будет удалён вместе со всеми заказами, оплатами и счетами. Записи журнала останутся. Действие безвозвратно — используйте только для тестовых учёток.`
+          purge.item
+            ? `«${purge.item.name}» будет удалён вместе со всеми заказами, оплатами и счетами. Записи журнала останутся. Действие безвозвратно — используйте только для тестовых учёток.`
             : ""
         }
         confirmLabel="Удалить с историей"
-        busy={purgeBusy}
-        error={purgeError}
-        onConfirm={confirmPurge}
       />
       <Modal
         open={!!portalClient}
@@ -1044,9 +913,9 @@ function ClientsPageInner() {
         open={statementOpen}
         onClose={() => setStatementOpen(false)}
         endpoint="/clients/statement/"
-        filename="clients-full-statement.xlsx"
+        filenameStem="clients-full-statement"
         title="Общая выписка по клиентам"
-        description="Единый Excel-файл по всей клиентской базе, заказам, продажам, оплатам и задолженности."
+        description="Единая выписка в Excel или PDF по всей клиентской базе, заказам, продажам, оплатам и задолженности."
         scopeLabel="Все клиенты и все финансовые движения"
         sections={ALL_CLIENTS_STATEMENT_SECTIONS}
       />

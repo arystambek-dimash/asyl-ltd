@@ -2,17 +2,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, MoreVertical } from "lucide-react";
+import { focusableElements, nextRovingIndex } from "@/lib/focus";
 import { cn } from "@/lib/utils";
 import { useDismiss } from "@/lib/use-dismiss";
-
-const TABBABLE_SELECTOR = [
-  "button:not(:disabled)",
-  "a[href]",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  "textarea:not(:disabled)",
-  '[tabindex]:not([tabindex="-1"])',
-].join(",");
 
 export interface ActionMenuItem {
   key: string;
@@ -49,7 +41,7 @@ export function ActionMenu({
   const focusEdgeRef = useRef<"first" | "last">("first");
   const open = pos !== null;
   const TriggerIcon = triggerIcon ?? MoreVertical;
-  useDismiss(menuRef, () => setPos(null), open, [triggerRef]);
+  useDismiss(menuRef, () => setPos(null), open, { ignoreRefs: [triggerRef], returnFocusRef: triggerRef });
 
   useEffect(() => {
     if (!open) return;
@@ -109,26 +101,10 @@ export function ActionMenu({
   }
 
   function onMenuKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    const enabledItems = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [],
-    );
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      setPos(null);
-      triggerRef.current?.focus();
-      return;
-    }
     if (e.key === "Tab") {
       e.preventDefault();
       const trigger = triggerRef.current;
-      const tabbable = Array.from(document.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR)).filter(
-        (element) =>
-          element.tabIndex >= 0 &&
-          !element.hidden &&
-          !element.closest("[inert]") &&
-          !menuRef.current?.contains(element),
-      );
+      const tabbable = focusableElements(document).filter((element) => !menuRef.current?.contains(element));
       const triggerIndex = trigger ? tabbable.indexOf(trigger) : -1;
       const nextTarget = triggerIndex >= 0 ? tabbable[triggerIndex + (e.shiftKey ? -1 : 1)] : undefined;
       setPos(null);
@@ -138,14 +114,11 @@ export function ActionMenu({
       requestAnimationFrame(() => nextTarget?.focus());
       return;
     }
-    if (!enabledItems.length) return;
-
+    const enabledItems = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [],
+    );
     const currentIndex = enabledItems.indexOf(document.activeElement as HTMLButtonElement);
-    let nextIndex: number | null = null;
-    if (e.key === "ArrowDown") nextIndex = (currentIndex + 1) % enabledItems.length;
-    if (e.key === "ArrowUp") nextIndex = (currentIndex - 1 + enabledItems.length) % enabledItems.length;
-    if (e.key === "Home") nextIndex = 0;
-    if (e.key === "End") nextIndex = enabledItems.length - 1;
+    const nextIndex = nextRovingIndex(e.key, currentIndex, enabledItems.length);
     if (nextIndex === null) return;
     e.preventDefault();
     e.stopPropagation();

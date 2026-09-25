@@ -8,10 +8,11 @@ from django.utils import timezone
 
 from apps.cameras import shipping_segments as segments
 from apps.cameras.models import (
-    ANALYTICS_SCOPE_SHIPPING, AlwaysOnCounterCursor, AlwaysOnImportedEvent,
+    AlwaysOnCounterCursor,
     ShippingLoadingCursor, ShippingLoadingEvent, ShippingLoadingSegment,
     ShippingLoadingSession, ShippingSessionSettings, ShippingTransportCamera,
 )
+from apps.cameras.tests.shipping_fakes import add_events
 
 pytestmark = pytest.mark.django_db
 
@@ -24,21 +25,6 @@ def start():
 @pytest.fixture(autouse=True)
 def policy(start):
     return ShippingSessionSettings.objects.update_or_create(singleton=True, defaults={"activated_at": start, "idle_timeout_seconds": 300})[0]
-
-
-def add_events(start, seconds, *, camera="cam2", scope=ANALYTICS_SCOPE_SHIPPING, applied=True):
-    existing = AlwaysOnImportedEvent.objects.filter(camera=camera).order_by("-upstream_event_id").first()
-    previous = existing.upstream_event_id if existing else 0
-    rows = AlwaysOnImportedEvent.objects.bulk_create([
-        AlwaysOnImportedEvent(camera=camera, upstream_event_id=previous+i+1, occurred_at=start+timedelta(seconds=second), source="sub", mode="always_on", analytics_scope=scope, applied_to_analytics=applied)
-        for i, second in enumerate(seconds)
-    ])
-    AlwaysOnCounterCursor.objects.update_or_create(camera=camera, defaults={
-        "last_event_id": rows[-1].upstream_event_id, "last_total": previous+len(rows), "event_compat_total": previous+len(rows),
-        "event_sync_supported": True, "event_boundary_validated": True,
-        "event_caught_up_at": start+timedelta(seconds=max(seconds)), "event_sync_error": "", "event_sync_failed_at": None,
-    })
-    return rows
 
 
 def binding(camera="cam2", number_camera="cam8", model="vehicle_number", zone=None):
@@ -57,7 +43,7 @@ def test_first_count_starts_without_order_number_camera_or_ocr(start):
     assert result["processed"] == 3 and result["created_segment_ids"] == [segment.pk]
     assert segment.identity_status == "pending" and segment.number == "" and not segment.photo
     assert segment.loading_zone is None
-    assert segment.first_event_id == events[0].pk and segment.last_event_id == events[-1].pk
+    assert segment.first_event_id == events[0].pk
     assert segment.total_bags == session.total_bags == 3
     assert session.order_id is None and session.status == "active"
     assert session.started_at == start and session.last_counted_at == start+timedelta(seconds=20)

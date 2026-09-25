@@ -11,7 +11,7 @@ class _FixedScopeThrottle(SimpleRateThrottle):
             return None  # ставка не задана — троттл не применяется
         return self.cache_format % {
             "scope": self.scope,
-            "ident": self.get_ident(request),  # по IP: логин/регистрация анонимны
+            "ident": self.get_ident(request),  # по IP: запросы анонимны
         }
 
 
@@ -21,6 +21,12 @@ class LoginRateThrottle(_FixedScopeThrottle):
 
 class RegisterRateThrottle(_FixedScopeThrottle):
     scope = "register"
+
+
+class VehiclePlateWebhookRateThrottle(_FixedScopeThrottle):
+    """Входящий вебхук номеров от ПК камер — лимит по IP."""
+
+    scope = "vehicle_plate_webhook"
 
 
 class _UserScopeThrottle(_FixedScopeThrottle):
@@ -46,3 +52,4 @@ class TruckScalePreviewRateThrottle(_UserScopeThrottle):
     """Bound live scale polling per authenticated operator account."""
 
     scope = "truck_scale_preview"
+

@@ -30,7 +30,7 @@ beforeEach(() => {
 it("показывает, сколько клиентов ждут отдела, и закрепляет за своим отделом только после «Да»", async () => {
   const user = userEvent.setup();
   const onAssigned = vi.fn();
-  render(<UnassignedClients ownDepartment={ownDepartment} onAssigned={onAssigned} />);
+  render(<UnassignedClients ownDepartment={ownDepartment} departments={[]} onAssigned={onAssigned} />);
 
   await user.click(await screen.findByRole("button", { name: /1 клиент ждёт отдела/ }));
   const dialog = await screen.findByRole("dialog");
@@ -51,7 +51,9 @@ it("показывает, сколько клиентов ждут отдела,
 
 it("ничего не показывает, когда все клиенты распределены", async () => {
   unassigned = [];
-  const { container } = render(<UnassignedClients ownDepartment={ownDepartment} onAssigned={vi.fn()} />);
+  const { container } = render(
+    <UnassignedClients ownDepartment={ownDepartment} departments={[]} onAssigned={vi.fn()} />,
+  );
 
   await waitFor(() => expect(get).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();

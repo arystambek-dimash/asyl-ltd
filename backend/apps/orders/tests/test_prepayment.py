@@ -11,8 +11,6 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-from django.db import connection
-from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
@@ -21,12 +19,11 @@ from apps.catalog.models import Product
 from apps.clients.models import Client, Store
 from apps.eventlog.models import EventLog
 from apps.orders import services
-from apps.orders.apipay import create_cash_refund
+from apps.orders.refunds import create_cash_refund
 from apps.orders.debt import order_overpaid
 from apps.orders.fixation import fixate_order
 from apps.orders.models import Order, OrderItem, Payment, StatusChangeRequest
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES, is_payment_open
-from apps.sales.models import Department
 from apps.shipments.models import Shipment
 from apps.warehouse.services import receive_stock
 
@@ -127,12 +124,9 @@ def test_cashier_cannot_take_money_for_unconfirmed_or_closed_order(auth_client, 
     assert not order.payments.exists()
 
 
-@pytest.mark.parametrize("channel", [None, "document"])
-def test_invoice_before_shipment_is_closed(auth_client, accountant, product, channel):
+def test_invoice_before_shipment_is_closed(auth_client, accountant, product):
     order = _order(product)
-    body = {"amount": "4000.00", "method": "invoice", "stage": "requested", "phone_number": "+77011112233"}
-    if channel:
-        body["channel"] = channel
+    body = {"amount": "4000.00", "method": "invoice", "phone_number": "+77011112233"}
 
     with patch("apps.orders.views.create_invoice") as create_invoice:
         response = auth_client(accountant).post(f"/api/orders/{order.id}/payments/", body, format="json")
@@ -158,30 +152,6 @@ def test_kaspi_qr_before_shipment_is_closed(auth_client, accountant, product):
     assert response.data["code"] == "payment_not_open"
     create_invoice.assert_not_called()
     assert not order.payments.exists()
-
-
-def test_mixed_prepayment_accepts_only_settled_methods(auth_client, accountant, product):
-    order = _order(product)
-    api = auth_client(accountant)
-
-    with_invoice = api.post(
-        f"/api/orders/{order.id}/payments/",
-        {"parts": [{"method": "cash", "amount": "1000.00"}, {"method": "invoice", "amount": "2000.00"}]},
-        format="json",
-    )
-    assert with_invoice.status_code == 400
-    assert with_invoice.data["code"] == "payment_not_open"
-    assert not order.payments.exists()
-
-    settled = api.post(
-        f"/api/orders/{order.id}/payments/",
-        {"parts": [{"method": "cash", "amount": "1000.00"}, {"method": "kaspi", "amount": "2000.00"}]},
-        format="json",
-    )
-    assert settled.status_code == 201, settled.data
-    assert {row["status"] for row in settled.data} == {"confirmed"}
-    order.refresh_from_db()
-    assert order.paid_total == Decimal("3000.00")
 
 
 @pytest.mark.parametrize("method", ["cash", "kaspi", "invoice"])
@@ -240,6 +210,30 @@ def test_order_api_reports_payment_window(auth_client, accountant, product, stat
     # открывает отдельный признак: кнопке POS не нужно повторять правило статусов.
     assert data["payment_request_open"] is request_open
     assert data["overpaid_amount"] == "0.00"
+
+
+@pytest.mark.parametrize("status", ["confirmed", "shipped"])
+def test_usd_order_api_opens_only_cash(auth_client, accountant, product, status):
+    order = _order(product, status=status, currency="USD")
+
+    data = auth_client(accountant).get(f"/api/orders/{order.id}/").data
+
+    assert data["payment_open_methods"] == ["cash"]
+    assert data["payment_request_open"] is False
+
+
+@pytest.mark.parametrize("method", ["kaspi", "remote", "invoice"])
+def test_usd_order_accepts_only_cash(auth_client, accountant, product, method):
+    order = _order(product, status="shipped", currency="USD")
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "100", "method": method}, format="json"
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "payment_kzt_only"
+    assert not order.payments.exists()
+    assert _prepay(order, accountant, "100.00").status == "confirmed"
 
 
 # ── P3: отгрузка не затирает предоплату ────────────────────────────────────
@@ -425,13 +419,28 @@ def test_unshipped_order_with_money_cannot_be_deleted(auth_client, accountant, p
     assert Order.objects.filter(pk=order.pk).exists()
 
 
-def test_shipped_order_with_money_can_still_be_deleted(boss, product):
+def test_shipped_order_with_money_can_still_be_deleted(boss, accountant, product):
+    from apps.clients.reports.statements.data import build_statement_data
+
     order = _order(product, status="shipped")
-    _prepay(order, boss, "4000.00")
+    payment = _prepay(order, boss, "4000.00")
 
     services.soft_delete_order(order, boss)
 
     assert not Order.objects.filter(pk=order.pk).exists()
+    # Деньги состоявшейся продажи из корзины не пропадают: журнал кассы и
+    # выписка по-прежнему видят оплату, а выписка — и саму продажу.
+    journal = APIClient()
+    journal.force_authenticate(accountant)
+    rows = journal.get("/api/payment-transactions/").data["results"]
+    assert [row["id"] for row in rows] == [payment.pk]
+    statement = build_statement_data(client=order.client)
+    assert [row.pk for row in statement.payments] == [payment.pk]
+    assert [(op.kind, op.amount) for op in statement.operations] == [
+        ("sale", Decimal("10000.00")),
+        ("payment", Decimal("-4000.00")),
+    ]
+    assert statement.closing["KZT"] == Decimal("6000.00")
 
 
 def test_shipment_rollback_keeps_prepayment_when_order_waits_again(boss, product):
@@ -568,19 +577,12 @@ def test_price_correction_still_guards_active_payment_requests(boss, product):
 
 
 @pytest.fixture
-def departments():
-    return (
-        Department.objects.create(code="mill", name="Мельница"),
-        Department.objects.create(code="city", name="Нью-Сити"),
-    )
-
-
-@pytest.fixture
 def cashier(user_with_perms, departments):
-    user = user_with_perms("mill-cashier", codes=["payments.confirm", "payments.create"])
-    user.employee.sales_department = departments[0]
-    user.employee.save(update_fields=["sales_department"])
-    return user
+    return user_with_perms(
+        "mill-cashier",
+        codes=["payments.confirm", "payments.create"],
+        department=departments[0],
+    )
 
 
 def _department_order(product, department, **fields):
@@ -700,16 +702,6 @@ def test_cashier_lists_need_cashier_permission(auth_client, user_with_perms):
     assert api.get("/api/orders/to-refund/").status_code == 403
 
 
-def _count_queries(user, url):
-    api = APIClient()
-    user = type(user).objects.get(pk=user.pk)
-    api.force_authenticate(user)
-    with CaptureQueriesContext(connection) as ctx:
-        response = api.get(url)
-        assert response.status_code == 200
-    return len(ctx)
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -719,7 +711,7 @@ def _count_queries(user, url):
         "/api/orders/to-refund/?summary=1",
     ],
 )
-def test_cashier_lists_query_count_is_constant(accountant, boss, product, url):
+def test_cashier_lists_query_count_is_constant(accountant, boss, product, url, count_queries):
     def make():
         order = _order(product)
         _prepay(order, boss, "10000.00" if "refund" in url else "1000.00")
@@ -728,10 +720,10 @@ def test_cashier_lists_query_count_is_constant(accountant, boss, product, url):
 
     for _ in range(2):
         make()
-    small = _count_queries(accountant, url)
+    small = count_queries(accountant, url)
     for _ in range(5):
         make()
-    assert _count_queries(accountant, url) == small
+    assert count_queries(accountant, url) == small
 
 
 # ── Отчёты: касса по дню денег, продажа по дню отгрузки ────────────────────

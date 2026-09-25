@@ -20,7 +20,7 @@ describe("archStopReasonLabel", () => {
     expect(archStopReasonLabel("exit_unseen_v2", "Текст с сервера")).toBe("Текст с сервера");
   });
 
-  it("explains the two terminal reasons the automation cannot recover from (m7)", () => {
+  it("explains the two terminal reasons the automation cannot recover from", () => {
     expect(archStopReasonLabel("not_simple_flow")).toBe("Рейс не в коротком потоке — оформите вручную");
     expect(archStopReasonLabel("wrong_scale_action")).toBe("Весы ждут другое действие — проверьте этап рейса");
   });

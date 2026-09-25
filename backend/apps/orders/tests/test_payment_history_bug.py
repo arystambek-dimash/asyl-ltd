@@ -15,7 +15,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _shipped_order(client):
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="50.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     o = Order.objects.create(client=client, status="shipped", payment_status="unpaid")
     OrderItem.objects.create(order=o, product=p, quantity=1, unit_price="50.00")  # total 50
     return o

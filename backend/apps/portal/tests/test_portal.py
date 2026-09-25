@@ -1,25 +1,22 @@
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order, OrderItem, Payment
 from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
 from apps.warehouse.models import StockItem, Warehouse
-from apps.warehouse.tests.legacy import force_legacy_null_warehouse
 
 pytestmark = pytest.mark.django_db
 
 
 def _product():
-    p = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="Премиум", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
     return p
-
-
-def _client_for(user):
-    return Client.objects.create_with_user(first_name="Мой", last_name="К", phone="x", user=user)
 
 
 def _make_default(warehouse):
@@ -30,8 +27,7 @@ def _make_default(warehouse):
     warehouse.refresh_from_db()
 
 
-def test_client_creates_own_pending_order(auth_client, client_user):
-    _client_for(client_user)
+def test_client_creates_own_pending_order(auth_client, client_user, own_client):
     prod = _product()
     resp = auth_client(client_user).post(
         "/api/portal/orders/",
@@ -63,9 +59,8 @@ def test_client_creates_own_pending_order(auth_client, client_user):
     ],
 )
 def test_portal_order_rejects_abusive_item_lists(
-    auth_client, client_user, items
+    auth_client, client_user, own_client, items
 ):
-    _client_for(client_user)
     product = _product()
     payload_items = items(product.pk) if callable(items) else items
 
@@ -78,18 +73,17 @@ def test_portal_order_rejects_abusive_item_lists(
 
 
 @pytest.mark.parametrize(
-    ("method", "intent"),
-    [("invoice", "instant"), ("kaspi", "instant"),
-     ("cash", "instant"), ("debt", "debt")],
+    "choice",
+    [{"payment_method": "invoice"}, {"payment_method": "kaspi"},
+     {"payment_method": "cash"}, {"payment_method": "debt"},
+     {"settlement_intent": "instant"}],
 )
-def test_payment_method_sent_during_creation_is_deferred_until_shipment(
-        auth_client, client_user, method, intent):
-    _client_for(client_user)
+def test_payment_choice_sent_during_creation_is_deferred_until_shipment(
+        auth_client, client_user, own_client, choice):
     prod = _product()
     resp = auth_client(client_user).post(
         "/api/portal/orders/",
-        {"items": [{"product": prod.id, "quantity": 1}],
-         "payment_method": method},
+        {"items": [{"product": prod.id, "quantity": 1}], **choice},
         format="json",
     )
     assert resp.status_code == 201
@@ -99,33 +93,47 @@ def test_payment_method_sent_during_creation_is_deferred_until_shipment(
     assert resp.data["payment_method"] == "pending"
 
 
-def test_client_can_choose_instant_intent(auth_client, client_user):
-    _client_for(client_user)
-    prod = _product()
-    resp = auth_client(client_user).post(
-        "/api/portal/orders/",
-        {"items": [{"product": prod.id, "quantity": 1}], "settlement_intent": "instant"},
-        format="json",
-    )
-    assert resp.status_code == 201
-    order = Order.objects.get()
-    assert order.settlement_intent == "pending"
-    assert order.payment_method == "pending"
-
-
-def test_client_sees_only_own_orders(auth_client, client_user, make_user):
-    mine = _client_for(client_user)
+def test_client_sees_only_own_orders(auth_client, client_user, own_client, make_user):
     other_user = make_user(username="other", client=True)
     other = Client.objects.create_with_user(first_name="Чужой", last_name="К", phone="y", user=other_user)
-    Order.objects.create(client=mine, status="draft")
+    Order.objects.create(client=own_client, status="draft")
     Order.objects.create(client=other, status="draft")
     resp = auth_client(client_user).get("/api/portal/orders/")
     assert resp.status_code == 200
     assert len(resp.data) == 1
 
 
-def test_client_cannot_fetch_foreign_order(auth_client, client_user, make_user):
-    _client_for(client_user)
+def test_client_orders_are_listed_newest_first(auth_client, client_user, own_client):
+    oldest = Order.objects.create(client=own_client, status="draft")
+    newest = Order.objects.create(client=own_client, status="draft")
+    middle = Order.objects.create(client=own_client, status="draft")
+    now = timezone.now()
+    # Порядок задаёт дата создания, а не порядок строк в таблице.
+    Order.all_objects.filter(pk=newest.pk).update(created_at=now)
+    Order.all_objects.filter(pk=middle.pk).update(created_at=now - timedelta(days=1))
+    Order.all_objects.filter(pk=oldest.pk).update(created_at=now - timedelta(days=2))
+
+    resp = auth_client(client_user).get("/api/portal/orders/")
+
+    assert resp.status_code == 200
+    assert [row["id"] for row in resp.data] == [newest.pk, middle.pk, oldest.pk]
+
+
+def test_portal_order_rejects_archived_product(auth_client, client_user, own_client):
+    product = _product()
+    Product.objects.filter(pk=product.pk).update(is_active=False)
+
+    resp = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": product.id, "quantity": 1}]}, format="json",
+    )
+
+    assert resp.status_code == 400
+    assert "Архивный товар нельзя добавлять в заказ" in str(resp.data)
+    assert not Order.objects.exists()
+
+
+def test_client_cannot_fetch_foreign_order(auth_client, client_user, own_client, make_user):
     other_user = make_user(username="other", client=True)
     other = Client.objects.create_with_user(first_name="Чужой", last_name="К", phone="y", user=other_user)
     foreign = Order.objects.create(client=other, status="draft")
@@ -139,20 +147,19 @@ def test_staff_cannot_use_portal(auth_client, manager):
 
 
 def test_client_catalog_lists_only_active_products_with_positive_default_stock(
-    auth_client, client_user,
+    auth_client, client_user, own_client,
 ):
-    _client_for(client_user)
     main = Warehouse.objects.get(code="main")
     available = Product.objects.create(
-        name="В наличии", color="Blue", weight_kg="50", price="100.00")
+        name="В наличии", color="Blue", weight_kg="50")
     StockItem.objects.create(product=available, warehouse=main, bags=5)
     no_stock = Product.objects.create(
-        name="Без склада", color="Blue", weight_kg="50", price="100.00")
+        name="Без склада", color="Blue", weight_kg="50")
     zero_stock = Product.objects.create(
-        name="Нулевой остаток", color="Blue", weight_kg="50", price="100.00")
+        name="Нулевой остаток", color="Blue", weight_kg="50")
     StockItem.objects.create(product=zero_stock, warehouse=main, bags=0)
     inactive = Product.objects.create(
-        name="Скрытый", color="Green", weight_kg="50", price="100.00", is_active=False
+        name="Скрытый", color="Green", weight_kg="50", is_active=False
     )
     StockItem.objects.create(product=inactive, warehouse=main, bags=7)
 
@@ -169,18 +176,17 @@ def test_client_catalog_lists_only_active_products_with_positive_default_stock(
 
 
 def test_client_catalog_scopes_products_to_active_default_warehouse(
-    auth_client, client_user,
+    auth_client, client_user, own_client,
 ):
-    _client_for(client_user)
     main = Warehouse.objects.get(code="main")
     secondary = Warehouse.objects.create(
         code="south", name="Южный склад", is_active=True,
     )
     main_product = Product.objects.create(
-        name="Главный", color="Red", weight_kg="50", price="100.00",
+        name="Главный", color="Red", weight_kg="50",
     )
     secondary_product = Product.objects.create(
-        name="Южный", color="Blue", weight_kg="50", price="100.00",
+        name="Южный", color="Blue", weight_kg="50",
     )
     StockItem.objects.create(product=main_product, warehouse=main, bags=10)
     StockItem.objects.create(
@@ -201,48 +207,9 @@ def test_client_catalog_scopes_products_to_active_default_warehouse(
     assert response.data == []
 
 
-@pytest.mark.django_db(transaction=True)
-def test_legacy_null_stock_belongs_only_to_compatibility_main_default(
-    auth_client, client_user,
-):
-    _client_for(client_user)
-    main = Warehouse.objects.get(code="main")
-    legacy_product = Product.objects.create(
-        name="Legacy", color="Red", weight_kg="50", price="100.00",
-    )
-    legacy_stock = StockItem.objects.create(
-        product=legacy_product, warehouse=main, bags=4,
-    )
-    force_legacy_null_warehouse(legacy_stock)
-
-    response = auth_client(client_user).get("/api/portal/catalog/")
-
-    assert response.status_code == 200
-    assert [row["id"] for row in response.data] == [legacy_product.pk]
-
-    secondary = Warehouse.objects.create(
-        code="north", name="Северный склад", is_active=True,
-    )
-    secondary_product = Product.objects.create(
-        name="Северный", color="Blue", weight_kg="50", price="100.00",
-    )
-    StockItem.objects.create(
-        product=secondary_product, warehouse=secondary, bags=2,
-    )
-    _make_default(secondary)
-
-    response = auth_client(client_user).get("/api/portal/catalog/")
-
-    assert response.status_code == 200
-    assert [row["id"] for row in response.data] == [secondary_product.pk]
-
-
-def test_portal_catalog_does_not_leak_exact_balance_but_staff_catalog_keeps_it(
-    auth_client, client_user, manager,
-):
-    _client_for(client_user)
+def test_portal_catalog_does_not_leak_exact_balance(auth_client, client_user, own_client):
     product = Product.objects.create(
-        name="Скрытый остаток", color="Red", weight_kg="50", price="100.00",
+        name="Скрытый остаток", color="Red", weight_kg="50",
     )
     StockItem.objects.create(product=product, bags=987_654)
 
@@ -257,20 +224,12 @@ def test_portal_catalog_does_not_leak_exact_balance_but_staff_catalog_keeps_it(
     }
     assert 987_654 not in portal_row.values()
 
-    staff_response = auth_client(manager).get("/api/products/")
-    assert staff_response.status_code == 200
-    staff_row = next(
-        item for item in staff_response.data if item["id"] == product.pk
-    )
-    assert staff_row["available_bags"] == 987_654
-
 
 @pytest.mark.parametrize(
     "endpoint",
     [
         "/api/products/",
         "/api/stock/",
-        "/api/stock/movements/",
         "/api/orders/form-options/",
     ],
 )
@@ -295,20 +254,18 @@ def test_client_flag_denies_stock_even_with_accidentally_assigned_permissions(
     for endpoint in (
         "/api/products/",
         "/api/stock/",
-        "/api/stock/movements/",
         "/api/orders/form-options/",
     ):
         assert auth_client(user).get(endpoint).status_code == 403
 
 
 def test_client_catalog_returns_only_own_personal_price(
-        auth_client, client_user, make_user):
-    client = _client_for(client_user)
+        auth_client, client_user, own_client, make_user):
     other_user = make_user(username="priced-other", client=True)
     other = Client.objects.create_with_user(
         first_name="Другой", last_name="К", phone="2", user=other_user)
     product = _product()
-    ClientPrice.objects.create(client=client, product=product, price="87.50")
+    ClientPrice.objects.create(client=own_client, product=product, price="87.50")
     ClientPrice.objects.create(client=other, product=product, price="12.00")
 
     response = auth_client(client_user).get("/api/portal/catalog/")
@@ -318,10 +275,9 @@ def test_client_catalog_returns_only_own_personal_price(
     assert row["price"] == "87.50"
 
 
-def test_portal_order_fixes_personal_price_at_creation(auth_client, client_user):
-    client = _client_for(client_user)
+def test_portal_order_fixes_personal_price_at_creation(auth_client, client_user, own_client):
     product = _product()
-    ClientPrice.objects.create(client=client, product=product, price="91.25")
+    ClientPrice.objects.create(client=own_client, product=product, price="91.25")
 
     response = auth_client(client_user).post(
         "/api/portal/orders/",
@@ -332,13 +288,12 @@ def test_portal_order_fixes_personal_price_at_creation(auth_client, client_user)
     assert OrderItem.objects.get(order_id=response.data["id"]).unit_price == Decimal("91.25")
 
 
-def test_portal_client_selects_usd_price_and_order_currency(auth_client, client_user):
-    client = _client_for(client_user)
+def test_portal_client_selects_usd_price_and_order_currency(auth_client, client_user, own_client):
     product = _product()
     ClientPrice.objects.create(
-        client=client, product=product, currency="KZT", price="15000.00")
+        client=own_client, product=product, currency="KZT", price="15000.00")
     ClientPrice.objects.create(
-        client=client, product=product, currency="USD", price="31.25")
+        client=own_client, product=product, currency="USD", price="31.25")
 
     catalog = auth_client(client_user).get(
         "/api/portal/catalog/", {"currency": "USD"})
@@ -369,10 +324,9 @@ def test_client_order_without_profile_returns_400(auth_client, client_user):
     assert resp.data["detail"] == "К аккаунту не привязан профиль клиента."
 
 
-def test_client_pending_order_hides_amounts(auth_client, client_user):
-    client = _client_for(client_user)
+def test_client_pending_order_hides_amounts(auth_client, client_user, own_client):
     product = _product()
-    order = Order.objects.create(client=client, status="pending")
+    order = Order.objects.create(client=own_client, status="pending")
     OrderItem.objects.create(order=order, product=product, quantity=2)
 
     resp = auth_client(client_user).get(f"/api/portal/orders/{order.id}/")
@@ -383,10 +337,9 @@ def test_client_pending_order_hides_amounts(auth_client, client_user):
     assert resp.data["remaining_amount"] is None
 
 
-def test_client_confirmed_order_shows_amounts(auth_client, client_user):
-    client = _client_for(client_user)
+def test_client_confirmed_order_shows_amounts(auth_client, client_user, own_client):
     product = _product()
-    order = Order.objects.create(client=client, status="confirmed")
+    order = Order.objects.create(client=own_client, status="confirmed")
     OrderItem.objects.create(order=order, product=product, quantity=2, unit_price="100.00")
 
     resp = auth_client(client_user).get(f"/api/portal/orders/{order.id}/")
@@ -395,3 +348,35 @@ def test_client_confirmed_order_shows_amounts(auth_client, client_user):
     assert resp.data["total_amount"] == "200.00"
     assert resp.data["paid_total"] == "0.00"
     assert resp.data["remaining_amount"] == "200.00"
+
+
+def test_client_overpaid_order_shows_no_remaining(auth_client, client_user, own_client):
+    """Переплата — не отрицательный остаток: он и свободная сумма — через orders/debt.py."""
+    product = _product()
+    order = Order.objects.create(client=own_client, status="shipped")
+    OrderItem.objects.create(order=order, product=product, quantity=2, unit_price="100.00")
+    Payment.objects.create(order=order, amount="250.00", method="cash", status="confirmed")
+
+    resp = auth_client(client_user).get(f"/api/portal/orders/{order.id}/")
+
+    assert resp.status_code == 200
+    assert resp.data["paid_total"] == "250.00"
+    assert resp.data["remaining_amount"] == "0.00"
+    assert resp.data["available_amount"] == "0.00"
+
+
+def test_portal_order_item_snapshot_matches_order_item_save(
+    auth_client, client_user, own_client,
+):
+    product = _product()
+
+    response = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": product.id, "quantity": 2}]}, format="json",
+    )
+
+    assert response.status_code == 201
+    item = OrderItem.objects.get(order_id=response.data["id"])
+    assert item.product_label_snapshot == str(product)
+    assert item.product_cv_class_snapshot == product.cv_class
+    assert item.product_weight_kg_snapshot == Decimal("50")

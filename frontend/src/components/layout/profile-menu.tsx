@@ -1,15 +1,12 @@
 "use client";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, LogOut, Monitor, Moon, Sun } from "lucide-react";
+import { pickTheme, readTheme, type Theme } from "@/lib/theme";
 import type { Me } from "@/lib/types";
 import { useDismiss } from "@/lib/use-dismiss";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
-
-type Theme = "light" | "dark" | "system";
-
-const THEME_KEY = "asyl_theme";
 
 const THEMES: { key: Theme; icon: React.ElementType; label: string; short: string }[] = [
   { key: "light", icon: Sun, label: "Светлая тема", short: "Светлая" },
@@ -17,68 +14,23 @@ const THEMES: { key: Theme; icon: React.ElementType; label: string; short: strin
   { key: "system", icon: Monitor, label: "Системная тема", short: "Авто" },
 ];
 
-function applyTheme(theme: Theme) {
-  const dark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.classList.toggle("dark", dark);
-}
-
-/** Тема живёт в кнопке профиля, а не в меню: меню монтируется по клику, а тему надо применить при загрузке. */
-function useTheme() {
-  const [theme, setTheme] = useState<Theme>("light");
-  useEffect(() => {
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem(THEME_KEY);
-    } catch {
-      // Приватный режим без localStorage — остаёмся на светлой.
-    }
-    const saved: Theme = stored === "dark" || stored === "system" ? stored : "light";
-    setTheme(saved);
-    applyTheme(saved);
-  }, []);
-  useEffect(() => {
-    if (theme !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const sync = () => applyTheme("system");
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, [theme]);
-  function pick(next: Theme) {
-    setTheme(next);
-    try {
-      localStorage.setItem(THEME_KEY, next);
-    } catch {
-      // Не сохранится между визитами, но на этой странице применится.
-    }
-    applyTheme(next);
-  }
-  return { theme, pick };
-}
-
 /** Аватар в шапке: по нажатию — кто вошёл, тема оформления и выход. */
-export function ProfileMenu({ me, accountLabel }: { me: Me; accountLabel: string }) {
+export function ProfileMenu({ me }: { me: Me }) {
   const { logout } = useAuth();
   const router = useRouter();
-  const { theme, pick } = useTheme();
+  // Тему применил скрипт корневого layout ещё до React; здесь только выбор.
+  const [theme, setTheme] = useState<Theme>(readTheme);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuId = useId();
   const initials = me.username.slice(0, 2).toUpperCase();
+  const accountLabel = me.is_client ? "Клиент" : me.is_superuser ? "Администратор" : me.position || "Сотрудник";
 
-  useDismiss(rootRef, () => setOpen(false), open);
+  useDismiss(rootRef, () => setOpen(false), open, { returnFocusRef: triggerRef });
 
   return (
-    <div
-      ref={rootRef}
-      className="relative border-l pl-3"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || !open) return;
-        event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }}
-    >
+    <div ref={rootRef} className="relative border-l pl-3">
       <button
         ref={triggerRef}
         type="button"
@@ -135,7 +87,10 @@ export function ProfileMenu({ me, accountLabel }: { me: Me; accountLabel: string
                 <button
                   key={key}
                   type="button"
-                  onClick={() => pick(key)}
+                  onClick={() => {
+                    setTheme(key);
+                    pickTheme(key);
+                  }}
                   aria-label={label}
                   aria-pressed={theme === key}
                   className={cn(

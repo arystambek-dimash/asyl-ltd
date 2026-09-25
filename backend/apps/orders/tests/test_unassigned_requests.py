@@ -4,24 +4,13 @@ import pytest
 
 from apps.clients.models import Client
 from apps.orders.models import Order
-from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def departments():
-    mill = Department.objects.create(code="mill", name="Мельница")
-    city = Department.objects.create(code="city", name="Нью-Сити")
-    return mill, city
-
-
-@pytest.fixture
 def mill_cashier(user_with_perms, departments):
-    user = user_with_perms("mill-cashier", codes=["orders.view", "orders.confirm"])
-    user.employee.sales_department = departments[0]
-    user.employee.save(update_fields=["sales_department"])
-    return user
+    return user_with_perms("mill-cashier", codes=["orders.view", "orders.confirm"], department=departments[0])
 
 
 def _client(name, department=None):
@@ -44,8 +33,6 @@ def test_department_queue_shows_unassigned_requests_only(auth_client, mill_cashi
 
     assert _pending_ids(api) == {request.pk}
     assert _pending_ids(api, "&department=mill&confirm_queue=1") == {request.pk}
-    # Прежнее имя флага очереди у касс, открытых до обновления страницы.
-    assert _pending_ids(api, "&department=mill&with_unassigned=1") == {request.pk}
     assert _pending_ids(api, "&department=mill") == set()
     assert api.get(f"/api/orders/{already_confirmed.pk}/").status_code == 404
     # Заявки других отделов — только с правом orders.confirm_all (test_shared_confirm_queue.py).

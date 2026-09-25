@@ -2,6 +2,7 @@ from django.db import transaction
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 
+from .attachments import delete_file_if_unreferenced
 from .models import TaskAttachment
 
 
@@ -14,14 +15,10 @@ def delete_attachment_file_after_commit(sender, instance, using, **kwargs):
     name = instance.file.name
     storage = instance.file.storage
 
-    def delete_if_unreferenced():
-        # A legacy/imported row may intentionally share one physical object.
-        # Removing either row must not break the remaining attachment.
-        if TaskAttachment.objects.using(using).filter(file=name).exists():
-            return
-        storage.delete(name)
-
     # Rollbacks discard this callback, so the still-existing row never loses
     # its file. Robust mode avoids reporting a failed request after the DB
     # deletion has already committed; Django logs any storage error.
-    transaction.on_commit(delete_if_unreferenced, using=using, robust=True)
+    transaction.on_commit(
+        lambda: delete_file_if_unreferenced(storage, name, using=using),
+        using=using, robust=True,
+    )

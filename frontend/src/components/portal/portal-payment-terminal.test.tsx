@@ -22,12 +22,10 @@ function order(overrides: Partial<PortalOrder> = {}): PortalOrder {
     has_pending_payment: false,
     available_amount: "50000.00",
     payment_parts: [],
-    apipay_invoice: null,
     client_phone: "+7 (705) 565-65-65",
     receipt_available: false,
     truck_number: "",
     debt_requested: false,
-    debt_override: false,
     created_at: "2026-09-17T08:00:00Z",
     ...overrides,
   };

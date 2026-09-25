@@ -31,11 +31,9 @@ export function Topbar({
   actions?: ReactNode;
   onMenu?: () => void;
   back?: TopbarBack;
-  /** Иконки справа от заголовка (перед темой и профилем), например фильтры экрана. */
+  /** Иконки справа от заголовка (перед кнопкой обучения и профилем), например фильтры экрана. */
   trailing?: ReactNode;
 }) {
-  const accountLabel = me.is_client ? "Клиент" : me.is_superuser ? "Администратор" : me.position || "Сотрудник";
-
   return (
     <header className="flex min-h-16 flex-wrap items-center gap-2 border-b px-4 py-2 sm:px-8 xl:h-16 xl:flex-nowrap xl:py-0">
       <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -96,7 +94,7 @@ export function Topbar({
         )}
         {me.is_client && <CartButton />}
         {me.is_client && <NotificationBell />}
-        <ProfileMenu me={me} accountLabel={accountLabel} />
+        <ProfileMenu me={me} />
       </div>
     </header>
   );

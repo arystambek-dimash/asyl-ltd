@@ -59,7 +59,7 @@ _SECTIONS = {
     "sys_permissions": ("Администрирование", {"manage": "Права, отделы, настройки камер и накладной"}),
 }
 
-SECTION_ORDER = list(_SECTIONS)
+SECTION_LABELS = {sec: sec_label for sec, (sec_label, _actions) in _SECTIONS.items()}
 
 PERMISSIONS = [
     {"code": f"{sec}.{act}", "section": sec, "action": act, "label": f"{sec_label}: {label}"}

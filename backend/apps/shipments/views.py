@@ -1,8 +1,6 @@
-from datetime import date
 from typing import ClassVar
 
 from django.db.models import F
-from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -12,7 +10,6 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.bots.parsing import parse_rail_report
 from apps.bots.preview import preview_report, resolution_options
 from apps.bots.rail import (
     RAIL_TRANSPORT,
@@ -26,98 +23,31 @@ from apps.bots.serializers import (
     RailReportSerializer,
     WagonReportComposeSerializer,
     WagonReportSendSerializer,
+    rail_report_input,
 )
 from apps.bots.wagon_report import REPORT_MAX_ORDERS, report_draft, send_wagon_report, sent_payload
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
-from apps.common.query_params import parse_date_range, parse_search_param
+from apps.common.query_params import parse_date_range, parse_iso_date, parse_search_param
 from apps.orders.models import Order
-from apps.orders.querysets import filter_order_search
+from apps.orders.querysets import filter_order_search, planned_day
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
 from apps.orders.transport import suggestion_pairs
 from apps.sales.access import scope_by_client_department
 
-from .access import allowed_transports, assert_can_ship, requested_transport
+from .access import allowed_transports, requested_transport
 from .models import WaybillSettings
 from .serializers import (
-    ArrivalSerializer,
-    LoadSerializer,
     LoaderDispatchSerializer,
     LoaderOrderSerializer,
-    ShipmentSerializer,
     WaybillSettingsSerializer,
 )
 from .services import (
     loader_dispatch,
     loader_rollback_blocker,
-    finish_loading,
-    record_arrival,
-    record_count,
-    record_shipment,
-    rewind_loading,
     rollback_shipment,
 )
 from .waybill import build_waybill_pdf
-
-
-class ShipmentViewSet(PermViewSetMixin, viewsets.GenericViewSet):
-    queryset = Order.objects.select_related("shipment").prefetch_related("items__product")
-    required_perms: ClassVar[dict[str, str]] = {
-        # Отгрузка — работа грузчика. Интерфейс вызывает только «Отгружено» на его
-        # странице; пошаговые переходы поста остаются API под тем же правом.
-        "arrive": "loader.confirm",
-        "load": "loader.confirm",
-        "finish_loading": "loader.confirm",
-        "ship": "loader.confirm",
-        "rewind_loading": "loader.confirm",
-    }
-
-    def get_queryset(self):
-        qs = scope_by_client_department(
-            super().get_queryset(),
-            self.request.user,
-            client_path="client",
-        )
-        return qs
-
-    @action(detail=True, methods=["post"], url_path="arrive")
-    def arrive(self, request, pk=None):
-        serializer = ArrivalSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        order = self.get_object()
-        weigh_in_kg = serializer.validated_data.get("weigh_in_kg")
-        shipment = record_arrival(order, weigh_in_kg, request.user)
-        return Response(ShipmentSerializer(shipment).data)
-
-    @action(detail=True, methods=["post"], url_path="load")
-    def load(self, request, pk=None):
-        serializer = LoadSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        shipment = record_count(
-            self.get_object(),
-            serializer.validated_data["bags"],
-            request.user,
-        )
-        return Response(ShipmentSerializer(shipment).data)
-
-    @action(detail=True, methods=["post"], url_path="finish-loading")
-    def finish_loading(self, request, pk=None):
-        shipment = finish_loading(self.get_object(), request.user)
-        return Response(ShipmentSerializer(shipment).data)
-
-    @action(detail=True, methods=["post"], url_path="rewind-loading")
-    def rewind_loading(self, request, pk=None):
-        order = self.get_object()
-        # Сервис общий с административной сменой статуса — область проверяет пост.
-        assert_can_ship(request.user, order)
-        order = rewind_loading(order, request.user)
-        # Клиенту достаточно нового статуса; список доски сразу перечитывается.
-        return Response({"id": order.pk, "status": order.status})
-
-    @action(detail=True, methods=["post"], url_path="ship")
-    def ship(self, request, pk=None):
-        shipment = record_shipment(self.get_object(), request.user)
-        return Response(ShipmentSerializer(shipment).data)
 
 
 class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
@@ -149,11 +79,13 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         # transport_locked: без них это запрос на строку.
         # Заказ чужой области («Фуры | Вагоны») грузчику не виден вовсе:
         # отгрузка, откат и накладная по нему — 404.
+        # Плановый день — на каждой строке, в том числе в ответе действия:
+        # экран по нему возвращает строку в очередь.
         queryset = Order.objects.filter(
             transport_type__in=allowed_transports(self.request.user),
         ).select_related(
             "client__user", "shipment__report_message", "truck_number_set_by",
-        ).prefetch_related("items__product", "payments", "shipment__wagons")
+        ).prefetch_related("items__product", "payments", "shipment__wagons").annotate(planned_on=planned_day())
         return scope_by_client_department(queryset, self.request.user, client_path="client")
 
     def _tab(self, queryset):
@@ -187,17 +119,12 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         сегодняшнюю работу. Без параметров — вся очередь.
         """
         today = timezone.localdate()
-        queryset = self._tab(self.get_queryset()).filter(status__in=AWAITING_SHIPMENT_STATUSES).annotate(
-            planned_on=Coalesce("arrival_date", TruncDate("created_at")),
-        )
+        queryset = self._tab(self.get_queryset()).filter(status__in=AWAITING_SHIPMENT_STATUSES)
         if request.query_params.get("overdue") == "1":
             queryset = queryset.filter(planned_on__lt=today)
-        raw_day = request.query_params.get("day")
-        if raw_day:
-            try:
-                queryset = queryset.filter(planned_on=date.fromisoformat(raw_day))
-            except ValueError as exc:
-                raise ValidationError({"day": "Дата в формате ГГГГ-ММ-ДД"}) from exc
+        day = parse_iso_date(request.query_params.get("day"))
+        if day:
+            queryset = queryset.filter(planned_on=day)
         queryset = filter_order_search(queryset, parse_search_param(request.query_params.get("search")))
         return self._page(queryset.order_by("planned_on", "id"))
 
@@ -305,13 +232,8 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     def _rail_input(self, serializer_class):
         """Отчёт из запроса и заказ «Отгрузить по отчёту» (своей области и отдела)."""
         # Отчёт о вагонах — вкладка «Вагоны»: без этой области — 403, а не пустой разбор.
-        requested_transport(self.request.user, "train")
-        serializer = serializer_class(data=self.request.data, context=self.get_serializer_context())
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
-        order_id = data.get("order")
-        order = get_object_or_404(self.get_queryset(), pk=order_id) if order_id is not None else None
-        return data, parse_rail_report(data["text"]), order
+        requested_transport(self.request.user, RAIL_TRANSPORT)
+        return rail_report_input(self, serializer_class, self.get_queryset())
 
     def _rail_preview(self, report, order):
         return Response(preview_report(report, self.request.user, order=order))
@@ -325,7 +247,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
     @action(detail=False, methods=["get"], url_path="rail-report/options")
     def rail_options(self, request):
         """Товары и клиенты для разрешения неизвестного — только то, что человеку можно запомнить."""
-        requested_transport(request.user, "train")
+        requested_transport(request.user, RAIL_TRANSPORT)
         return Response(resolution_options(request.user))
 
     @action(detail=False, methods=["post"], url_path="rail-report/product-codes")

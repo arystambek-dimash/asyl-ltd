@@ -1,5 +1,5 @@
 from django.urls import path
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 
 from .photos import WeighingPhotoView
 from .passage_views import PassageViewSet
@@ -14,13 +14,12 @@ from .views import (
     TruckScaleReadingView,
     UnassignedWeighingViewSet,
     VehicleOrientationSampleViewSet,
-    WagonArchRuntimeView,
     WagonArchStopDismissView,
     WagonArchStopListView,
     WagonViewSet,
 )
 
-router = DefaultRouter()
+router = SimpleRouter()
 router.register("grain/supplies", GrainSupplyViewSet, basename="grain-supply")
 router.register("grain/wagons", WagonViewSet, basename="grain-wagon")
 router.register("grain/passages", PassageViewSet, basename="grain-passage")
@@ -35,14 +34,10 @@ router.register(
     VehicleOrientationSampleViewSet,
     basename="grain-orientation-sample",
 )
-router.register(
-    "grain/silo-types", SiloTypeViewSet, basename="grain-silo-type")
-router.register(
-    "grain/types", SiloTypeViewSet, basename="grain-type")
+router.register("grain/silo-types", SiloTypeViewSet, basename="grain-silo-type")
 
 urlpatterns = [
     path("grain/automatic-passage-scale/history/", PassageScaleHistoryView.as_view()),
-    path("truck-scale/reading/", TruckScaleReadingView.as_view()),
     path(
         "grain/automatic-passage-scale/acknowledge/",
         AutomaticPassageScaleAcknowledgeView.as_view(),
@@ -60,7 +55,6 @@ urlpatterns = [
         TruckScaleReadingView.as_view(),
     ),
     path("grain/photos/<str:kind>/<int:pk>/", WeighingPhotoView.as_view()),
-    path("grain/wagon-arch/runtime/", WagonArchRuntimeView.as_view()),
     path("grain/wagon-arch/stops/", WagonArchStopListView.as_view()),
     path(
         "grain/wagon-arch/stops/<int:pk>/dismiss/",

@@ -48,44 +48,33 @@ def test_audit_distinguishes_saved_untracked_and_processing_weights():
     assert UnassignedWeighing.objects.get(capture=parked).status == "open"
 
 
-def test_probes_saved_pair_without_mutating_trip_or_exposing_key(settings, tmp_path):
+def test_probes_saved_frame_without_mutating_trip_or_exposing_key(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     settings.OPENAI_API_KEY = "private-test-secret"
     wagon = Wagon.objects.create(
         number="934PPB13", direction="passage", status=st.COMPLETED
     )
-    entry = WeighingRecord.objects.create(
-        wagon=wagon, kind="gross", source="scale", weight_kg=4000
-    )
     exit = WeighingRecord.objects.create(
         wagon=wagon, kind="tare", source="scale", weight_kg=8000
     )
-    for row in (entry, exit):
-        row.photo.save("frame.jpg", ContentFile(b"saved-image"))
+    exit.photo.save("frame.jpg", ContentFile(b"saved-image"))
     report, samples = audit.snapshot()
+    assert samples == [(exit, "934PPB13")]
     verdict = {
-        "exit": {"plate": "934PPB13", "plate_clear": True, "orientation": "rear"},
-        "entries": [
-            {
-                "key": f"record:{entry.pk}",
-                "plate": "934PPB13",
-                "plate_clear": True,
-                "orientation": "front",
-                "appearance": "same",
-                "visual_evidence": "Совпадают повреждения",
-            }
-        ],
+        "exit": {"plate": "KZ 934 PPB 13", "plate_clear": True, "orientation": "rear"}
     }
     with patch.object(
         audit.weighing_identity, "request_verification", return_value=(verdict, "resp")
-    ):
+    ) as request:
         results = audit.probe(samples)
-    assert results[0]["pair_reading_matches"] is True
+    request.assert_called_once_with(exit)
+    assert results[0]["normalized_plate"] == "934PPB13"
+    assert results[0]["agrees_with_reference"] is True
     assert results[0]["reference_is_ground_truth"] is False
     assert "private-test-secret" not in str(report) + str(results)
     wagon.refresh_from_db()
     assert wagon.status == st.COMPLETED
-    assert WeighingRecord.objects.count() == 2
+    assert WeighingRecord.objects.count() == 1
 
 
 def test_network_error_does_not_expose_exception_message():
@@ -95,12 +84,12 @@ def test_network_error_does_not_expose_exception_message():
         "request_verification",
         side_effect=OSError("private header"),
     ):
-        results = audit.probe([(item, None, item.vehicle_number)])
+        results = audit.probe([(item, item.vehicle_number)])
     assert results[0]["error_type"] == "OSError"
     assert "private header" not in str(results)
 
 
-def test_legacy_uuid_links_are_covered_but_similar_plates_are_not():
+def test_uuid_links_are_covered_but_similar_plates_are_not():
     booked = capture(status="completed", attempt_request_id=uuid4())
     queued = capture(status="completed")
     missing = capture(status="completed", vehicle_number="934PPB13")
@@ -118,7 +107,6 @@ def test_legacy_uuid_links_are_covered_but_similar_plates_are_not():
         status="discarded",
     )
     report, _ = audit.snapshot()
-    assert report["legacy_photo_link_count"] == 2
     assert report["uncovered_saved_weight_ids"] == [missing.pk]
 
 
@@ -127,7 +115,7 @@ def test_public_actions_summary_excludes_all_business_data():
     report.update(
         ok=False,
         scale_probe={"state": "stale", "weight_kg": "8500"},
-        vision_samples=[{"plate": "private-plate", "pair_reading_matches": True}],
+        vision_samples=[{"plate": "private-plate", "agrees_with_reference": False}],
         arbitrary_private_field="secret-example",
     )
     public = audit.public_summary(report)

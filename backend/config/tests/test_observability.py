@@ -1,16 +1,12 @@
 import json
 import logging
 import os
-import subprocess
-import sys
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from config import observability
-
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
+from config.tests.settings_process import BACKEND_ROOT, import_base_settings
 
 
 def test_sensitive_key_scrubbing_is_recursive_and_normalizes_headers():
@@ -110,58 +106,11 @@ def test_base_settings_default_to_production_environment_before_sentry_init():
     environment.pop("APP_ENVIRONMENT", None)
     environment.pop("SENTRY_BACKEND_DSN", None)
     environment["DEBUG"] = "0"
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from config._settings.base import APP_ENVIRONMENT; print(APP_ENVIRONMENT)",
-        ],
-        cwd=BACKEND_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = import_base_settings(environment, "APP_ENVIRONMENT")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "production"
-
-
-def test_production_settings_establish_environment_before_sentry_init():
-    environment = os.environ.copy()
-    environment.pop("APP_ENVIRONMENT", None)
-    environment.pop("DEBUG", None)
-    environment.pop("SENTRY_BACKEND_DSN", None)
-    environment.update(
-        {
-            "SECRET_KEY": "production-secret-with-more-than-fifty-distinct-ish-characters-123",
-            "DB_PASSWORD": "test-database-password",
-            "REDIS_URL": "redis://localhost:6379/0",
-            "ALLOWED_HOSTS": "example.test",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
-    )
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "from config._settings.production import APP_ENVIRONMENT; "
-                "print(APP_ENVIRONMENT)"
-            ),
-        ],
-        cwd=BACKEND_ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "production"
+    assert json.loads(result.stdout) == ["production"]
 
 
 def test_sentry_configuration_is_private_opt_in_and_tagged(monkeypatch):

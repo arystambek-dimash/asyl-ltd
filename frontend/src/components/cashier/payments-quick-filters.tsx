@@ -1,6 +1,8 @@
 "use client";
 import { Chip } from "@/components/ui/chip";
-import { periodPresetOf, periodRange } from "./filters";
+import { DepartmentDot } from "@/components/ui/department-badge";
+import { periodPresetOf, periodRange } from "@/lib/date-range";
+import { PERIOD_PRESETS } from "./filters";
 import { ALL_DEPARTMENTS } from "./scope";
 import type { CashierModel } from "./use-cashier";
 
@@ -10,7 +12,7 @@ import type { CashierModel } from "./use-cashier";
  */
 export function PaymentsQuickFilters({ model }: { model: CashierModel }) {
   const { filters, patchFilters, departments, scope } = model;
-  const preset = periodPresetOf(filters);
+  const preset = periodPresetOf(filters, PERIOD_PRESETS);
   const showDepartments = !scope.assigned && scope.department === ALL_DEPARTMENTS && departments.length > 1;
 
   return (
@@ -30,18 +32,16 @@ export function PaymentsQuickFilters({ model }: { model: CashierModel }) {
           >
             Все отделы
           </Chip>
-          {departments
-            .filter((row) => row.is_active)
-            .map((row) => (
-              <Chip
-                key={row.code}
-                active={filters.department === row.code}
-                onClick={() => patchFilters({ department: row.code })}
-              >
-                <span aria-hidden className="size-2 rounded-full" style={{ backgroundColor: row.color }} />
-                {row.name}
-              </Chip>
-            ))}
+          {departments.map((row) => (
+            <Chip
+              key={row.code}
+              active={filters.department === row.code}
+              onClick={() => patchFilters({ department: row.code })}
+            >
+              <DepartmentDot color={row.color} className="size-2" />
+              {row.name}
+            </Chip>
+          ))}
         </>
       )}
     </div>

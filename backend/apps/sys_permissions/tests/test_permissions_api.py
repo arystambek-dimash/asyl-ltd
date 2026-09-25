@@ -4,11 +4,8 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def admin_client(auth_client, make_user):
-    user = make_user(username="permissions-root")
-    user.is_superuser = True
-    user.save(update_fields=["is_superuser"])
-    return auth_client(user)
+def admin_client(auth_client, admin_user):
+    return auth_client(admin_user)
 
 
 def test_permissions_list(admin_client):
@@ -24,6 +21,28 @@ def test_permissions_list(admin_client):
         "action": "view",
         "label": "Моноблок: Доступ (видит всё)",
     }
+
+
+def test_permissions_list_follows_the_catalog_order_with_section_labels(admin_client):
+    """Пикер прав показывает разделы в порядке меню и подписывает их как страницы."""
+    from apps.sys_permissions.perms import PERMISSIONS
+
+    response = admin_client.get("/api/permissions/")
+    catalog = [permission["code"] for permission in PERMISSIONS]
+    listed = [item["code"] for item in response.data if item["code"] in catalog]
+    assert listed == catalog
+    labels = {item["section"]: item["section_label"] for item in response.data}
+    assert labels["stores"] == "Магазины"
+    assert labels["bots"] == "WhatsApp-бот"
+
+
+def test_permissions_list_puts_codes_outside_the_catalog_last(admin_client):
+    from apps.sys_permissions.models import Permission
+
+    Permission.objects.create(code="aaa.legacy", section="aaa", action="legacy", label="Старое")
+    response = admin_client.get("/api/permissions/")
+    assert response.data[-1]["code"] == "aaa.legacy"
+    assert response.data[-1]["section_label"] == "aaa"
 
 
 def test_permissions_list_requires_catalog_or_employee_management(

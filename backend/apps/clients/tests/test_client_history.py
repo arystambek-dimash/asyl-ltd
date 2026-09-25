@@ -1,5 +1,4 @@
 import pytest
-from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
@@ -8,15 +7,9 @@ from apps.clients.services import client_history
 pytestmark = pytest.mark.django_db
 
 
-def _api(user):
-    c = APIClient()
-    c.force_authenticate(user)
-    return c
-
-
 def _order(client, status, qty=10, paid=None, intent="debt"):
     p = Product.objects.create(
-        name=f"P{status}{qty}{paid}", color="Red", weight_kg="50", price="100.00"
+        name=f"P{status}{qty}{paid}", color="Red", weight_kg="50"
     )
     o = Order.objects.create(
         client=client, status=status, settlement_intent=intent, payment_status="unpaid"
@@ -41,6 +34,17 @@ def test_history_summary():
     assert h["summary"]["orders_count"] == 1  # только финансовые
 
 
+def test_history_summary_paid_includes_prepaid_orders():
+    """«Оплачено за всё время» — все финансовые заказы, не только отгруженные."""
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
+    _order(c, "shipped", qty=2, paid="200")
+    _order(c, "loading", qty=3, paid="300")  # предоплата до отгрузки
+    h = client_history(c)
+    assert h["summary"]["revenue"] == "500.00"
+    assert h["summary"]["paid"] == "500.00"
+    assert h["summary"]["debt"] == "0.00"
+
+
 def test_history_rows():
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     o1 = _order(c, "shipped", qty=10, paid="500")
@@ -60,9 +64,41 @@ def test_history_rows():
     assert h["payments"][0]["order_id"] == o1.id
     assert h["payments"][0]["amount"] == "500.00"
     assert h["payments"][0]["currency"] == "KZT"
+    # Подписи строк — из labels.py, фронт своих словарей не держит.
+    assert h["payments"][0]["method_label"] == "Наличные"
+    assert h["payments"][0]["status_label"] == "Оплачено"
     # Долги — только отгруженные в долг с остатком.
     assert [r["id"] for r in h["debts"]] == [o1.id]
     assert h["debts"][0]["remaining"] == "500.00"
+
+
+def test_history_rows_mark_what_counts_in_totals():
+    """Итог по списку на странице клиента складывает только то, что входит в
+    сводку: продажи в обороте и нетто подтверждённых оплат финансовых заказов."""
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
+    shipped = _order(c, "shipped", qty=10, paid="600")
+    Payment.objects.filter(order=shipped).update(refunded_amount="100")
+    Payment.objects.create(order=shipped, amount="200", status="rejected")
+    Payment.objects.create(order=shipped, amount="50", status="received")
+    cancelled = _order(c, "cancelled", qty=3, paid="300")
+    h = client_history(c)
+
+    sales = {r["id"]: r for r in h["sales"]}
+    assert sales[shipped.id]["is_financial"] is True
+    assert sales[cancelled.id]["is_financial"] is False
+
+    counted = sorted(
+        (r["status"], r["order_id"] == shipped.id, r["counted_amount"])
+        for r in h["payments"]
+    )
+    assert counted == [
+        ("confirmed", False, "0.00"),  # отменённый заказ — не оплата клиента
+        ("confirmed", True, "500.00"),  # 600 минус возврат 100
+        ("received", True, "0.00"),
+        ("rejected", True, "0.00"),
+    ]
+    # Сумма засчитанного совпадает со сводкой «Оплачено».
+    assert h["summary"]["paid"] == "500.00"
 
 
 def test_history_excludes_service_debt_method():
@@ -73,10 +109,10 @@ def test_history_excludes_service_debt_method():
     assert h["payments"] == []
 
 
-def test_history_endpoint(boss):
+def test_history_endpoint(boss, api_as):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x", currency="USD")
     _order(c, "shipped", qty=10)
-    r = _api(boss).get(f"/api/clients/{c.id}/history/")
+    r = api_as(boss).get(f"/api/clients/{c.id}/history/")
     assert r.status_code == 200
     assert r.data["client"]["id"] == c.id
     assert r.data["client"]["currency"] == "USD"

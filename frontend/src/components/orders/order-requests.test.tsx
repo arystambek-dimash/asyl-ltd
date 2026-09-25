@@ -16,7 +16,8 @@ vi.mock("@/lib/use-visible-polling", () => ({
   },
 }));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: { get: (...args: unknown[]) => mocks.get(...args), post: (...args: unknown[]) => mocks.post(...args) },
   apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
   isCanceledRequest: () => false,
@@ -109,7 +110,7 @@ it("shows a confirmation error inside the dialog", async () => {
   mocks.post.mockRejectedValue(new Error("Цена не указана"));
   render(<Harness />);
   await user.click(await screen.findByRole("button", { name: "Проверить и подтвердить" }));
-  const dialog = await screen.findByRole("dialog", { name: /Заказ #621/ });
+  const dialog = await screen.findByRole("dialog", { name: "Подтвердить заказ #621" });
   await user.selectOptions(within(dialog).getByRole("combobox", { name: "Отдел продаж" }), "main");
   await user.type(within(dialog).getByRole("spinbutton", { name: "Цена: Мука" }), "10");
   await user.click(within(dialog).getByRole("button", { name: "Подтвердить заказ" }));
@@ -125,7 +126,7 @@ it("rereads a request whose items changed while the dialog was open", async () =
   );
   render(<Harness />);
   await user.click(await screen.findByRole("button", { name: "Проверить и подтвердить" }));
-  const dialog = await screen.findByRole("dialog", { name: /Заказ #621/ });
+  const dialog = await screen.findByRole("dialog", { name: "Подтвердить заказ #621" });
   await user.selectOptions(within(dialog).getByRole("combobox", { name: "Отдел продаж" }), "main");
   await user.type(within(dialog).getByRole("spinbutton", { name: "Цена: Мука" }), "10");
   // Пока окно было открыто, клиент поменял состав заявки.

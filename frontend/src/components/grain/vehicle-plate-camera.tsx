@@ -1,15 +1,13 @@
 "use client";
 
-import type { AxiosError } from "axios";
 import { useState } from "react";
 import { Check, Clock3, Focus, PencilLine, Scale, ScanLine, VideoOff, X } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
 import {
   isDrawableVehicleRoi,
-  normalizeVehicleRoi,
+  useRoiEditor,
   VehicleRoiOverlay,
   type NormalizedRoiPoint,
-  type VehicleRoiConfig,
 } from "@/components/grain/vehicle-roi-overlay";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,9 +15,10 @@ import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { showSuccess } from "@/lib/toast";
+import type { ScaleAutomationRuntime, VehiclePlateMonitor, VehiclePlateRuntime } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { cn } from "@/lib/utils";
+import { cn, pluralRu } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 const VEHICLE_RUNTIME_BOOTSTRAP_URL = "/cameras/vehicle-plate-runtime/";
@@ -37,90 +36,14 @@ const DEFAULT_VEHICLE_ROI: NormalizedRoiPoint[] = [
   [0.1, 0.85],
 ];
 
-type VehiclePlateMonitor = {
-  status: string;
-  source: string;
-  last_frame_at: string | null;
-  last_inference_at: string | null;
-  last_confirmed_at: string | null;
-  scanned_frames: number;
-  plate_detections: number;
-  stationary_admissions: number;
-  ocr_attempts: number;
-  confirmed_events: number;
-  durable_duplicates: number;
-  consecutive_errors: number;
-  inference_avg_ms: number;
-  ocr_avg_ms: number;
-  has_error: boolean;
-  stop_gate: {
-    dwell_seconds: number;
-    min_frames: number;
-    max_movement_ratio: number;
-    exit_grace_seconds: number;
-  };
-};
-
-export type ScaleAutomationRuntime = {
-  enabled: boolean;
-  /** Optional while old backend instances are draining during a rolling deploy. */
-  stable_weight_seconds?: number;
-  state:
-    | "disabled"
-    | "idle"
-    | "candidate"
-    | "recognizing"
-    | "applying"
-    | "awaiting_clear"
-    | "manual_required"
-    | "unavailable";
-  last_checked_at: string | null;
-  heartbeat_stale: boolean;
-  active: {
-    request_id: string;
-    stage: "claimed" | "recognizing" | "applying" | "done";
-    action: "entry" | "exit" | null;
-    wagon_id: number | null;
-    retryable: boolean;
-    error_code: string | null;
-  } | null;
-};
-
 type ScaleAutomationSettings = {
   stable_weight_seconds: number;
-};
-
-export type VehiclePlateRuntime = {
-  camera: string;
-  enabled: boolean;
-  ready: boolean;
-  automation_enabled: boolean;
-  camera_configured: boolean;
-  weight_first_enabled: boolean;
-  on_demand_enabled: boolean;
-  on_demand_camera_configured: boolean;
-  source: "main" | "sub";
-  stream: string;
-  server_push_configured: boolean;
-  diagnostic: string;
-  monitor: VehiclePlateMonitor | null;
-  roi: VehicleRoiConfig;
-  /** Optional during a rolling deploy; absence must never be shown as healthy. */
-  scale_automation?: ScaleAutomationRuntime;
 };
 
 type ScaleAutomationAcknowledgeResponse = {
   acknowledged: true;
   scale_automation: ScaleAutomationRuntime;
 };
-
-type VehicleRoiSaveResponse = {
-  saved: true;
-  applied_to_monitor: boolean;
-  roi: VehicleRoiConfig;
-};
-
-type SaveNotice = { message: string; tone: "success" | "warning" };
 
 type RuntimePresentation = {
   label: string;
@@ -145,52 +68,12 @@ function validStableWeightSeconds(value: unknown): value is number {
 }
 
 function secondsLabel(seconds: number): string {
-  const mod100 = seconds % 100;
-  if (mod100 >= 11 && mod100 <= 14) return `${seconds} секунд`;
-  const mod10 = seconds % 10;
-  if (mod10 === 1) return `${seconds} секунду`;
-  if (mod10 >= 2 && mod10 <= 4) return `${seconds} секунды`;
-  return `${seconds} секунд`;
+  return `${seconds} ${pluralRu(seconds, ["секунду", "секунды", "секунд"])}`;
 }
 
-function draftRoi(points: NormalizedRoiPoint[], source: "main" | "sub"): VehicleRoiConfig {
-  return {
-    configured: true,
-    enabled: true,
-    source,
-    coordinate_space: "normalized",
-    points: points.map(([x, y]) => ({ x, y })),
-  };
-}
-
-function polygonArea(points: NormalizedRoiPoint[]) {
-  let doubledArea = 0;
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index];
-    const next = points[(index + 1) % points.length];
-    doubledArea += current[0] * next[1] - next[0] * current[1];
-  }
-  return Math.abs(doubledArea) / 2;
-}
-
-function validRoiDraft(points: NormalizedRoiPoint[]) {
-  return points.length >= 3 && points.length <= 12 && polygonArea(points) >= 0.0001;
-}
-
-function acceptedSaveResponse(value: unknown, expectedSource: "main" | "sub"): value is VehicleRoiSaveResponse {
-  if (!value || typeof value !== "object") return false;
-  const payload = value as Partial<VehicleRoiSaveResponse>;
-  const points = normalizeVehicleRoi(payload.roi?.points);
-  return (
-    payload.saved === true &&
-    typeof payload.applied_to_monitor === "boolean" &&
-    isDrawableVehicleRoi(payload.roi, expectedSource) &&
-    validRoiDraft(points)
-  );
-}
-
-export function vehicleAiPresentation(
+function vehicleAiPresentation(
   runtime: VehiclePlateRuntime | null,
+  onDemand: boolean,
   loading: boolean,
   error: string,
 ): RuntimePresentation {
@@ -208,7 +91,7 @@ export function vehicleAiPresentation(
   if (!runtime.ready) {
     return { label: "AI: НЕ ГОТОВА", detail: "Детектор номера или OCR не загрузился.", tone: "bad" };
   }
-  if (runtime.weight_first_enabled || runtime.scale_automation?.enabled) {
+  if (onDemand) {
     if (!runtime.on_demand_enabled) {
       return {
         label: "AI ПО ЗАПРОСУ ВЫКЛ.",
@@ -247,13 +130,6 @@ export function vehicleAiPresentation(
   }
   if (!runtime.monitor) {
     return { label: "AI: НЕ ЗАПУЩЕНА", detail: "Монитор камеры не создан на ПК камер.", tone: "bad" };
-  }
-  if (runtime.monitor.source !== runtime.source) {
-    return {
-      label: "ПОТОК МОНИТОРА НЕ СОВПАЛ",
-      detail: "Монитор запущен для другого потока камеры; статус отклонён как недостоверный.",
-      tone: "bad",
-    };
   }
   if (runtime.monitor.status === "model_unavailable") {
     return { label: "AI: НЕТ МОДЕЛИ", detail: "Монитор запущен без готового детектора или OCR.", tone: "bad" };
@@ -297,8 +173,8 @@ export function vehicleAiPresentation(
   return { label: "AI ЗАПУСКАЕТСЯ", detail: "ROI загружен, ожидаем первый обработанный кадр.", tone: "warn" };
 }
 
-export function scaleAutomationPresentation(
-  automation: ScaleAutomationRuntime | null | undefined,
+function scaleAutomationPresentation(
+  automation: ScaleAutomationRuntime | null,
   loading: boolean,
   error: string,
 ): RuntimePresentation {
@@ -345,18 +221,14 @@ export function scaleAutomationPresentation(
   if (automation.state === "idle") {
     return {
       label: "ОЖИДАЕТ МАШИНУ",
-      detail: validStableWeightSeconds(automation.stable_weight_seconds)
-        ? `Фоновый сервис проверяет весы каждую секунду. OCR запустится, когда вес останется стабильным ${secondsLabel(automation.stable_weight_seconds)}.`
-        : "Фоновый сервис проверяет весы каждую секунду и ждёт новый стабильный заезд.",
+      detail: `Фоновый сервис проверяет весы каждую секунду. OCR запустится, когда вес останется стабильным ${secondsLabel(automation.stable_weight_seconds)}.`,
       tone: "good",
     };
   }
   if (automation.state === "candidate") {
     return {
       label: "ЖДЁТ СТАБИЛЬНЫЙ ВЕС",
-      detail: validStableWeightSeconds(automation.stable_weight_seconds)
-        ? `Обнаружено изменение веса; перед запуском камеры оно должно быть стабильным ${secondsLabel(automation.stable_weight_seconds)}.`
-        : "Обнаружено изменение веса; ждём стабильное показание перед запуском камеры.",
+      detail: `Обнаружено изменение веса; перед запуском камеры оно должно быть стабильным ${secondsLabel(automation.stable_weight_seconds)}.`,
       tone: "warn",
     };
   }
@@ -424,14 +296,8 @@ function roiPresentation(runtime: VehiclePlateRuntime | null, error: string): Ru
  */
 export function VehiclePlateCameraWorkspace() {
   const isSuperuser = useAuth((state) => Boolean(state.me?.is_superuser));
-  const canManageRoi = isSuperuser;
   const canAcknowledgeManualPassage = useAuth((state) => can(state.me, "grain.weigh"));
   const [streamOnline, setStreamOnline] = useState(false);
-  const [editingRoi, setEditingRoi] = useState(false);
-  const [roiDraft, setRoiDraft] = useState<NormalizedRoiPoint[]>([]);
-  const [savingRoi, setSavingRoi] = useState(false);
-  const [roiSaveError, setRoiSaveError] = useState("");
-  const [saveNotice, setSaveNotice] = useState<SaveNotice | null>(null);
   const [acknowledgingRequestId, setAcknowledgingRequestId] = useState("");
   const [acknowledgeError, setAcknowledgeError] = useState<{ requestId: string; message: string } | null>(null);
   const [stableWeightSettingsOpen, setStableWeightSettingsOpen] = useState(false);
@@ -446,70 +312,65 @@ export function VehiclePlateCameraWorkspace() {
     setData: setRuntime,
   } = useApi<VehiclePlateRuntime>(VEHICLE_RUNTIME_BOOTSTRAP_URL);
   const {
-    data: standaloneScaleAutomation,
+    data: scaleAutomation,
     loading: scaleAutomationLoading,
     error: scaleAutomationError,
     reload: reloadScaleAutomation,
-    setData: setStandaloneScaleAutomation,
+    setData: setScaleAutomation,
   } = useApi<ScaleAutomationRuntime>(SCALE_AUTOMATION_RUNTIME_URL);
-  const {
-    data: scaleAutomationSettings,
-    loading: scaleAutomationSettingsLoading,
-    error: scaleAutomationSettingsError,
-    reload: reloadScaleAutomationSettings,
-    setData: setScaleAutomationSettings,
-  } = useApi<ScaleAutomationSettings>(SCALE_AUTOMATION_SETTINGS_URL);
+  // Mirrors the backend source choice: the on-demand lane runs when either flag is on.
+  const onDemand = Boolean(runtime?.weight_first_enabled || scaleAutomation?.enabled);
+  const weightFirst = onDemand || scaleAutomation?.state === "manual_required";
+  const roiEditor = useRoiEditor({
+    saveUrl: isSuperuser && runtime ? `/cameras/${runtime.camera}/vehicle-plate-runtime/` : null,
+    source: runtime?.source ?? "main",
+    responseKey: "roi",
+    defaultPoints: DEFAULT_VEHICLE_ROI,
+    onSaved: (roi, appliedToMonitor) => {
+      if (runtime) setRuntime({ ...runtime, roi });
+      if (weightFirst || appliedToMonitor) showSuccess("ROI камеры сохранён");
+      if (weightFirst) {
+        return {
+          message: "ROI сохранён. Следующее распознавание после стабильного веса использует новую зону.",
+          tone: "success",
+        };
+      }
+      return appliedToMonitor
+        ? {
+            message:
+              "ROI сохранён. ПК камер получил запрос на обновление; новая зона обычно применяется в течение 2 секунд.",
+            tone: "success",
+          }
+        : {
+            message: "ROI сохранён, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
+            tone: "warning",
+          };
+    },
+  });
+  const { editing: editingRoi, saving: savingRoi } = roiEditor;
   useVisiblePolling(
     reload,
     VEHICLE_RUNTIME_POLL_MS,
     !runtimeLoading && !editingRoi && !savingRoi && !acknowledgingRequestId,
   );
-  useVisiblePolling(reloadScaleAutomation, VEHICLE_RUNTIME_POLL_MS, !scaleAutomationLoading && !acknowledgingRequestId);
   useVisiblePolling(
-    reloadScaleAutomationSettings,
+    reloadScaleAutomation,
     VEHICLE_RUNTIME_POLL_MS,
-    !scaleAutomationSettingsLoading && !savingStableWeightSeconds,
+    !scaleAutomationLoading && !acknowledgingRequestId && !savingStableWeightSeconds,
   );
-  const aiState = vehicleAiPresentation(runtime, runtimeLoading, runtimeError);
-  // The CRM endpoint stays available when Camera-PC diagnostics fail. Keep the
-  // embedded field only as a rolling-deploy fallback for an older backend.
-  const embeddedScaleAutomation = runtime?.scale_automation;
-  const healthyEmbeddedScaleAutomation = runtimeError ? undefined : embeddedScaleAutomation;
-  const scaleAutomation =
-    standaloneScaleAutomation && !scaleAutomationError
-      ? standaloneScaleAutomation
-      : (healthyEmbeddedScaleAutomation ?? standaloneScaleAutomation ?? embeddedScaleAutomation);
-  const usingHealthyEmbeddedFallback = !standaloneScaleAutomation && Boolean(embeddedScaleAutomation) && !runtimeError;
-  const effectiveScaleAutomationError = usingHealthyEmbeddedFallback
-    ? ""
-    : scaleAutomationError || (!standaloneScaleAutomation ? runtimeError : "");
-  const weightFirst = Boolean(
-    runtime?.weight_first_enabled || scaleAutomation?.enabled || scaleAutomation?.state === "manual_required",
-  );
-  const stableWeightSeconds = validStableWeightSeconds(scaleAutomation?.stable_weight_seconds)
-    ? scaleAutomation.stable_weight_seconds
-    : validStableWeightSeconds(scaleAutomationSettings?.stable_weight_seconds)
-      ? scaleAutomationSettings.stable_weight_seconds
-      : null;
+  const aiState = vehicleAiPresentation(runtime, onDemand, runtimeLoading, runtimeError);
+  const stableWeightSeconds = scaleAutomation?.stable_weight_seconds ?? null;
   const canOpenStableWeightSettings =
-    isSuperuser &&
-    weightFirst &&
-    !scaleAutomationSettingsLoading &&
-    !scaleAutomationSettingsError &&
-    validStableWeightSeconds(scaleAutomationSettings?.stable_weight_seconds);
+    isSuperuser && weightFirst && stableWeightSeconds !== null && !scaleAutomationError;
   const stableWeightSecondsValue = Number(stableWeightSecondsDraft);
   const canSaveStableWeightSeconds =
     stableWeightSecondsDraft.trim() !== "" &&
     validStableWeightSeconds(stableWeightSecondsValue) &&
     !savingStableWeightSeconds;
-  const scaleAutomationWithSettings =
-    scaleAutomation && stableWeightSeconds !== null
-      ? { ...scaleAutomation, stable_weight_seconds: stableWeightSeconds }
-      : scaleAutomation;
   const scaleAutomationState = scaleAutomationPresentation(
-    scaleAutomationWithSettings,
+    scaleAutomation,
     !scaleAutomation && scaleAutomationLoading,
-    effectiveScaleAutomationError,
+    scaleAutomationError,
   );
   const manualRequiredRequestId =
     scaleAutomation?.state === "manual_required" ? (scaleAutomation.active?.request_id ?? "") : "";
@@ -519,75 +380,11 @@ export function VehiclePlateCameraWorkspace() {
   const roiState = editingRoi
     ? { label: "ROI РЕДАКТИРУЕТСЯ", detail: "Перетащите точки и сохраните новую зону.", tone: "warn" as const }
     : roiPresentation(runtime, runtimeError);
-  const overlayRoi = editingRoi && runtime ? draftRoi(roiDraft, runtime.source) : runtimeError ? null : runtime?.roi;
-  const canSaveRoi = validRoiDraft(roiDraft) && !savingRoi;
+  const overlayRoi = editingRoi && runtime ? roiEditor.draftRoi : runtimeError ? null : runtime?.roi;
 
   function startRoiEditor() {
-    if (!canManageRoi || !runtime || runtimeLoading || runtimeError) return;
-    const serverPoints = normalizeVehicleRoi(runtime.roi.points);
-    setRoiDraft(serverPoints.length ? serverPoints : DEFAULT_VEHICLE_ROI);
-    setRoiSaveError("");
-    setSaveNotice(null);
-    setEditingRoi(true);
-  }
-
-  function cancelRoiEditor() {
-    setEditingRoi(false);
-    setRoiDraft([]);
-    setRoiSaveError("");
-  }
-
-  function acceptSavedRoi(payload: VehicleRoiSaveResponse) {
-    if (!runtime) return;
-    setRuntime({ ...runtime, roi: payload.roi });
-    setEditingRoi(false);
-    setRoiDraft([]);
-    setRoiSaveError("");
-    setSaveNotice(
-      weightFirst
-        ? {
-            message: "ROI сохранён. Следующее распознавание после стабильного веса использует новую зону.",
-            tone: "success",
-          }
-        : payload.applied_to_monitor
-          ? {
-              message:
-                "ROI сохранён. ПК камер получил запрос на обновление; новая зона обычно применяется в течение 2 секунд.",
-              tone: "success",
-            }
-          : {
-              message:
-                "ROI сохранён, но монитор пока не подтвердил обновление. Он перечитает зону после восстановления.",
-              tone: "warning",
-            },
-    );
-    if (weightFirst || payload.applied_to_monitor) showSuccess("ROI камеры сохранён");
-  }
-
-  async function saveRoi() {
-    if (!canManageRoi || !runtime || !canSaveRoi) return;
-    setSavingRoi(true);
-    setRoiSaveError("");
-    const body = {
-      points: roiDraft.map(([x, y]) => ({ x, y })),
-      enabled: true,
-      source: runtime.source,
-    };
-    const runtimeUrl = `/cameras/${runtime.camera}/vehicle-plate-runtime/`;
-    try {
-      const response = await api.put<VehicleRoiSaveResponse>(runtimeUrl, body, { timeout: 12_000 });
-      if (!acceptedSaveResponse(response.data, runtime.source)) throw new Error("invalid vehicle ROI response");
-      acceptSavedRoi(response.data);
-    } catch (cause) {
-      // A 503 may mean that the polygon was persisted while the live monitor
-      // refresh failed. Keep that authoritative value instead of rolling back.
-      const errorResponse = (cause as AxiosError<unknown>).response;
-      const partial = errorResponse?.data;
-      if (errorResponse?.status === 503 && acceptedSaveResponse(partial, runtime.source)) acceptSavedRoi(partial);
-      else setRoiSaveError(apiError(cause));
-    } finally {
-      setSavingRoi(false);
-    }
+    if (!isSuperuser || !runtime || runtimeLoading || runtimeError) return;
+    roiEditor.start(runtime.roi.points);
   }
 
   async function acknowledgeManualPassage() {
@@ -600,9 +397,8 @@ export function VehiclePlateCameraWorkspace() {
         request_id: requestId,
         resolved: true,
       });
-      setStandaloneScaleAutomation(response.data.scale_automation);
+      setScaleAutomation(response.data.scale_automation);
       showSuccess("Ручная обработка подтверждена");
-      await reloadScaleAutomation().catch(() => undefined);
     } catch {
       // Keep backend diagnostics (which may contain recognition details) out of
       // the grain.view runtime UI.
@@ -639,16 +435,11 @@ export function VehiclePlateCameraWorkspace() {
       if (!validStableWeightSeconds(response.data?.stable_weight_seconds)) {
         throw new Error("invalid automatic passage scale settings response");
       }
-      setScaleAutomationSettings(response.data);
-      if (standaloneScaleAutomation) {
-        setStandaloneScaleAutomation({
-          ...standaloneScaleAutomation,
-          stable_weight_seconds: response.data.stable_weight_seconds,
-        });
+      if (scaleAutomation) {
+        setScaleAutomation({ ...scaleAutomation, stable_weight_seconds: response.data.stable_weight_seconds });
       }
       setStableWeightSettingsOpen(false);
       showSuccess("Время ожидания стабильного веса сохранено");
-      await Promise.all([reloadScaleAutomation(), reloadScaleAutomationSettings()]).catch(() => undefined);
     } catch (cause) {
       setStableWeightSettingsSaveError(apiError(cause));
     } finally {
@@ -671,28 +462,28 @@ export function VehiclePlateCameraWorkspace() {
               : "Камера проходной показывает машину, номер которой используется для автоматического рейса."}
           </p>
         </div>
-        {canManageRoi || (isSuperuser && weightFirst) ? (
+        {isSuperuser ? (
           <div className="flex flex-wrap items-center gap-2">
-            {isSuperuser && weightFirst && !editingRoi ? (
+            {weightFirst && !editingRoi ? (
               <Button
                 variant="outline"
                 disabled={!canOpenStableWeightSettings}
                 onClick={openStableWeightSettings}
-                title={scaleAutomationSettingsError ? "Настройка ожидания временно недоступна" : undefined}
+                title={scaleAutomationError ? "Настройка ожидания временно недоступна" : undefined}
               >
                 <Clock3 className="size-4" /> Настроить ожидание
               </Button>
             ) : null}
-            {canManageRoi && editingRoi ? (
+            {editingRoi ? (
               <div className="flex flex-wrap items-center gap-2" aria-label="Действия редактора ROI">
-                <Button variant="outline" disabled={savingRoi} onClick={cancelRoiEditor}>
+                <Button variant="outline" disabled={savingRoi} onClick={roiEditor.cancel}>
                   <X className="size-4" /> Отмена
                 </Button>
-                <Button disabled={!canSaveRoi} onClick={() => void saveRoi()}>
+                <Button disabled={!roiEditor.canSave} onClick={() => void roiEditor.save()}>
                   <Check className="size-4" /> {savingRoi ? "Сохранение…" : "Сохранить ROI"}
                 </Button>
               </div>
-            ) : canManageRoi ? (
+            ) : (
               <Button
                 variant="outline"
                 disabled={!runtime || runtimeLoading || Boolean(runtimeError)}
@@ -700,7 +491,7 @@ export function VehiclePlateCameraWorkspace() {
               >
                 <PencilLine className="size-4" /> Изменить ROI
               </Button>
-            ) : null}
+            )}
           </div>
         ) : null}
       </div>
@@ -711,22 +502,22 @@ export function VehiclePlateCameraWorkspace() {
           шаг.
         </p>
       ) : null}
-      {roiSaveError ? (
+      {roiEditor.error ? (
         <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-          {roiSaveError}
+          {roiEditor.error}
         </p>
       ) : null}
-      {saveNotice ? (
+      {roiEditor.notice ? (
         <p
           role="status"
           className={cn(
             "rounded-xl border px-4 py-3 text-sm",
-            saveNotice.tone === "success"
+            roiEditor.notice.tone === "success"
               ? "border-emerald-200 bg-emerald-50 text-emerald-800"
               : "border-amber-200 bg-amber-50 text-amber-900",
           )}
         >
-          {saveNotice.message}
+          {roiEditor.notice.message}
         </p>
       ) : null}
 
@@ -748,7 +539,7 @@ export function VehiclePlateCameraWorkspace() {
               roi={overlayRoi}
               expectedSource={runtime?.source ?? "main"}
               editable={editingRoi}
-              onPointsChange={setRoiDraft}
+              onPointsChange={roiEditor.setDraft}
             />
             {!streamOnline && (
               <div className="absolute inset-0 z-[2] flex flex-col items-center justify-center gap-2 bg-black text-white/40">

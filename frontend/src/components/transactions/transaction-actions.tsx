@@ -2,16 +2,12 @@
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink, History, Link2, RotateCcw, Send, Undo2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { invoiceIsActive } from "@/lib/apipay-invoice";
 import type { Payment } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const ACTIVE_PROVIDER_STATUSES = new Set(["creating", "processing", "pending", "cancelling"]);
-
-export type TransactionActionKey =
-  "restore" | "reopen" | "issue" | "qr" | "receipt" | "qr_refund" | "refund" | "reject";
-
-export interface TransactionAction {
-  key: TransactionActionKey;
+interface TransactionAction {
+  key: "restore" | "reopen" | "issue" | "qr" | "receipt" | "qr_refund" | "refund" | "reject";
   /** Подпись в списке (телефон) и на широких экранах у outline-кнопок. */
   label: string;
   /** Подсказка/имя для иконки без текста — как в таблице сейчас. */
@@ -27,13 +23,10 @@ export interface TransactionActionHandlers {
   busy: boolean;
   receipt: (payment: Payment) => unknown;
   issue: (payment: Payment) => unknown;
-  openRefund: (payment: Payment) => void;
+  /** Окно действия: возврат, отклонение, восстановление, возврат ошибочно подтверждённой оплаты на проверку. */
+  open: (kind: "refund" | "reject" | "restore" | "reopen", payment: Payment) => void;
   /** Возврат по Kaspi QR через ссылку покупателю: состояние и ссылка. */
-  openQrRefund?: (payment: Payment) => void;
-  openReject: (payment: Payment) => void;
-  openRestore: (payment: Payment) => void;
-  /** Вернуть ошибочно подтверждённую оплату на проверку кассы. */
-  openReopen?: (payment: Payment) => void;
+  openQrRefund: (payment: Payment) => void;
 }
 
 /** Какие действия доступны по операции — единый источник для таблицы и шторки. */
@@ -50,18 +43,17 @@ export function transactionActions(
       title: "Восстановить отклонённую операцию",
       icon: Undo2,
       variant: "outline",
-      run: () => t.openRestore(row),
+      run: () => t.open("restore", row),
     });
   }
-  const openReopen = t.openReopen;
-  if (perms.canConfirm && openReopen && row.can_reopen) {
+  if (perms.canConfirm && row.can_reopen) {
     actions.push({
       key: "reopen",
       label: "Вернуть на проверку",
       title: "Отменить ошибочное подтверждение оплаты",
       icon: History,
       variant: "ghost",
-      run: () => openReopen(row),
+      run: () => t.open("reopen", row),
     });
   }
   if (perms.canCreate && row.can_issue) {
@@ -76,7 +68,7 @@ export function transactionActions(
     });
   }
   const qrUrl =
-    row.provider?.channel === "qr" && row.provider.qr_token_url && ACTIVE_PROVIDER_STATUSES.has(row.provider.status)
+    row.provider?.channel === "qr" && row.provider.qr_token_url && invoiceIsActive(row.provider.status)
       ? row.provider.qr_token_url
       : null;
   if (qrUrl) {
@@ -99,15 +91,14 @@ export function transactionActions(
       run: () => void t.receipt(row),
     });
   }
-  const openQrRefund = t.openQrRefund;
-  if (perms.canConfirm && openQrRefund && row.refunds?.some((refund) => refund.method === "apipay_qr")) {
+  if (perms.canConfirm && row.refunds?.some((refund) => refund.method === "apipay_qr")) {
     actions.push({
       key: "qr_refund",
       label: "Возврат по QR",
       title: "Ссылка на возврат и её статус",
       icon: Link2,
       variant: Number(row.pending_refund_amount ?? 0) > 0 ? "outline" : "ghost",
-      run: () => openQrRefund(row),
+      run: () => t.openQrRefund(row),
     });
   }
   if (perms.canConfirm && row.status === "confirmed" && Number(row.available_for_refund ?? 0) > 0) {
@@ -117,7 +108,7 @@ export function transactionActions(
       title: row.provider ? "Вернуть через ApiPay" : "Вернуть деньги из кассы",
       icon: RotateCcw,
       variant: "ghost",
-      run: () => t.openRefund(row),
+      run: () => t.open("refund", row),
     });
   }
   if (perms.canConfirm && ["requested", "received"].includes(row.status) && row.confirmation_mode !== "automatic") {
@@ -128,7 +119,7 @@ export function transactionActions(
       icon: XCircle,
       variant: "ghost",
       destructive: true,
-      run: () => t.openReject(row),
+      run: () => t.open("reject", row),
     });
   }
   return actions;

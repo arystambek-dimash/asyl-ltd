@@ -37,7 +37,7 @@ services:
       SENTRY_ENABLE_LOGS: "${SENTRY_ENABLE_LOGS:-0}"
       SENTRY_TRACES_SAMPLE_RATE: "${SENTRY_TRACES_SAMPLE_RATE:-0}"
       SENTRY_PROFILES_SAMPLE_RATE: "${SENTRY_PROFILES_SAMPLE_RATE:-0}"
-      ALLOWED_HOSTS: "*"  # сервер в локальной сети цеха — доступен по своему IP
+      ALLOWED_HOSTS: "*"
       CORS_ALLOWED_ORIGINS: "http://localhost:3000"
       REDIS_URL: "redis://redis:6379/0"
       # Keep broker queues isolated from Django cache keys while reusing the
@@ -47,8 +47,10 @@ services:
       # Development-only default that still passes Django's validators.
       SUPER_ADMIN_PASS: "${SUPER_ADMIN_PASS:-Local-only-Q7v9-Pass!}"
       SUPER_ADMIN_RESET_PASSWORD: "${SUPER_ADMIN_RESET_PASSWORD:-0}"
-      # Камеры и AI-подсчёт: для локальной отладки укажите хосты в .env
-      # (host.docker.internal — мок на маке); пусто = функции выключены.
+      # Камеры и AI-подсчёт: для локальной отладки укажите хост в .env
+      # (host.docker.internal — мок на маке). Пусто НЕ выключает камеры:
+      # settings подставляют Tailscale-IP боевого ПК цеха (base.py), а от него
+      # же считается AI_SERVICE_URL.
       CAMERA_HOST: "${CAMERA_HOST:-}"
       CAMERA_PORT: "${CAMERA_PORT:-8554}"
       CAMERA_PASS: "${CAMERA_PASS:-}"
@@ -62,8 +64,6 @@ services:
       VEHICLE_PLATE_WEBHOOK_TOKEN: "${VEHICLE_PLATE_WEBHOOK_TOKEN:-}"
       VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES: "${VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES:-65536}"
       THROTTLE_VEHICLE_PLATE_WEBHOOK: "${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}"
-      # Local development never drives a physical export workflow unless it is
-      # explicitly enabled. Production is also fail-closed by default.
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       WEIGHING_AI_ENABLED: "${WEIGHING_AI_ENABLED:-1}"
       WEIGHING_AI_MODEL: "${WEIGHING_AI_MODEL:-gpt-5-mini}"
@@ -71,7 +71,8 @@ services:
       SHIPPING_WAGON_AI_DETAIL: "${SHIPPING_WAGON_AI_DETAIL:-high}"
       WEIGHING_AI_MAX_DAILY_REQUESTS: "${WEIGHING_AI_MAX_DAILY_REQUESTS:-200}"
       WEIGHING_AI_ENTRY_MAX_HOURS: "${WEIGHING_AI_ENTRY_MAX_HOURS:-12}"
-      VEHICLE_PLATE_AUTO_EXPORT_ENABLED: "${VEHICLE_PLATE_AUTO_EXPORT_ENABLED:-0}"
+      # Local development never drives a physical export workflow unless it is
+      # explicitly enabled. Production is also fail-closed by default.
       VEHICLE_PLATE_WEIGHT_FIRST_ENABLED: "${VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:-0}"
       VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: "${VEHICLE_PLATE_WEIGHT_FIRST_CAMERA:-cam1}"
       VEHICLE_PLATE_WEIGHT_FIRST_SOURCE: "${VEHICLE_PLATE_WEIGHT_FIRST_SOURCE:-main}"
@@ -79,11 +80,9 @@ services:
       VEHICLE_PLATE_AUTO_SCALE_ENABLED: "${VEHICLE_PLATE_AUTO_SCALE_ENABLED:-0}"
       VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS: "${VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS:-1}"
       VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG: "${VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:-500}"
-      VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS: "${VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS:-2}"
       VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS: "${VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:-3}"
       VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG: "${VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG:-50}"
       VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG: "${VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG:-1000}"
-      VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS: "${VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS:-3}"
       VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE: "${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE:-/tmp/passage-scale-monitor/heartbeat.json}"
       VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS: "${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS:-60}"
       # Independent wagon-collector automation (deploy/weighbridge/). The CRM
@@ -91,7 +90,6 @@ services:
       WAGON_ARCH_AUTOMATION_ENABLED: "${WAGON_ARCH_AUTOMATION_ENABLED:-0}"
       WAGON_ARCH_CAMERA: "${WAGON_ARCH_CAMERA:-cam8}"
       VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME: "${VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME:-Отруби}"
-      VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS: "${VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS:-15}"
       VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS: "${VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS:-60}"
       # Пусто по умолчанию: локальная разработка не должна читать production
       # весы. Для интеграционной проверки задайте адреса в .env.
@@ -104,7 +102,6 @@ services:
       TRUCK_SCALE_MAX_AGE_SECONDS: "${TRUCK_SCALE_MAX_AGE_SECONDS:-5}"
       TRUCK_SCALE_MAX_WEIGHT_KG: "${TRUCK_SCALE_MAX_WEIGHT_KG:-100000}"
       THROTTLE_TRUCK_SCALE_PREVIEW: "${THROTTLE_TRUCK_SCALE_PREVIEW:-60/min}"
-      CAMERA_PLAYBACK_URL: "${CAMERA_PLAYBACK_URL:-}"
       GO2RTC_API_URL: "${GO2RTC_API_URL:-}"
       SHIPPING_TRANSPORT_POLL_SECONDS: "${SHIPPING_TRANSPORT_POLL_SECONDS:-2}"
       SHIPPING_TRANSPORT_HEARTBEAT_FILE: "${SHIPPING_TRANSPORT_HEARTBEAT_FILE:-/tmp/shipping-transport-monitor/heartbeat.json}"
@@ -130,7 +127,6 @@ services:
     environment:
       <<: *backend-environment
       APP_SERVICE: shipping-transport-monitor
-      DJANGO_COLLECTSTATIC: "0"
     entrypoint: []
     command: ["python", "manage.py", "monitor_shipping_sessions"]
     volumes:
@@ -160,11 +156,14 @@ services:
     environment:
       <<: *backend-environment
       APP_SERVICE: passage-scale-monitor
-      DJANGO_COLLECTSTATIC: "0"
     entrypoint: []
     command: ["python", "manage.py", "monitor_passage_scale"]
+    # The monitor only imports the collector outboxes (deploy/weighbridge/);
+    # without the collector's `enabled` marker it reports `disabled`.
     volumes:
       - mediadata:/app/media
+      - weighbridge-outbox:/var/lib/weighbridge
+      - weighbridge-wagon-outbox:/var/lib/weighbridge-wagon
     depends_on:
       backend:
         condition: service_started
@@ -189,7 +188,6 @@ services:
     environment:
       <<: *backend-environment
       APP_SERVICE: celery-payments
-      DJANGO_COLLECTSTATIC: "0"
     entrypoint: []
     command:
       - celery
@@ -220,7 +218,6 @@ services:
     environment:
       <<: *backend-environment
       APP_SERVICE: celery-orientation
-      DJANGO_COLLECTSTATIC: "0"
     entrypoint: []
     command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--queues=orientation", "--hostname=orientation@%h", "--concurrency=1", "--prefetch-multiplier=1"]
     volumes:
@@ -244,8 +241,6 @@ services:
     environment:
       <<: *backend-environment
       APP_SERVICE: celery-beat
-      DJANGO_COLLECTSTATIC: "0"
-      CELERY_BEAT_PID_FILE: /tmp/celerybeat/celerybeat.pid
     entrypoint: []
     command:
       - celery
@@ -281,50 +276,16 @@ services:
         NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: "${NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE:-0}"
         SENTRY_ORG: "${SENTRY_ORG:-}"
         SENTRY_PROJECT: "${SENTRY_PROJECT_FRONTEND:-}"
-    environment:
-      APP_RELEASE: "${APP_RELEASE:-development}"
-      APP_ENVIRONMENT: "${APP_ENVIRONMENT:-development}"
-      APP_SERVICE: frontend-server
-      SENTRY_FRONTEND_SERVER_DSN: "${SENTRY_FRONTEND_SERVER_DSN:-}"
-      SENTRY_ENABLE_LOGS: "${SENTRY_FRONTEND_ENABLE_LOGS:-0}"
-      SENTRY_TRACES_SAMPLE_RATE: "${SENTRY_FRONTEND_TRACES_SAMPLE_RATE:-0}"
-      SENTRY_PROFILES_SAMPLE_RATE: "${SENTRY_FRONTEND_PROFILES_SAMPLE_RATE:-0}"
     depends_on:
       - backend
     ports:
       - "3000:3000"
 
-
-  wireguard:
-    image: lscr.io/linuxserver/wireguard:latest
-    container_name: wireguard
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Asia/Almaty
-      - SERVERURL=${WG_SERVERURL:-78.40.109.240}
-      - SERVERPORT=${WG_SERVERPORT:-51820}
-      - PEERS=${WG_PEERS:-operator-laptop}
-      - PEERDNS=${WG_PEERDNS:-1.1.1.1}
-      - INTERNAL_SUBNET=${WG_INTERNAL_SUBNET:-10.13.13.0}
-      # Split tunnel: VPN subnet + camera LAN only. Replace camera LAN in .env.
-      - ALLOWEDIPS=${WG_ALLOWEDIPS:-10.13.13.0/24,192.168.1.0/24}
-      - PERSISTENTKEEPALIVE_PEERS=${WG_PERSISTENTKEEPALIVE_PEERS:-all}
-      - LOG_CONFS=true
-    volumes:
-      - ./config:/config
-      - /lib/modules:/lib/modules:ro
-    ports:
-      - 51820:51820/udp
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-      - net.ipv4.ip_forward=1
-    restart: unless-stopped
-
 volumes:
+  weighbridge-outbox:
+    name: asyl-weighbridge-outbox
+  weighbridge-wagon-outbox:
+    name: asyl-weighbridge-wagon-outbox
   pgdata:
   redisdata:
   mediadata:

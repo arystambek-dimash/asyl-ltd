@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, EyeOff, MessageCircle, PackageCheck, Search, Settings, Sparkles } from "lucide-react";
+import { ChevronDown, EyeOff, MessageCircle, PackageCheck, Settings, Sparkles } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { IssueList, RailReportSheet } from "@/components/loader/rail-report-sheet";
 import { RequirePerm } from "@/components/require-perm";
@@ -9,11 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
 import { Tabs } from "@/components/ui/tabs";
 import { BotSettingsModal } from "@/components/whatsapp-bot/bot-settings-modal";
 import { api, apiError } from "@/lib/api";
+import { can } from "@/lib/can";
 import { withBack } from "@/lib/navigation";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
@@ -36,6 +37,7 @@ import {
   type BotTab,
   type WhatsAppBotStatus,
 } from "@/lib/whatsapp-bot";
+import { useAuth } from "@/store/auth";
 
 const PAGE = "/management/whatsapp-bot";
 const STATUS_URL = `${WHATSAPP_BOT_API}/status/`;
@@ -56,6 +58,7 @@ export default function WhatsAppBotPage() {
 }
 
 function WhatsAppBotJournal() {
+  const { me } = useAuth();
   const status = useApi<WhatsAppBotStatus>(STATUS_URL);
   const [tab, setTab] = useState<BotTab>("review");
   const [search, setSearch] = useState("");
@@ -74,15 +77,11 @@ function WhatsAppBotJournal() {
   const [now, setNow] = useState(() => Date.now());
 
   const setStatus = status.setData;
+  const refreshStatusData = status.refresh;
   const refreshStatus = useCallback(async () => {
-    try {
-      const { data } = await api.get<WhatsAppBotStatus>(STATUS_URL);
-      setStatus(data);
-    } catch {
-      // Тихий опрос: последняя шапка остаётся на экране.
-    }
+    await refreshStatusData();
     setNow(Date.now());
-  }, [setStatus]);
+  }, [refreshStatusData]);
 
   // Бот работает сам: шапка и список обновляются тихо, пока человек ничего не решает.
   useVisiblePolling(
@@ -114,21 +113,21 @@ function WhatsAppBotJournal() {
       const { data } = await api.post<BotMessage>(`${messageApi(message.id)}/ignore/`);
       applyDecision(data);
     } catch (cause) {
-      setRowError({ id: message.id, message: apiError(cause) || "Не удалось пропустить сообщение" });
+      setRowError({ id: message.id, message: apiError(cause) });
     } finally {
       setBusyId(null);
     }
   }
 
   const data = status.data;
-  const canManage = Boolean(data?.can_manage);
+  const canManage = can(me, "bots.manage");
   return (
     <AppShell
       title="WhatsApp-бот"
       section="Управление"
       description="Отчёты о вагонах из группы в WhatsApp: всё, что сошлось, бот проводит сам — остальное ждёт здесь."
       actions={
-        data?.can_configure && (
+        can(me, "sys_permissions.manage") && (
           <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
             <Settings /> Настройки
           </Button>
@@ -153,16 +152,14 @@ function WhatsAppBotJournal() {
             }}
             className="overflow-x-auto"
           />
-          <div className="relative sm:w-72">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-            <Input
-              aria-label="Поиск по сообщениям"
-              placeholder="Текст, отправитель, № заказа"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              className={cn("pl-9", PHONE_INPUT_TEXT)}
-            />
-          </div>
+          <SearchInput
+            wrapperClassName="sm:w-72"
+            aria-label="Поиск по сообщениям"
+            placeholder="Текст, отправитель, № заказа"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className={PHONE_INPUT_TEXT}
+          />
         </div>
 
         {messages.error && <ErrorAlert message={messages.error} onRetry={messages.reload} />}
@@ -310,7 +307,9 @@ function MessageRow({
           </div>
           <p className="mt-1 truncate text-sm font-medium">{messageSummary(message)}</p>
           <p className="mt-0.5 truncate text-[12px] text-[var(--muted-foreground)]">
-            {message.sender_name || message.sender_id} · {formatDateTime(message.sent_at ?? message.received_at)}
+            {message.sender_name || message.sender_id}
+            {message.chat_name && message.chat_name !== message.sender_name && ` · ${message.chat_name}`} ·{" "}
+            {formatDateTime(message.sent_at ?? message.received_at)}
             {message.issues.length > 0 && message.status !== "applied" && ` · ${message.issues[0].message}`}
           </p>
         </div>

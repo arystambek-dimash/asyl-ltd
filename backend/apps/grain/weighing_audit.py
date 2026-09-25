@@ -17,8 +17,7 @@ from .models import (
     WeighingPhotoDelivery,
     WeighingRecord,
 )
-
-HAS_PHOTO = ~Q(photo="") & Q(photo__isnull=False)
+from .weighing_photos import EMPTY_PHOTO
 
 
 def _counts(rows, field="status"):
@@ -30,7 +29,7 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
     lower = now - timedelta(hours=hours)
     captures = AutomaticPassageCapture.objects.filter(started_at__gte=lower)
     saved = captures.filter(weight_kg__isnull=False, stable_weight_at__isnull=False)
-    legacy = saved.exclude(status="processing").filter(
+    unlinked = saved.exclude(status=AutomaticPassageCapture.PROCESSING).filter(
         wagon_id__isnull=True, unassigned_weighing__isnull=True
     )
     # Older/manual bookings retain the immutable photo request UUID even when
@@ -38,19 +37,12 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
     frame_match = Q(photo_request_id=OuterRef("idempotency_key")) | Q(
         photo_request_id=OuterRef("attempt_request_id")
     )
-    legacy = legacy.annotate(
-        has_record=Exists(WeighingRecord.objects.filter(frame_match)),
-        has_queue=Exists(UnassignedWeighing.objects.filter(frame_match)),
+    uncovered = unlinked.filter(
+        ~Exists(WeighingRecord.objects.filter(frame_match)),
+        ~Exists(UnassignedWeighing.objects.filter(frame_match)),
     )
-    uncovered = legacy.filter(has_record=False, has_queue=False)
-    frame_ids = [
-        value
-        for pair in legacy.values_list("idempotency_key", "attempt_request_id")
-        for value in pair
-        if value is not None
-    ]
-    queue = UnassignedWeighing.objects.filter(status="open")
-    checks = WeighingIdentityCheck.objects.filter(weighing__status="open")
+    queue = UnassignedWeighing.objects.filter(status=UnassignedWeighing.OPEN)
+    checks = WeighingIdentityCheck.objects.filter(weighing__status=UnassignedWeighing.OPEN)
     photos = WeighingPhotoDelivery.objects.filter(created_at__gte=lower)
     records = WeighingRecord.objects.filter(
         wagon__direction=Wagon.PASSAGE, source="scale", created_at__gte=lower
@@ -75,21 +67,6 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         "lane": lanes,
         "captures": _counts(captures),
         "saved_weight_count": saved.count(),
-        "legacy_photo_link_count": legacy.exclude(
-            has_record=False, has_queue=False
-        ).count(),
-        "legacy_records": [
-            {**row, "photo_request_id": str(row["photo_request_id"])}
-            for row in WeighingRecord.objects.filter(
-                photo_request_id__in=frame_ids
-            ).values("id", "wagon_id", "kind", "photo_request_id")[:100]
-        ],
-        "legacy_queue": [
-            {**row, "photo_request_id": str(row["photo_request_id"])}
-            for row in UnassignedWeighing.objects.filter(
-                photo_request_id__in=frame_ids
-            ).values("id", "status", "capture_id", "photo_request_id")[:100]
-        ],
         "uncovered_saved_weight_count": uncovered.count(),
         "uncovered_saved_weight_ids": list(uncovered.values_list("pk", flat=True)[:50]),
         "uncovered_details": list(
@@ -120,7 +97,7 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         ),
         "processing_over_10_minutes": list(
             saved.filter(
-                status="processing", updated_at__lt=now - timedelta(minutes=10)
+                status=AutomaticPassageCapture.PROCESSING, updated_at__lt=now - timedelta(minutes=10)
             ).values_list("pk", flat=True)[:50]
         ),
         "captures_without_stable_weight": captures.filter(
@@ -128,88 +105,48 @@ def snapshot(*, now=None, hours=24, sample_limit=3):
         ).count(),
         "manual_queue_count": queue.count(),
         "manual_queue_reasons": _counts(queue, "reason"),
-        "manual_queue_without_photo": queue.exclude(HAS_PHOTO).count(),
-        "recorded_weighings_without_photo": records.exclude(HAS_PHOTO).count(),
+        "manual_queue_without_photo": queue.filter(EMPTY_PHOTO).count(),
+        "recorded_weighings_without_photo": records.filter(EMPTY_PHOTO).count(),
         "identity_checks": _counts(checks),
         "verified_saved_exit_present": WeighingIdentityCheck.objects.filter(
-            status="matched", updated_at__gte=lower
+            status=WeighingIdentityCheck.MATCHED, updated_at__gte=lower
         ).exists(),
-        "identity_review_reasons": _counts(checks.filter(status="review"), "reason"),
-        "reviews_matching_after_normalization": [
-            check.pk
-            for check in checks.filter(
-                status="review", reason="identity_uncertain"
-            ).select_related("weighing")[:50]
-            if weighing_identity.choose(
-                check.evidence.get("verdict", {}),
-                [(entry, None) for entry in check.evidence.get("entries", [])],
-                check.weighing.vehicle_number,
-            )
-        ],
+        "identity_review_reasons": _counts(checks.filter(status=WeighingIdentityCheck.REVIEW), "reason"),
         "photo_delivery": _counts(photos),
     }
-    # Prefer complete saved entry/exit pairs. Never make a fresh camera request.
-    exits = list(records.filter(HAS_PHOTO, kind="tare").select_related("wagon")[:30])
-    entries = {}
-    for row in WeighingRecord.objects.filter(
-        HAS_PHOTO,
-        wagon_id__in=[row.wagon_id for row in exits],
-        kind="gross",
-        source="scale",
-    ).order_by("-id"):
-        entries.setdefault(row.wagon_id, row)
-    samples = []
-    for row in exits:
-        if row.wagon_id not in entries:
-            continue
-        samples.append((row, entries[row.wagon_id], row.wagon.number))
-        if len(samples) >= sample_limit:
-            break
-    # Supplement with unassigned photographs when no complete pair exists.
-    for row in queue.filter(HAS_PHOTO)[:sample_limit]:
-        if len(samples) >= sample_limit:
-            break
-        samples.append((row, None, row.vehicle_number))
+    # Saved frames only: never make a fresh camera request.
+    samples = [
+        (row, row.wagon.number)
+        for row in records.exclude(EMPTY_PHOTO)
+        .select_related("wagon")
+        .order_by("-id")[:sample_limit]
+    ]
+    for row in queue.exclude(EMPTY_PHOTO)[: sample_limit - len(samples)]:
+        samples.append((row, row.vehicle_number))
     return report, samples
 
 
 def probe(samples):
-    """Read plates/appearance only; never call the booking worker or save models."""
+    """Read plates/orientation only; never call the booking worker or save models."""
     results = []
-    for item, entry, reference in samples:
+    for item, reference in samples:
         result = {
-            "exit_id": item.pk,
+            "weighing_id": item.pk,
             "source": "record" if isinstance(item, WeighingRecord) else "unassigned",
             "reference_ocr": reference,
             "reference_is_ground_truth": False,
         }
-        entries = (
-            []
-            if entry is None
-            else [({"key": f"record:{entry.pk}", "number": reference}, entry)]
-        )
         try:
-            verdict, _ = weighing_identity.request_verification(item, entries)
+            verdict, _ = weighing_identity.request_verification(item)
             reading = verdict.get("exit", {})
+            plate = weighing_identity.normalized_plate(reading.get("plate"))
             result.update(
                 {
                     "plate": reading.get("plate"),
-                    "normalized_plate": weighing_identity.normalized_plate(
-                        reading.get("plate")
-                    ),
+                    "normalized_plate": plate,
                     "plate_clear": reading.get("plate_clear"),
                     "orientation": reading.get("orientation"),
-                    "agrees_with_reference": bool(reference)
-                    and weighing_identity.normalized_plate(reading.get("plate"))
-                    == reference,
-                    "pair_reading_matches": (
-                        bool(weighing_identity.choose(verdict, entries, reference))
-                        if entry is not None
-                        else None
-                    ),
-                    "appearance": [
-                        row.get("appearance") for row in verdict.get("entries", [])
-                    ],
+                    "agrees_with_reference": bool(reference) and plate == reference,
                 }
             )
         except Exception as exc:
@@ -236,11 +173,5 @@ def public_summary(report):
         "scale_data_stale": report.get("scale_probe", {}).get("state") == "stale",
         "verified_saved_exit_present": bool(report["verified_saved_exit_present"]),
         "vision_samples_passed": bool(report["vision_samples"])
-        and all(
-            "error_type" not in row and row.get("pair_reading_matches") is not False
-            for row in report["vision_samples"]
-        ),
-        "legacy_format_review_pending": bool(
-            report.get("reviews_matching_after_normalization")
-        ),
+        and all("error_type" not in row for row in report["vision_samples"]),
     }

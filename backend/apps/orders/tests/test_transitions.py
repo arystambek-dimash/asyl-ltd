@@ -29,9 +29,3 @@ def test_cannot_reject_confirmed(make_order, make_user):
     o = make_order("confirmed")
     with pytest.raises(ValidationError):
         services.reject_order(o, make_user(), reason="Нет товара")
-
-
-def test_transition_rejects_illegal(make_order, make_user):
-    o = make_order("pending")
-    with pytest.raises(ValidationError):
-        services.transition(o, "shipped", make_user())

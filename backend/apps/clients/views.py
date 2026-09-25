@@ -13,36 +13,34 @@ from rest_framework.response import Response
 from apps.catalog.models import ClientPrice, Product
 from apps.catalog.serializers import ClientPriceUpdateSerializer
 from apps.common.money import (
+    CURRENCY_CODES,
+    DEFAULT_CURRENCY,
     as_money_strings,
     money_string,
-    primary_currency,
     sum_by_currency,
 )
 from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import PermViewSetMixin
-from apps.common.query_params import (
-    parse_iso_date,
-    parse_money_param,
-    parse_store_id,
-    validate_date_range,
-)
+from apps.common.permissions import SUPERUSER_ONLY, PermViewSetMixin
+from apps.common.query_params import parse_date_range, parse_money_param
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
-from apps.orders.debt import DEBT_STATUS, debt_orders, order_remaining
+from apps.orders.debt import DEBT_STATUS, debt_fields, debt_orders, order_remaining
 from apps.orders.models import Order
-from apps.orders.querysets import order_remaining_by_id, with_order_api_relations
+from apps.orders.querysets import (
+    filter_order_scope,
+    order_remaining_by_id,
+    with_order_api_relations,
+)
+from apps.orders.statuses import ON_POST_STATUSES
 from apps.sales.access import assigned_department_id, scope_by_client_department
 from apps.sales.models import Department
 
-from .assignment import assign_client_department
+from .assignment import assign_client_department, log_department_change
 from .models import Client, Store
 from .reports.statements import (
     ALL_CLIENT_SECTIONS,
     CLIENT_SECTIONS,
-    build_all_clients_statement,
-    build_all_clients_statement_pdf,
-    build_client_statement,
-    build_client_statement_pdf,
+    build_statement,
 )
 from .reports.statements.utils import (
     STATEMENT_CONTENT_TYPES,
@@ -56,7 +54,12 @@ from .serializers import (
     ClientReadSerializer,
     StoreSerializer,
 )
-from .services import client_history, detect_overdue, is_payment_window_open
+from .services import (
+    client_history,
+    detect_overdue,
+    is_payment_window_open,
+    is_store_overdue,
+)
 
 
 class ClientNoLongerAvailable(APIException):
@@ -66,6 +69,17 @@ class ClientNoLongerAvailable(APIException):
     def __init__(self):
         super().__init__({
             "detail": "Клиент уже удалён",
+            "code": self.default_code,
+        })
+
+
+class ClientHasOrders(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "client_has_orders"
+
+    def __init__(self):
+        super().__init__({
+            "detail": "У клиента есть заказы — обычное удаление недоступно",
             "code": self.default_code,
         })
 
@@ -94,6 +108,71 @@ def _lock_scoped_client(client_pk, user=None):
     ).exists():
         raise PermissionDenied("Клиент передан в другой отдел")
     return client
+
+
+def _lock_client_orders(client_pk):
+    return list(
+        Order.all_objects.select_for_update()
+        .filter(client_id=client_pk)
+        .only("pk", "status")
+        .order_by("pk")
+    )
+
+
+def _lock_client_with_orders(client_pk, user):
+    """Заказы → клиент → заказы: блокировки для удаления клиента.
+
+    Порядок совпадает с сервисами заказов, которые пишут FK на клиента.
+    Повторный проход закрывает окно вставки: пока клиент заблокирован,
+    новый заказ не пройдёт проверку FK. Возвращает (клиент, его заказы).
+    """
+    _lock_client_orders(client_pk)
+    client = _lock_scoped_client(client_pk, user)
+    return client, _lock_client_orders(client_pk)
+
+
+def _assert_no_active_loading(locked_orders):
+    from apps.cameras.models import AiCountingSession
+
+    if (
+        AiCountingSession.objects.filter(
+            order_id__in=[order.pk for order in locked_orders],
+            status__in=AiCountingSession.OPEN_STATUSES,
+        ).exists()
+        or any(order.status in ON_POST_STATUSES for order in locked_orders)
+    ):
+        raise ValidationError({
+            "detail": "Сначала завершите или верните активные погрузки клиента",
+            "code": "active_loading",
+        })
+
+
+def _statement_options(params, available_sections):
+    date_from, date_to = parse_date_range(params)
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "departments": statement_departments(params),
+        "sections": statement_sections(params, available_sections),
+    }
+
+
+def _statement_payload(options, export):
+    departments = options["departments"]
+    sections = options["sections"]
+    return {
+        "date_from": str(options["date_from"]) if options["date_from"] else None,
+        "date_to": str(options["date_to"]) if options["date_to"] else None,
+        "departments": list(departments) if departments else None,
+        "sections": list(sections) if sections else None,
+        "format": export,
+    }
+
+
+def _statement_response(content, export, filename):
+    response = HttpResponse(content, content_type=STATEMENT_CONTENT_TYPES[export])
+    response["Content-Disposition"] = f'attachment; filename="{filename}.{export}"'
+    return response
 
 
 class ClientViewSet(
@@ -127,7 +206,7 @@ class ClientViewSet(
         "prices": "clients.set_price",
         "picker": "clients.view",
         "set_password": "clients.manage_access",
-        "purge": "clients.delete",
+        "purge": SUPERUSER_ONLY,
         # Касса разбирает заявки саморегистрации и забирает клиента к себе.
         "assign_department": ("clients.edit", "orders.confirm"),
     }
@@ -156,31 +235,29 @@ class ClientViewSet(
             base = base.filter(department__isnull=True)
         elif department:
             base = base.filter(department__code=department)
-        can_view_financials = self.request.user.has_perm_code("reports.view")
-        can_enter_payments = self.request.user.has_perm_code("payments.create")
-        if self.action not in {"list", "retrieve", "debts", "debt_detail"}:
-            return base
-        if self.action in {"list", "retrieve"} and not can_view_financials:
-            return base
-        if (
-            self.action in {"debts", "debt_detail"}
-            and not (can_view_financials or can_enter_payments)
-        ):
-            return base
+        # Долг и просрочка клиента читают только отгруженные заказы.
         if self.action == "debt_detail":
             return base.prefetch_related(
                 Prefetch(
-                    "orders", queryset=with_order_api_relations(Order.objects.all())
+                    "orders",
+                    queryset=with_order_api_relations(
+                        Order.objects.filter(status=DEBT_STATUS)
+                    ),
                 )
             )
-        return base.prefetch_related(
-            Prefetch(
-                "orders",
-                queryset=Order.objects.filter(
-                    status=DEBT_STATUS,
-                ).prefetch_related("items", "payments"),
+        if (
+            self.action in {"list", "retrieve"}
+            and self.request.user.has_perm_code("reports.view")
+        ):
+            return base.prefetch_related(
+                Prefetch(
+                    "orders",
+                    queryset=Order.objects.filter(
+                        status=DEBT_STATUS,
+                    ).prefetch_related("items", "payments"),
+                )
             )
-        )
+        return base
 
     @transaction.atomic
     def perform_update(self, serializer):
@@ -189,8 +266,8 @@ class ClientViewSet(
             # Order mutations already use Order→Client (for example when an
             # order creates a client notification).  Take existing Orders
             # first so this path never holds Client while waiting for Order.
-            self._lock_client_orders(client_pk)
-        client = self._lock_client(client_pk, self.request.user)
+            _lock_client_orders(client_pk)
+        client = _lock_scoped_client(client_pk, self.request.user)
         # Validation happens before ``perform_update``.  Replace its possibly
         # stale instance so a concurrent purge cannot turn ``save()`` into an
         # INSERT that resurrects the deleted Client row.
@@ -198,41 +275,19 @@ class ClientViewSet(
         previous = client.department
         target = serializer.validated_data.get("department", previous)
         if (previous.pk if previous else None) != (target.pk if target else None):
-            from apps.cameras.models import AiCountingSession
-
             # Repeat after Client is locked: an Order whose FK key lock began
             # before our Client lock may have committed after the first pass.
             # No new Order can pass its FK check while Client stays locked.
-            locked_orders = self._lock_client_orders(client_pk)
-            order_ids = [order.pk for order in locked_orders]
-            if (
-                AiCountingSession.objects.filter(
-                    order_id__in=order_ids,
-                    status__in=AiCountingSession.OPEN_STATUSES,
-                ).exists()
-                or any(
-                    order.status in ("arrived", "loading", "loaded")
-                    for order in locked_orders
-                )
-            ):
-                raise ValidationError({
-                    "detail": "Сначала завершите или верните активные погрузки клиента",
-                    "code": "active_loading",
-                })
+            _assert_no_active_loading(_lock_client_orders(client_pk))
         client = serializer.save()
         current = client.department
         if (previous.pk if previous else None) == (current.pk if current else None):
             return
-        log_event(
-            "client",
+        log_department_change(
+            client,
+            previous,
+            self.request.user,
             f"Клиент «{client.name}» перенесён в другой отдел",
-            user=self.request.user,
-            payload={
-                "client_id": client.pk,
-                "action": "client_department_changed",
-                "department_from": previous.code if previous else None,
-                "department_to": current.code if current else None,
-            },
         )
 
     @action(detail=True, methods=["post"], url_path="assign-department")
@@ -243,50 +298,23 @@ class ClientViewSet(
         department = Department.objects.filter(pk=raw).first() if str(raw).isdigit() else None
         with transaction.atomic():
             # Тот же порядок блокировок, что у переноса клиента: заказы → клиент.
-            self._lock_client_orders(client_pk)
-            try:
-                client = Client.objects.select_for_update().get(pk=client_pk)
-            except Client.DoesNotExist as exc:
-                raise ClientNoLongerAvailable() from exc
+            _lock_client_orders(client_pk)
+            client = _lock_scoped_client(client_pk)
             assign_client_department(client, department, request.user)
         client = self.get_queryset().get(pk=client_pk)
         return Response(ClientReadSerializer(client, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post"], url_path="purge")
     def purge(self, request, pk=None):
-        if not request.user.is_superuser:
-            raise PermissionDenied("Удаление с историей доступно только суперадмину.")
-        client_pk = self.get_object().pk
         from apps.cameras.models import AiCountingSession
-        from apps.orders.models import Order as OrderModel
 
+        client_pk = self.get_object().pk
         with transaction.atomic():
-            # Existing Orders→Client→Orders again is deliberate. It agrees
-            # with order-side services that write a Client FK and closes the
-            # insert gap once the Client row is held.
-            self._lock_client_orders(client_pk)
-            client = self._lock_client(client_pk, request.user)
+            client, locked_orders = _lock_client_with_orders(client_pk, request.user)
+            _assert_no_active_loading(locked_orders)
             portal_user = client.user
-            locked_orders = self._lock_client_orders(client_pk)
             order_ids = [order.pk for order in locked_orders]
             orders_count = len(order_ids)
-            if (
-                AiCountingSession.objects.filter(
-                    order_id__in=order_ids,
-                    status__in=AiCountingSession.OPEN_STATUSES,
-                ).exists()
-                or any(
-                    order.status in ("arrived", "loading", "loaded")
-                    for order in locked_orders
-                )
-            ):
-                raise ValidationError({
-                    "detail": (
-                        "Сначала завершите или верните активные погрузки клиента"
-                    ),
-                    "code": "active_loading",
-                })
-
             log_event(
                 "client",
                 f"Клиент «{client.name}» удалён с историей "
@@ -300,24 +328,10 @@ class ClientViewSet(
                 },
             )
             AiCountingSession.objects.filter(order_id__in=order_ids).delete()
-            OrderModel.all_objects.filter(pk__in=order_ids).delete()
+            Order.all_objects.filter(pk__in=order_ids).delete()
             client.delete()
             self._deactivate_portal_user(portal_user)
         return Response(status=204)
-
-
-    @staticmethod
-    def _lock_client(client_pk, user=None):
-        return _lock_scoped_client(client_pk, user)
-
-    @staticmethod
-    def _lock_client_orders(client_pk):
-        return list(
-            Order.all_objects.select_for_update()
-            .filter(client_id=client_pk)
-            .only("pk", "status")
-            .order_by("pk")
-        )
 
     @staticmethod
     def _deactivate_portal_user(user):
@@ -327,10 +341,11 @@ class ClientViewSet(
 
     @transaction.atomic
     def perform_destroy(self, instance):
-        client_pk = instance.pk
-        self._lock_client_orders(client_pk)
-        instance = self._lock_client(client_pk, self.request.user)
-        self._lock_client_orders(client_pk)
+        instance, locked_orders = _lock_client_with_orders(instance.pk, self.request.user)
+        # Заказы (и из корзины тоже) держат клиента через PROTECT: без этой
+        # проверки delete() падает ProtectedError → 500.
+        if locked_orders:
+            raise ClientHasOrders()
         portal_user = instance.user
         instance.delete()
         self._deactivate_portal_user(portal_user)
@@ -338,7 +353,7 @@ class ClientViewSet(
     @action(detail=True, methods=["post"], url_path="password")
     @transaction.atomic
     def set_password(self, request, pk=None):
-        client = self._lock_client(self.get_object().pk, request.user)
+        client = _lock_scoped_client(self.get_object().pk, request.user)
         context = self.get_serializer_context()
         context["client"] = client
         serializer = self.get_serializer(data=request.data, context=context)
@@ -387,96 +402,55 @@ class ClientViewSet(
 
     @action(detail=True, methods=["get"], url_path="statement")
     def statement(self, request, pk=None):
-        date_from = parse_iso_date(request.query_params.get("date_from"))
-        date_to = parse_iso_date(request.query_params.get("date_to"))
-        validate_date_range(date_from, date_to)
-        departments = statement_departments(request.query_params)
-        sections = statement_sections(request.query_params, CLIENT_SECTIONS)
+        options = _statement_options(request.query_params, CLIENT_SECTIONS)
         export = statement_format(request.query_params)
         client = self.get_object()
-        builder = (
-            build_client_statement_pdf if export == "pdf" else build_client_statement
-        )
-        content = builder(
-            client, date_from, date_to, departments=departments,
-            sections=sections,
-        )
-        response = HttpResponse(content, content_type=STATEMENT_CONTENT_TYPES[export])
-        response["Content-Disposition"] = (
-            f'attachment; filename="client-{client.pk}-statement.{export}"'
-        )
+        content = build_statement(export, client=client, **options)
         log_event(
             "client_statement",
             f"Сформирована {export.upper()}-выписка клиента «{client.name}»",
             user=request.user,
-            payload={"client_id": client.pk,
-                     "date_from": str(date_from) if date_from else None,
-                     "date_to": str(date_to) if date_to else None,
-                     "departments": list(departments) if departments else None,
-                     "sections": list(sections) if sections else None,
-                     "format": export},
+            payload={"client_id": client.pk, **_statement_payload(options, export)},
         )
-        return response
+        return _statement_response(content, export, f"client-{client.pk}-statement")
 
     @action(detail=False, methods=["get"], url_path="statement")
     def all_statement(self, request):
-        date_from = parse_iso_date(request.query_params.get("date_from"))
-        date_to = parse_iso_date(request.query_params.get("date_to"))
-        validate_date_range(date_from, date_to)
-        departments = statement_departments(request.query_params)
-        sections = statement_sections(request.query_params, ALL_CLIENT_SECTIONS)
+        options = _statement_options(request.query_params, ALL_CLIENT_SECTIONS)
         export = statement_format(request.query_params)
-        builder = (
-            build_all_clients_statement_pdf if export == "pdf"
-            else build_all_clients_statement
-        )
         client_ids = tuple(
             self.get_queryset().values_list("pk", flat=True)
         )
-        content = builder(
-            date_from, date_to, departments=departments, sections=sections,
-            client_ids=client_ids,
-        )
-        response = HttpResponse(content, content_type=STATEMENT_CONTENT_TYPES[export])
-        response["Content-Disposition"] = (
-            f'attachment; filename="clients-full-statement.{export}"'
-        )
+        content = build_statement(export, client_ids=client_ids, **options)
         log_event(
             "clients_statement",
             f"Сформирована общая {export.upper()}-выписка по клиентам",
             user=request.user,
-            payload={
-                "date_from": str(date_from) if date_from else None,
-                "date_to": str(date_to) if date_to else None,
-                "departments": list(departments) if departments else None,
-                "sections": list(sections) if sections else None,
-                "format": export,
-            },
+            payload=_statement_payload(options, export),
         )
-        return response
+        return _statement_response(content, export, "clients-full-statement")
 
     def _price_rows(self, client):
         prices = {
             (row.product_id, row.currency): row
             for row in ClientPrice.objects.filter(client=client).select_related("updated_by")
         }
-        return [
-            {
-                "product": product.id,
-                "product_label": str(product),
-                "currency": currency,
-                "price": money_string(prices[(product.id, currency)].price)
-                if (product.id, currency) in prices else None,
-                "updated_at": prices[(product.id, currency)].updated_at
-                if (product.id, currency) in prices else None,
-                "updated_by_name": prices[(product.id, currency)].updated_by.username
-                if ((product.id, currency) in prices
-                    and prices[(product.id, currency)].updated_by) else None,
-            }
-            for product in Product.objects.filter(is_active=True).order_by(
-                "name", "color", "weight_kg")
-            for currency, _label in ClientPrice.CURRENCIES
-        ]
+        rows = []
+        for product in Product.objects.filter(is_active=True).order_by(
+                "name", "color", "weight_kg"):
+            for currency in CURRENCY_CODES:
+                row = prices.get((product.id, currency))
+                rows.append({
+                    "product": product.id,
+                    "product_label": str(product),
+                    "currency": currency,
+                    "price": money_string(row.price) if row else None,
+                    "updated_at": row.updated_at if row else None,
+                    "updated_by_name": (
+                        row.updated_by.username if row and row.updated_by else None
+                    ),
+                })
+        return rows
 
     @staticmethod
     def _price_client(client):
@@ -497,7 +471,7 @@ class ClientViewSet(
         changed = 0
         removed = 0
         with transaction.atomic():
-            client = self._lock_client(client.pk, request.user)
+            client = _lock_scoped_client(client.pk, request.user)
             for row in serializer.validated_data["prices"]:
                 product = row["product"]
                 currency = row["currency"]
@@ -507,7 +481,7 @@ class ClientViewSet(
                         client=client, product=product, currency=currency).delete()
                     removed += deleted
                     continue
-                _, created = ClientPrice.objects.update_or_create(
+                ClientPrice.objects.update_or_create(
                     client=client, product=product, currency=currency,
                     defaults={"price": price, "updated_by": request.user},
                 )
@@ -520,21 +494,11 @@ class ClientViewSet(
         return Response({"client": self._price_client(client),
                          "prices": self._price_rows(client)})
 
-    def _debt_orders(self, client):
-        # Заказы уже предзагружены queryset'ом — фильтруем кэш, не создавая
-        # новый запрос на каждого клиента.
-        orders = debt_orders(client.orders.all())
-        orders.sort(key=lambda o: o.created_at, reverse=True)
-        return orders
-
     @action(detail=False, methods=["get"], url_path="debts")
     def debts(self, request):
         """Агрегированные долги по клиентам (в рамках видимых отделов)."""
         today = timezone.localdate()
         params = request.query_params
-        date_from = parse_iso_date(params.get("date_from"))
-        date_to = parse_iso_date(params.get("date_to"))
-        validate_date_range(date_from, date_to)
         debt_min = parse_money_param(
             params.get("remaining_min"),
             "Минимальный остаток",
@@ -544,7 +508,7 @@ class ClientViewSet(
             "Максимальный остаток",
         )
         remaining_currency = params.get("remaining_currency")
-        if remaining_currency and remaining_currency not in ("KZT", "USD"):
+        if remaining_currency and remaining_currency not in CURRENCY_CODES:
             raise ValidationError({
                 "detail": "Неизвестная валюта остатка",
                 "code": "bad_currency",
@@ -553,9 +517,6 @@ class ClientViewSet(
             raise ValidationError(
                 {"detail": "Минимальный остаток больше максимального",
                  "code": "bad_range"})
-        store_id = parse_store_id(params.get("store"))
-
-        department = params.get("department")
         # Погашенные заказы не считаем: payment_status ведёт сервис оплат при
         # каждом изменении оплат и позиций (services.sync_payment_status;
         # бэкфилл — manage.py sync_payment_status), а остаток по остальным
@@ -563,14 +524,7 @@ class ClientViewSet(
         orders_qs = Order.objects.filter(
             status=DEBT_STATUS,
         ).exclude(payment_status="settled")
-        if department:
-            orders_qs = orders_qs.filter(department=department)
-        if date_from:
-            orders_qs = orders_qs.filter(created_at__date__gte=date_from)
-        if date_to:
-            orders_qs = orders_qs.filter(created_at__date__lte=date_to)
-        if store_id:
-            orders_qs = orders_qs.filter(store_id=store_id)
+        orders_qs = filter_order_scope(orders_qs, params, date_field="created_at")
         visible_clients = self.get_queryset().prefetch_related(None)
         orders_qs = orders_qs.filter(client_id__in=visible_clients.values("pk"))
         # Остаток считаем по всей выборке разом: подзапрос на каждый заказ
@@ -597,11 +551,10 @@ class ClientViewSet(
             orders = by_client[client.pk]
             totals = defaultdict(lambda: Decimal("0"))
             for order in orders:
-                totals[order["currency"] or "KZT"] += order["amount_remaining"]
-            currency = primary_currency(totals, fallback=client.currency)
-            debt = totals.get(currency, Decimal("0"))
-            if debt <= 0:
-                continue
+                totals[order["currency"] or DEFAULT_CURRENCY] += order["amount_remaining"]
+            fields = debt_fields(totals, fallback=client.currency)
+            # В by_client только заказы с положительным остатком — долг есть.
+            debt = totals[fields["debt_currency"]]
             filtered_debt = (
                 totals.get(remaining_currency, Decimal("0"))
                 if remaining_currency
@@ -617,17 +570,12 @@ class ClientViewSet(
                 "client_name": client.name,
                 "client_phone": client.phone,
                 # debt_total — основная валюта; полная раскладка рядом.
-                "debt_total": money_string(debt),
-                "debt_currency": currency,
-                "debt_by_currency": as_money_strings(totals),
+                **fields,
                 "orders_count": len(orders),
                 "unpaid_count": sum(1 for o in orders if o["payment_status"] == "unpaid"),
                 "partial_count": sum(1 for o in orders if o["payment_status"] == "partial"),
                 "stores_count": len(stores),
-                "overdue_count": sum(
-                    1 for s in stores
-                    if s.payment_schedule_type != "none" and is_payment_window_open(s, today)
-                ),
+                "overdue_count": sum(1 for s in stores if is_store_overdue(s, today)),
             })
         # Валюты не ранжируем друг против друга без курса: сначала стабильная
         # группа валюты, затем остаток по убыванию внутри этой группы.
@@ -645,24 +593,19 @@ class ClientViewSet(
         client = self.get_object()
         today = timezone.localdate()
         can_view_reports = request.user.has_perm_code("reports.view")
-        orders = list(self._debt_orders(client))
+        # Заказы предзагружены queryset'ом — фильтруем кэш без нового запроса.
+        orders = debt_orders(client.orders.all())
+        orders.sort(key=lambda o: o.created_at, reverse=True)
         totals = sum_by_currency(orders, order_remaining)
-        currency = primary_currency(totals, fallback=client.currency)
-        debt = totals.get(currency, Decimal("0"))
+        fields = debt_fields(totals, fallback=client.currency)
+        currency = fields["debt_currency"]
         stores = [s for s in client.stores.all()
                   if any(o.store_id == s.id for o in orders)]
-        # Lifetime/overdue analytics remain report-only. A payment recorder
-        # gets current debt, scoped orders and the minimum client identity.
-        lifetime_total = {}
-        lifetime_paid = {}
+        # Просрочка — только для reports.view; итоги «за всё время» отдаёт
+        # /history/. Приёмщик оплат получает текущий долг, заказы и минимум о клиенте.
         overdue = {}
         if can_view_reports:
-            lifetime = [o for o in client.orders.all() if o.status == DEBT_STATUS]
-            lifetime_total = sum_by_currency(lifetime, lambda o: o.total_amount)
-            lifetime_paid = sum_by_currency(lifetime, lambda o: o.paid_total)
-            overdue_stores = {s.id for s in stores
-                              if s.payment_schedule_type != "none"
-                              and is_payment_window_open(s, today)}
+            overdue_stores = {s.id for s in stores if is_store_overdue(s, today)}
             overdue = sum_by_currency(
                 [o for o in orders if o.store_id in overdue_stores], order_remaining)
         client_data = (
@@ -677,25 +620,9 @@ class ClientViewSet(
         )
         return Response({
             "client": client_data,
-            "debt_total": money_string(debt),
-            "debt_currency": currency,
-            "debt_by_currency": as_money_strings(totals),
-            "lifetime_total": money_string(
-                lifetime_total.get(currency, Decimal("0"))),
-            "lifetime_paid": money_string(
-                lifetime_paid.get(currency, Decimal("0"))),
-            "lifetime_by_currency": {
-                code: {
-                    "total": money_string(lifetime_total.get(code, Decimal("0"))),
-                    "paid": money_string(lifetime_paid.get(code, Decimal("0"))),
-                }
-                for code in sorted({*lifetime_total, *lifetime_paid})
-            },
+            **fields,
             "overdue_total": money_string(overdue.get(currency, Decimal("0"))),
             "overdue_by_currency": as_money_strings(overdue),
-            "orders_count": len(orders),
-            "unpaid_count": sum(1 for o in orders if o.payment_status == "unpaid"),
-            "partial_count": sum(1 for o in orders if o.payment_status == "partial"),
             "stores": [
                 {
                     "id": s.id,
@@ -720,8 +647,6 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "create": "stores.create", "update": "stores.edit",
         "partial_update": "stores.edit", "destroy": "stores.delete",
         "check_overdue": "stores.edit",
-        "debts": ("reports.view", "payments.create"),
-        "debt_detail": ("reports.view", "payments.create"),
     }
 
     def get_queryset(self):
@@ -739,121 +664,44 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         )
         serializer.save(client=client)
 
-    @transaction.atomic
-    def perform_update(self, serializer):
-        # Canonical order is Client -> Store, matching client deletion whose
-        # cascade later reaches Store. Read the FK optimistically, lock every
-        # possible Client in pk order, then lock/recheck the Store.
-        current_client_id = (
-            Store.objects.filter(pk=serializer.instance.pk)
+    def _lock_store(self, store_pk):
+        """Клиент → магазин под блокировкой; возвращает (магазин, клиент).
+
+        Порядок как у удаления клиента, чей каскад доходит до Store: FK читается
+        без блокировки, клиент блокируется, затем магазин перепроверяется.
+        """
+        client_pk = (
+            Store.objects.filter(pk=store_pk)
             .values_list("client_id", flat=True)
             .first()
         )
-        if current_client_id is None:
+        if client_pk is None:
             raise StoreChanged()
+        client = _lock_scoped_client(client_pk, self.request.user)
+        try:
+            store = Store.objects.select_for_update().get(pk=store_pk)
+        except Store.DoesNotExist as exc:
+            raise StoreChanged() from exc
+        if store.client_id != client_pk:
+            raise StoreChanged()
+        return store, client
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        store, client = self._lock_store(serializer.instance.pk)
         requested_client = serializer.validated_data.get("client")
-        if (
-            requested_client is not None
-            and requested_client.pk != current_client_id
-        ):
+        if requested_client is not None and requested_client.pk != client.pk:
             raise ValidationError({
                 "detail": "Клиента магазина изменить нельзя — создайте новый магазин",
                 "code": "client_locked",
             })
-        next_client_id = (
-            requested_client.pk if requested_client is not None else current_client_id
-        )
-        locked_clients = {
-            client_pk: _lock_scoped_client(client_pk, self.request.user)
-            for client_pk in sorted({current_client_id, next_client_id})
-        }
-        try:
-            store = Store.objects.select_for_update().get(pk=serializer.instance.pk)
-        except Store.DoesNotExist as exc:
-            raise StoreChanged() from exc
-        if store.client_id not in locked_clients:
-            raise StoreChanged()
         serializer.instance = store
-        serializer.save(client=locked_clients[next_client_id])
+        serializer.save(client=client)
 
     @transaction.atomic
     def perform_destroy(self, instance):
-        current_client_id = (
-            Store.objects.filter(pk=instance.pk)
-            .values_list("client_id", flat=True)
-            .first()
-        )
-        if current_client_id is None:
-            raise StoreChanged()
-        _lock_scoped_client(current_client_id, self.request.user)
-        try:
-            store = Store.objects.select_for_update().get(pk=instance.pk)
-        except Store.DoesNotExist as exc:
-            raise StoreChanged() from exc
-        if store.client_id != current_client_id:
-            raise StoreChanged()
+        store, _client = self._lock_store(instance.pk)
         store.delete()
-
-    @action(detail=True, methods=["get"], url_path="debt-detail")
-    def debt_detail(self, request, pk=None):
-        from apps.orders.serializers import OrderSerializer
-        store = self.get_object()
-        today = timezone.localdate()
-        qs = with_order_api_relations(store.orders.all()).order_by("created_at")
-        orders = debt_orders(qs)
-        totals = sum_by_currency(orders, order_remaining)
-        currency = primary_currency(totals, fallback=store.client.currency)
-        return Response({
-            "store": StoreSerializer(store).data,
-            "client_name": store.client.name,
-            "debt_total": money_string(totals.get(currency, Decimal("0"))),
-            "debt_currency": currency,
-            "debt_by_currency": as_money_strings(totals),
-            "window_open": is_payment_window_open(store, today),
-            "orders": OrderSerializer(orders, many=True, context={"request": request}).data,
-        })
-
-    @action(detail=False, methods=["get"], url_path="debts")
-    def debts(self, request):
-        """Долги по магазинам: сумма непогашенного, расписание, окно/просрочка."""
-        today = timezone.localdate()
-        rows = []
-        # Долг считается по quantity/unit_price позиции — товар здесь не
-        # читается, поэтому джоин к каталогу не нужен. Набор сразу сужен до
-        # отгруженных: остальные заказы debt_orders всё равно отсеет.
-        debt_candidates = Order.objects.filter(
-            status=DEBT_STATUS,
-        ).prefetch_related("items", "payments")
-        for store in self.get_queryset().prefetch_related(
-                Prefetch("orders", queryset=debt_candidates)):
-            orders = debt_orders(store.orders.all())
-            totals = sum_by_currency(orders, order_remaining)
-            currency = primary_currency(totals, fallback=store.client.currency)
-            debt = totals.get(currency, Decimal("0"))
-            if debt <= 0:
-                continue
-            window_open = is_payment_window_open(store, today)
-            rows.append({
-                "store_id": store.id,
-                "store_name": store.name,
-                "client_id": store.client_id,
-                "client_name": store.client.name,
-                "payment_schedule_type": store.payment_schedule_type,
-                "payment_days": store.payment_days,
-                "debt_total": money_string(debt),
-                "debt_currency": currency,
-                "debt_by_currency": as_money_strings(totals),
-                "orders_count": len(orders),
-                "window_open": window_open,
-                # просрочка: окно сегодня открыто, но долг ещё висит
-                "overdue": window_open and store.payment_schedule_type != "none",
-            })
-        rows.sort(key=lambda r: (
-            r["debt_currency"],
-            -Decimal(r["debt_total"]),
-            r["store_name"].casefold(),
-        ))
-        return Response(rows)
 
     @action(detail=False, methods=["post"], url_path="check-overdue")
     def check_overdue(self, request):

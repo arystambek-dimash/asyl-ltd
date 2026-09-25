@@ -11,96 +11,15 @@ from django.db import DatabaseError
 from django.test import override_settings
 
 from apps.cameras.models import VehiclePlateEvent
+from apps.cameras.tests.vehicle_plate_fakes import EVENT_ID, WEBHOOK_TOKEN, WEBHOOK_URL, payload, post_event
 
 pytestmark = pytest.mark.django_db
-
-WEBHOOK_URL = "/api/integrations/vehicle-plate-events"
-LIST_URL = "/api/vehicle-plate-events"
-WEBHOOK_TOKEN = "vehicle-plate-test-token-that-is-long-enough"
-EVENT_ID = "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19"
 
 
 @pytest.fixture(autouse=True)
 def vehicle_plate_settings(settings):
     settings.VEHICLE_PLATE_WEBHOOK_TOKEN = WEBHOOK_TOKEN
     settings.VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = 64 * 1024
-
-
-def payload(*, event_id=EVENT_ID, vehicle_number="123ABC02", **overrides):
-    body = {
-        "schema_version": 1,
-        "event_id": event_id,
-        "event_type": "vehicle_plate_detected",
-        "detected_at": "2026-08-25T12:30:00.000Z",
-        "vehicle_number": vehicle_number,
-        "camera": "cam1",
-        "source": "main",
-        "stationary_seconds": 3.4,
-        "confirmation": {
-            "votes": 3,
-            "detector_confidence": 0.91,
-            "ocr_confidence": 0.96,
-        },
-        "bbox": {
-            "pixels": [820, 510, 1050, 590],
-            "normalized": {
-                "x": 0.320312,
-                "y": 0.354167,
-                "w": 0.089844,
-                "h": 0.055556,
-            },
-        },
-        "vehicle_roi": {
-            "coordinate_space": "normalized",
-            "points": [
-                {"x": 0.38, "y": 0.20},
-                {"x": 0.63, "y": 0.32},
-                {"x": 0.98, "y": 1.00},
-                {"x": 0.18, "y": 1.00},
-            ],
-        },
-        "image": {"width": 2560, "height": 1440},
-        "models": {
-            "detector": "vehicle-license-plate.pt",
-            "ocr": "en_PP-OCRv5_mobile_rec",
-        },
-    }
-    body.update(overrides)
-    return body
-
-
-def post_event(client, body=None, *, token=WEBHOOK_TOKEN, key=None, secure=True):
-    body = payload() if body is None else body
-    event_id = body.get("event_id", EVENT_ID) if isinstance(body, dict) else EVENT_ID
-    headers = {
-        "HTTP_AUTHORIZATION": f"Bearer {token}",
-        "HTTP_IDEMPOTENCY_KEY": key if key is not None else event_id,
-    }
-    return client.post(
-        WEBHOOK_URL,
-        body,
-        format="json",
-        secure=secure,
-        **headers,
-    )
-
-
-def create_event(*, event_id=None, detected_at=None, **overrides):
-    return VehiclePlateEvent.objects.create(
-        event_id=event_id or uuid.uuid4(),
-        vehicle_number=overrides.pop("vehicle_number", "123ABC02"),
-        camera=overrides.pop("camera", "cam1"),
-        source=overrides.pop("source", "main"),
-        detected_at=detected_at or datetime(2026, 8, 25, 12, 30, tzinfo=UTC),
-        stationary_seconds=overrides.pop("stationary_seconds", Decimal("3.400")),
-        confirmation_votes=overrides.pop("confirmation_votes", 3),
-        detector_confidence=overrides.pop(
-            "detector_confidence", Decimal("0.9100")
-        ),
-        ocr_confidence=overrides.pop("ocr_confidence", Decimal("0.9600")),
-        payload_json=overrides.pop("payload_json", {}),
-        **overrides,
-    )
 
 
 def test_webhook_saves_metadata_and_returns_201(api_client):
@@ -123,8 +42,7 @@ def test_webhook_saves_metadata_and_returns_201(api_client):
     assert event.detector_confidence == Decimal("0.9100")
     assert event.ocr_confidence == Decimal("0.9600")
     assert event.processing_status == VehiclePlateEvent.RECEIVED
-    assert event.payload_json["detected_at"] == "2026-08-25T12:30:00+00:00"
-    assert event.payload_json["models"]["detector"] == "vehicle-license-plate.pt"
+    assert event.payload_json == {}
     assert response["Cache-Control"] == "no-store"
 
 
@@ -267,54 +185,18 @@ def test_webhook_rejects_invalid_confirmation(api_client, confirmation):
     assert not VehiclePlateEvent.objects.exists()
 
 
-def test_webhook_ignores_unknown_fields_and_persists_only_metadata_allowlist(
-    api_client,
-):
+def test_webhook_ignores_unknown_fields_and_stores_no_raw_body(api_client):
     body = payload(
         future_contract={"enabled": True, "api_token": "body-secret"},
         password="password-in-body",
         photo="inline-photo",
-        snapshot_blob="data:image/jpeg;base64,disguised-image",
-        content="unrecognized-content",
-        image={
-            "width": 2560,
-            "height": 1440,
-            "base64": "inline-image",
-            "future_metadata": "not-approved-under-image",
-        },
+        image={"width": 2560, "height": 1440, "base64": "inline-image"},
     )
 
     response = post_event(api_client, body)
 
     assert response.status_code == 201, response.data
-    stored = VehiclePlateEvent.objects.get().payload_json
-    assert stored["image"] == {"width": 2560, "height": 1440}
-    assert stored["bbox"] == body["bbox"]
-    assert stored["vehicle_roi"] == body["vehicle_roi"]
-    assert stored["models"] == body["models"]
-    assert set(stored) == {
-        "schema_version",
-        "event_id",
-        "event_type",
-        "detected_at",
-        "vehicle_number",
-        "camera",
-        "source",
-        "stationary_seconds",
-        "confirmation",
-        "bbox",
-        "vehicle_roi",
-        "image",
-        "models",
-    }
-    serialized = json.dumps(stored)
-    assert "inline-photo" not in serialized
-    assert "inline-image" not in serialized
-    assert "body-secret" not in serialized
-    assert "password-in-body" not in serialized
-    assert "disguised-image" not in serialized
-    assert "unrecognized-content" not in serialized
-    assert WEBHOOK_TOKEN not in serialized
+    assert VehiclePlateEvent.objects.get().payload_json == {}
 
 
 def test_webhook_accepts_maximum_confirmation_votes(api_client):
@@ -330,22 +212,6 @@ def test_webhook_accepts_maximum_confirmation_votes(api_client):
 
     assert response.status_code == 201, response.data
     assert VehiclePlateEvent.objects.get().confirmation_votes == 32767
-
-
-def test_payload_projection_rejects_uri_disguised_as_model_name(api_client):
-    body = payload(
-        models={
-            "detector": "data:image/jpeg;base64,disguised",
-            "ocr": "en_PP-OCRv5_mobile_rec",
-        }
-    )
-
-    response = post_event(api_client, body)
-
-    assert response.status_code == 201, response.data
-    stored_models = VehiclePlateEvent.objects.get().payload_json["models"]
-    assert stored_models == {"ocr": "en_PP-OCRv5_mobile_rec"}
-    assert "disguised" not in json.dumps(stored_models)
 
 
 def test_webhook_rejects_non_object_and_malformed_json(api_client):
@@ -446,142 +312,3 @@ def test_webhook_rate_limit_also_bounds_invalid_credentials(api_client):
 
     assert codes == [401, 401, 429]
     assert not VehiclePlateEvent.objects.exists()
-
-
-def test_internal_list_requires_events_permission(api_client, auth_client, make_user):
-    assert api_client.get(LIST_URL).status_code == 401
-
-    ordinary = make_user("plate-no-permission")
-    assert auth_client(ordinary).get(LIST_URL).status_code == 403
-
-
-def test_integration_webhook_to_database_to_internal_api(
-    api_client,
-    auth_client,
-    user_with_perms,
-):
-    created = post_event(api_client)
-    assert created.status_code == 201, created.data
-    stored = VehiclePlateEvent.objects.get(pk=created.data["vehicle_event_id"])
-
-    viewer = user_with_perms("plate-integration-viewer", codes=["events.view"])
-    listed = auth_client(viewer).get(
-        f"{LIST_URL}?vehicle_number=123ABC02&camera=cam1"
-        "&date_from=2026-08-25&date_to=2026-08-25&limit=10"
-    )
-
-    assert listed.status_code == 200, listed.data
-    assert listed.data["count"] == 1
-    row = listed.data["results"][0]
-    assert row["id"] == stored.pk == created.data["vehicle_event_id"]
-    assert row["event_id"] == str(stored.event_id) == created.data["event_id"]
-    assert row["vehicle_number"] == stored.vehicle_number == "123ABC02"
-    assert row["camera"] == stored.camera == "cam1"
-    assert row["stationary_seconds"] == float(stored.stationary_seconds) == 3.4
-    assert row["ocr_confidence"] == float(stored.ocr_confidence) == 0.96
-    assert row["processing_status"] == stored.processing_status == "received"
-
-
-def test_internal_list_returns_paginated_contract(auth_client, user_with_perms):
-    viewer = user_with_perms("plate-viewer", codes=["events.view"])
-    client = auth_client(viewer)
-    first = create_event(
-        vehicle_number="111AAA01",
-        detected_at=datetime(2026, 8, 25, 10, 0, tzinfo=UTC),
-    )
-    second = create_event(
-        vehicle_number="222BBB02",
-        detected_at=datetime(2026, 8, 25, 11, 0, tzinfo=UTC),
-        stationary_seconds=Decimal("4.500"),
-    )
-    create_event(
-        vehicle_number="333CCC03",
-        detected_at=datetime(2026, 8, 25, 12, 0, tzinfo=UTC),
-    )
-
-    response = client.get(f"{LIST_URL}?page=1&limit=2")
-
-    assert response.status_code == 200, response.data
-    assert set(response.data) == {"count", "next", "previous", "results"}
-    assert response.data["count"] == 3
-    assert response.data["previous"] is None
-    assert response.data["next"] is not None
-    assert len(response.data["results"]) == 2
-    row = response.data["results"][1]
-    assert row == {
-        "id": second.pk,
-        "event_id": str(second.event_id),
-        "vehicle_number": "222BBB02",
-        "camera": "cam1",
-        "source": "main",
-        "detected_at": "2026-08-25T16:00:00+05:00",
-        "stationary_seconds": 4.5,
-        "confirmation_votes": 3,
-        "detector_confidence": 0.91,
-        "ocr_confidence": 0.96,
-        "processing_status": "received",
-        "processing_attempts": 0,
-        "processing_action": "",
-        "processing_error": "",
-        "processing_started_at": None,
-        "processed_at": None,
-    }
-    assert first.pk not in {item["id"] for item in response.data["results"]}
-    assert response["Cache-Control"] == "no-store"
-
-
-def test_internal_list_filters_dates_plate_and_camera(
-    auth_client,
-    user_with_perms,
-):
-    viewer = user_with_perms("plate-filter-viewer", codes=["events.view"])
-    client = auth_client(viewer)
-    wanted = create_event(
-        vehicle_number="123ABC02",
-        camera="cam1",
-        detected_at=datetime(2026, 8, 25, 8, 0, tzinfo=UTC),
-    )
-    create_event(
-        vehicle_number="999XYZ01",
-        camera="cam2",
-        detected_at=datetime(2026, 8, 24, 8, 0, tzinfo=UTC),
-    )
-    create_event(
-        vehicle_number="123ABC02",
-        camera="cam2",
-        detected_at=datetime(2026, 8, 26, 8, 0, tzinfo=UTC),
-    )
-
-    response = client.get(
-        f"{LIST_URL}?date_from=2026-08-25&date_to=2026-08-25"
-        "&vehicle_number=123&camera=cam1&page_size=10"
-    )
-
-    assert response.status_code == 200, response.data
-    assert response.data["count"] == 1
-    assert response.data["results"][0]["id"] == wanted.pk
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "date_from=25-08-2026",
-        "date_from=2026-08-26&date_to=2026-08-25",
-        "vehicle_number=123-%20ABC",
-        "camera=cam0",
-        "camera=cam" + "1" * 100,
-        "limit=0",
-        "limit=201",
-        "limit=abc",
-    ],
-)
-def test_internal_list_rejects_invalid_filters(
-    auth_client,
-    user_with_perms,
-    query,
-):
-    viewer = user_with_perms(f"plate-invalid-{uuid.uuid4()}", codes=["events.view"])
-
-    response = auth_client(viewer).get(f"{LIST_URL}?{query}")
-
-    assert response.status_code == 400, response.data

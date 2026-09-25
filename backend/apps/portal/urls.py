@@ -1,10 +1,10 @@
 from django.urls import path
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 
 from .registration import RegisterView
 from .views import PortalCatalogViewSet, PortalOrderViewSet, PortalStoreViewSet
 
-router = DefaultRouter()
+router = SimpleRouter()
 router.register("portal/catalog", PortalCatalogViewSet, basename="portal-catalog")
 router.register("portal/orders", PortalOrderViewSet, basename="portal-orders")
 router.register("portal/stores", PortalStoreViewSet, basename="portal-stores")

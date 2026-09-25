@@ -16,6 +16,40 @@ READY = {
     "updated_at": "2026-08-10T10:20:30+05:00",
     "error": None,
 }
+# What the real weighbridge reports while nothing stands on it.
+EMPTY_SCALE_PAYLOAD = {
+    "weight_kg": None,
+    "stable": False,
+    "gross": None,
+    "connected": True,
+    "stale": True,
+    "age_seconds": None,
+    "updated_at": None,
+    "raw": "",
+    "port": "COM11",
+    "baud": 9600,
+    "error": None,
+}
+MISSING = object()
+MALFORMED_FIELDS = [
+    *(
+        (field, value)
+        for field in ("connected", "stable", "stale")
+        for value in (None, 0, 1, "true")
+    ),
+    *(("error", value) for value in (0, False, [], {})),
+    *(
+        (field, value)
+        for field in ("weight_kg", "age_seconds")
+        for value in (None, True, "12.5", [], {})
+    ),
+    ("age_seconds", -0.01),
+    *(("updated_at", value) for value in (0, False, [], {})),
+    *(
+        (field, MISSING)
+        for field in ("connected", "stable", "stale", "error", "updated_at")
+    ),
+]
 
 
 class UpstreamResponse(BytesIO):
@@ -36,7 +70,7 @@ def response(payload=READY, *, status=200):
 def open_patch(*, return_value=None, side_effect=None):
     return patch.object(
         scale,
-        "_open_request",
+        "open_local_request",
         return_value=return_value,
         side_effect=side_effect,
     )
@@ -56,19 +90,6 @@ def assert_error(exc_info, *, status, code):
     assert exc_info.value.status_code == status
     assert exc_info.value.get_codes() == code
     assert str(exc_info.value.detail)
-
-
-def test_enabled_reads_current_setting_dynamically(settings):
-    assert scale.DEFAULT_SCALE_KEY == scale.TRUCK_SCALE_KEY
-    assert scale.enabled() is True
-    assert scale.enabled(scale.WAGON_SCALE_KEY) is True
-
-    settings.TRUCK_SCALE_API_URL = "   "
-    assert scale.enabled() is False
-    assert scale.enabled(scale.WAGON_SCALE_KEY) is True
-
-    settings.TRUCK_SCALE_API_URL = "http://other.test/weight"
-    assert scale.enabled() is True
 
 
 def test_each_scale_key_reads_only_its_configured_url(settings):
@@ -91,8 +112,11 @@ def test_each_scale_key_reads_only_its_configured_url(settings):
     ]
 
 
-def test_missing_truck_scale_fails_closed_without_using_wagon_scale(settings):
-    settings.TRUCK_SCALE_API_URL = ""
+@pytest.mark.parametrize("url", ["", "   "])
+def test_missing_truck_scale_fails_closed_without_using_wagon_scale(
+    settings, url
+):
+    settings.TRUCK_SCALE_API_URL = url
 
     with open_patch() as request_open, pytest.raises(
         scale.TruckScaleDisabled
@@ -100,9 +124,6 @@ def test_missing_truck_scale_fails_closed_without_using_wagon_scale(settings):
         scale.read_truck_scale(scale.TRUCK_SCALE_KEY)
 
     request_open.assert_not_called()
-    assert scale.enabled() is False
-    assert scale.enabled(scale.WAGON_SCALE_KEY) is True
-    assert scale.enabled(scale.TRUCK_SCALE_KEY) is False
     assert_error(exc_info, status=503, code="truck_scale_disabled")
 
 
@@ -115,8 +136,6 @@ def test_missing_wagon_scale_fails_closed_without_using_truck_scale(settings):
         scale.read_truck_scale(scale.WAGON_SCALE_KEY)
 
     request_open.assert_not_called()
-    assert scale.enabled() is True
-    assert scale.enabled(scale.WAGON_SCALE_KEY) is False
     assert_error(exc_info, status=503, code="truck_scale_disabled")
 
 
@@ -125,16 +144,6 @@ def test_unknown_scale_key_is_rejected_before_io():
         scale.read_truck_scale("unknown")
 
     request_open.assert_not_called()
-
-
-def test_disabled_fails_without_network_request(settings):
-    settings.TRUCK_SCALE_API_URL = ""
-    with open_patch() as urlopen, \
-         pytest.raises(scale.TruckScaleDisabled) as exc_info:
-        scale.read_truck_scale()
-
-    urlopen.assert_not_called()
-    assert_error(exc_info, status=503, code="truck_scale_disabled")
 
 
 @pytest.mark.parametrize(
@@ -321,37 +330,22 @@ def test_unexpected_http_status_is_closed_and_reported_as_unreachable():
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    "payload",
     [
-        ("connected", False),
-        ("stable", False),
-        ("stale", True),
-        ("error", "COM11 disconnected"),
+        pytest.param({**READY, "connected": False}, id="disconnected"),
+        pytest.param({**READY, "stable": False}, id="unstable"),
+        pytest.param({**READY, "stale": True}, id="stale"),
+        pytest.param({**READY, "error": "COM11 disconnected"}, id="error"),
+        pytest.param(EMPTY_SCALE_PAYLOAD, id="real-empty-scale"),
+        pytest.param({**READY, "weight_kg": 0}, id="zero-weight"),
+        pytest.param({**READY, "weight_kg": -1}, id="negative-weight"),
+        pytest.param({**READY, "weight_kg": 100_000.01}, id="over-limit"),
+        pytest.param({**READY, "weight_kg": 0.004}, id="rounds-to-zero"),
+        pytest.param({**READY, "age_seconds": 5.01}, id="too-old"),
     ],
 )
-def test_well_formed_but_not_ready_state_returns_conflict(field, value):
-    upstream = response({**READY, field: value})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleNotReady) as exc_info:
-        scale.read_truck_scale()
-
-    assert_error(exc_info, status=409, code="truck_scale_not_ready")
-
-
-def test_real_not_ready_payload_is_conflict_even_with_null_measurements():
-    upstream = response({
-        "weight_kg": None,
-        "stable": False,
-        "gross": None,
-        "connected": True,
-        "stale": True,
-        "age_seconds": None,
-        "updated_at": None,
-        "raw": "",
-        "port": "COM11",
-        "baud": 9600,
-        "error": None,
-    })
+def test_well_formed_but_not_ready_payload_returns_conflict(payload):
+    upstream = response(payload)
     with open_patch(return_value=upstream), \
          pytest.raises(scale.TruckScaleNotReady) as exc_info:
         scale.read_truck_scale()
@@ -393,19 +387,7 @@ def test_observation_maps_display_states_and_hides_unsafe_weight(
 
 
 def test_real_empty_scale_payload_is_a_stale_observation_without_a_weight():
-    upstream = response({
-        "weight_kg": None,
-        "stable": False,
-        "gross": None,
-        "connected": True,
-        "stale": True,
-        "age_seconds": None,
-        "updated_at": None,
-        "raw": "",
-        "port": "COM11",
-        "baud": 9600,
-        "error": None,
-    })
+    upstream = response(EMPTY_SCALE_PAYLOAD)
     with open_patch(return_value=upstream):
         observation = scale.read_truck_scale_observation()
 
@@ -435,50 +417,19 @@ def test_zero_is_displayable_but_authoritative_capture_still_rejects_it():
     ]
 
 
-@pytest.mark.parametrize("field", ["connected", "stable", "stale"])
-@pytest.mark.parametrize("value", [None, 0, 1, "true"])
-def test_state_flags_must_be_json_booleans(field, value):
-    upstream = response({**READY, field: value})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse):
-        scale.read_truck_scale()
-
-
-@pytest.mark.parametrize("value", [0, False, [], {}])
-def test_error_must_be_null_or_a_string(value):
-    upstream = response({**READY, "error": value})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse):
-        scale.read_truck_scale()
-
-
-@pytest.mark.parametrize("missing", ["connected", "stable", "stale", "error"])
-def test_required_state_fields_may_not_be_missing(missing):
+@pytest.mark.parametrize(("field", "value"), MALFORMED_FIELDS)
+def test_malformed_field_is_rejected(field, value):
     payload = READY.copy()
-    payload.pop(missing)
+    if value is MISSING:
+        payload.pop(field)
+    else:
+        payload[field] = value
     upstream = response(payload)
     with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse):
+         pytest.raises(scale.TruckScaleMalformedResponse) as exc_info:
         scale.read_truck_scale()
 
-
-@pytest.mark.parametrize("field", ["weight_kg", "age_seconds"])
-@pytest.mark.parametrize("value", [None, True, "12.5", [], {}])
-def test_measurements_must_be_json_numbers(field, value):
-    upstream = response({**READY, field: value})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse):
-        scale.read_truck_scale()
-
-
-@pytest.mark.parametrize("weight", [0, -1, 100_000.01])
-def test_weight_must_be_positive_and_inside_configured_limit(weight):
-    upstream = response({**READY, "weight_kg": weight})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleNotReady) as exc_info:
-        scale.read_truck_scale()
-
-    assert_error(exc_info, status=409, code="truck_scale_not_ready")
+    assert_error(exc_info, status=502, code="truck_scale_malformed_response")
 
 
 def test_weight_at_configured_limit_is_accepted():
@@ -508,15 +459,6 @@ def test_weight_is_normalized_to_model_precision_with_half_up(weight, expected):
     assert reading.weight_kg.as_tuple().exponent == -2
 
 
-def test_positive_weight_that_rounds_to_zero_is_not_accepted():
-    upstream = response({**READY, "weight_kg": 0.004})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleNotReady) as exc_info:
-        scale.read_truck_scale()
-
-    assert_error(exc_info, status=409, code="truck_scale_not_ready")
-
-
 def test_two_normalized_readings_produce_an_exact_two_decimal_net():
     weigh_in = response({**READY, "weight_kg": 12_500.005})
     weigh_out = response({**READY, "weight_kg": 18_000.005})
@@ -529,47 +471,12 @@ def test_two_normalized_readings_produce_an_exact_two_decimal_net():
     assert second.weight_kg - first.weight_kg == scale.Decimal("5500.00")
 
 
-def test_negative_age_is_malformed():
-    upstream = response({**READY, "age_seconds": -0.01})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse) as exc_info:
-        scale.read_truck_scale()
-
-    assert_error(exc_info, status=502, code="truck_scale_malformed_response")
-
-
-def test_age_older_than_configured_limit_is_not_ready():
-    upstream = response({**READY, "age_seconds": 5.01})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleNotReady) as exc_info:
-        scale.read_truck_scale()
-
-    assert_error(exc_info, status=409, code="truck_scale_not_ready")
-
-
 def test_age_at_configured_limit_is_accepted():
     upstream = response({**READY, "age_seconds": 5})
     with open_patch(return_value=upstream):
         reading = scale.read_truck_scale()
 
     assert reading.age_seconds == scale.Decimal("5")
-
-
-@pytest.mark.parametrize("updated_at", [0, False, [], {}])
-def test_updated_at_must_be_string_or_null(updated_at):
-    upstream = response({**READY, "updated_at": updated_at})
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse):
-        scale.read_truck_scale()
-
-
-def test_updated_at_may_not_be_missing():
-    payload = READY.copy()
-    payload.pop("updated_at")
-    upstream = response(payload)
-    with open_patch(return_value=upstream), \
-         pytest.raises(scale.TruckScaleMalformedResponse):
-        scale.read_truck_scale()
 
 
 @pytest.mark.parametrize(

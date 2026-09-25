@@ -5,6 +5,23 @@ import { TH } from "./table";
 
 export type SortDir = "asc" | "desc";
 
+/**
+ * Сортировка таблицы: повторный клик по колонке меняет направление, клик по
+ * другой колонке сортирует её в направлении newKeyDir.
+ */
+export function useSortState(initialKey: string, initialDir: SortDir, newKeyDir: SortDir = "asc") {
+  const [sortKey, setSortKey] = React.useState(initialKey);
+  const [sortDir, setSortDir] = React.useState<SortDir>(initialDir);
+  const toggleSort = (key: string) => {
+    if (key === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else {
+      setSortKey(key);
+      setSortDir(newKeyDir);
+    }
+  };
+  return { sortKey, sortDir, toggleSort };
+}
+
 export function SortableHeader({
   label,
   sortKey,

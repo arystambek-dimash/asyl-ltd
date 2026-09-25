@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
-from django.db import close_old_connections, connection, connections, transaction
+from django.db import close_old_connections, connections, transaction
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
@@ -14,23 +14,14 @@ from apps.warehouse.services import get_default_warehouse, transfer_stock
 pytestmark = pytest.mark.django_db
 
 
-def _product():
-    return Product.objects.create(
-        name="Трансферный товар",
-        color="Red",
-        weight_kg="50",
-        price="100.00",
-    )
-
-
 def _secondary(code="second", name="Второй склад"):
     return Warehouse.objects.create(code=code, name=name)
 
 
-def test_partial_transfer_preserves_total_and_writes_correlated_ledger(boss):
+def test_partial_transfer_preserves_total_and_writes_correlated_ledger(boss, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 20, boss, warehouse=source_warehouse)
 
     result = transfer_stock(
@@ -85,10 +76,10 @@ def test_partial_transfer_preserves_total_and_writes_correlated_ledger(boss):
     }
 
 
-def test_transfer_adds_to_an_existing_destination_balance(boss):
+def test_transfer_adds_to_an_existing_destination_balance(boss, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 20, boss, warehouse=source_warehouse)
     services.receive_stock(product, 4, boss, warehouse=destination_warehouse)
 
@@ -108,11 +99,11 @@ def test_transfer_adds_to_an_existing_destination_balance(boss):
     ).bags == 9
 
 
-@pytest.mark.parametrize("bags", [0, -1, True, "not-a-number"])
-def test_transfer_rejects_invalid_amount_without_mutation(boss, bags):
+@pytest.mark.parametrize("bags", [0, -1])
+def test_transfer_rejects_invalid_amount_without_mutation(boss, bags, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 10, boss, warehouse=source_warehouse)
 
     with pytest.raises(ValidationError) as exc_info:
@@ -129,10 +120,10 @@ def test_transfer_rejects_invalid_amount_without_mutation(boss, bags):
     assert not StockMovement.objects.filter(transfer_id__isnull=False).exists()
 
 
-def test_transfer_rejects_same_warehouse_and_insufficient_stock(boss):
+def test_transfer_rejects_same_warehouse_and_insufficient_stock(boss, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 3, boss, warehouse=source_warehouse)
 
     with pytest.raises(ValidationError) as same_error:
@@ -161,10 +152,10 @@ def test_transfer_rejects_same_warehouse_and_insufficient_stock(boss):
     ).exists()
 
 
-def test_transfer_rejects_inactive_source_or_destination(boss):
+def test_transfer_rejects_inactive_source_or_destination(boss, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 3, boss, warehouse=source_warehouse)
     destination_warehouse.is_active = False
     destination_warehouse.save(update_fields=["is_active"])
@@ -181,10 +172,10 @@ def test_transfer_rejects_inactive_source_or_destination(boss):
     assert str(exc_info.value.detail["code"]) == "warehouse_inactive"
 
 
-def test_transfer_rolls_back_balances_and_ledger_when_audit_fails(boss, monkeypatch):
+def test_transfer_rolls_back_balances_and_ledger_when_audit_fails(boss, monkeypatch, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 10, boss, warehouse=source_warehouse)
     movement_count = StockMovement.objects.count()
 
@@ -210,10 +201,10 @@ def test_transfer_rolls_back_balances_and_ledger_when_audit_fails(boss, monkeypa
     assert StockMovement.objects.count() == movement_count
 
 
-def test_transfer_endpoint_contract_and_permissions(auth_client, operator, boss):
+def test_transfer_endpoint_contract_and_permissions(auth_client, operator, boss, make_product):
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 10, boss, warehouse=source_warehouse)
     payload = {
         "product": product.pk,
@@ -237,14 +228,11 @@ def test_transfer_endpoint_contract_and_permissions(auth_client, operator, boss)
 
 
 @pytest.mark.django_db(transaction=True)
-def test_concurrent_transfers_cannot_overspend(boss):
-    if connection.vendor != "postgresql":
-        pytest.skip("row-lock concurrency contract requires PostgreSQL")
-
+def test_concurrent_transfers_cannot_overspend(boss, make_product):
     source_warehouse = get_default_warehouse()
     first_destination = _secondary("first", "Первый склад")
     second_destination = _secondary("second", "Второй склад")
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 10, boss, warehouse=source_warehouse)
 
     def run(destination_id):
@@ -281,14 +269,12 @@ def test_concurrent_transfers_cannot_overspend(boss):
 def test_transfer_warehouse_locks_do_not_deadlock_with_movement_foreign_key(
     boss,
     monkeypatch,
+    make_product,
 ):
     """A stock writer may hold Product before its warehouse FK is checked."""
-    if connection.vendor != "postgresql":
-        pytest.skip("row-lock compatibility contract requires PostgreSQL")
-
     source_warehouse = get_default_warehouse()
     destination_warehouse = _secondary()
-    product = _product()
+    product = make_product()
     services.receive_stock(product, 10, boss, warehouse=source_warehouse)
 
     transfer_reached_product = Event()

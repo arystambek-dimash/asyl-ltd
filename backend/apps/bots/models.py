@@ -6,12 +6,16 @@ from django.db import models
 from django.utils import timezone
 
 from apps.clients.models import Client
+from apps.common.models import SingletonModel
+from apps.common.money import CURRENCY_CHOICES
 from apps.common.text import match_key
 
 # Дубль вагона: тот же номер в живом заказе с датой отгрузки в пределах ±N
 # дней от даты отчёта. Повторно присланный отчёт — той же датой, а раньше чем
 # через 3 дня вагон под погрузку физически не вернётся (решение владельца).
 DEFAULT_DUPLICATE_WINDOW_DAYS = 3
+# Цена клиента дальше этого (в %) от цены прошлого вагонного заказа — на разбор.
+DEFAULT_PRICE_TOLERANCE_PCT = Decimal("15")
 # Кому «Отправить отчёт» из истории грузчика (решение владельца, 24.09).
 DEFAULT_REPORT_RECIPIENT = "Динара"
 # Удачный круг процесса бота (runtime_status) и номер, который может
@@ -34,7 +38,7 @@ class BotClientProfile(models.Model):
     # apps.common.text.match_key(name): «ООО OSIYO» и «OOO "Osiyo"» — одно.
     name_key = models.CharField(max_length=200, unique=True)
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="bot_profiles")
-    currency = models.CharField(max_length=3, choices=Client.CURRENCIES)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="bot_client_profiles",
@@ -66,7 +70,6 @@ class BotMessage(models.Model):
     PROVIDER_GREEN_API = "green_api"
 
     RECEIVED = "received"
-    PARSED = "parsed"
     APPLIED = "applied"
     NEEDS_REVIEW = "needs_review"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
@@ -75,7 +78,6 @@ class BotMessage(models.Model):
     FAILED = "failed"
     STATUSES = [
         (RECEIVED, "Получено"),
-        (PARSED, "Разобрано"),
         (APPLIED, "Проведено"),
         (NEEDS_REVIEW, "На проверке"),
         # Черновик ИИ по неразобранному сообщению — проводит только человек.
@@ -86,6 +88,8 @@ class BotMessage(models.Model):
     ]
     # Ждут человека в журнале.
     REVIEW_STATUSES = (NEEDS_REVIEW, AWAITING_CONFIRMATION, FAILED, REJECTED)
+    # Вкладки журнала → статусы (плюс «Все» без фильтра).
+    TAB_STATUSES = {"review": REVIEW_STATUSES, "applied": (APPLIED,), "ignored": (IGNORED,)}
 
     MESSAGE = "message"
     EDITED = "edited"
@@ -103,12 +107,12 @@ class BotMessage(models.Model):
     original = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="revisions",
     )
-    # Не длиннее 8 КБ (``apps.bots.serializers.RAIL_REPORT_MAX_LENGTH``).
+    # Не длиннее 8 КБ (``apps.bots.parsing.RAIL_REPORT_MAX_LENGTH``).
     text = models.TextField(blank=True, default="")
     sent_at = models.DateTimeField(null=True, blank=True)
     received_at = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=24, choices=STATUSES, default=RECEIVED)
-    # Итог разбора для журнала: день, клиент, станция, вагоны, тонны, мешки.
+    # Итог разбора для журнала: клиент, станция, вагоны, тонны.
     parsed = models.JSONField(default=dict, blank=True)
     # Причины разбора: [{code, message, line, subject, order_id}].
     issues = models.JSONField(default=list, blank=True)
@@ -148,7 +152,7 @@ class BotMessage(models.Model):
         return f"{self.get_kind_display()} {self.provider_message_id} ({self.get_status_display()})"
 
 
-class WhatsAppBotSettings(models.Model):
+class WhatsAppBotSettings(SingletonModel):
     """Настройки WhatsApp-бота и его состояние — одна строка на приложение.
 
     Настройки правит администратор (``sys_permissions.manage``); поля
@@ -156,7 +160,6 @@ class WhatsAppBotSettings(models.Model):
     бота — отдельными ``update``, чтобы не перетирать друг друга.
     """
 
-    singleton = models.BooleanField(default=True, unique=True, editable=False)
     enabled = models.BooleanField(default=False)
     # Чаты (группа «Отгрузка вагонов») и отправители, чьи отчёты бот разбирает.
     allowed_chat_ids = models.JSONField(default=list, blank=True)
@@ -164,7 +167,8 @@ class WhatsAppBotSettings(models.Model):
     show_amounts_in_reply = models.BooleanField(default=False)
     # ±дней от даты отчёта (см. DEFAULT_DUPLICATE_WINDOW_DAYS).
     duplicate_window_days = models.PositiveSmallIntegerField(default=DEFAULT_DUPLICATE_WINDOW_DAYS)
-    price_tolerance_pct = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("15"))
+    # См. DEFAULT_PRICE_TOLERANCE_PCT.
+    price_tolerance_pct = models.DecimalField(max_digits=5, decimal_places=2, default=DEFAULT_PRICE_TOLERANCE_PCT)
     # «Отправить отчёт» в истории грузчика: кому (имя для кнопки «Отправить
     # Динаре») и номер WhatsApp — только цифры с кодом страны. Без номера бот
     # пишет в первую разрешённую группу, а ссылка открывает выбор чата.
@@ -186,16 +190,13 @@ class WhatsAppBotSettings(models.Model):
     # выбрать группу в настройках, не зная её идентификатора.
     seen_chats = models.JSONField(default=dict, blank=True)
 
-    CONFIG_FIELDS = (
+    # Настройки, которые правит администратор (экран, журнал событий).
+    SETTINGS_FIELDS = (
         "enabled", "allowed_chat_ids", "allowed_sender_ids", "show_amounts_in_reply",
         "duplicate_window_days", "price_tolerance_pct", "report_recipient_name", "report_recipient_phone",
-        "updated_by", "updated_at",
     )
-
-    @classmethod
-    def load(cls) -> "WhatsAppBotSettings":
-        settings_row, _ = cls.objects.get_or_create(singleton=True)
-        return settings_row
+    # Что сохраняет правка настроек: состояние номера и опроса пишет процесс бота.
+    CONFIG_FIELDS = (*SETTINGS_FIELDS, "updated_by", "updated_at")
 
     def is_alive(self, now=None) -> bool:
         """Процесс бота работает: последний круг удачный, номер готов, и круг не старше heartbeat.

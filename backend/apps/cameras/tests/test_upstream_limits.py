@@ -1,12 +1,14 @@
-import json
-from datetime import datetime, timezone
+import os
+import subprocess
+import sys
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import pytest
 
-from apps.cameras import ai, recordings
+from apps.cameras import ai
 
 
 class TrackingBytesIO(BytesIO):
@@ -108,38 +110,28 @@ def test_ai_error_detail_must_be_a_nonempty_string(monkeypatch):
     assert exc_info.value.detail == "AI-сервис: ошибка 400"
 
 
-@pytest.mark.parametrize("body", [
-    b"x" * (recordings.MAX_SEGMENT_LIST_BYTES + 1),
-    b"{",
-    b"{}",
-])
-def test_recording_list_rejects_oversized_or_malformed_json_and_closes_response(body):
-    response = UpstreamResponse(body)
-    now = datetime.now(timezone.utc)
-    with patch.object(recordings, "_request", return_value=response), \
-         pytest.raises(recordings.RecordingUnavailable):
-        recordings.list_segments("cam2ai", now, now)
-    assert response.closed
+def test_ai_error_text_prefers_camera_pc_error_everywhere(monkeypatch):
+    # cv-service пишет причину в «error»; общий _call раньше брал «detail»
+    # первым, а распознавание номера и датасет — «error».
+    payload = {"error": "camera is busy", "detail": "legacy detail"}
+    monkeypatch.setattr(ai, "_request", lambda *_args, **_kwargs: (409, payload))
+    with pytest.raises(ai.AiError) as call_error:
+        ai._call("GET", "/status")
+    with pytest.raises(ai.AiError) as sample_error:
+        ai.clear_orientation_samples()
+    assert call_error.value.detail == sample_error.value.detail == "camera is busy"
+    assert call_error.value.payload == payload
 
 
-def test_recording_list_caps_segment_count_and_closes_response():
-    segment = {"start": "2026-07-22T10:00:00+00:00", "duration": 1}
-    body = json.dumps([segment] * (recordings.MAX_SEGMENTS + 25)).encode()
-    assert len(body) < recordings.MAX_SEGMENT_LIST_BYTES
-    response = UpstreamResponse(body)
-    now = datetime.now(timezone.utc)
-
-    with patch.object(recordings, "_request", return_value=response):
-        result = recordings.list_segments("cam2ai", now, now)
-
-    assert len(result) == recordings.MAX_SEGMENTS
-    assert response.read_sizes == [recordings.MAX_SEGMENT_LIST_BYTES + 1]
-    assert response.closed
-
-
-def test_recording_http_error_response_is_closed():
-    error, stream = _http_error(502, b"upstream failure")
-    with patch("urllib.request.urlopen", side_effect=error), \
-         pytest.raises(recordings.RecordingUnavailable):
-        recordings._request("/list")
-    assert stream.closed
+def test_ai_client_imports_without_django_apps():
+    # Сборщик весов (weighbridge) грузит ai.py с INSTALLED_APPS = []:
+    # импорт моделей камер здесь роняет его при старте.
+    result = subprocess.run(
+        [sys.executable, "-c", "import apps.cameras.ai"],
+        cwd=Path(__file__).resolve().parents[3],
+        env={**os.environ, "DJANGO_SETTINGS_MODULE": "config.weighbridge_settings"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr

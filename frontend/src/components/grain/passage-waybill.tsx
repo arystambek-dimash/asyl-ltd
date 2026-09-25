@@ -5,6 +5,7 @@ import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { grainTripHref } from "@/lib/grain";
 import type { GrainWagon } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
+import { formatMoney, loadErrorText } from "@/lib/utils";
 
 // Бумажный бланк мельницы Аксу, перенесённый 1:1: координаты сняты с фото
 // бланка (--x/--y — миллиметры на пиксель фото), поэтому лист печатается на
@@ -314,8 +315,6 @@ const PLANT_DATE = new Intl.DateTimeFormat("ru-RU", {
   month: "2-digit",
   year: "numeric",
 });
-const KG = new Intl.NumberFormat("ru-RU");
-const MONEY = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
 const COLUMN_WIDTHS = ["7.34072%", "22.99169%", "13.98892%", "15.51247%", "12.04986%", "8.31025%", "19.80609%"];
 const NUMERIC_COLUMNS = ["Пустой груз", "Груженый груз", "Масса нетто", "Цена за кг", "Стоимость"];
 const EXTRA_ROWS = [2, 3, 4, 5, 6];
@@ -328,7 +327,7 @@ const SIGNATURES = [
 ];
 
 function kg(value: number | null) {
-  return value == null ? "" : KG.format(value);
+  return value == null ? "" : formatMoney(value);
 }
 
 function parsePrice(text: string): number | null {
@@ -384,7 +383,7 @@ function editable(label: string) {
 function WaybillSheet({ trip }: { trip: GrainWagon }) {
   const [price, setPrice] = useState<number | null>(null);
   const net = trip.net_weight_kg;
-  const cost = price === null || net == null ? "" : MONEY.format(Math.round(net * price * 100) / 100);
+  const cost = price === null || net == null ? "" : formatMoney(Math.round(net * price * 100) / 100);
   return (
     <section className="sheet" aria-label="Накладная на отпуск товаров">
       <h1 className="doc-title">Накладная на отпуск товаров</h1>
@@ -564,7 +563,7 @@ export function PassageWaybill({ trip }: { trip: GrainWagon }) {
 export function PassageWaybillPage({ tripId }: { tripId: number }) {
   const valid = Number.isSafeInteger(tripId) && tripId > 0;
   const detail = useApi<GrainWagon>(valid ? `/grain/passages/${tripId}/` : null);
-  const failure = detail.error || (detail.errorStatus ? "Накладная недоступна. Проверьте права доступа." : "");
+  const failure = loadErrorText(detail, "Накладная недоступна. Проверьте права доступа.");
   const trip = detail.data;
   return (
     <main className="aksu-waybill-page">
@@ -581,7 +580,7 @@ export function PassageWaybillPage({ tripId }: { tripId: number }) {
         <div className="aksu-waybill-message">
           <DataGate loading={detail.loading} />
         </div>
-      ) : trip.direction !== "passage" || trip.status !== "completed" ? (
+      ) : trip.status !== "completed" ? (
         <div className="aksu-waybill-message">
           <p>Накладная доступна после завершения вывоза.</p>
         </div>

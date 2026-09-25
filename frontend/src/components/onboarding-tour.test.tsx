@@ -2,28 +2,19 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Me } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 import { OnboardingTour, TOUR_START_EVENT } from "./onboarding-tour";
 
-const me: Me = {
-  id: 1,
-  username: "operator",
-  is_client: false,
-  is_superuser: false,
+const me = makeMe({ username: "operator", position: "Оператор" });
 
-  permissions: [],
-  position: "Оператор",
-  client_id: null,
-  sales_department: null,
-};
-
-function Harness() {
+function Harness({ user = me }: { user?: Me }) {
   return (
     <>
       <button type="button" onClick={() => window.dispatchEvent(new Event(TOUR_START_EVENT))}>
         Начать обучение
       </button>
       <button type="button">Фоновое действие</button>
-      <OnboardingTour me={me} />
+      <OnboardingTour me={user} />
     </>
   );
 }
@@ -65,5 +56,16 @@ describe("OnboardingTour", () => {
     expect(opener).not.toHaveAttribute("inert");
     expect(opener).not.toHaveAttribute("aria-hidden");
     expect(backgroundAction).not.toHaveAttribute("inert");
+  });
+
+  it("shows the cashier step to everyone who sees «Касса» in the menu", async () => {
+    localStorage.setItem("asyl_tour_v1", "1");
+    const user = userEvent.setup();
+    render(<Harness user={{ ...me, permissions: ["payments.create"] }} />);
+
+    await user.click(screen.getByRole("button", { name: "Начать обучение" }));
+    await user.click(screen.getByRole("button", { name: "Далее" }));
+
+    expect(screen.getByRole("dialog", { name: "Касса" })).toBeInTheDocument();
   });
 });

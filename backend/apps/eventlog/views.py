@@ -5,7 +5,7 @@ from rest_framework.pagination import PageNumberPagination
 
 from apps.clients.models import Client
 from apps.common.permissions import PermViewSetMixin
-from apps.common.query_params import parse_iso_date, validate_date_range
+from apps.common.query_params import filter_date_range, parse_date_range, parse_search_param
 from apps.orders.models import Order
 from apps.sales.access import assigned_department_id, scope_by_client_department
 
@@ -28,13 +28,15 @@ class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericV
 
     def get_queryset(self):
         ownership_department_id = assigned_department_id(self.request.user)
-        visible_orders = scope_by_client_department(
-            Order.objects.all(),
-            self.request.user,
-            client_path="client",
-        )
-        system_events = Q(order__isnull=True)
+        qs = EventLog.objects.select_related("user")
         if ownership_department_id is not None:
+            # Заказы из корзины и архива тоже: журнал — единственное место,
+            # где видно, кто и когда удалил заказ (all_objects, а не Live).
+            visible_orders = scope_by_client_department(
+                Order.all_objects.all(),
+                self.request.user,
+                client_path="client",
+            )
             visible_client_ids = list(
                 Client.objects.filter(
                     department_id=ownership_department_id,
@@ -44,12 +46,12 @@ class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericV
             # lives in the JSON payload. Rows without a verifiable client are
             # hidden fail-closed: an old order event becomes order=NULL after
             # hard deletion and must never be mistaken for a global event.
-            system_events &= Q(payload__client_id__in=visible_client_ids)
-
-        # Системные события и события видимых заказов доступны в едином журнале.
-        qs = EventLog.objects.select_related("user").filter(
-            system_events | Q(order__in=visible_orders)
-        )
+            system_events = Q(
+                order__isnull=True,
+                payload__client_id__in=visible_client_ids,
+            )
+            # Системные события и события видимых заказов — в едином журнале.
+            qs = qs.filter(system_events | Q(order__in=visible_orders))
         p = self.request.query_params
         raw_order_id = p.get("order")
         if raw_order_id:
@@ -67,13 +69,8 @@ class EventLogViewSet(PermViewSetMixin, mixins.ListModelMixin, viewsets.GenericV
             qs = qs.filter(order_id=order_id)
         if p.get("event_type"):
             qs = qs.filter(event_type=p["event_type"])
-        if p.get("search"):
-            qs = qs.filter(message__icontains=p["search"])
-        date_from = parse_iso_date(p.get("date_from"))
-        date_to = parse_iso_date(p.get("date_to"))
-        validate_date_range(date_from, date_to)
-        if date_from:
-            qs = qs.filter(created_at__date__gte=date_from)
-        if date_to:
-            qs = qs.filter(created_at__date__lte=date_to)
-        return qs
+        search = parse_search_param(p.get("search"))
+        if search:
+            qs = qs.filter(message__icontains=search)
+        date_from, date_to = parse_date_range(p)
+        return filter_date_range(qs, "created_at", date_from, date_to)

@@ -1,29 +1,15 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Me, Order, Payment } from "@/lib/types";
+import type { Order, Payment } from "@/lib/types";
+import { makeMe, makePayment } from "@/test-utils/factories";
 import { OverpaymentRefundButton, refundablePayments } from "./overpayment-refund";
 
 const postMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ api: { post: postMock }, apiError: () => "Ошибка" }));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 
-const cashier = { id: 1, is_superuser: false, permissions: ["payments.confirm"] } as unknown as Me;
-
-function payment(fields: Partial<Payment>): Payment {
-  return {
-    id: 1,
-    order: 40,
-    currency: "KZT",
-    amount: "100000.00",
-    method: "cash",
-    status: "confirmed",
-    paid_at: "2026-09-20T10:00:00Z",
-    recorded_by: null,
-    available_for_refund: "100000.00",
-    ...fields,
-  } as Payment;
-}
+const cashier = makeMe({ permissions: ["payments.confirm"] });
 
 const order = {
   id: 40,
@@ -32,7 +18,7 @@ const order = {
   total_amount: "70000",
   paid_total: "100000",
   overpaid_amount: "30000.00",
-  payments: [payment({ id: 1 })],
+  payments: [makePayment({ id: 1, order: 40 })],
 } as unknown as Order;
 
 beforeEach(() => {
@@ -45,9 +31,9 @@ describe("refundablePayments", () => {
     const rows = refundablePayments({
       ...order,
       payments: [
-        payment({ id: 1, paid_at: "2026-09-01T10:00:00Z" }),
-        payment({ id: 2, paid_at: "2026-09-10T10:00:00Z" }),
-        payment({ id: 3, available_for_refund: "0.00" }),
+        makePayment({ id: 1, order: 40, paid_at: "2026-09-01T10:00:00Z" }),
+        makePayment({ id: 2, order: 40, paid_at: "2026-09-10T10:00:00Z" }),
+        makePayment({ id: 3, order: 40, available_for_refund: "0.00" }),
       ],
     } as Order);
     expect(rows.map((row) => row.id)).toEqual([2, 1]);
@@ -68,7 +54,6 @@ describe("OverpaymentRefundButton", () => {
     expect(postMock).toHaveBeenCalledWith("/payment-transactions/1/refund/", {
       amount: "30000",
       reason: "Переплата",
-      mode: "auto",
     });
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(screen.queryByRole("dialog", { name: "Вернуть оплату" })).not.toBeInTheDocument();
@@ -78,7 +63,7 @@ describe("OverpaymentRefundButton", () => {
     const user = userEvent.setup();
     const qr = { status: "awaiting_customer" };
     postMock.mockResolvedValueOnce({ data: { method: "apipay_qr", qr_refund: qr } });
-    const online = payment({ id: 1, provider: { channel: "qr" } as Payment["provider"] });
+    const online = makePayment({ id: 1, order: 40, provider: { channel: "qr" } as Payment["provider"] });
     const onChanged = vi.fn();
     const onQrRefund = vi.fn();
     render(
@@ -111,7 +96,7 @@ describe("OverpaymentRefundButton", () => {
     rerender(
       <OverpaymentRefundButton
         order={order}
-        me={{ ...cashier, permissions: ["payments.create"] } as Me}
+        me={{ ...cashier, permissions: ["payments.create"] }}
         onChanged={vi.fn()}
         onQrRefund={vi.fn()}
       />,

@@ -6,7 +6,6 @@ from rest_framework.exceptions import ValidationError
 
 from apps.common.plates import (
     clean_plate,
-    detect_plate_country,
     format_plate,
     format_plate_pair,
     normalize_plate,
@@ -31,11 +30,6 @@ def test_normalize_plate_accepts_none():
 @pytest.mark.parametrize(("compact", "expected"), VECTORS["match_key"])
 def test_plate_match_key(compact, expected):
     assert plate_match_key(compact) == expected
-
-
-@pytest.mark.parametrize(("compact", "expected"), VECTORS["country"])
-def test_detect_plate_country(compact, expected):
-    assert detect_plate_country(compact) == expected
 
 
 @pytest.mark.parametrize(("raw", "expected"), VECTORS["format"])

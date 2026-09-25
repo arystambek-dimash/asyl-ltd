@@ -12,8 +12,7 @@ const rows: ReportClientRow[] = [
     bags: 17,
     revenue_by_currency: { KZT: "17000.00" },
     paid_amount_by_currency: { KZT: "9000.00" },
-    debt_amount_by_currency: { KZT: "6000.00" },
-    awaiting_amount_by_currency: { KZT: "2000.00" },
+    debt_amount_by_currency: { KZT: "8000.00" },
     order_list: [
       {
         id: 117,
@@ -21,11 +20,8 @@ const rows: ReportClientRow[] = [
         bags: 10,
         total: "10000.00",
         currency: "KZT",
-        paid_amount: "4000.00",
         remaining_amount: "6000.00",
         payment_status: "partial",
-        is_debt: true,
-        on_debt: true,
       },
       {
         id: 118,
@@ -33,11 +29,8 @@ const rows: ReportClientRow[] = [
         bags: 5,
         total: "5000.00",
         currency: "KZT",
-        paid_amount: "5000.00",
         remaining_amount: "0.00",
         payment_status: "settled",
-        is_debt: false,
-        on_debt: false,
       },
       {
         id: 119,
@@ -45,11 +38,8 @@ const rows: ReportClientRow[] = [
         bags: 2,
         total: "2000.00",
         currency: "KZT",
-        paid_amount: "0.00",
         remaining_amount: "2000.00",
         payment_status: "unpaid",
-        is_debt: false,
-        on_debt: false,
       },
     ],
   },
@@ -72,7 +62,7 @@ describe("ClientsTable", () => {
     expect(order).toHaveAttribute("href", "/orders/117");
     expect(screen.getByText(/Частично оплачен/)).toBeInTheDocument();
     expect(screen.getByText("Оплачен")).toBeInTheDocument();
-    expect(screen.getByText(/Ожидает оплаты/)).toBeInTheDocument();
+    expect(screen.getByText(/В долгу/)).toBeInTheDocument();
 
     await user.click(toggle);
     expect(screen.queryByRole("link", { name: /№117/ })).not.toBeInTheDocument();

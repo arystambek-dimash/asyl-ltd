@@ -1,12 +1,15 @@
 import math
 import os
-from corsheaders.defaults import default_headers
 import re
 import sys
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+from celery.schedules import crontab
+from corsheaders.defaults import default_headers
+
+from config.apipay_reconciliation import reconcile_timing_from_env
 from config.observability import (
     build_logging_config,
     env_flag,
@@ -17,9 +20,64 @@ from config.observability import (
 BASE_DIR = Path(__file__).resolve().parents[2]
 TESTING = "pytest" in sys.modules or os.environ.get("PYTEST_RUNNING") == "1"
 
+
+def env_list(name: str, default: str = "") -> list[str]:
+    """Список через запятую (хосты, origin'ы); пустые элементы отбрасываются."""
+    return [
+        value.strip()
+        for value in os.environ.get(name, default).split(",")
+        if value.strip()
+    ]
+
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _bounded_float_env(
+    name: str, default: float, minimum: float, maximum: float
+) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+_CAMERA_NAME_RE = re.compile(r"cam(?:[1-9]|[12][0-9]|3[0-2])")
+
+
+def _is_printable_token(value: str) -> bool:
+    return 32 <= len(value) <= 512 and all(33 <= ord(char) <= 126 for char in value)
+
+
+def _lenient_positive_env(name, default, *, allow_zero=False):
+    """Число из env; кривое или вне (0, inf) значение молча заменяется умолчанием.
+
+    Таймауты весов и ПК камер не должны ронять старт всего бэкенда.
+    """
+    try:
+        value = type(default)(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    lower_bound_ok = value >= 0 if allow_zero else value > 0
+    if not (lower_bound_ok and value < float("inf")):
+        return default
+    return value
+
+
 # Weight-capture commands require this header. Allow it for already trusted
 # cross-origin frontends as well as the same-origin production proxy.
 CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
+CORS_ALLOW_CREDENTIALS = True
 
 APP_RELEASE = os.environ.get("APP_RELEASE", "development").strip() or "development"
 _DEFAULT_APP_ENVIRONMENT = (
@@ -104,13 +162,11 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.UserRateThrottle",
     ),
     "DEFAULT_THROTTLE_RATES": {
-        "anon": os.environ.get("THROTTLE_ANON", "60/min"),
-        "user": os.environ.get("THROTTLE_USER", "600/min"),
-        "login": os.environ.get("THROTTLE_LOGIN", "10/min"),
-        "register": os.environ.get("THROTTLE_REGISTER", "5/min"),
-        "portal_order_create": os.environ.get(
-            "THROTTLE_PORTAL_ORDER_CREATE", "10/min"
-        ),
+        "anon": "60/min",
+        "user": "600/min",
+        "login": "10/min",
+        "register": "5/min",
+        "portal_order_create": "10/min",
         "truck_scale_preview": os.environ.get(
             "THROTTLE_TRUCK_SCALE_PREVIEW", "60/min"
         ),
@@ -118,7 +174,7 @@ REST_FRAMEWORK = {
             "THROTTLE_VEHICLE_PLATE_WEBHOOK", "120/min"
         ),
     },
-    "NUM_PROXIES": int(os.environ.get("THROTTLE_NUM_PROXIES", "0")),
+    "NUM_PROXIES": 0,
 }
 
 if TESTING:
@@ -208,9 +264,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-DATA_UPLOAD_MAX_MEMORY_SIZE = int(
-    os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", str(5 * 1024 * 1024))
-)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 2000
 
 _redis_url = os.environ.get("REDIS_URL", "").strip()
@@ -222,8 +276,11 @@ if _redis_url:
         }
     }
 
-# Celery is introduced narrowly for ApiPay reconciliation. Results are never
-# stored: the task's durable effects and the heartbeat are the source of truth.
+# Celery runs periodic jobs only: ApiPay reconciliation on the "payments"
+# queue, the nightly orientation-sample export on
+# "orientation". Results are never stored: the task's durable effects and the
+# heartbeat are the source of truth. JSON-only serialization is explicit so
+# pickle can never be accepted from the broker.
 CELERY_BROKER_URL = (
     os.environ.get("CELERY_BROKER_URL", "").strip()
     or _redis_url
@@ -231,12 +288,8 @@ CELERY_BROKER_URL = (
 )
 CELERY_RESULT_BACKEND = None
 CELERY_TASK_IGNORE_RESULT = True
-CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = False
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_EVENT_SERIALIZER = "json"
-CELERY_ENABLE_UTC = True
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
@@ -246,62 +299,33 @@ CELERY_TASK_ROUTES = {
     "grain.export_orientation_samples": {"queue": "orientation"},
 }
 
-try:
-    _apipay_reconcile_interval = max(
-        15,
-        int(os.environ.get("APIPAY_RECONCILE_INTERVAL_SECONDS", "30")),
-    )
-except ValueError:
-    _apipay_reconcile_interval = 30
-
-try:
-    _apipay_reconcile_max_backoff = max(
-        _apipay_reconcile_interval,
-        int(os.environ.get("APIPAY_MONITOR_MAX_BACKOFF_SECONDS", "300")),
-    )
-except ValueError:
-    _apipay_reconcile_max_backoff = max(_apipay_reconcile_interval, 300)
-try:
-    _apipay_task_lock_seconds = max(
-        _apipay_reconcile_max_backoff + _apipay_reconcile_interval + 60,
-        int(os.environ.get("APIPAY_RECONCILE_TASK_LOCK_SECONDS", "1200")),
-    )
-except ValueError:
-    _apipay_task_lock_seconds = max(
-        _apipay_reconcile_max_backoff + _apipay_reconcile_interval + 60,
-        1200,
-    )
+_apipay_reconcile = reconcile_timing_from_env()
 
 # A hard-killed late-acked task becomes visible no later than its singleton
 # lease expires. Fresh beat messages keep a replacement worker observable in
 # the meantime, and exactly one owner can claim work at this boundary.
 CELERY_BROKER_TRANSPORT_OPTIONS = {
-    "visibility_timeout": _apipay_task_lock_seconds,
+    "visibility_timeout": _apipay_reconcile.task_lock_seconds,
 }
 
-from celery.schedules import crontab  # noqa: E402 - beat schedule below
-
 CELERY_BEAT_SCHEDULE = {
-    "retry-weighing-photos": {
-        "task": "grain.retry_weighing_photos",
-        "schedule": 30.0,
-        "options": {"queue": "payments", "expires": 25},
-    },
     # The CRM labels the day's scale-camera frames and hands them to Camera-PC
     # before its 02:30 local self-training run of the orientation classifier.
     "export-orientation-samples": {
         "task": "grain.export_orientation_samples",
         "schedule": crontab(hour=1, minute=30),
-        "options": {"queue": "payments", "expires": 3600},
+        # Queue comes from CELERY_TASK_ROUTES: an explicit queue here would
+        # override the route and occupy the single payments worker.
+        "options": {"expires": 3600},
     },
     "reconcile-apipay": {
         "task": "orders.reconcile_apipay",
-        "schedule": _apipay_reconcile_interval,
+        "schedule": _apipay_reconcile.interval_seconds,
         "options": {
             "queue": "payments",
             # A delayed periodic message is obsolete once the next interval is
             # due. Explicit task retries override this with their own expiry.
-            "expires": max(1, _apipay_reconcile_interval - 1),
+            "expires": max(1, _apipay_reconcile.interval_seconds - 1),
         },
     },
 }
@@ -315,66 +339,30 @@ APIPAY_BASE_URL = os.environ.get(
 ).rstrip("/")
 APIPAY_TIMEOUT_SECONDS = float(os.environ.get("APIPAY_TIMEOUT_SECONDS", "10"))
 
-# Railway wagons and outgoing trucks have independent optional scale slots;
-# wagon hardware is not installed yet. Both fail closed: falling back to the
-# other slot could record a different vehicle's weight on the current trip.
+# Railway wagons and outgoing trucks have independent optional scale slots.
+# Both fail closed: falling back to the other slot could record a different
+# vehicle's weight on the current trip.
 WAGON_SCALE_API_URL = os.environ.get("WAGON_SCALE_API_URL", "").strip()
 TRUCK_SCALE_API_URL = os.environ.get("TRUCK_SCALE_API_URL", "").strip()
-try:
-    TRUCK_SCALE_TIMEOUT_SECONDS = float(
-        os.environ.get("TRUCK_SCALE_TIMEOUT_SECONDS", "3")
-    )
-except (TypeError, ValueError):
-    TRUCK_SCALE_TIMEOUT_SECONDS = 3.0
-if not 0 < TRUCK_SCALE_TIMEOUT_SECONDS < float("inf"):
-    TRUCK_SCALE_TIMEOUT_SECONDS = 3.0
-
-try:
-    # The operator display should fail quickly; capture commands retain the
-    # longer timeout above because they are explicit user actions.
-    TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = float(
-        os.environ.get("TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS", "1")
-    )
-except (TypeError, ValueError):
-    TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = 1.0
-if not 0 < TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS < float("inf"):
-    TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = 1.0
-
-try:
-    TRUCK_SCALE_MAX_AGE_SECONDS = float(
-        os.environ.get("TRUCK_SCALE_MAX_AGE_SECONDS", "5")
-    )
-except (TypeError, ValueError):
-    TRUCK_SCALE_MAX_AGE_SECONDS = 5.0
-if not 0 <= TRUCK_SCALE_MAX_AGE_SECONDS < float("inf"):
-    TRUCK_SCALE_MAX_AGE_SECONDS = 5.0
-
-try:
-    TRUCK_SCALE_MAX_WEIGHT_KG = int(
-        os.environ.get("TRUCK_SCALE_MAX_WEIGHT_KG", "100000")
-    )
-except (TypeError, ValueError):
-    TRUCK_SCALE_MAX_WEIGHT_KG = 100_000
-if TRUCK_SCALE_MAX_WEIGHT_KG <= 0:
-    TRUCK_SCALE_MAX_WEIGHT_KG = 100_000
+TRUCK_SCALE_TIMEOUT_SECONDS = _lenient_positive_env("TRUCK_SCALE_TIMEOUT_SECONDS", 3.0)
+# The operator display should fail quickly; capture commands retain the
+# longer timeout above because they are explicit user actions.
+TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS = _lenient_positive_env(
+    "TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS", 1.0
+)
+TRUCK_SCALE_MAX_AGE_SECONDS = _lenient_positive_env(
+    "TRUCK_SCALE_MAX_AGE_SECONDS", 5.0, allow_zero=True
+)
+TRUCK_SCALE_MAX_WEIGHT_KG = _lenient_positive_env("TRUCK_SCALE_MAX_WEIGHT_KG", 100_000)
 
 INVOICE_SUPPLIER = {
-    "short_name": os.environ.get("INVOICE_SUPPLIER_SHORT_NAME", "АСЫЛ-LTD"),
-    "legal_name": os.environ.get(
-        "INVOICE_SUPPLIER_LEGAL_NAME",
-        'ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ "АСЫЛ-LTD"',
-    ),
-    "bin": os.environ.get("INVOICE_SUPPLIER_BIN", "020740000305"),
-    "iban": os.environ.get("INVOICE_SUPPLIER_IBAN", "KZ6696516F0007929746"),
-    "kbe": os.environ.get("INVOICE_SUPPLIER_KBE", "17"),
-    "bank": os.environ.get("INVOICE_SUPPLIER_BANK", 'АО "ForteBank"'),
-    "bic": os.environ.get("INVOICE_SUPPLIER_BIC", "IRTYKZKA"),
-    "payment_code": os.environ.get("INVOICE_PAYMENT_CODE", "710"),
-    "address": os.environ.get(
-        "INVOICE_SUPPLIER_ADDRESS",
-        "Шымкент, Аль-Фарабийский район, улица Руставелли, д. 18",
-    ),
-    "vat_rate": os.environ.get("INVOICE_VAT_RATE", "16"),
+    "short_name": "АСЫЛ-LTD",
+    "legal_name": 'ТОВАРИЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ "АСЫЛ-LTD"',
+    "bin": "020740000305",
+    "iban": "KZ6696516F0007929746",
+    "bank": 'АО "ForteBank"',
+    "bic": "IRTYKZKA",
+    "address": "Шымкент, Аль-Фарабийский район, улица Руставелли, д. 18",
 }
 
 CAMERA_HOST = os.environ.get("CAMERA_HOST") or "100.109.156.107"
@@ -382,9 +370,6 @@ CAMERA_PORT = int(os.environ.get("CAMERA_PORT") or "8554")
 CAMERA_USER = os.environ.get("CAMERA_USER") or "viewer"
 CAMERA_PASS = os.environ.get("CAMERA_PASS", "")
 GO2RTC_API_URL = (os.environ.get("GO2RTC_API_URL") or "").rstrip("/")
-CAMERA_PLAYBACK_URL = (
-    os.environ.get("CAMERA_PLAYBACK_URL") or f"http://{CAMERA_HOST}:9996"
-).rstrip("/")
 CAMERA_ALERT_WEBHOOK_URL = os.environ.get("CAMERA_ALERT_WEBHOOK_URL", "").strip()
 CAMERA_ALERT_WEBHOOK_TOKEN = os.environ.get("CAMERA_ALERT_WEBHOOK_TOKEN", "").strip()
 CAMERA_ALERT_TELEGRAM_BOT_TOKEN = os.environ.get(
@@ -393,6 +378,10 @@ CAMERA_ALERT_TELEGRAM_BOT_TOKEN = os.environ.get(
 CAMERA_ALERT_TELEGRAM_CHAT_ID = os.environ.get(
     "CAMERA_ALERT_TELEGRAM_CHAT_ID", ""
 ).strip()
+# Heartbeat циклов camera-monitor и ai-stock-monitor; healthcheck в
+# docker-compose.prod.yml читает эти же пути (heartbeat_healthcheck.py).
+CAMERA_MONITOR_HEARTBEAT_FILE = "/tmp/camera-monitor/heartbeat.json"
+AI_STOCK_MONITOR_HEARTBEAT_FILE = "/tmp/ai-stock-monitor/heartbeat.json"
 
 # Django is the only holder of the plaintext service key. The camera PC stores
 # only its SHA-256 digest and validates the X-Api-Key header sent by the client.
@@ -400,35 +389,7 @@ AI_SERVICE_URL = (
     os.environ.get("AI_SERVICE_URL") or f"http://{CAMERA_HOST}:8890"
 ).rstrip("/")
 AI_SERVICE_API_KEY = os.environ.get("AI_SERVICE_API_KEY", "").strip()
-try:
-    AI_SERVICE_TIMEOUT = float(os.environ.get("AI_SERVICE_TIMEOUT", "25"))
-except (TypeError, ValueError):
-    AI_SERVICE_TIMEOUT = 25.0
-if not 0 < AI_SERVICE_TIMEOUT < float("inf"):
-    AI_SERVICE_TIMEOUT = 25.0
-
-
-def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
-    try:
-        value = int(os.environ.get(name, str(default)))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if not minimum <= value <= maximum:
-        raise ValueError(f"{name} must be between {minimum} and {maximum}")
-    return value
-
-
-def _bounded_float_env(
-    name: str, default: float, minimum: float, maximum: float
-) -> float:
-    try:
-        value = float(os.environ.get(name, str(default)))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a number") from exc
-    if not minimum <= value <= maximum:
-        raise ValueError(f"{name} must be between {minimum} and {maximum}")
-    return value
-
+AI_SERVICE_TIMEOUT = _lenient_positive_env("AI_SERVICE_TIMEOUT", 25.0)
 
 # Parallelism is across cameras; pages of one journal remain sequential.
 CAMERA_EVENT_SYNC_WORKERS = _bounded_int_env("CAMERA_EVENT_SYNC_WORKERS", 2, 1, 8)
@@ -440,11 +401,7 @@ CAMERA_EVENT_SYNC_WORKERS = _bounded_int_env("CAMERA_EVENT_SYNC_WORKERS", 2, 1, 
 VEHICLE_PLATE_WEBHOOK_TOKEN = os.environ.get(
     "VEHICLE_PLATE_WEBHOOK_TOKEN", ""
 ).strip()
-if VEHICLE_PLATE_WEBHOOK_TOKEN and (
-    len(VEHICLE_PLATE_WEBHOOK_TOKEN) < 32
-    or len(VEHICLE_PLATE_WEBHOOK_TOKEN) > 512
-    or any(ord(char) < 33 or ord(char) > 126 for char in VEHICLE_PLATE_WEBHOOK_TOKEN)
-):
+if VEHICLE_PLATE_WEBHOOK_TOKEN and not _is_printable_token(VEHICLE_PLATE_WEBHOOK_TOKEN):
     raise ValueError(
         "VEHICLE_PLATE_WEBHOOK_TOKEN must contain 32-512 printable ASCII characters"
     )
@@ -453,9 +410,6 @@ VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = _bounded_int_env(
     64 * 1024,
     1024,
     256 * 1024,
-)
-VEHICLE_PLATE_AUTO_EXPORT_ENABLED = env_flag(
-    os.environ.get("VEHICLE_PLATE_AUTO_EXPORT_ENABLED", "0")
 )
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 WEIGHING_AI_ENABLED = env_flag(os.environ.get("WEIGHING_AI_ENABLED", "1"))
@@ -487,36 +441,21 @@ VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = env_flag(
 VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = os.environ.get(
     "VEHICLE_PLATE_WEIGHT_FIRST_CAMERA", "cam1"
 ).strip()
-if re.fullmatch(
-    r"cam(?:[1-9]|[12][0-9]|3[0-2])",
-    VEHICLE_PLATE_WEIGHT_FIRST_CAMERA,
-) is None:
+if _CAMERA_NAME_RE.fullmatch(VEHICLE_PLATE_WEIGHT_FIRST_CAMERA) is None:
     raise ValueError("VEHICLE_PLATE_WEIGHT_FIRST_CAMERA must be cam1..cam32")
 VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = os.environ.get(
     "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE", "main"
 ).strip().lower()
 if VEHICLE_PLATE_WEIGHT_FIRST_SOURCE not in {"main", "sub"}:
     raise ValueError("VEHICLE_PLATE_WEIGHT_FIRST_SOURCE must be main or sub")
-try:
-    VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS = float(
-        os.environ.get("VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS", "12")
-    )
-except (TypeError, ValueError) as exc:
-    raise ValueError(
-        "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS must be a number"
-    ) from exc
-if not 1 <= VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS <= 30:
-    raise ValueError(
-        "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS must be between 1 and 30"
-    )
+VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS = _bounded_float_env(
+    "VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS", 12.0, 1, 30
+)
 VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS = _bounded_float_env(
     "VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS", 1.0, 0.5, 10.0
 )
 VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG", 500, 0, 10_000
-)
-VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS = _bounded_int_env(
-    "VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS", 2, 1, 10
 )
 VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS", 3, 2, 30
@@ -535,7 +474,7 @@ WAGON_ARCH_AUTOMATION_ENABLED = env_flag(
     os.environ.get("WAGON_ARCH_AUTOMATION_ENABLED", "0")
 )
 WAGON_ARCH_CAMERA = os.environ.get("WAGON_ARCH_CAMERA", "cam8").strip().lower()
-if re.fullmatch(r"cam(?:[1-9]|[12][0-9]|3[0-2])", WAGON_ARCH_CAMERA) is None:
+if _CAMERA_NAME_RE.fullmatch(WAGON_ARCH_CAMERA) is None:
     raise ValueError("WAGON_ARCH_CAMERA must be cam1..cam32")
 WAGON_ARCH_STILL_SECONDS = _bounded_int_env("WAGON_ARCH_STILL_SECONDS", 10, 3, 120)
 WAGON_ARCH_STABLE_SECONDS = _bounded_int_env("WAGON_ARCH_STABLE_SECONDS", 2, 1, 30)
@@ -556,9 +495,6 @@ WAGON_ARCH_OCR_MAX_ATTEMPTS = _bounded_int_env("WAGON_ARCH_OCR_MAX_ATTEMPTS", 4,
 # Отъезд применяется не сразу: вагон могли просто переставить под аркой.
 WAGON_ARCH_EXIT_GRACE_SECONDS = _bounded_int_env(
     "WAGON_ARCH_EXIT_GRACE_SECONDS", 600, 60, 3600
-)
-VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS = _bounded_int_env(
-    "VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS", 3, 1, 10
 )
 VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = os.environ.get(
     "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE",
@@ -589,13 +525,6 @@ if (
         "VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS must be at least "
         f"{_AUTO_SCALE_HEARTBEAT_MIN_AGE_SECONDS} for the configured poll cadence"
         + (" and hardware timeouts" if VEHICLE_PLATE_AUTO_SCALE_ENABLED else "")
-    )
-if VEHICLE_PLATE_AUTO_EXPORT_ENABLED and (
-    VEHICLE_PLATE_WEIGHT_FIRST_ENABLED or VEHICLE_PLATE_AUTO_SCALE_ENABLED
-):
-    raise ValueError(
-        "VEHICLE_PLATE_AUTO_EXPORT_ENABLED and "
-        "weight-triggered vehicle plate modes cannot both be enabled"
     )
 if VEHICLE_PLATE_AUTO_SCALE_ENABLED:
     scale_parts = urlsplit(TRUCK_SCALE_API_URL)
@@ -636,16 +565,14 @@ if VEHICLE_PLATE_WEIGHT_FIRST_ENABLED or VEHICLE_PLATE_AUTO_SCALE_ENABLED:
     ):
         raise ValueError(
             "AI_SERVICE_URL must be an absolute HTTP(S) service root when "
-            "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1"
+            "VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1 or "
+            "VEHICLE_PLATE_AUTO_SCALE_ENABLED=1"
         )
-    if (
-        len(AI_SERVICE_API_KEY) < 32
-        or len(AI_SERVICE_API_KEY) > 512
-        or any(ord(char) < 33 or ord(char) > 126 for char in AI_SERVICE_API_KEY)
-    ):
+    if not _is_printable_token(AI_SERVICE_API_KEY):
         raise ValueError(
             "AI_SERVICE_API_KEY must contain 32-512 printable ASCII characters "
-            "when VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1"
+            "when VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1 or "
+            "VEHICLE_PLATE_AUTO_SCALE_ENABLED=1"
         )
 VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME = os.environ.get(
     "VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME", "Отруби"
@@ -656,34 +583,18 @@ if len(VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME) > 100:
     raise ValueError(
         "VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME must not exceed 100 characters"
     )
-VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS = _bounded_int_env(
-    "VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS", 15, 5, 300
-)
 VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS = _bounded_int_env(
     "VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS", 60, 10, 86400
 )
-# Как далеко назад искать неопознанный пустой заезд, когда камера видит
-# гружёный выезд без открытого рейса.
-VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS = _bounded_int_env(
-    "VEHICLE_PLATE_AUTO_MISSED_ENTRY_MAX_AGE_HOURS", 24, 1, 168
-)
 # Self-collecting dataset for the Camera-PC front/rear classifier: labels
 # come from completed trips, or from the weight when no trip closed yet.
-VEHICLE_ORIENTATION_DATASET_ENABLED = os.environ.get(
-    "VEHICLE_ORIENTATION_DATASET_ENABLED", "1"
-).strip().lower() in {"1", "true", "yes", "on"}
-VEHICLE_ORIENTATION_EMPTY_MAX_KG = _bounded_int_env(
-    "VEHICLE_ORIENTATION_EMPTY_MAX_KG", 5000, 500, 50000
+VEHICLE_ORIENTATION_DATASET_ENABLED = env_flag(
+    os.environ.get("VEHICLE_ORIENTATION_DATASET_ENABLED", "1")
 )
-VEHICLE_ORIENTATION_LOADED_MIN_KG = _bounded_int_env(
-    "VEHICLE_ORIENTATION_LOADED_MIN_KG", 6000, 500, 100000
-)
-VEHICLE_ORIENTATION_EXPORT_BATCH = _bounded_int_env(
-    "VEHICLE_ORIENTATION_EXPORT_BATCH", 300, 1, 5000
-)
-VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS = _bounded_int_env(
-    "VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS", 60, 1, 730
-)
+VEHICLE_ORIENTATION_EMPTY_MAX_KG = 5000
+VEHICLE_ORIENTATION_LOADED_MIN_KG = 6000
+VEHICLE_ORIENTATION_EXPORT_BATCH = 300
+VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS = 60
 
 # WhatsApp-бот отчётов о вагонах (apps/bots): Green-API в режиме опроса —
 # без публичного вебхука, очередь уведомлений у провайдера держит сутки и

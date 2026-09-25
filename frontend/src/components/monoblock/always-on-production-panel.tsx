@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, Clock3, LoaderCircle, RefreshCw, Save, Warehouse } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { PillToggle } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import type {
   AlwaysOnProductMapping,
@@ -29,26 +30,9 @@ const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; classNam
 // Keep this in sync with backend production.BASE_COLORS. White and any new
 // detector label can be mapped to any product from the selected warehouse.
 const PRODUCT_COLOR_RESTRICTED = new Set(["red", "green", "blue"]);
-// Phase A remains a safe rollback target: until it is finalized, an existing
-// catalogue product can only be selected where its stock card already exists.
-// Phase B flips this and lets camera mapping create a card in another warehouse.
-const MULTI_WAREHOUSE_PRODUCT_ASSIGNMENT_ENABLED = true;
 
 function productHasStockCard(product: AlwaysOnProductionProduct, warehouse: number | null) {
-  if (warehouse === null) return false;
-  if (product.warehouse_ids !== undefined) {
-    return product.warehouse_ids.includes(warehouse);
-  }
-  return product.warehouse === undefined || product.warehouse === warehouse;
-}
-
-function productCanBeAssigned(product: AlwaysOnProductionProduct, warehouse: number | null) {
-  if (warehouse === null) return true;
-  if (MULTI_WAREHOUSE_PRODUCT_ASSIGNMENT_ENABLED) return true;
-  if (product.warehouse_ids !== undefined) {
-    return product.warehouse_ids.length === 0 || productHasStockCard(product, warehouse);
-  }
-  return product.warehouse == null || product.warehouse === warehouse;
+  return warehouse !== null && product.warehouse_ids.includes(warehouse);
 }
 
 function zonedDateTime(value: string, timezone: string, withDate = true) {
@@ -62,19 +46,13 @@ function zonedDateTime(value: string, timezone: string, withDate = true) {
   }).format(date);
 }
 
-function productOptions(
-  products: AlwaysOnProductionProduct[],
-  color: string,
-  selectedProduct: number | null,
-  warehouse: number | null,
-) {
-  const available = products.filter((product) => productCanBeAssigned(product, warehouse));
-  const matching = available.filter((product) => normalizedColor(product.color) === normalizedColor(color));
+function productOptions(products: AlwaysOnProductionProduct[], color: string, selectedProduct: number | null) {
+  const matching = products.filter((product) => normalizedColor(product.color) === normalizedColor(color));
   const selected = products.find((product) => product.id === selectedProduct);
   // The model can report a new/unclassified color. The backend deliberately
   // allows such a row to map to any product from this warehouse; known colors
   // remain restricted so an operator cannot accidentally bind red to blue.
-  const candidates = PRODUCT_COLOR_RESTRICTED.has(normalizedColor(color)) ? matching : available;
+  const candidates = PRODUCT_COLOR_RESTRICTED.has(normalizedColor(color)) ? matching : products;
   if (!selected || candidates.some((product) => product.id === selected.id)) return candidates;
   // Старую несовпадающую настройку не прячем: оператор должен сначала увидеть,
   // куда сейчас идёт продукция, и только потом осознанно заменить товар.
@@ -100,7 +78,7 @@ function mappingNeedsConfiguration(
   return !productHasStockCard(product, warehouse);
 }
 
-export type AlwaysOnReceiptMappingStatus = "ready" | "loading" | "unavailable";
+type AlwaysOnReceiptMappingStatus = "ready" | "loading" | "unavailable";
 
 export interface AlwaysOnReceiptMappingContext {
   status: AlwaysOnReceiptMappingStatus;
@@ -110,7 +88,26 @@ export interface AlwaysOnReceiptMappingContext {
   warehouseName?: string | null;
 }
 
-export type AlwaysOnReceiptDestination =
+/**
+ * Контекст «Куда приходовать»: срез выбранного дня, если он загружен, иначе
+ * текущий снимок вкладки «Выпуск и склад».
+ */
+export function buildReceiptMapping(
+  day: AlwaysOnProductionPayload | null,
+  production: AlwaysOnProductionPayload | null,
+  error: string | null,
+): AlwaysOnReceiptMappingContext {
+  const mappings = day?.mappings ?? production?.mappings ?? null;
+  return {
+    status: error ? "unavailable" : mappings ? "ready" : day || production ? "unavailable" : "loading",
+    mappings,
+    products: day?.products ?? production?.products,
+    warehouse: day?.warehouse ?? production?.warehouse,
+    warehouseName: day?.warehouse_name ?? production?.warehouse_name,
+  };
+}
+
+type AlwaysOnReceiptDestination =
   | { state: "bound"; productLabel: string; warehouseName: string | null }
   | { state: "unbound" | "loading" | "unavailable" };
 
@@ -122,25 +119,23 @@ export function resolveAlwaysOnReceiptDestination(
   if (context.status !== "ready") return { state: context.status };
 
   const mapping = (context.mappings ?? []).find((row) => normalizedColor(row.color) === normalizedColor(color));
-  if (mapping?.product == null || !mapping.product_label || context.warehouse === null) {
+  // Stale/inactive products and products from another warehouse are no longer valid bindings.
+  if (
+    !mapping?.product_label ||
+    mappingNeedsConfiguration(mapping, context.products ?? [], context.warehouse ?? null)
+  ) {
     return { state: "unbound" };
   }
 
-  // When the product catalogue is present, stale/inactive products and products
-  // from another warehouse are no longer valid bindings. An omitted catalogue is
-  // accepted only for rolling compatibility with the previous API response.
-  if (context.products) {
-    const product = context.products.find((row) => row.id === mapping.product);
-    if (!product || (context.warehouse !== undefined && !productHasStockCard(product, context.warehouse))) {
-      return { state: "unbound" };
-    }
-  }
+  return { state: "bound", productLabel: mapping.product_label, warehouseName: context.warehouseName ?? null };
+}
 
-  return {
-    state: "bound",
-    productLabel: mapping.product_label,
-    warehouseName: context.warehouseName ?? (context.warehouse === undefined ? null : `Склад #${context.warehouse}`),
-  };
+/** Заголовок строки аналитики: товар, если цвет привязан, иначе цвет; цвет уходит в подпись назначения. */
+export function receiptItemLabel(destination: AlwaysOnReceiptDestination | null | undefined, color: string) {
+  const colorLabel = colorMeta(color).label;
+  return destination?.state === "bound"
+    ? { title: destination.productLabel, colorLabel: undefined }
+    : { title: colorLabel, colorLabel };
 }
 
 /** Compact `product → warehouse` label shared by summaries, day cards and runs. */
@@ -214,9 +209,9 @@ interface AlwaysOnProductionPanelProps {
   saving: boolean;
   canManage: boolean;
   onSave: (mappings: AlwaysOnProductMapping[], warehouse: number | null) => void | Promise<void>;
-  onRetry?: (batch: AlwaysOnStockBatch) => void | Promise<void>;
+  onRetry: (batch: AlwaysOnStockBatch) => void | Promise<void>;
   /** «Указать цвет»: бросает ошибку запроса, чтобы окно показало её у себя. */
-  onAssignUnknown?: (input: AlwaysOnUnknownColorInput) => Promise<void>;
+  onAssignUnknown: (input: AlwaysOnUnknownColorInput) => Promise<void>;
 }
 
 interface UnknownColorTarget {
@@ -280,40 +275,17 @@ export function AlwaysOnDayColorViewToggle({
       <InfoHint
         text={`Алгоритм объединяет соседние одинаковые периоды и меняет короткий период (< ${nMin} меш.) только между двумя периодами одного другого цвета. Сырые данные не меняются.`}
       />
-      <div
-        role="group"
-        aria-label="Отображение цветовой аналитики"
-        className="inline-flex rounded-lg bg-[var(--muted)] p-0.5"
-      >
-        <button
-          type="button"
-          aria-pressed={view === "algorithm"}
-          disabled={disabled}
-          onClick={() => onChange("algorithm")}
-          className={cn(
-            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
-            view === "algorithm"
-              ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-          )}
-        >
-          Алгоритм
-        </button>
-        <button
-          type="button"
-          aria-pressed={view === "raw"}
-          disabled={disabled}
-          onClick={() => onChange("raw")}
-          className={cn(
-            "rounded-md px-2.5 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
-            view === "raw"
-              ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-              : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-          )}
-        >
-          Сырые данные
-        </button>
-      </div>
+      <PillToggle
+        ariaLabel="Отображение цветовой аналитики"
+        size="sm"
+        value={view}
+        disabled={disabled}
+        onChange={onChange}
+        options={[
+          { value: "algorithm", label: "Алгоритм" },
+          { value: "raw", label: "Сырые данные" },
+        ]}
+      />
     </>
   );
 }
@@ -389,44 +361,37 @@ export function AlwaysOnDayRunLog({
             const destination = receiptMapping
               ? resolveAlwaysOnReceiptDestination(receiptMapping, run.color)
               : undefined;
-            const hasProduct = destination?.state === "bound";
+            const { title, colorLabel } = receiptItemLabel(destination, run.color);
             const active = run.status === "active";
             const partial = Boolean(run.is_partial_for_day);
             return (
               <div
                 key={`${run.id}:${run.segment ?? 0}`}
                 role="group"
-                aria-label={
-                  partial
-                    ? `Период ${hasProduct ? destination.productLabel : meta.label}: сквозной период`
-                    : `Период ${hasProduct ? destination.productLabel : meta.label}: ${run.model_bags} мешков`
-                }
+                aria-label={partial ? `Период ${title}: сквозной период` : `Период ${title}: ${run.model_bags} мешков`}
                 className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-2.5 sm:grid-cols-[minmax(220px,1.25fr)_minmax(150px,1fr)_auto] sm:items-center"
               >
                 <div className="col-start-1 row-start-1 min-w-0">
-                  {hasProduct ? (
+                  {destination?.state === "bound" ? (
                     <div className="flex min-w-0 items-start gap-2">
                       <span
                         className={cn("mt-0.5 size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")}
                       />
-                      {destination && (
-                        <AlwaysOnReceiptDestinationLabel
-                          destination={destination}
-                          colorLabel={undefined}
-                          className="flex-col items-start gap-y-1"
-                        />
-                      )}
+                      <AlwaysOnReceiptDestinationLabel
+                        destination={destination}
+                        className="flex-col items-start gap-y-1"
+                      />
                     </div>
                   ) : (
                     <div className="flex min-w-0 items-center gap-2">
                       <span className={cn("size-2.5 shrink-0 rounded-full", meta.dot, active && "animate-pulse")} />
-                      <span className="truncate text-xs font-bold text-[var(--foreground)]">{meta.label}</span>
+                      <span className="truncate text-xs font-bold text-[var(--foreground)]">{title}</span>
                     </div>
                   )}
-                  {destination && !hasProduct && (
+                  {destination && destination.state !== "bound" && (
                     <AlwaysOnReceiptDestinationLabel
                       destination={destination}
-                      colorLabel={meta.label}
+                      colorLabel={colorLabel}
                       className="mt-1 pl-[18px]"
                     />
                   )}
@@ -518,7 +483,7 @@ export function AlwaysOnProductionPanel({
   useEffect(() => {
     if (!payload) return;
     const incomingSignature = mappingSignature(payload.mappings);
-    const incomingWarehouse = payload.warehouse ?? null;
+    const incomingWarehouse = payload.warehouse;
     const draftSignature = mappingSignature(draftRef.current);
     const sameCamera = syncedCamera.current === payload.camera;
     const hasLocalChanges =
@@ -560,8 +525,7 @@ export function AlwaysOnProductionPanel({
     () =>
       Boolean(
         payload &&
-        (mappingSignature(draft) !== mappingSignature(payload.mappings) ||
-          warehouseDraft !== (payload.warehouse ?? null)),
+        (mappingSignature(draft) !== mappingSignature(payload.mappings) || warehouseDraft !== payload.warehouse),
       ),
     [draft, payload, warehouseDraft],
   );
@@ -601,10 +565,9 @@ export function AlwaysOnProductionPanel({
     );
   }
 
-  const timezone = payload.timezone || "Asia/Almaty";
+  const timezone = payload.timezone;
   const nextRun = zonedDateTime(payload.next_run_at, timezone);
-  const unresolvedBags = payload.unresolved?.bags ?? 0;
-  const canAssignUnknown = canManage && Boolean(onAssignUnknown);
+  const unresolvedBags = payload.unresolved.bags;
 
   function updateMapping(color: string, value: string) {
     if (!canManage) return;
@@ -621,15 +584,7 @@ export function AlwaysOnProductionPanel({
 
   function updateWarehouse(value: string) {
     if (!canManage) return;
-    const warehouseId = value ? Number(value) : null;
-    setWarehouseDraft(warehouseId);
-    setDraft((current) =>
-      current.map((mapping) => {
-        const selected = payload?.products.find((product) => product.id === mapping.product);
-        if (!selected || productCanBeAssigned(selected, warehouseId)) return mapping;
-        return { ...mapping, product: null, product_label: null };
-      }),
-    );
+    setWarehouseDraft(value ? Number(value) : null);
   }
 
   return (
@@ -705,7 +660,7 @@ export function AlwaysOnProductionPanel({
           <>
             <Hairline />
             <div className="px-5 pb-5 pt-4">
-              {(payload.warehouses?.length ?? 0) > 0 && (
+              {payload.warehouses.length > 0 && (
                 <label className="mb-4 grid gap-2 rounded-xl bg-slate-50 p-3 sm:grid-cols-[130px_minmax(0,1fr)] sm:items-center">
                   <span className="text-sm font-semibold text-slate-700">Склад прихода</span>
                   <Select
@@ -718,7 +673,7 @@ export function AlwaysOnProductionPanel({
                     <option value="" disabled>
                       Выберите склад
                     </option>
-                    {(payload.warehouses ?? []).map((warehouse) => (
+                    {payload.warehouses.map((warehouse) => (
                       <option key={warehouse.id} value={warehouse.id}>
                         {warehouse.name}
                         {warehouse.is_default ? " · основной" : ""}
@@ -730,7 +685,7 @@ export function AlwaysOnProductionPanel({
               <div className="space-y-2">
                 {draft.map((mapping) => {
                   const meta = colorMeta(mapping.color);
-                  const candidates = productOptions(payload.products, mapping.color, mapping.product, warehouseDraft);
+                  const candidates = productOptions(payload.products, mapping.color, mapping.product);
                   const needsConfiguration = mappingNeedsConfiguration(mapping, payload.products, warehouseDraft);
                   return (
                     <label
@@ -740,9 +695,7 @@ export function AlwaysOnProductionPanel({
                       <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-700">
                         <ColorDot className={meta.dot} /> {meta.label}
                         {needsConfiguration && (
-                          <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-bold text-red-700">
-                            Не привязан
-                          </span>
+                          <AlwaysOnReceiptDestinationLabel destination={{ state: "unbound" }} colorLabel={meta.label} />
                         )}
                       </span>
                       <Select
@@ -776,7 +729,7 @@ export function AlwaysOnProductionPanel({
                     disabled={
                       (!dirty && !canRepairCurrentMappings) ||
                       saving ||
-                      ((payload.warehouses?.length ?? 0) > 0 && warehouseDraft === null)
+                      (payload.warehouses.length > 0 && warehouseDraft === null)
                     }
                     onClick={() => void onSave(draft, warehouseDraft)}
                   >
@@ -803,13 +756,7 @@ export function AlwaysOnProductionPanel({
               const meta = colorMeta(row.color);
               const destination: AlwaysOnReceiptDestination =
                 row.configured && row.product_label
-                  ? {
-                      state: "bound",
-                      productLabel: row.product_label,
-                      warehouseName:
-                        payload.warehouse_name ??
-                        (payload.warehouse === undefined ? null : `Склад #${payload.warehouse}`),
-                    }
+                  ? { state: "bound", productLabel: row.product_label, warehouseName: payload.warehouse_name }
                   : { state: "unbound" };
               return (
                 <div key={row.color}>
@@ -834,15 +781,15 @@ export function AlwaysOnProductionPanel({
             })}
           </div>
         )}
-        {unresolvedBags > 0 && payload.unresolved && (
+        {unresolvedBags > 0 && (
           <UnresolvedBagsRow
             bags={unresolvedBags}
             className="mt-5"
             onAssign={
-              canAssignUnknown
+              canManage
                 ? () =>
                     setUnknownTarget({
-                      businessDay: payload.unresolved!.business_day,
+                      businessDay: payload.unresolved.business_day,
                       bags: unresolvedBags,
                       posted: false,
                     })
@@ -866,7 +813,7 @@ export function AlwaysOnProductionPanel({
             {batches.map((batch, index) => {
               const meta = BATCH_META[batch.status];
               const retryable = batch.status === "blocked" || batch.status === "failed";
-              const pendingBags = batch.pending_bags ?? 0;
+              const pendingBags = batch.pending_bags;
               const manualBags = batch.items
                 .filter((item) => item.kind === "manual_color")
                 .reduce((sum, item) => sum + item.posted_bags, 0);
@@ -878,7 +825,7 @@ export function AlwaysOnProductionPanel({
                       <div className="text-sm font-semibold text-slate-800">{formatIsoDate(batch.business_day)}</div>
                       <div className="mt-0.5 text-[11px] text-slate-400">
                         {zonedDateTime(batch.scheduled_for, timezone, false)}
-                        {batch.warehouse_name ? ` · ${batch.warehouse_name}` : ""}
+                        {` · ${batch.warehouse_name}`}
                       </div>
                     </div>
                     <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", meta.className)}>
@@ -900,7 +847,7 @@ export function AlwaysOnProductionPanel({
                       bags={pendingBags}
                       className="mb-2"
                       onAssign={
-                        canAssignUnknown
+                        canManage
                           ? () =>
                               setUnknownTarget({
                                 businessDay: batch.business_day,
@@ -914,7 +861,7 @@ export function AlwaysOnProductionPanel({
                   {(batch.last_error || retryable) && (
                     <div className="flex flex-wrap items-center gap-2 pb-2">
                       {batch.last_error && <p className="min-w-0 flex-1 text-xs text-red-600">{batch.last_error}</p>}
-                      {canManage && retryable && onRetry && (
+                      {canManage && retryable && (
                         <Button variant="outline" size="sm" onClick={() => void onRetry(batch)}>
                           <RefreshCw /> Повторить
                         </Button>
@@ -932,17 +879,15 @@ export function AlwaysOnProductionPanel({
         )}
       </Panel>
 
-      {onAssignUnknown && (
-        <UnknownColorDialog
-          open={unknownTarget !== null}
-          businessDay={unknownTarget?.businessDay ?? payload.current_business_day}
-          pendingBags={unknownTarget?.bags ?? 0}
-          posted={unknownTarget?.posted ?? false}
-          mappings={payload.mappings}
-          onClose={() => setUnknownTarget(null)}
-          onSubmit={onAssignUnknown}
-        />
-      )}
+      <UnknownColorDialog
+        open={unknownTarget !== null}
+        businessDay={unknownTarget?.businessDay ?? payload.current_business_day}
+        pendingBags={unknownTarget?.bags ?? 0}
+        posted={unknownTarget?.posted ?? false}
+        mappings={payload.mappings}
+        onClose={() => setUnknownTarget(null)}
+        onSubmit={onAssignUnknown}
+      />
     </div>
   );
 }

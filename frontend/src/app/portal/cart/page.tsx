@@ -4,12 +4,11 @@ import Link from "next/link";
 import { CheckCircle2, Info, ShoppingCart, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { ProductPhoto } from "@/components/catalog/product-photo";
-import { bagsLabel } from "@/components/portal/cart-button";
 import { CurrencyToggle } from "@/components/portal/currency-toggle";
 import { QuantityStepper } from "@/components/portal/quantity-stepper";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { DataGate, ErrorAlert } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert, FormError } from "@/components/ui/data-state";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
@@ -17,10 +16,10 @@ import { priceCart, type PricedCart } from "@/lib/cart";
 import type { PortalOrder, Store } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePortalCatalog } from "@/lib/use-portal-catalog";
-import { cn, formatCurrency, pluralRu } from "@/lib/utils";
+import { bagsLabel, cn, formatCurrency, pluralRu } from "@/lib/utils";
 import { useCart } from "@/store/cart";
 
-type Transport = "truck" | "train";
+type Transport = PortalOrder["transport_type"];
 
 const TRANSPORTS: [Transport, string][] = [
   ["truck", "🚚 Трак"],
@@ -156,14 +155,7 @@ export default function PortalCartPage() {
                 </div>
               </fieldset>
               <CartTotals priced={priced} currency={currency} />
-              {error && (
-                <p
-                  role="alert"
-                  className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
-                >
-                  {error}
-                </p>
-              )}
+              <FormError message={error} />
               {catalog.error && <ErrorAlert message={catalog.error} onRetry={catalog.reload} />}
               {/* На телефоне кнопка — в нижней панели, вторая в карточке только дублировала бы её. */}
               <Button className="hidden h-11 md:inline-flex" disabled={!canCheckout} onClick={checkout}>

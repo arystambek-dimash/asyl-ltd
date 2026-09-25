@@ -8,13 +8,12 @@ import {
   PackageCheck,
   Printer,
   RefreshCwOff,
-  Search,
   Send,
   Settings2,
   Undo2,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { LoaderOrderCard, bagsWord } from "@/components/loader/loader-order-card";
+import { LoaderOrderCard } from "@/components/loader/loader-order-card";
 import { LoaderOrderScreen, LoaderShippedScreen } from "@/components/loader/loader-order-screen";
 import { RailReportSheet } from "@/components/loader/rail-report-sheet";
 import { WagonReportModal } from "@/components/loader/wagon-report-modal";
@@ -23,17 +22,17 @@ import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
-import { DataGate } from "@/components/ui/data-state";
+import { DataGate, FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
 import { Tabs } from "@/components/ui/tabs";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, blobApiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import {
   loaderUrl,
   openWaybill,
   readStoredLoaderTransport,
-  shiftIsoDate,
   storeLoaderTransport,
   type LoaderOrder,
 } from "@/lib/loader";
@@ -44,20 +43,19 @@ import {
   inQueueFilter,
   LOADER_TRANSPORTS,
   loaderTransports,
-  plannedDay,
   shippedDay,
-  shortDate,
   withHistoryRow,
   withQueueRow,
   type LoaderQueueFilter,
   type LoaderTransport,
 } from "@/lib/loader-groups";
+import { periodRange, type PeriodOption } from "@/lib/date-range";
 import { EMPTY_TRANSPORT_PAIR, transportChanges, transportPairOf, type TransportPair } from "@/lib/plates";
 import { useDebounced } from "@/lib/use-debounced";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { cn, pluralRu, todayLocalIsoDate } from "@/lib/utils";
+import { bagsLabel, cn, formatIsoDayMonth, pluralRu, shiftIsoDate, todayLocalIsoDate } from "@/lib/utils";
 import { reportMark, withReportSent, type WagonReportScope, type WagonReportSent } from "@/lib/wagon-report";
 import { useAuth } from "@/store/auth";
 
@@ -66,6 +64,12 @@ type Paged = ReturnType<typeof usePagedApi<LoaderOrder>>;
 
 /** Очередь меняют другие устройства (второй грузчик, камеры) — сверяемся тихо. */
 const QUEUE_POLL_MS = 15_000;
+
+const HISTORY_PERIODS: PeriodOption<"today" | "yesterday" | "week">[] = [
+  { key: "today", label: "Сегодня" },
+  { key: "yesterday", label: "Вчера" },
+  { key: "week", label: "7 дней" },
+];
 
 function LoaderPageInner() {
   const { me } = useAuth();
@@ -85,8 +89,7 @@ function LoaderPageInner() {
   // Заказ, каким его открыли; на экране — свежая строка очереди.
   const [openedOrder, setOpenedOrder] = useState<LoaderOrder | null>(null);
   const openedId = openedOrder?.id ?? null;
-  // Пара заказа, какой её увидел оператор, и набранная им: уходит только исправленное.
-  const [openedNumbers, setOpenedNumbers] = useState<TransportPair>(EMPTY_TRANSPORT_PAIR);
+  // Пара, набранная оператором: сверяется с парой открытого заказа, уходит только исправленное.
   const [numbers, setNumbers] = useState<TransportPair>(EMPTY_TRANSPORT_PAIR);
   const [shipped, setShipped] = useState<LoaderOrder | null>(null);
   const [busy, setBusy] = useState(false);
@@ -169,7 +172,6 @@ function LoaderPageInner() {
     setUndone("");
     setLost("");
     // Номер подставляем из заказа, но последнее слово за оператором.
-    setOpenedNumbers(transportPairOf(order));
     setNumbers(transportPairOf(order));
     setOpenedOrder(order);
   }
@@ -182,7 +184,7 @@ function LoaderPageInner() {
   }
 
   async function confirm() {
-    if (!opened || busy) return;
+    if (!opened || !openedOrder || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -190,7 +192,7 @@ function LoaderPageInner() {
       // он не перетрёт. Пустой прицеп — «стереть» (у вагона прицепа нет вовсе).
       const { data } = await api.post<LoaderOrder>(
         `/loader/orders/${opened.id}/dispatch/`,
-        transportChanges(openedNumbers, numbers),
+        transportChanges(transportPairOf(openedOrder), numbers),
       );
       setShipped(data);
       setOpenedOrder(null);
@@ -257,7 +259,7 @@ function LoaderPageInner() {
     try {
       await openWaybill(orderId);
     } catch (cause) {
-      setError(apiError(cause));
+      setError(await blobApiError(cause));
     }
   }
 
@@ -285,7 +287,6 @@ function LoaderPageInner() {
       <AppShell title="Грузчик" section="Работа">
         <LoaderOrderScreen
           order={opened}
-          day={plannedDay(opened)}
           today={today}
           canConfirm={canConfirm}
           busy={busy}
@@ -383,11 +384,7 @@ function LoaderPageInner() {
             </div>
           )}
         </div>
-        {error && (
-          <p role="alert" className="rounded-xl bg-[var(--destructive)]/10 px-4 py-3 text-sm text-[var(--destructive)]">
-            {error}
-          </p>
-        )}
+        <FormError message={error} className="rounded-xl px-4 py-3" />
         {undone && (
           <p
             role="status"
@@ -404,16 +401,13 @@ function LoaderPageInner() {
             {lost}
           </p>
         )}
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input
-            aria-label="Поиск"
-            className="h-12 pl-10 text-base"
-            placeholder={transport === "train" ? "Номер вагона или клиент" : "Номер машины или клиент"}
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </div>
+        <SearchInput
+          aria-label="Поиск"
+          size="lg"
+          placeholder={transport === "train" ? "Номер вагона или клиент" : "Номер машины или клиент"}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
         {view === "queue" ? (
           <div className="flex flex-wrap items-center gap-2">
             {(
@@ -457,17 +451,18 @@ function LoaderPageInner() {
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            {(
-              [
-                ["Сегодня", today, today],
-                ["Вчера", shiftIsoDate(today, -1), shiftIsoDate(today, -1)],
-                ["7 дней", shiftIsoDate(today, -6), today],
-              ] as const
-            ).map(([label, from, to]) => (
-              <Chip key={label} active={range.from === from && range.to === to} onClick={() => setRange({ from, to })}>
-                {label}
-              </Chip>
-            ))}
+            {HISTORY_PERIODS.map(({ key, label }) => {
+              const preset = periodRange(key, today);
+              return (
+                <Chip
+                  key={key}
+                  active={range.from === preset.dateFrom && range.to === preset.dateTo}
+                  onClick={() => setRange({ from: preset.dateFrom, to: preset.dateTo })}
+                >
+                  {label}
+                </Chip>
+              );
+            })}
             <Input
               type="date"
               aria-label="С даты"
@@ -513,7 +508,7 @@ function LoaderPageInner() {
         )}
       </div>
 
-      <WaybillSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {settingsOpen && <WaybillSettingsModal onClose={() => setSettingsOpen(false)} />}
       {railReportSheet}
       {reportScope && <WagonReportModal scope={reportScope} onClose={() => setReportScope(null)} onSent={reportSent} />}
     </AppShell>
@@ -613,7 +608,7 @@ function HistoryList({
     <div className="flex flex-col gap-3">
       <div className="text-sm text-[var(--muted-foreground)]">
         {history.count} {pluralRu(history.count, ["отгрузка", "отгрузки", "отгрузок"])}
-        {history.items.length === history.count && ` · ${totalBags} ${bagsWord(totalBags)}`}
+        {history.items.length === history.count && ` · ${bagsLabel(totalBags)}`}
       </div>
       {history.items.map((order) => {
         const shippedOn = shippedDay(order, today);
@@ -621,7 +616,7 @@ function HistoryList({
           <div key={order.id} className="flex min-w-0 flex-col gap-2">
             {shippedOn !== today && (
               <span className="text-xs font-medium text-[var(--muted-foreground)] tabular-nums">
-                {shortDate(shippedOn)}
+                {formatIsoDayMonth(shippedOn)}
               </span>
             )}
             <LoaderOrderCard order={order} />

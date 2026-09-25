@@ -44,7 +44,6 @@ export function CashFiltersModal({
         title="Фильтры кассы"
         description={activeCount ? `Применено: ${activeCount}` : "Без ограничений · все оплаты"}
         className="max-w-2xl"
-        mobileFullscreen
         footer={
           <>
             {activeCount > 0 && (

@@ -18,7 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { playableCameras, type CameraFeed } from "@/components/camera-wall";
+import { CameraChoice } from "@/components/camera-choice";
 import { CameraStream } from "@/components/camera-stream";
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { DetectionOverlay } from "@/components/detection-overlay";
@@ -27,9 +27,10 @@ import {
   AlwaysOnDayRunLog,
   AlwaysOnProductionPanel,
   AlwaysOnReceiptDestinationLabel,
+  buildReceiptMapping,
+  receiptItemLabel,
   resolveAlwaysOnReceiptDestination,
   type AlwaysOnDayColorView,
-  type AlwaysOnReceiptMappingContext,
 } from "@/components/monoblock/always-on-production-panel";
 import { InferredBadge } from "@/components/monoblock/unknown-color";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
@@ -46,12 +47,19 @@ import { Modal } from "@/components/ui/modal";
 import { StatCard } from "@/components/ui/stat-card";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { ColorDot, Hairline, Metric, Panel, SectionHead, StatusChip } from "@/components/monoblock/ui";
-import { brandMeta } from "@/lib/monoblock-brands";
+import { brandLabel } from "@/lib/monoblock-brands";
 import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
 import { api, apiError } from "@/lib/api";
+import { ORDER_AWAITING_SHIPMENT_STATUSES } from "@/lib/constants";
 import { orderedBagCount } from "@/lib/orders";
 import { normalizeVerificationLines, resolveCountingLine } from "@/lib/camera-counting-line";
-import { cameraOwnersFor, indexFirstBy, type PlayableCamera } from "@/lib/shipping-cameras";
+import {
+  cameraOwnersFor,
+  indexFirstBy,
+  isLogicalCamera,
+  playableCameras,
+  type PlayableCamera,
+} from "@/lib/shipping-cameras";
 import { showSuccess } from "@/lib/toast";
 import { can } from "@/lib/can";
 import type {
@@ -66,29 +74,25 @@ import type {
   AlwaysOnStockBatch,
   AlwaysOnUnknownColorInput,
   CameraContinuousReadiness,
+  CameraFeed,
   MonoblockCameraSettings,
   Order,
   ShippingBoardSettings,
   ShippingCameraDayHistory,
 } from "@/lib/types";
-import { dayColorBreakdown, fullDay } from "@/lib/day-analytics";
 import { useApi } from "@/lib/use-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { useLocalDay } from "@/lib/use-local-day";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { cn, formatIsoDate, pluralRu } from "@/lib/utils";
+import { analyticsRange, cn, formatIsoDate, pluralRu } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 // Заказы — как на посту: 30 с слишком медленно для очереди, 10 с достаточно.
 const BOARD_POLL_MS = 10_000;
 const SESSION_POLL_MS = 3_000;
-// История подсчёта меняется только при завершении погрузки.
 // Рамки тянем чаще остального: мешок пересекает кадр за секунды, и на общем
 // трёхсекундном опросе рамка заметно отставала от него.
 const DETECTIONS_POLL_MS = 250;
-// Рамка старше этого времени описывает уже уехавший мешок — гасим её, чтобы
-// она не висела на пустом месте при обрыве связи или остановке модели.
-const DETECTIONS_STALE_MS = 2_500;
 // Заказы/камеры/настройки меняются редко — не гоняем полный список заказов
 // каждые 3 секунды на экране, который висит открытым весь день.
 const SLOW_POLL_MS = 30_000;
@@ -112,93 +116,9 @@ const MODAL_TABS: { key: ModalView; label: string; icon: LucideIcon }[] = [
   { key: "transport", label: "Камера номера", icon: ScanLine },
 ];
 
-/** Панель вкладки модалки: общий Tabs не связывает панели по id, роль и подпись ставим сами. */
-function modalPanelProps(view: ModalView) {
-  return { role: "tabpanel" as const, "aria-label": MODAL_TABS.find((tab) => tab.key === view)?.label };
-}
-
-function CameraChoice({
-  camera,
-  checked,
-  onToggle,
-  disabled = false,
-  disabledReason,
-}: {
-  camera: CameraFeed & { src: string };
-  checked: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
-  disabledReason?: string;
-}) {
-  const [streamOnline, setStreamOnline] = useState(false);
-
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-pressed={checked}
-      disabled={disabled}
-      aria-label={disabledReason ? `${camera.zone}: ${disabledReason}` : undefined}
-      className={cn(
-        "group overflow-hidden rounded-2xl border text-left transition duration-200",
-        checked
-          ? "border-blue-400 bg-blue-50 shadow-[0_10px_28px_rgba(59,104,210,0.15)] ring-2 ring-blue-500/20"
-          : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md",
-        disabled &&
-          "cursor-not-allowed border-amber-200 bg-amber-50/60 opacity-75 hover:translate-y-0 hover:shadow-none",
-      )}
-    >
-      <div className="relative aspect-video overflow-hidden bg-[#151821]">
-        <CameraStream
-          src={camera.src}
-          onStateChange={setStreamOnline}
-          className="absolute inset-0 size-full object-cover transition duration-300 group-hover:scale-[1.02]"
-        />
-
-        {!streamOnline && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-950/75 text-white/45">
-            <VideoOff className="size-5" />
-            <span className="text-[11px]">Нет изображения</span>
-          </div>
-        )}
-
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/65 to-transparent px-3 pb-8 pt-2.5">
-          <span className="flex items-center gap-1.5 rounded-full bg-black/35 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-md">
-            <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
-            {streamOnline ? "ОНЛАЙН" : "НЕТ СИГНАЛА"}
-          </span>
-          <span
-            className={cn(
-              "flex size-7 items-center justify-center rounded-full border backdrop-blur-md transition",
-              checked ? "border-blue-300 bg-blue-600 text-white" : "border-white/35 bg-black/25 text-transparent",
-            )}
-          >
-            <Check className="size-4" />
-          </span>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3 px-3.5 py-3">
-        <span
-          className={cn(
-            "flex size-9 shrink-0 items-center justify-center rounded-xl",
-            checked ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400",
-          )}
-        >
-          <Camera className="size-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-bold text-slate-800">{camera.zone}</span>
-          <span className="mt-0.5 block truncate text-[11px] text-slate-400">{camera.name}</span>
-          {disabledReason && (
-            <span className="mt-1 flex items-center gap-1 text-[10px] font-semibold text-amber-700">
-              <LockKeyhole className="size-3" /> {disabledReason}
-            </span>
-          )}
-        </span>
-      </div>
-    </button>
-  );
+/** Процессор камеры, которой ещё нет в ответе ПК камер: не считает и не пишет. */
+function emptyProcessor(cam: string, scope: "shipping" | "ai_247"): AlwaysOnProcessorStatus {
+  return { cam, running: false, mode: "always_on", analytics_scope: scope, recording: false, total: 0 };
 }
 
 function CameraSettingsButton({
@@ -206,7 +126,7 @@ function CameraSettingsButton({
   settings,
   reload,
 }: {
-  cameras: (CameraFeed & { src: string })[];
+  cameras: PlayableCamera[];
   settings: MonoblockCameraSettings | null;
   reload: () => Promise<void>;
 }) {
@@ -284,6 +204,8 @@ function CameraSettingsButton({
                 key={camera.id}
                 camera={camera}
                 checked={checked}
+                accent="blue"
+                icon={Camera}
                 disabled={blocked}
                 disabledReason={blocked ? "занята контуром AI 24/7" : undefined}
                 onToggle={() => toggle(camera.src)}
@@ -308,7 +230,7 @@ function AlwaysOnSettingsButton({
   settings,
   onSaved,
 }: {
-  cameras: (CameraFeed & { src: string })[];
+  cameras: PlayableCamera[];
   settings: AlwaysOnCameraSettings | null;
   onSaved: (next: AlwaysOnCameraSettings) => void;
 }) {
@@ -327,7 +249,7 @@ function AlwaysOnSettingsButton({
     if ((settings?.blocked_camera_sources ?? []).includes(source)) return;
     setSelected((current) => {
       if (current.includes(source)) return current.filter((item) => item !== source);
-      const activeOtherSources = settings?.active_other_camera_sources ?? settings?.blocked_camera_sources ?? [];
+      const activeOtherSources = settings?.active_other_camera_sources ?? [];
       const availableCapacity = settings?.capacity ? Math.max(0, settings.capacity - activeOtherSources.length) : null;
       if (availableCapacity !== null && current.length >= availableCapacity) {
         setError(
@@ -370,7 +292,7 @@ function AlwaysOnSettingsButton({
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        eyebrow="Требуется право «AI 24/7: Управление»"
+        eyebrow="Только суперпользователь"
         title="Постоянный AI-подсчёт"
         description="Отдельный контур AI 24/7 через прямой camN/sub. Камеры отгрузки сюда не переносятся и недоступны для выбора."
         className="max-w-2xl"
@@ -482,17 +404,17 @@ function AlwaysOnCard({
   daily,
   analyticsError,
   canManage,
-  scope = "ai_247",
+  scope,
   bound,
 }: {
   processor: AlwaysOnProcessorStatus;
-  camera?: CameraFeed & { src: string };
+  camera?: PlayableCamera;
   detail?: string;
   readiness?: CameraContinuousReadiness;
   daily?: AlwaysOnDailyCameraAnalytics;
   analyticsError?: string;
   canManage: boolean;
-  scope?: "shipping" | "ai_247";
+  scope: "shipping" | "ai_247";
   /** Заказ, за которым закреплена камера отгрузки (сессия или loading_camera). */
   bound?: ShippingTileBinding;
 }) {
@@ -503,16 +425,21 @@ function AlwaysOnCard({
   const detectionsUrl = isShipping ? "/cameras/shipping-continuous-detections/" : "/cameras/always-on-detections/";
   const analyticsUrl = isShipping ? "/cameras/shipping-continuous-analytics/" : "/cameras/always-on-analytics/";
   const modalViews = isShipping ? SHIPPING_MODAL_VIEWS : ALWAYS_ON_MODAL_VIEWS;
+  const modalPanelId = useId();
   const visibleModalTabs = MODAL_TABS.filter(
     (tab) => modalViews.includes(tab.key) && (tab.key !== "transport" || canManageTransport),
-  );
+  ).map((tab) => ({ ...tab, panelId: `${modalPanelId}-${tab.key}` }));
+  const modalPanelProps = (view: ModalView) => ({
+    role: "tabpanel" as const,
+    id: `${modalPanelId}-${view}`,
+    "aria-labelledby": `${modalPanelId}-${view}-tab`,
+  });
   const [open, setOpen] = useState(false);
   const today = useLocalDay();
   const [dateRange, setDateRange] = useState<AnalyticsDateRange | null>(null);
   const dateFrom = dateRange?.from ?? today;
   const dateTo = dateRange?.to ?? today;
-  const rangeDays = (Date.parse(dateTo) - Date.parse(dateFrom)) / 86_400_000 + 1;
-  const rangeValid = Number.isFinite(rangeDays) && rangeDays >= 1 && rangeDays <= 366;
+  const { days: rangeDays, valid: rangeValid } = analyticsRange(dateFrom, dateTo);
   const rangeQuery = new URLSearchParams({ camera: processor.cam, date_from: dateFrom, date_to: dateTo }).toString();
   const [modalView, setModalView] = useState<ModalView>("live");
   const [streamOnline, setStreamOnline] = useState(false);
@@ -557,6 +484,8 @@ function AlwaysOnCard({
   const current = open ? liveProcessor : processor;
   const currentReadiness = open ? liveReadiness : readiness;
   const bagsPresent = open && liveBoxes ? liveBoxes.bagsPresent : current.bags_present;
+  // Рамки на видео и их число на кнопке — из одного источника: частого опроса, пока он есть.
+  const visibleDetections = liveBoxes ? liveBoxes.detections : current.detections;
   const countingLine = resolveCountingLine(
     {
       line: liveBoxes?.line ?? current.line,
@@ -585,23 +514,10 @@ function AlwaysOnCard({
   const currentCycleDisplay = liveCounterAvailable ? current.total : "—";
   const inSession = current.mode === "session";
   const chartMax = Math.max(1, ...(currentDaily?.history ?? []).map((item) => item.total));
-  const currentReceiptMappings = selectedProductionDay?.mappings ?? production?.mappings ?? null;
-  const currentReceiptError = selectedProductionError || productionError;
-  const receiptMapping = useMemo<AlwaysOnReceiptMappingContext>(
-    () => ({
-      status: currentReceiptError
-        ? "unavailable"
-        : currentReceiptMappings
-          ? "ready"
-          : selectedProductionDay || production
-            ? "unavailable"
-            : "loading",
-      mappings: currentReceiptMappings,
-      products: selectedProductionDay?.products ?? production?.products,
-      warehouse: selectedProductionDay?.warehouse ?? production?.warehouse,
-      warehouseName: selectedProductionDay?.warehouse_name ?? production?.warehouse_name,
-    }),
-    [currentReceiptError, currentReceiptMappings, production, selectedProductionDay],
+  // «Куда приходовать» — одна привязка и для обзора, и для разбора выбранного дня.
+  const receiptMapping = useMemo(
+    () => buildReceiptMapping(selectedProductionDay, production, selectedProductionError || productionError),
+    [production, productionError, selectedProductionDay, selectedProductionError],
   );
   // Разбор одного дня: сам столбик уже несёт полную статистику, поэтому
   // выбранный день хранится ключом, а не копией — опрос обновляет данные,
@@ -628,18 +544,16 @@ function AlwaysOnCard({
     }
   }, [selectedPoint?.day]);
   // Разбивку за день считает бэкенд — тем же кодом, что и общую, поэтому
-  // цифры сходятся. Локальный расчёт остаётся на случай старого ответа.
-  const selectedColors = selectedPoint?.colors?.length ? selectedPoint.colors : dayColorBreakdown(selectedPoint);
+  // цифры сходятся.
+  const selectedColors = selectedPoint?.colors ?? [];
   // Дневная детализация приходит отдельным запросом. Проверка даты не даёт
   // на один рендер показать ответ предыдущего столбика после быстрого клика.
   const selectedHistory = selectedDayHistory?.selected_day === selectedPoint?.day ? selectedDayHistory : null;
   const selectedRawRuns = selectedHistory?.day_runs ?? null;
+  const selectedAlgorithmRuns = selectedHistory?.algorithm_day_runs ?? null;
   const smoothing = selectedHistory?.run_smoothing;
-  const serverAlgorithmRuns = selectedHistory?.algorithm_day_runs;
   const historyComplete =
     selectedHistory && ("history_status" in selectedHistory ? selectedHistory.history_status === "complete" : true);
-  const algorithmViewAvailable = Boolean(serverAlgorithmRuns && smoothing);
-  const selectedAlgorithmRuns = serverAlgorithmRuns && smoothing ? serverAlgorithmRuns : selectedRawRuns;
   const rawRunsTotal = selectedRawRuns?.reduce((sum, run) => sum + run.model_bags, 0);
   const runsMatchSelectedAnalytics = Boolean(
     selectedPoint &&
@@ -648,9 +562,8 @@ function AlwaysOnCard({
     selectedRawRuns &&
     !selectedRawRuns.some((run) => run.is_partial_for_day) &&
     rawRunsTotal === selectedPoint.model_total &&
-    (!smoothing ||
-      (smoothing.raw_model_total === selectedPoint.model_total &&
-        smoothing.algorithm_model_total === selectedPoint.model_total)),
+    smoothing?.raw_model_total === selectedPoint.model_total &&
+    smoothing.algorithm_model_total === selectedPoint.model_total,
   );
   const selectedVisibleRuns = selectedHistory
     ? runsMatchSelectedAnalytics
@@ -669,28 +582,10 @@ function AlwaysOnCard({
   // границу переноса в архив. В обоих случаях не смешиваем разные срезы.
   const selectedVisibleColors =
     runsMatchSelectedAnalytics && smoothing
-      ? selectedDayColorView === "algorithm" && algorithmViewAvailable
+      ? selectedDayColorView === "algorithm"
         ? smoothing.algorithm_colors
         : smoothing.raw_colors
       : selectedColors;
-  const selectedMappings = selectedProductionDay?.mappings ?? production?.mappings ?? null;
-  const selectedReceiptMapping = useMemo<AlwaysOnReceiptMappingContext>(
-    () => ({
-      status:
-        selectedProductionError || productionError
-          ? "unavailable"
-          : selectedMappings
-            ? "ready"
-            : selectedHistory || production
-              ? "unavailable"
-              : "loading",
-      mappings: selectedMappings,
-      products: selectedProductionDay?.products ?? production?.products,
-      warehouse: selectedProductionDay?.warehouse ?? production?.warehouse,
-      warehouseName: selectedProductionDay?.warehouse_name ?? production?.warehouse_name,
-    }),
-    [selectedHistory, selectedProductionDay, selectedMappings, selectedProductionError, production, productionError],
-  );
   const selectedBrandsByColor = selectedHistory?.dominant_brand_by_color;
   const selectedBrandByColor = new Map(
     Object.entries(selectedBrandsByColor ?? {}).map(([color, brand]) => [normalizedColor(color), brand]),
@@ -722,73 +617,57 @@ function AlwaysOnCard({
     setSelectedDayColorView("algorithm");
   }, [selectedDay]);
 
-  useEffect(() => {
-    if (!open || !rangeValid) return;
-    const controller = new AbortController();
-    setLiveAnalyticsError("");
-    setAnalyticsLoading(true);
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const refresh = async () => {
+  useVisiblePolling(
+    async ({ signal, first }) => {
+      if (first) {
+        setLiveAnalyticsError("");
+        setAnalyticsLoading(true);
+      }
       try {
         const [settingsResponse, analyticsResponse] = await Promise.all([
-          api.get<AlwaysOnCameraSettings>(runtimeSettingsUrl, { signal: controller.signal }),
-          api.get<AlwaysOnDailyAnalytics>(`${analyticsUrl}?${rangeQuery}`, { signal: controller.signal }),
+          api.get<AlwaysOnCameraSettings>(runtimeSettingsUrl, { signal }),
+          api.get<AlwaysOnDailyAnalytics>(`${analyticsUrl}?${rangeQuery}`, { signal }),
         ]);
-        if (disposed) return;
+        if (signal.aborted) return;
         const next = settingsResponse.data.processors.find((item) => item.cam === processor.cam);
-        setLiveProcessor(
-          next ?? {
-            cam: processor.cam,
-            running: false,
-            processor_alive: false,
-            mode: "always_on",
-            analytics_scope: scope,
-            source: "sub",
-            recording: false,
-            total: 0,
-          },
-        );
+        setLiveProcessor(next ?? emptyProcessor(processor.cam, scope));
         setLiveReadiness(settingsResponse.data.camera_readiness?.[processor.cam]);
         setLiveDaily(analyticsResponse.data.cameras.find((item) => item.camera === processor.cam));
-        setLiveDetail(settingsResponse.data.detail || "");
+        setLiveDetail(continuousCameraDetail(settingsResponse.data, processor.cam));
         setLiveAnalyticsError("");
       } catch (cause) {
-        if (!disposed) {
+        if (!signal.aborted) {
           const message = apiError(cause);
           setLiveDetail(message);
           setLiveAnalyticsError(message);
         }
       } finally {
-        if (!disposed) {
+        if (!signal.aborted) {
           setAnalyticsLoading(false);
           setLoadedAnalyticsQuery(rangeQuery);
-          timer = setTimeout(() => void refresh(), SESSION_POLL_MS);
         }
       }
-    };
-    void refresh();
-    return () => {
-      disposed = true;
-      controller.abort();
-      if (timer) clearTimeout(timer);
-    };
-  }, [analyticsReload, analyticsUrl, open, processor.cam, rangeQuery, rangeValid, runtimeSettingsUrl, scope]);
+    },
+    SESSION_POLL_MS,
+    open && rangeValid,
+    {
+      immediate: true,
+      resetKey: `${analyticsReload}|${analyticsUrl}|${processor.cam}|${rangeQuery}|${runtimeSettingsUrl}|${scope}`,
+    },
+  );
 
   // Быстрый опрос только рамок. Отдельно от тяжёлого снимка: аналитику и
   // настройки незачем перечитывать раз в секунду, а рамка на общем интервале
   // отставала от мешка и висела после его ухода.
+  const detectionsActive = open && modalView === "live" && showDetections;
   useEffect(() => {
-    if (!open || modalView !== "live" || !showDetections) {
-      setLiveBoxes(null);
-      return;
-    }
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const pull = async () => {
+    if (!detectionsActive) setLiveBoxes(null);
+  }, [detectionsActive]);
+  useVisiblePolling(
+    async ({ signal }) => {
       try {
-        const { data } = await api.get<{ processors: AlwaysOnProcessorStatus[] }>(detectionsUrl);
-        if (disposed) return;
+        const { data } = await api.get<{ processors: AlwaysOnProcessorStatus[] }>(detectionsUrl, { signal });
+        if (signal.aborted) return;
         const row = data.processors.find((item) => item.cam === processor.cam);
         const revision = row?.last_frame_at ?? (row ? null : "processor-missing");
         setLiveBoxes((previous) => {
@@ -821,23 +700,19 @@ function AlwaysOnCard({
         // Null means that the first fast poll has not completed yet. Once a
         // poll fails, keep an explicit empty snapshot so initial detections do
         // not reappear behind an unavailable endpoint.
-        if (!disposed) {
+        if (!signal.aborted) {
           setLiveBoxes((previous) =>
             previous?.revision === "unavailable"
               ? previous
               : { detections: [], bagsPresent: null, revision: "unavailable", at: Date.now() },
           );
         }
-      } finally {
-        if (!disposed) timer = setTimeout(() => void pull(), DETECTIONS_POLL_MS);
       }
-    };
-    void pull();
-    return () => {
-      disposed = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [detectionsUrl, open, modalView, showDetections, processor.cam]);
+    },
+    DETECTIONS_POLL_MS,
+    detectionsActive,
+    { immediate: true, resetKey: `${detectionsUrl}|${processor.cam}` },
+  );
 
   const loadProduction = useCallback(
     async (showLoader = false, signal?: AbortSignal) => {
@@ -877,42 +752,31 @@ function AlwaysOnCard({
     [processor.cam],
   );
 
-  // Both views use the same snapshot. Wait for each request before polling
-  // again, and invalidate responses when the modal/camera scope changes.
-  useEffect(() => {
-    if (!open || (modalView !== "production" && (isShipping || modalView !== "analytics" || selectedDay))) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function poll(first = false) {
-      if (!document.hidden) await loadProduction(first && modalView === "production", controller.signal);
-      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 15_000);
-    }
-    void poll(true);
-    return () => {
-      controller.abort();
-      productionRequestSequence.current += 1;
-      if (timer) clearTimeout(timer);
-    };
-  }, [isShipping, loadProduction, modalView, open, selectedDay]);
+  // Both views use the same snapshot. A new view or camera aborts the reply
+  // in flight; only the production tab shows the loader on its first request.
+  useVisiblePolling(
+    ({ signal, first }) => loadProduction(first && modalView === "production", signal),
+    15_000,
+    open && (modalView === "production" || (!isShipping && modalView === "analytics" && !selectedDay)),
+    { immediate: true, resetKey: `${modalView}|${processor.cam}` },
+  );
 
   // Исторический день запрашиваем отдельно: полный ответ вкладки «Выпуск и
   // склад» нельзя подменять дневным срезом. Текущий выбранный день обновляем,
   // пока окно открыто — так строка «идёт сейчас» и количество не замирают.
+  const selectedDayActive = open && modalView === "analytics" && !!selectedDay;
+  const pollCurrentDay = selectedDay === currentDaily?.day;
   useEffect(() => {
-    if (!open || modalView !== "analytics" || !selectedDay) {
-      setSelectedDayHistory(null);
-      setSelectedProductionError(null);
-      setSelectedProductionLoading(false);
-      return;
-    }
-
-    let disposed = false;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const pollCurrentDay = selectedDay === currentDaily?.day;
-
-    const pull = async (showLoader: boolean) => {
-      if (showLoader) {
+    if (selectedDayActive) return;
+    setSelectedDayHistory(null);
+    setSelectedProductionError(null);
+    setSelectedProductionLoading(false);
+  }, [selectedDayActive]);
+  useVisiblePolling(
+    async ({ signal, first }) => {
+      // Прошедший день не меняется: он грузится один раз, опрашивается только текущий.
+      if (!selectedDay || (!first && !pollCurrentDay)) return;
+      if (first) {
         setSelectedDayHistory(null);
         setSelectedProductionLoading(true);
         setSelectedProductionError(null);
@@ -920,53 +784,56 @@ function AlwaysOnCard({
       try {
         const params = new URLSearchParams({ camera: processor.cam, day: selectedDay });
         const response = isShipping
-          ? await api.get<ShippingCameraDayHistory>(`/cameras/shipping-continuous-history/?${params}`, {
-              signal: controller.signal,
-            })
-          : await api.get<AlwaysOnProductionPayload>(`/cameras/always-on-production/?${params}`, {
-              signal: controller.signal,
-            });
-        if (disposed) return;
+          ? await api.get<ShippingCameraDayHistory>(`/cameras/shipping-continuous-history/?${params}`, { signal })
+          : await api.get<AlwaysOnProductionPayload>(`/cameras/always-on-production/?${params}`, { signal });
+        if (signal.aborted) return;
         setSelectedProductionError(null);
         setProductionError(null);
         setSelectedDayHistory(response.data);
       } catch (cause) {
-        if (!disposed) setSelectedProductionError(apiError(cause));
+        if (!signal.aborted) setSelectedProductionError(apiError(cause));
       } finally {
-        if (!disposed) {
-          setSelectedProductionLoading(false);
-          if (pollCurrentDay) timer = setTimeout(() => void pull(false), 15_000);
-        }
+        if (!signal.aborted) setSelectedProductionLoading(false);
       }
-    };
+    },
+    15_000,
+    selectedDayActive,
+    {
+      immediate: true,
+      resetKey: `${currentDaily?.day}|${isShipping}|${processor.cam}|${selectedDay}|${selectedProductionReload}`,
+    },
+  );
 
-    void pull(true);
-    return () => {
-      disposed = true;
-      controller.abort();
-      if (timer) clearTimeout(timer);
-    };
-  }, [currentDaily?.day, isShipping, modalView, open, processor.cam, selectedDay, selectedProductionReload]);
-
-  async function saveProductionMappings(mappings: AlwaysOnProductMapping[], warehouse: number | null) {
-    if (!canManage) return;
+  // Пока идёт запись, опрос вкладки молчит, а ответ уже отправленного GET
+  // отбрасывается по номеру запроса: старый снимок не перетрёт новый.
+  async function runProductionMutation<T>(mutate: () => Promise<T>): Promise<T> {
     productionMutationInFlight.current = true;
     productionRequestSequence.current += 1;
     setProductionLoading(false);
+    try {
+      return await mutate();
+    } finally {
+      productionMutationInFlight.current = false;
+    }
+  }
+
+  async function saveProductionMappings(mappings: AlwaysOnProductMapping[], warehouse: number | null) {
+    if (!canManage) return;
     setProductionSaving(true);
     setProductionError(null);
     try {
-      const response = await api.put<AlwaysOnProductionPayload>("/cameras/always-on-production/", {
-        camera: processor.cam,
-        ...(warehouse !== null ? { warehouse } : {}),
-        mappings: mappings.map(({ color, product }) => ({ color, product })),
-      });
+      const response = await runProductionMutation(() =>
+        api.put<AlwaysOnProductionPayload>("/cameras/always-on-production/", {
+          camera: processor.cam,
+          ...(warehouse !== null ? { warehouse } : {}),
+          mappings: mappings.map(({ color, product }) => ({ color, product })),
+        }),
+      );
       setProduction(response.data);
       showSuccess("Привязки цветов к товарам сохранены");
     } catch (cause) {
       setProductionError(apiError(cause));
     } finally {
-      productionMutationInFlight.current = false;
       setProductionSaving(false);
     }
   }
@@ -975,37 +842,26 @@ function AlwaysOnCard({
   // его сразу, чтобы опрос не показал старое число. Ошибку показывает окно.
   async function assignUnknownColor(input: AlwaysOnUnknownColorInput) {
     if (!canManage) return;
-    productionMutationInFlight.current = true;
-    productionRequestSequence.current += 1;
-    setProductionLoading(false);
-    try {
-      const response = await api.post<AlwaysOnProductionPayload>("/cameras/always-on-production/unknown-colors/", {
+    const response = await runProductionMutation(() =>
+      api.post<AlwaysOnProductionPayload>("/cameras/always-on-production/unknown-colors/", {
         camera: processor.cam,
         ...input,
-      });
-      setProduction(response.data);
-      setProductionError(null);
-      showSuccess("Цвет указан");
-    } finally {
-      productionMutationInFlight.current = false;
-    }
+      }),
+    );
+    setProduction(response.data);
+    setProductionError(null);
+    showSuccess("Цвет указан");
   }
 
   async function retryProductionBatch(batch: AlwaysOnStockBatch) {
     if (!canManage) return;
-    productionMutationInFlight.current = true;
-    productionRequestSequence.current += 1;
-    setProductionLoading(false);
     setProductionError(null);
     try {
-      await api.post(`/cameras/always-on-production/batches/${batch.id}/retry/`);
-      productionMutationInFlight.current = false;
+      await runProductionMutation(() => api.post(`/cameras/always-on-production/batches/${batch.id}/retry/`));
       await loadProduction(false);
       showSuccess("Приёмка повторно проверена");
     } catch (cause) {
       setProductionError(apiError(cause));
-    } finally {
-      productionMutationInFlight.current = false;
     }
   }
 
@@ -1102,9 +958,8 @@ function AlwaysOnCard({
               {streamOnline && showDetections && (
                 <>
                   <DetectionOverlay
-                    detections={liveBoxes ? liveBoxes.detections : current.detections}
+                    detections={visibleDetections}
                     frame={liveBoxes?.frame ?? current.detection_frame}
-                    staleAfterMs={DETECTIONS_STALE_MS}
                     updatedAt={liveBoxes?.at}
                   />
                   {countingLine && (
@@ -1142,19 +997,10 @@ function AlwaysOnCard({
                 >
                   <ScanLine className="size-3.5" />
                   {showDetections ? "Рамки и линия" : "Слой скрыт"}
-                  {showDetections && current.detections?.length ? (
-                    <span className="tabular-nums">· {current.detections.length}</span>
+                  {showDetections && visibleDetections?.length ? (
+                    <span className="tabular-nums">· {visibleDetections.length}</span>
                   ) : null}
                 </button>
-              )}
-              {/* Старая версия ПК цеха не присылает координаты рамок. Молчать
-                  нельзя: оператор видит включённую кнопку и пустое видео и
-                  считает, что сломалась модель, хотя счёт при этом идёт. */}
-              {streamOnline && showDetections && current.running && current.detections === undefined && (
-                <div className="absolute bottom-2.5 left-2.5 right-2.5 rounded-md border border-[var(--warning)]/50 bg-black/70 px-3 py-2 text-[11px] text-white/85 backdrop-blur-md sm:bottom-4 sm:left-4 sm:right-auto sm:max-w-md">
-                  Рамки недоступны: на ПК цеха стоит версия AI-сервиса без их передачи. Счёт мешков при этом работает —
-                  обновите сервис, чтобы увидеть распознавание.
-                </div>
               )}
             </div>
 
@@ -1250,16 +1096,13 @@ function AlwaysOnCard({
                     tabIndex={-1}
                     className="scroll-mt-20 text-[15px] font-semibold tracking-tight outline-none"
                   >
-                    {fullDay(selectedPoint.day)}
+                    {formatIsoDate(selectedPoint.day)}
                   </h4>
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                     <AlwaysOnDayColorViewToggle
                       view={selectedDayColorView}
                       nMin={smoothing?.n_min ?? 10}
-                      disabled={
-                        isShipping &&
-                        (!runsMatchSelectedAnalytics || !algorithmViewAvailable || !!selectedProductionError)
-                      }
+                      disabled={!runsMatchSelectedAnalytics || !!selectedProductionError}
                       onChange={setSelectedDayColorView}
                     />
                     <Button variant="ghost" size="sm" onClick={() => selectAnalyticsDay(null)}>
@@ -1313,24 +1156,21 @@ function AlwaysOnCard({
                           );
                         }
                         const brand = selectedBrandByColor.get(normalizedColor(item.color));
-                        const brandLabel = brand
-                          ? brandMeta(brand).label
+                        const brandText = brand
+                          ? brandLabel(brand)
                           : selectedBrandStatus === "ready"
                             ? "Бренд не определён"
                             : selectedBrandStatus === "unavailable"
                               ? "Бренд недоступен"
                               : "Загрузка бренда…";
-                        const colorAndBrandLabel = `${colorMeta(item.color).label} · ${brandLabel}`;
-                        const destination = resolveAlwaysOnReceiptDestination(selectedReceiptMapping, item.color);
+                        const colorAndBrandLabel = `${colorMeta(item.color).label} · ${brandText}`;
+                        const destination = resolveAlwaysOnReceiptDestination(receiptMapping, item.color);
                         const hasProduct = destination.state === "bound";
-                        const itemLabel = hasProduct ? destination.productLabel : colorMeta(item.color).label;
+                        const { title: itemLabel, colorLabel } = receiptItemLabel(destination, item.color);
                         return (
                           <div key={item.color} role="group" aria-label={`${itemLabel}: ${item.total} мешков`}>
                             <div className="flex min-w-0 items-start gap-2">
-                              <AlwaysOnReceiptDestinationLabel
-                                destination={destination}
-                                colorLabel={hasProduct ? undefined : colorMeta(item.color).label}
-                              />
+                              <AlwaysOnReceiptDestinationLabel destination={destination} colorLabel={colorLabel} />
                               <span className="ml-auto text-[12px] tabular-nums text-[var(--muted-foreground)]">
                                 {item.percent}%
                               </span>
@@ -1349,13 +1189,13 @@ function AlwaysOnCard({
                             <div className="mt-1.5 flex min-w-0 items-center gap-2">
                               <ColorDot className={colorMeta(item.color).dot} />
                               <span
-                                title={hasProduct ? (brand ? `Бренд: ${brandLabel}` : brandLabel) : colorAndBrandLabel}
+                                title={hasProduct ? (brand ? `Бренд: ${brandText}` : brandText) : colorAndBrandLabel}
                                 className={cn(
                                   "truncate text-[11px] font-medium",
                                   brand ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
                                 )}
                               >
-                                {hasProduct ? (brand ? `Бренд: ${brandLabel}` : brandLabel) : colorAndBrandLabel}
+                                {hasProduct ? (brand ? `Бренд: ${brandText}` : brandText) : colorAndBrandLabel}
                               </span>
                             </div>
                           </div>
@@ -1373,7 +1213,7 @@ function AlwaysOnCard({
                   loading={selectedProductionLoading}
                   error={selectedProductionError}
                   unavailableReason={runMismatchMessage}
-                  receiptMapping={isShipping ? undefined : selectedReceiptMapping}
+                  receiptMapping={isShipping ? undefined : receiptMapping}
                   onRetry={() => setSelectedProductionReload((value) => value + 1)}
                 />
               </Panel>
@@ -1391,6 +1231,11 @@ function AlwaysOnCard({
       </Modal>
     </>
   );
+}
+
+/** Пояснение для камеры: своё из готовности камеры, иначе общее — одинаково для плитки и открытого окна. */
+function continuousCameraDetail(settings: AlwaysOnCameraSettings, cam: string): string {
+  return settings.camera_readiness?.[cam]?.detail || settings.detail || "";
 }
 
 /** Плитка непрерывной камеры (отгрузка или AI 24/7): без стрима, тап открывает модалку AlwaysOnCard. */
@@ -1413,20 +1258,13 @@ function ContinuousCameraTile({
   bound?: ShippingTileBinding;
   canManage?: boolean;
 }) {
-  const processor = settings.processors.find((item) => item.cam === source) ?? {
-    cam: source,
-    running: false,
-    mode: "always_on" as const,
-    recording: false,
-    total: 0,
-    analytics_scope: scope,
-  };
+  const processor = settings.processors.find((item) => item.cam === source) ?? emptyProcessor(source, scope);
   return (
     <AlwaysOnCard
       scope={scope}
       processor={processor}
       camera={camera}
-      detail={settings.camera_readiness?.[source]?.detail || settings.detail}
+      detail={continuousCameraDetail(settings, source)}
       readiness={settings.camera_readiness?.[source]}
       daily={analytics?.cameras.find((item) => item.camera === source)}
       analyticsError={analyticsError}
@@ -1441,16 +1279,14 @@ function MonoblockPageInner() {
   // Моноблок только для просмотра: одно право видит всё (грузовики, вагоны, AI 24/7).
   // Отгружает грузчик на своей странице; режим AI 24/7 и «Куда приходовать» —
   // только суперпользователь.
-  const canView = can(me, "monoblock.view");
   const canManage = can(me, "sys_permissions.manage");
   const canManageAlwaysOn = !!me?.is_superuser;
   const canOpenOrder = can(me, "orders.view");
-  // Без права URL = null: иначе бэкенд отвечает 403 и страница держит
-  // постоянный ErrorAlert. Условия повторяют гейты бэкенда.
-  const canViewSettings = canView || canManage;
 
   // Доска живёт сегодняшним днём; другой день и поиск — явный выбор
   // оператора. URL без фильтров остаётся ровно "/orders/?post_board=1".
+  // Сегодняшняя дата хранится как '' (календарь сам так её отдаёт): иначе
+  // после полуночи доска застыла бы на вчерашнем дне, выбранном явно.
   const today = useLocalDay();
   const [day, setDay] = useState("");
   const [search, setSearch] = useState("");
@@ -1461,73 +1297,59 @@ function MonoblockPageInner() {
     if (debouncedSearch) query += `&search=${encodeURIComponent(debouncedSearch)}`;
     return query;
   }, [day, debouncedSearch, today]);
-  const boardFilter = useMemo(
-    () => ({
-      day,
-      today,
-      search,
-      appliedSearch: debouncedSearch,
-      // Сегодняшняя дата хранится как '' — «за календарём»: иначе после
-      // полуночи киоск застыл бы на вчерашнем дне, выбранном явно.
-      onDayChange: (value: string) => setDay(value === today ? "" : value),
-      onSearchChange: setSearch,
-    }),
-    [day, debouncedSearch, search, today],
-  );
 
   const { data: orders, error, reload: reloadOrders } = useApi<Order[]>(`/orders/?post_board=1${boardQuery}`);
   const {
     data: sessions,
     error: sessionsError,
     reload: reloadSessions,
-  } = useApi<AiCountingSession[]>(canView ? "/cameras/ai/sessions/" : null);
+  } = useApi<AiCountingSession[]>("/cameras/ai/sessions/");
   const { data: cameras, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
+  // Выбор камер моноблока нужен только администратору: GET ходит на ПК камер.
   const {
     data: cameraSettings,
     error: cameraSettingsError,
     reload: reloadCameraSettings,
-  } = useApi<MonoblockCameraSettings>(canViewSettings ? "/cameras/monoblock-settings/" : null);
+  } = useApi<MonoblockCameraSettings>(canManage ? "/cameras/monoblock-settings/" : null);
   const {
     data: shippingSettings,
     error: shippingSettingsError,
     reload: reloadShippingSettings,
-  } = useApi<ShippingBoardSettings>(canViewSettings ? "/cameras/shipping-settings/" : null);
+    setData: setShippingSettings,
+  } = useApi<ShippingBoardSettings>("/cameras/shipping-settings/");
   const {
     data: alwaysOnSettings,
     error: alwaysOnSettingsError,
     reload: reloadAlwaysOnSettings,
     setData: setAlwaysOnSettings,
-  } = useApi<AlwaysOnCameraSettings>(canView ? "/cameras/always-on-settings/" : null);
+  } = useApi<AlwaysOnCameraSettings>("/cameras/always-on-settings/");
   const {
     data: alwaysOnAnalytics,
     error: alwaysOnAnalyticsError,
     reload: reloadAlwaysOnAnalytics,
-  } = useApi<AlwaysOnDailyAnalytics>(canView ? "/cameras/always-on-analytics/" : null);
+  } = useApi<AlwaysOnDailyAnalytics>("/cameras/always-on-analytics/");
   const {
     data: shippingContinuousSettings,
     error: shippingContinuousSettingsError,
     reload: reloadShippingContinuousSettings,
-  } = useApi<AlwaysOnCameraSettings>(canViewSettings ? "/cameras/shipping-continuous-settings/" : null);
+  } = useApi<AlwaysOnCameraSettings>("/cameras/shipping-continuous-settings/");
   const {
     data: shippingContinuousAnalytics,
     error: shippingContinuousAnalyticsError,
     reload: reloadShippingContinuousAnalytics,
-  } = useApi<AlwaysOnDailyAnalytics>(canViewSettings ? "/cameras/shipping-continuous-analytics/" : null);
+  } = useApi<AlwaysOnDailyAnalytics>("/cameras/shipping-continuous-analytics/");
 
   // Страница разделена на вкладки: «Отгрузка» (по умолчанию) — очередь и
   // камеры отгрузки, «AI 24/7» — сам моноблок с бесконечным циклом подсчёта.
-  // Киоск и view-only видят «Отгрузку» без полосы вкладок.
   const [tab, setTab] = useState<MonoblockTab>("shipments");
   const [shippingTab, setShippingTab] = useState("conveyors");
   const shippingPanelId = useId();
-  const [transportType, setTransportType] = useState<"truck" | "train" | "unknown" | null>(null);
-  const defaultTransportType = "truck";
-  const activeTab: MonoblockTab = canView ? tab : "shipments";
+  const [transportType, setTransportType] = useState<"truck" | "train">("truck");
   const [completedOpen, setCompletedOpen] = useState(false);
 
   const allPlayable = useMemo(() => playableCameras(cameras), [cameras]);
   // Логические камеры camN — только их закрепляют за моноблоком и контурами.
-  const playable = useMemo(() => allPlayable.filter((camera) => /^cam[1-9]\d*$/.test(camera.src)), [allPlayable]);
+  const playable = useMemo(() => allPlayable.filter((camera) => isLogicalCamera(camera.src)), [allPlayable]);
   const { ordersById, sessionsByCamera, camerasBySrc, cameraOwners } = useMemo(
     () => ({
       ordersById: indexFirstBy(orders ?? [], (order) => order.id),
@@ -1539,17 +1361,19 @@ function MonoblockPageInner() {
   );
 
   useVisiblePolling(reloadOrders, BOARD_POLL_MS);
-  useVisiblePolling(reloadSessions, SESSION_POLL_MS, canView);
-  useVisiblePolling(
-    () =>
-      Promise.all([
-        reloadCameras(),
-        ...(canViewSettings ? [reloadCameraSettings()] : []),
-        ...(canViewSettings ? [reloadShippingContinuousSettings(), reloadShippingContinuousAnalytics()] : []),
-        ...(canView ? [reloadAlwaysOnSettings(), reloadAlwaysOnAnalytics()] : []),
-      ]),
-    SLOW_POLL_MS,
-  );
+  useVisiblePolling(reloadSessions, SESSION_POLL_MS);
+  // Политика камер — то, что меняет окно «Камеры моноблока»; медленный опрос
+  // и «Повторить» перечитывают её вместе с остальным.
+  const reloadMonoblockPolicy = async () => {
+    await Promise.all([
+      reloadCameraSettings(),
+      reloadShippingContinuousSettings(),
+      reloadShippingContinuousAnalytics(),
+      reloadAlwaysOnSettings(),
+    ]);
+  };
+  const reloadSlow = () => Promise.all([reloadCameras(), reloadMonoblockPolicy(), reloadAlwaysOnAnalytics()]);
+  useVisiblePolling(reloadSlow, SLOW_POLL_MS);
   const auxiliaryError =
     camerasError ||
     sessionsError ||
@@ -1562,69 +1386,42 @@ function MonoblockPageInner() {
   const alwaysOnAnalyticsAvailable = !alwaysOnAnalyticsError && alwaysOnAnalytics?.analytics_sync?.available === true;
   const shippingAnalyticsAvailable =
     !shippingContinuousAnalyticsError && shippingContinuousAnalytics?.analytics_sync?.available === true;
-  const reloadAll = () =>
-    Promise.all([
-      reloadOrders(),
-      reloadCameras(),
-      reloadSessions(),
-      reloadCameraSettings(),
-      reloadShippingSettings(),
-      reloadShippingContinuousSettings(),
-      reloadShippingContinuousAnalytics(),
-      reloadAlwaysOnSettings(),
-      reloadAlwaysOnAnalytics(),
-    ]);
-  const reloadMonoblockPolicy = async () => {
-    await Promise.all([
-      reloadCameraSettings(),
-      reloadShippingContinuousSettings(),
-      reloadShippingContinuousAnalytics(),
-      reloadAlwaysOnSettings(),
-    ]);
-  };
+  const reloadAll = () => Promise.all([reloadOrders(), reloadSessions(), reloadShippingSettings(), reloadSlow()]);
 
   /* ── Метрики: считаются на клиенте из уже опрошенных данных ─────────── */
   const transportCounts = useMemo(() => {
-    const totals = { truck: 0, train: 0, unknown: 0 };
+    const totals = { truck: 0, train: 0 };
     for (const order of orders ?? []) {
-      if (["confirmed", "arrived", "loading", "loaded", "shipped"].includes(order.status)) {
-        totals[order.transport_type ?? "unknown"] += 1;
+      if (order.status === "shipped" || ORDER_AWAITING_SHIPMENT_STATUSES.includes(order.status)) {
+        totals[order.transport_type] += 1;
       }
     }
     for (const session of sessions ?? []) {
-      if (!ordersById.has(session.order_id)) totals[session.order_transport_type ?? "unknown"] += 1;
+      if (!ordersById.has(session.order_id)) totals[session.order_transport_type] += 1;
     }
     return totals;
   }, [orders, ordersById, sessions]);
-  const activeTransportType =
-    transportType === "unknown" && transportCounts.unknown === 0
-      ? defaultTransportType
-      : (transportType ?? defaultTransportType);
   const transportTabs: TabDef[] = [
     { key: "truck", label: "Грузовики", count: transportCounts.truck },
     { key: "train", label: "Вагоны", count: transportCounts.train },
-    ...(transportCounts.unknown > 0 ? [{ key: "unknown", label: "Без типа", count: transportCounts.unknown }] : []),
   ];
   const boardOrders = useMemo(
-    () => orders?.filter((order) => (order.transport_type ?? "unknown") === activeTransportType) ?? [],
-    [activeTransportType, orders],
+    () => orders?.filter((order) => order.transport_type === transportType) ?? [],
+    [transportType, orders],
   );
   const boardSessions = useMemo(
     () =>
       (sessions ?? []).filter(
         (session) =>
-          ((ordersById.has(session.order_id)
-            ? ordersById.get(session.order_id)?.transport_type
-            : session.order_transport_type) ?? "unknown") === activeTransportType,
+          (ordersById.get(session.order_id)?.transport_type ?? session.order_transport_type) === transportType,
       ),
-    [activeTransportType, ordersById, sessions],
+    [transportType, ordersById, sessions],
   );
   const counts = useMemo(() => {
-    const result = { waiting: 0, wagons: 0, loading: 0, ready: 0, shipped: 0, shippedBags: 0 };
+    const result = { waiting: 0, loading: 0, ready: 0, shipped: 0, shippedBags: 0 };
     for (const order of boardOrders) {
       if (order.status === "confirmed") {
         result.waiting += 1;
-        if (order.transport_type === "train") result.wagons += 1;
       } else if (order.status === "arrived" || order.status === "loading") {
         result.loading += 1;
       } else if (order.status === "loaded") {
@@ -1642,10 +1439,6 @@ function MonoblockPageInner() {
   // днём подпись «сегодня» была бы неправдой.
   const boardScopeLabel = debouncedSearch ? "по поиску" : day && day !== today ? formatIsoDate(day) : completedLabel;
   const shippedCaption = counts.shipped > 0 ? `${boardScopeLabel} · ${counts.shippedBags} меш.` : boardScopeLabel;
-  const waitingCaption =
-    counts.wagons > 0
-      ? `в очереди · ${counts.wagons} ${pluralRu(counts.wagons, ["вагон", "вагона", "вагонов"])}`
-      : "в очереди";
   /* ── Полоса камер: плитка знает, какой заказ занимает камеру ─────────── */
   const stripSources = shippingContinuousSettings?.camera_sources ?? [];
   function tileBinding(source: string): ShippingTileBinding | undefined {
@@ -1704,38 +1497,22 @@ function MonoblockPageInner() {
     },
     { key: "monoblock", label: "AI 24/7", count: alwaysOnSettings?.camera_sources.length ?? 0 },
   ];
-  const showHeader = canView;
 
   return (
     <AppShell title="Моноблок" section="Работа">
       <div className="flex flex-col gap-6">
-        {showHeader && (
-          <div className="flex flex-wrap items-center gap-3">
-            {canView && (
-              <Tabs
-                tabs={pageTabs}
-                active={activeTab}
-                onChange={(key) => setTab(key as MonoblockTab)}
-                label="Режим моноблока"
-              />
+        <div className="flex flex-wrap items-center gap-3">
+          <Tabs tabs={pageTabs} active={tab} onChange={(key) => setTab(key as MonoblockTab)} label="Режим моноблока" />
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {tab === "monoblock" && canManageAlwaysOn && (
+              <AlwaysOnSettingsButton cameras={playable} settings={alwaysOnSettings} onSaved={setAlwaysOnSettings} />
             )}
-            <div className="ml-auto flex flex-wrap items-center gap-2">
-              {activeTab === "monoblock"
-                ? canManageAlwaysOn && (
-                    <AlwaysOnSettingsButton
-                      cameras={playable}
-                      settings={alwaysOnSettings}
-                      onSaved={setAlwaysOnSettings}
-                    />
-                  )
-                : null}
-            </div>
           </div>
-        )}
+        </div>
 
         {(error || auxiliaryError) && <ErrorAlert message={error || auxiliaryError} onRetry={() => void reloadAll()} />}
 
-        {activeTab === "monoblock" ? (
+        {tab === "monoblock" ? (
           !alwaysOnSettings?.camera_sources.length ? (
             <Card className="rounded-lg px-4 py-12 text-center">
               <div className="text-[14px]">Бесконечный цикл пока не запущен</div>
@@ -1755,11 +1532,7 @@ function MonoblockPageInner() {
                 />
                 <StatCard
                   label="Всего"
-                  value={
-                    alwaysOnAnalyticsAvailable
-                      ? (alwaysOnAnalytics?.all_time_total ?? alwaysOnAnalytics?.total ?? 0)
-                      : "—"
-                  }
+                  value={alwaysOnAnalyticsAvailable ? (alwaysOnAnalytics?.all_time_total ?? 0) : "—"}
                   caption="за всё время"
                 />
                 <StatCard
@@ -1815,73 +1588,71 @@ function MonoblockPageInner() {
                 aria-labelledby={`${shippingPanelId}-conveyors-tab`}
                 className="space-y-6"
               >
-                {canViewSettings && (
-                  <Card role="region" aria-label="Конвейеры и счёт" className="space-y-4 p-4 sm:p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <h2 className="text-lg font-semibold">Конвейеры и счёт</h2>
-                        <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                          Прямой эфир, счётчики мешков и камеры номеров. Сессии отгрузки по дням — в «Аналитике» камеры.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <ShippingIdleSettings />
-                        {canManage && (
-                          <CameraSettingsButton
-                            cameras={playable}
-                            settings={cameraSettings}
-                            reload={reloadMonoblockPolicy}
-                          />
-                        )}
-                      </div>
-                    </div>
-                    {shippingContinuousSettings ? (
-                      <>
-                        <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
-                          <span>Камеры отгрузки · работают 24/7</span>
-                          <span>
-                            · насчитано сегодня{" "}
-                            {shippingAnalyticsAvailable ? (shippingContinuousAnalytics?.total ?? 0) : "—"}
-                          </span>
-                          <span>
-                            ·{" "}
-                            {shippingContinuousSettings.sync_status !== "synced"
-                              ? "ожидает готовности"
-                              : shippingAnalyticsAvailable
-                                ? "синхронизировано"
-                                : "журнал не синхронизирован"}
-                          </span>
-                        </div>
-                        {stripSources.length ? (
-                          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-                            {stripSources.map((source) => (
-                              <ContinuousCameraTile
-                                key={source}
-                                scope="shipping"
-                                source={source}
-                                settings={shippingContinuousSettings}
-                                analytics={shippingContinuousAnalytics}
-                                analyticsError={shippingContinuousAnalyticsError}
-                                camera={camerasBySrc.get(source)}
-                                bound={tileBinding(source)}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-[12px] text-[var(--muted-foreground)]">
-                            Камеры отгрузки не назначены{canManage ? " — выберите их в «Камеры моноблока»" : ""}
-                          </p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-sm text-[var(--muted-foreground)]">
-                        {shippingContinuousSettingsError
-                          ? "Данные конвейеров недоступны."
-                          : "Данные конвейеров загружаются…"}
+                <Card role="region" aria-label="Конвейеры и счёт" className="space-y-4 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold">Конвейеры и счёт</h2>
+                      <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                        Прямой эфир, счётчики мешков и камеры номеров. Сессии отгрузки по дням — в «Аналитике» камеры.
                       </p>
-                    )}
-                  </Card>
-                )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <ShippingIdleSettings />
+                      {canManage && (
+                        <CameraSettingsButton
+                          cameras={playable}
+                          settings={cameraSettings}
+                          reload={reloadMonoblockPolicy}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  {shippingContinuousSettings ? (
+                    <>
+                      <div className="flex flex-wrap items-center gap-x-1.5 text-[12px] text-[var(--muted-foreground)]">
+                        <span>Камеры отгрузки · работают 24/7</span>
+                        <span>
+                          · насчитано сегодня{" "}
+                          {shippingAnalyticsAvailable ? (shippingContinuousAnalytics?.total ?? 0) : "—"}
+                        </span>
+                        <span>
+                          ·{" "}
+                          {shippingContinuousSettings.sync_status !== "synced"
+                            ? "ожидает готовности"
+                            : shippingAnalyticsAvailable
+                              ? "синхронизировано"
+                              : "журнал не синхронизирован"}
+                        </span>
+                      </div>
+                      {stripSources.length ? (
+                        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                          {stripSources.map((source) => (
+                            <ContinuousCameraTile
+                              key={source}
+                              scope="shipping"
+                              source={source}
+                              settings={shippingContinuousSettings}
+                              analytics={shippingContinuousAnalytics}
+                              analyticsError={shippingContinuousAnalyticsError}
+                              camera={camerasBySrc.get(source)}
+                              bound={tileBinding(source)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[12px] text-[var(--muted-foreground)]">
+                          Камеры отгрузки не назначены{canManage ? " — выберите их в «Камеры моноблока»" : ""}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-sm text-[var(--muted-foreground)]">
+                      {shippingContinuousSettingsError
+                        ? "Данные конвейеров недоступны."
+                        : "Данные конвейеров загружаются…"}
+                    </p>
+                  )}
+                </Card>
               </div>
             )}
             {shippingTab === "orders" && (
@@ -1902,12 +1673,12 @@ function MonoblockPageInner() {
                   </div>
                   <Tabs
                     tabs={transportTabs}
-                    active={activeTransportType}
+                    active={transportType}
                     onChange={(key) => setTransportType(key as typeof transportType)}
                     label="Тип транспорта в очереди"
                   />
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                    <StatCard label="Ожидают погрузки" value={counts.waiting} caption={waitingCaption} />
+                    <StatCard label="Ожидают погрузки" value={counts.waiting} caption="в очереди" />
                     <StatCard
                       label="На погрузке"
                       value={counts.loading}
@@ -1924,12 +1695,12 @@ function MonoblockPageInner() {
 
                   <ShippingCalendar
                     orders={orders === null ? null : boardOrders}
-                    day={boardFilter.day}
-                    today={boardFilter.today}
-                    search={boardFilter.search}
-                    appliedSearch={boardFilter.appliedSearch}
-                    onDayChange={boardFilter.onDayChange}
-                    onSearchChange={boardFilter.onSearchChange}
+                    day={day}
+                    today={today}
+                    search={search}
+                    appliedSearch={debouncedSearch}
+                    onDayChange={setDay}
+                    onSearchChange={setSearch}
                     canOpenOrder={canOpenOrder}
                   />
                 </Card>
@@ -1946,7 +1717,10 @@ function MonoblockPageInner() {
           onClose={() => setCompletedOpen(false)}
           // Окно «Выехали» применяет бэкенд — перечитываем очередь сразу,
           // не дожидаясь следующего опроса.
-          onSaved={() => Promise.all([reloadShippingSettings(), reloadOrders()])}
+          onSaved={(saved) => {
+            setShippingSettings(saved);
+            return reloadOrders();
+          }}
         />
       )}
     </AppShell>

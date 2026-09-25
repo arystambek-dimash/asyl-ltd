@@ -1,24 +1,6 @@
 "use client";
 import { Check } from "lucide-react";
-import { sectionRank } from "@/lib/permission-presets";
 import type { Permission } from "@/lib/types";
-
-const PERM_SECTION_LABELS: Record<string, string> = {
-  reports: "Отчёты",
-  orders: "Заказы",
-  payments: "Касса",
-  monoblock: "Моноблок",
-  loader: "Грузчик",
-  warehouse: "Склады",
-  silos: "Силосы",
-  grain: "Приход и вывоз",
-  clients: "Клиенты",
-  catalog: "Товары",
-  tasks: "Задачи",
-  events: "Журнал",
-  employees: "Сотрудники",
-  sys_permissions: "Администрирование",
-};
 
 export function PermissionPicker({
   perms,
@@ -31,15 +13,13 @@ export function PermissionPicker({
   onToggle: (code: string) => void;
   disabled?: Set<string>;
 }) {
-  // Разделы — в порядке меню, а не по алфавиту кодов с сервера.
-  const sections = Array.from(new Set(perms.map((permission) => permission.section))).sort(
-    (a, b) => sectionRank(a) - sectionRank(b),
-  );
+  // Сервер отдаёт права в порядке меню: разделы идут в порядке первого появления.
+  const sections = Array.from(new Map(perms.map((permission) => [permission.section, permission.section_label])));
   return (
     <div className="flex flex-col gap-3">
-      {sections.map((section) => (
+      {sections.map(([section, sectionLabel]) => (
         <div key={section} className="rounded-lg border p-3">
-          <h3 className="mb-2 text-sm font-semibold">{PERM_SECTION_LABELS[section] ?? section}</h3>
+          <h3 className="mb-2 text-sm font-semibold">{sectionLabel}</h3>
           <div className="flex flex-wrap gap-2">
             {perms
               .filter((permission) => permission.section === section)

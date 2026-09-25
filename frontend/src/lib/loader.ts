@@ -4,7 +4,7 @@ import type { ShipmentWagon } from "@/lib/types";
 import type { WagonReportStatus } from "@/lib/wagon-report";
 import { downloadBlob } from "@/lib/download";
 import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
-import { formatMoney, toLocalIsoDate } from "@/lib/utils";
+import { formatMoney, formatTons } from "@/lib/utils";
 
 export interface LoaderOrderItem {
   label: string;
@@ -19,36 +19,35 @@ export interface LoaderOrder {
   status: string;
   transport_type: "truck" | "train";
   truck_number: string;
-  trailer_number?: string;
+  trailer_number: string;
   /** Прошлые пары клиента — чипы «как в прошлый раз». */
-  transport_suggestions?: TransportPair[];
+  transport_suggestions: TransportPair[];
   /** Пару указал клиент: грузчик её не меняет. */
-  transport_locked?: boolean;
+  transport_locked: boolean;
   currency: "KZT" | "USD";
-  arrival_date: string | null;
-  created_at: string;
+  /** Плановый день: дата приезда, иначе день создания (ГГГГ-ММ-ДД). */
+  planned_on: string;
   client_name: string;
   /** Страна клиента — страна номера по умолчанию. */
-  client_country?: string;
+  client_country: string;
   items: LoaderOrderItem[];
   bags: number;
   total_kg: string;
   total_amount: string;
   shipped_at: string | null;
   /** Оплата заказа: грузчик видит, платил ли клиент заранее. */
-  payment_status?: string;
-  paid_total?: string;
-  remaining_amount?: string;
+  payment_status: string;
+  remaining_amount: string;
   /** Грузчик может сам отменить эту отгрузку (своя и не старше часа). */
-  can_rollback?: boolean;
+  can_rollback: boolean;
   /** Отгрузка по отчёту о вагонах: станция и вагоны. */
-  rail_station?: string;
-  wagons?: ShipmentWagon[];
+  rail_station: string;
+  wagons: ShipmentWagon[];
   /** «Отправить отчёт» о вагонах: когда, кому («Динаре») и что с сообщением. */
-  report_sent_at?: string | null;
-  report_sent_to?: string;
-  report_status?: "" | WagonReportStatus;
-  report_error?: string;
+  report_sent_at: string | null;
+  report_sent_to: string;
+  report_status: "" | WagonReportStatus;
+  report_error: string;
 }
 
 export interface WaybillSigner {
@@ -64,7 +63,7 @@ export interface WaybillSettings {
 /** Вес груза: у фуры — килограммы, у вагона — тонны (1360 мешков по 50 кг = 68 т). */
 export function loadWeight(order: Pick<LoaderOrder, "transport_type" | "total_kg">): string {
   const kg = Number(order.total_kg);
-  return order.transport_type === "train" ? `${formatMoney(kg / 1000)} т` : `${kg} кг`;
+  return order.transport_type === "train" ? `${formatTons(kg)} т` : `${formatMoney(kg)} кг`;
 }
 
 /** Последняя вкладка «Фуры | Вагоны» — своя у каждого на общем планшете. */
@@ -74,11 +73,6 @@ export function readStoredLoaderTransport(userId: number): string | null {
 
 export function storeLoaderTransport(transport: LoaderOrder["transport_type"], userId: number) {
   storeChoice(userChoiceKey("loader:transport", userId), transport);
-}
-
-export function shiftIsoDate(iso: string, days: number): string {
-  const [year, month, day] = iso.split("-").map(Number);
-  return toLocalIsoDate(new Date(year, month - 1, day + days));
 }
 
 export function loaderUrl(path: "queue" | "history", params: Record<string, string>) {

@@ -13,13 +13,7 @@ from apps.orders.models import (
 )
 
 
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
 
 def test_transaction_capabilities_include_employee_permissions(
@@ -75,7 +69,6 @@ def test_transaction_history_is_paginated_with_complete_currency_totals(
         invoice_id=987,
         idempotency_key=f"asyl-payment-{payments[0].id}",
         status="paid",
-        total_refunded="3.00",
     )
     PaymentRefund.objects.create(
         payment=payments[0],
@@ -109,72 +102,6 @@ def test_transaction_history_is_paginated_with_complete_currency_totals(
         "KZT": "3.00",
         "USD": "0.00",
     }
-
-
-@patch("apps.orders.apipay.api_request")
-def test_paid_qr_refund_is_reserved_in_apipay_until_provider_confirmation(
-    api_request, auth_client, accountant,
-):
-    # QR-оплату Kaspi возвращает только после подтверждения покупателем по ссылке.
-    api_request.return_value = {
-        "id": 42,
-        "status": "awaiting_customer",
-        "customer_url": "https://qr.apipay.kz/refund/token",
-        "link_expires_at": "2026-09-18T10:00:00+00:00",
-    }
-    client = Client.objects.create_with_user(
-        first_name="Возврат", phone="87770000000"
-    )
-    order = Order.objects.create(
-        client=client,
-        status="shipped",
-        currency="KZT",
-        payment_status="settled",
-    )
-    OrderItem.objects.create(order=order, quantity=1, unit_price="1.00")
-    payment = Payment.objects.create(
-        order=order,
-        amount="1.00",
-        method="kaspi",
-        status="confirmed",
-    )
-    ApiPayInvoice.objects.create(
-        payment=payment,
-        invoice_id=990,
-        channel="qr",
-        idempotency_key=f"asyl-payment-{payment.id}",
-        status="paid",
-    )
-
-    response = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/refund/",
-        {
-            "amount": "1.00",
-            "reason": "Тестовый платёж",
-            "mode": "auto",
-        },
-        format="json",
-    )
-
-    assert response.status_code == 201
-    assert response.data["method"] == "apipay_qr"
-    assert response.data["status"] == "pending"
-    payment.refresh_from_db()
-    order.refresh_from_db()
-    assert payment.refunded_amount == Decimal("0.00")
-    assert payment.pending_refund_amount == Decimal("1.00")
-    assert payment.available_for_refund == Decimal("0.00")
-    assert order.paid_total == Decimal("1.00")
-    assert order.payment_status == "settled"
-    serialized = auth_client(accountant).get(
-        "/api/payment-transactions/"
-    ).data["results"][0]
-    assert serialized["effective_status"] == "refund_pending"
-    assert serialized["refunds"][0]["reason"] == "Тестовый платёж"
-    assert serialized["refunds"][0]["status"] == "pending"
-    api_request.assert_called_once_with(
-        "POST", "/qr-refunds/links", {}, credentials=ANY,
-    )
 
 
 def test_manual_refund_requires_reason_and_cannot_exceed_available(
@@ -293,7 +220,7 @@ def test_cashier_can_reject_pending_transaction_with_reason(
     )
 
     response = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/reject/",
+        f"/api/orders/{order.id}/payments/{payment.id}/reject/",
         {"reason": "Ошибочно внесённая оплата"},
         format="json",
     )
@@ -327,7 +254,7 @@ def test_phone_kaspi_rejection_waits_for_provider_confirmation(
     )
 
     response = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/reject/",
+        f"/api/orders/{order.id}/payments/{payment.id}/reject/",
         {"reason": "Клиент отказался"},
         format="json",
     )
@@ -358,7 +285,7 @@ def test_active_qr_transaction_cannot_be_rejected(auth_client, accountant):
     )
 
     response = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/reject/",
+        f"/api/orders/{order.id}/payments/{payment.id}/reject/",
         {"reason": "Клиент отказался"},
         format="json",
     )
@@ -456,6 +383,7 @@ def test_summary_splits_paid_total_by_payment_method(auth_client, accountant):
         "cash": "300000.00",
         "kaspi": "350000.00",
     }
+    assert summary["method_labels"] == {"cash": "Наличные", "kaspi": "QR"}
     # Разбивка обязана сходиться с итогом, иначе кассир увидит два разных числа.
     assert summary["paid_by_currency"]["KZT"] == "650000.00"
 
@@ -473,6 +401,9 @@ def test_transaction_status_counts_and_filter(auth_client, accountant):
     # Счётчики — по всем статусам, независимо от выбранного фильтра.
     assert data["status_counts"] == {
         "confirmed": 2, "rejected": 1, "received": 3}
+    assert data["status_labels"] == {
+        "requested": "Ожидает", "received": "В кассе",
+        "confirmed": "Оплачено", "rejected": "Отклонено"}
 
     filtered = auth_client(accountant).get(
         "/api/payment-transactions/?status=rejected").data
@@ -507,6 +438,8 @@ def test_awaiting_customer_is_counted_and_filtered_as_requested(
         "/api/payment-transactions/?status=requested").data
     assert waiting["count"] == 1
     assert waiting["results"][0]["effective_status"] == "awaiting_customer"
+    assert waiting["results"][0]["effective_status_label"] == "Ожидает клиента"
+    assert waiting["results"][0]["status_label"] == "В кассе"
 
 
 def test_only_a_cash_desk_confirmation_can_be_returned_to_review(auth_client, accountant, user_with_perms):

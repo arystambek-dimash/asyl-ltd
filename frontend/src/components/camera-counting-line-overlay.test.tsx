@@ -1,25 +1,7 @@
 import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { installVideoGeometry, stubOverlaySurface } from "@/test-utils/video-geometry";
 import { CameraCountingLineOverlay } from "./camera-counting-line-overlay";
-
-function installVideoGeometry() {
-  Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", {
-    configurable: true,
-    value: 1920,
-  });
-  Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", {
-    configurable: true,
-    value: 1080,
-  });
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", {
-    configurable: true,
-    value: 800,
-  });
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
-    configurable: true,
-    value: 600,
-  });
-}
 
 const BEFORE = { id: "before", name: "До механизма", line: { x1: 0.25, y1: 0.2, x2: 0.25, y2: 0.8 } };
 
@@ -43,11 +25,7 @@ function renderEditor(props: Partial<React.ComponentProps<typeof CameraCountingL
       />
     </div>,
   );
-  const overlay = view.container.querySelector("[data-camera-counting-line]") as HTMLElement;
-  overlay.getBoundingClientRect = () =>
-    ({ left: 0, top: 75, width: 800, height: 450, right: 800, bottom: 525, x: 0, y: 75, toJSON() {} }) as DOMRect;
-  overlay.setPointerCapture = vi.fn();
-  overlay.hasPointerCapture = vi.fn(() => false);
+  const overlay = stubOverlaySurface(view.container.querySelector("[data-camera-counting-line]") as HTMLElement);
   return { ...view, overlay, ...handlers };
 }
 
@@ -124,23 +102,7 @@ describe("CameraCountingLineOverlay", () => {
   });
 
   it("normalizes editor pointer coordinates against the visible video box", () => {
-    installVideoGeometry();
-    const onLineChange = vi.fn();
-    const { container } = render(
-      <div style={{ position: "relative" }}>
-        <video style={{ objectFit: "contain" }} />
-        <CameraCountingLineOverlay
-          line={{ x1: 0.1, y1: 0.2, x2: 0.8, y2: 0.9 }}
-          direction="any"
-          editable
-          onLineChange={onLineChange}
-        />
-      </div>,
-    );
-    const overlay = container.querySelector("[data-camera-counting-line]") as HTMLElement;
-    overlay.getBoundingClientRect = () =>
-      ({ left: 0, top: 75, width: 800, height: 450, right: 800, bottom: 525, x: 0, y: 75, toJSON() {} }) as DOMRect;
-    overlay.setPointerCapture = vi.fn();
+    const { overlay, onLineChange } = renderEditor({ verificationLines: [] });
 
     fireEvent.pointerDown(overlay, { clientX: 400, clientY: 300, pointerId: 1 });
     fireEvent.pointerMove(overlay, { clientX: 600, clientY: 390, pointerId: 1 });
@@ -149,17 +111,7 @@ describe("CameraCountingLineOverlay", () => {
   });
 
   it("shows saved verification lines read-only next to the counting line", () => {
-    installVideoGeometry();
-    const { container } = render(
-      <div style={{ position: "relative" }}>
-        <video style={{ objectFit: "contain" }} />
-        <CameraCountingLineOverlay
-          line={{ x1: 0.1, y1: 0.2, x2: 0.8, y2: 0.9 }}
-          direction="any"
-          verificationLines={[BEFORE]}
-        />
-      </div>,
-    );
+    const { container } = renderEditor({ editable: false });
 
     const layer = container.querySelector('[data-verification-line="before"]')!;
     const stroke = layer.querySelector("[data-verification-stroke]")!;

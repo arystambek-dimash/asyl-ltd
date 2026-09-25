@@ -6,11 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
-import { PAYMENT_METHOD_LABELS } from "@/lib/constants";
 import type { Payment, QrRefundState } from "@/lib/types";
-import { formatCurrency, formatDateTime } from "@/lib/utils";
-
-const pad = (id: number) => String(id).padStart(6, "0");
+import { formatCurrency, formatDateTime, formatPaymentNumber } from "@/lib/utils";
 
 /**
  * Возврат подтверждённой оплаты: из кассы, через ApiPay или ссылкой по Kaspi QR
@@ -58,7 +55,7 @@ export function PaymentRefundModal({
     try {
       const response = await api.post<{ method: string; qr_refund?: QrRefundState }>(
         `/payment-transactions/${selected.id}/refund/`,
-        { amount: amount || undefined, reason, mode: "auto" },
+        { amount: amount || undefined, reason },
       );
       await onRefunded(selected, response.data.qr_refund ?? null);
     } catch (e) {
@@ -111,8 +108,7 @@ export function PaymentRefundModal({
             >
               {choices.map((row) => (
                 <option key={row.id} value={row.id}>
-                  PAY-{pad(row.id)} · {PAYMENT_METHOD_LABELS[row.method] ?? row.method_label ?? row.method} ·{" "}
-                  {formatDateTime(row.paid_at)} · можно вернуть{" "}
+                  {formatPaymentNumber(row.id)} · {row.method_label} · {formatDateTime(row.paid_at)} · можно вернуть{" "}
                   {formatCurrency(row.available_for_refund ?? "0", row.currency ?? "KZT")}
                 </option>
               ))}

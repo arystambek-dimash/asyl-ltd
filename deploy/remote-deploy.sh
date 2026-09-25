@@ -7,17 +7,18 @@ COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 DEPLOY_ACTION="${1:-deploy}"
 RELEASE_STATE_FILE="${RELEASE_STATE_FILE:-$APP_DIR/.deploy-state/release-state}"
-RELEASE_STATE_RECEIPT="${RELEASE_STATE_RECEIPT:-${RELEASE_STATE_FILE}.prev}"
-RELEASE_RUNNER_FILE="${RELEASE_RUNNER_FILE:-${RELEASE_STATE_FILE}.runner}"
+RELEASE_STATE_RECEIPT="${RELEASE_STATE_FILE}.prev"
+RELEASE_RUNNER_FILE="${RELEASE_STATE_FILE}.runner"
 RELEASE_STATE_DIRECTORY="$(dirname "$RELEASE_STATE_FILE")"
+CAMERA_WRITERS="backend camera-monitor ai-stock-monitor passage-scale-monitor shipping-transport-monitor"
 STATE_TEMP_FILE=""
 OLD_CAMERA_WRITERS_QUIESCED=0
 CANDIDATE_START_ATTEMPTED=0
 
 case "$DEPLOY_ACTION" in
-  deploy|rollback|finalize|mark-good) ;;
+  deploy|rollback|finalize) ;;
   *)
-    echo "Usage: $0 [deploy|rollback|finalize|mark-good]" >&2
+    echo "Usage: $0 [deploy|rollback|finalize]" >&2
     exit 2
     ;;
 esac
@@ -29,8 +30,7 @@ cleanup_state_temp() {
     echo "Candidate did not start; resuming the previous camera writers." >&2
     if ! (
       cd "$APP_DIR" &&
-      docker compose -f "$COMPOSE_FILE" start \
-        backend camera-monitor ai-stock-monitor passage-scale-monitor shipping-transport-monitor
+      docker compose -f "$COMPOSE_FILE" start $CAMERA_WRITERS
     ); then
       echo "Failed to resume one or more previous camera writer containers." >&2
       cleanup_status=1
@@ -48,11 +48,6 @@ file_owner_uid() {
 }
 
 prepare_secure_state_directory() {
-  if [ "$(dirname "$RELEASE_STATE_RECEIPT")" != "$RELEASE_STATE_DIRECTORY" ] || \
-     [ "$(dirname "$RELEASE_RUNNER_FILE")" != "$RELEASE_STATE_DIRECTORY" ]; then
-    echo "Release state, receipt and runner must share one private directory." >&2
-    return 1
-  fi
   if [ -L "$RELEASE_STATE_DIRECTORY" ] || \
      { [ -e "$RELEASE_STATE_DIRECTORY" ] && [ ! -d "$RELEASE_STATE_DIRECTORY" ]; }; then
     echo "Release state directory is not a real directory: $RELEASE_STATE_DIRECTORY" >&2
@@ -125,28 +120,24 @@ if [ "$DEPLOY_ACTION" != "deploy" ] && [ -z "$EXPECTED_SHA" ]; then
   exit 1
 fi
 
-if [ "${WAGON_SCALE_API_URL_B64+x}" = x ]; then
-  WAGON_SCALE_API_URL="$(printf '%s' "$WAGON_SCALE_API_URL_B64" | base64 -d)"
-  if [ -n "$WAGON_SCALE_API_URL" ]; then
-    if ! printf '%s\n' "$WAGON_SCALE_API_URL" \
-      | grep -Eq '^https?://[^[:space:]]+/[^[:space:]]*$'; then
-      echo "WAGON_SCALE_API_URL must be empty or an absolute HTTP(S) URL." >&2
-      exit 1
-    fi
+# Prints the decoded scale endpoint; an empty value explicitly disables it.
+decode_scale_url() {
+  scale_url_name="$1"
+  scale_url="$(printf '%s' "$2" | base64 -d)" || return 1
+  if [ -n "$scale_url" ] && ! printf '%s\n' "$scale_url" \
+    | grep -Eq '^https?://[^[:space:]]+/[^[:space:]]*$'; then
+    echo "$scale_url_name must be empty or an absolute HTTP(S) URL." >&2
+    return 1
   fi
+  printf '%s' "$scale_url"
+}
+
+if [ "${WAGON_SCALE_API_URL_B64+x}" = x ]; then
+  WAGON_SCALE_API_URL="$(decode_scale_url WAGON_SCALE_API_URL "$WAGON_SCALE_API_URL_B64")"
   export WAGON_SCALE_API_URL
 fi
 if [ "${TRUCK_SCALE_API_URL_B64+x}" = x ]; then
-  TRUCK_SCALE_API_URL="$(
-    printf '%s' "$TRUCK_SCALE_API_URL_B64" | base64 -d
-  )"
-  if [ -n "$TRUCK_SCALE_API_URL" ]; then
-    if ! printf '%s\n' "$TRUCK_SCALE_API_URL" \
-      | grep -Eq '^https?://[^[:space:]]+/[^[:space:]]*$'; then
-      echo "TRUCK_SCALE_API_URL must be empty or an absolute HTTP(S) URL." >&2
-      exit 1
-    fi
-  fi
+  TRUCK_SCALE_API_URL="$(decode_scale_url TRUCK_SCALE_API_URL "$TRUCK_SCALE_API_URL_B64")"
   export TRUCK_SCALE_API_URL
 fi
 
@@ -466,25 +457,7 @@ rollback_release() {
   # paired with its own bind-mounted files rather than a half-rollback.
   ensure_image_available "$STATE_PREVIOUS_BACKEND_IMAGE_REF" || return 1
   ensure_image_available "$STATE_PREVIOUS_FRONTEND_IMAGE_REF" || return 1
-  if docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=collector | grep -q .; then
-    if ! git cat-file -e "$STATE_PREVIOUS_GIT_SHA:backend/apps/grain/outbox_importer.py"; then
-      # The collector keeps recording to disk. An older application may be
-      # restored, but must never start a competing physical poller. Replay
-      # resumes when a compatible release is deployed again.
-      VEHICLE_PLATE_AUTO_SCALE_ENABLED=0
-      export VEHICLE_PLATE_AUTO_SCALE_ENABLED
-      echo "Rollback predates importer: legacy automation disabled; collector retains events." >&2
-    fi
-  fi
   git checkout --detach "$STATE_PREVIOUS_GIT_SHA" || return 1
-
-  # A pre-split release used TRUCK_SCALE_API_URL for every Grain weighing.
-  # The configured endpoint now belongs only to export trucks, so such an old
-  # rollback must disable physical capture instead of exposing it to intake.
-  if ! grep -q 'WAGON_SCALE_API_URL' "$COMPOSE_FILE"; then
-    TRUCK_SCALE_API_URL=""
-    export TRUCK_SCALE_API_URL
-  fi
 
   BACKEND_IMAGE_REF="$STATE_PREVIOUS_BACKEND_IMAGE_REF"
   FRONTEND_IMAGE_REF="$STATE_PREVIOUS_FRONTEND_IMAGE_REF"
@@ -492,10 +465,8 @@ rollback_release() {
   export BACKEND_IMAGE_REF FRONTEND_IMAGE_REF APP_RELEASE
 
   docker compose -f "$COMPOSE_FILE" config --quiet || return 1
-  echo "WARNING: ai-stock-monitor is intentionally disabled after rollback; " \
-       "deploy an event-aware release to restore automatic stock posting." >&2
   if ! docker compose -f "$COMPOSE_FILE" up -d --remove-orphans \
-    --scale ai-stock-monitor=0 --pull never --wait --wait-timeout 180; then
+    --pull never --wait --wait-timeout 180; then
     show_container_failure
     return 1
   fi
@@ -589,14 +560,14 @@ if [ "$DEPLOY_ACTION" = "rollback" ]; then
   exit 0
 fi
 
-if [ "$DEPLOY_ACTION" = "finalize" ] || [ "$DEPLOY_ACTION" = "mark-good" ]; then
+if [ "$DEPLOY_ACTION" = "finalize" ]; then
   if [ -e "$RELEASE_STATE_FILE" ]; then
     load_pending_candidate_state
     if ! running_release_matches \
       "$STATE_CANDIDATE_BACKEND_IMAGE_REF" \
       "$STATE_CANDIDATE_FRONTEND_IMAGE_REF" \
       "$STATE_CANDIDATE_GIT_SHA"; then
-      echo "Refusing to mark good: the candidate release is not fully running." >&2
+      echo "Refusing to finalize: the candidate release is not fully running." >&2
       exit 1
     fi
     complete_transaction FINALIZED
@@ -649,74 +620,56 @@ docker compose -f "$COMPOSE_FILE" exec -T db-backup \
   sh -c 'sha256sum -c /backups/asyl-latest.dump.sha256 && sha256sum -c /backups/media-latest.tar.gz.sha256'
 
 echo "Validating compose config..."
-if [ -n "${OPENAI_API_KEY_B64:-}" ] || [ -n "${SHIPPING_WAGON_AI_MODEL_B64:-}" ] || [ -n "${SHIPPING_WAGON_AI_DETAIL_B64:-}" ]; then
-  python3 deploy/sync-openai-secret.py
-fi
+python3 deploy/sync-openai-secret.py
 # `config` expands all environment values, including camera/alert credentials.
 # Quiet validation keeps those secrets out of a world-readable /tmp file.
 docker compose -f "$COMPOSE_FILE" config --quiet
 
 if [ -n "${GHCR_TOKEN:-}" ]; then
   echo "Logging in to ghcr.io..."
-  printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${GHCR_USER:-github}" --password-stdin
+  registry_login
 fi
 
 echo "Pulling immutable application images..."
 # Infrastructure images are upgraded only during an explicit maintenance
 # operation. An application release must not silently replace Postgres,
-# Redis, nginx, WireGuard, certbot, or go2rtc.
+# Redis, nginx, certbot, or go2rtc.
 docker compose -f "$COMPOSE_FILE" pull --quiet backend frontend
 
-# Releases before the non-root backend transition created these persistent
-# volumes as root. Image-level chown cannot change an already-mounted volume,
-# so repair it in a disposable privileged container before Django starts.
+# Every writer runs as app, but media restored manually from a tar archive
+# (deploy/backup/README.md) lands as root. Image-level chown cannot change an
+# already-mounted volume, so hand only such foreign files back to app in a
+# disposable privileged container before Django starts.
 echo "Preparing backend volume permissions..."
 docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   --user root \
   --entrypoint /bin/sh \
-  backend -c 'chown -R app:app /app/media /app/staticfiles'
+  backend -c 'find /app/media /app/staticfiles \( ! -user app -o ! -group app \) -exec chown app:app {} +'
 docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
   --user root --entrypoint /bin/sh passage-scale-monitor \
   -c 'chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon'
 
-# The separate collector must remain alive while all application writers stop.
-weighbridge_collector="$(docker ps -q --filter label=com.docker.compose.project=asyl-weighbridge --filter label=com.docker.compose.service=collector)"
-if [ -n "$weighbridge_collector" ]; then
-  docker exec "$weighbridge_collector" python -m weighbridge.healthcheck
-fi
-if [ -f deploy/weighbridge/install.sh ]; then
-  WEIGHBRIDGE_IMAGE_REF="$BACKEND_IMAGE_REF" sh deploy/weighbridge/install.sh prepare
-fi
+# The separate collector must remain alive while all application writers stop:
+# prepare health-checks a running collector or installs a missing one.
+WEIGHBRIDGE_IMAGE_REF="$BACKEND_IMAGE_REF" sh deploy/weighbridge/install.sh prepare
 
-# Migration 0028 introduces permanent analytics roles. The previous backend,
-# camera importer and stock poster do not understand those fences. Stop every
-# old camera writer before the candidate can migrate, then check sessions from
-# the candidate image while HTTP is unavailable. This closes the TOCTOU gap:
-# no new loading can start after the zero-open-session check, and no old worker
-# can post or import across the schema/policy cutover.
-echo "Quiescing previous camera writers before role migration..."
+# Every release stops the old camera writers before the candidate migrates, so
+# no previous worker posts or imports across a schema change. If the candidate
+# does not start, the trap resumes the previous writers.
+echo "Quiescing previous camera writers before migrations..."
 OLD_CAMERA_WRITERS_QUIESCED=1
-if ! docker compose -f "$COMPOSE_FILE" stop -t 180 \
-  backend camera-monitor ai-stock-monitor passage-scale-monitor shipping-transport-monitor; then
+if ! docker compose -f "$COMPOSE_FILE" stop -t 180 $CAMERA_WRITERS; then
   echo "Failed to quiesce previous camera writers." >&2
   exit 1
 fi
-if ! docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
-  --entrypoint python \
-  backend manage.py check_camera_cutover; then
-  echo "Camera contour cutover refused; the previous release will resume." >&2
-  exit 2
-fi
 
-# First rollout hands off on fresh clear readings after the legacy poller
-# stops, BEFORE migrations/startup. Later deployments find the marker and do
-# nothing: the independent collector stays alive while PostgreSQL is down.
-if [ -f deploy/weighbridge/install.sh ]; then
-  if ! docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
-    --entrypoint python passage-scale-monitor manage.py activate_weighbridge_collector; then
-    echo "Scale is busy or collector unavailable; deployment deferred, previous writers resume." >&2
-    exit 2
-  fi
+# First rollout activates the collector on fresh clear readings after the
+# previous writers stop, BEFORE migrations/startup. Later deployments find the
+# marker and do nothing: the collector stays alive while PostgreSQL is down.
+if ! docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+  --entrypoint python passage-scale-monitor manage.py activate_weighbridge_collector; then
+  echo "Scale is busy or collector unavailable; deployment deferred, previous writers resume." >&2
+  exit 2
 fi
 
 candidate_status=0

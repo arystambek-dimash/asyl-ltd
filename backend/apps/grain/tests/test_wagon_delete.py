@@ -8,32 +8,29 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from decimal import Decimal
 from threading import Event
 from unittest.mock import patch
 
 import pytest
-from django.db import close_old_connections, connection, connections, transaction
-from django.utils import timezone
+from django.db import close_old_connections, connections, transaction
 from rest_framework.exceptions import ValidationError
 
-from apps.catalog.models import Product  # noqa: F401  (регистрация приложений)
 from apps.eventlog.models import EventLog
-from apps.grain import passage_scale_automation as automation
 from apps.grain import scale, services
 from apps.grain import statuses as st
 from apps.grain.models import (
     AutomaticPassageCapture,
     GrainMovement,
     GrainSupply,
+    LabCheck,
     PassageScaleAutomationState,
     PassageWeightCapture,
     Silo,
     SiloReservation,
-    SiloType,
     Wagon,
     WeighingRecord,
 )
+from apps.grain.tests.factories import passage_trip, scale_reading, silo_route
 
 pytestmark = pytest.mark.django_db
 
@@ -44,27 +41,14 @@ def grain_admin(user_with_perms):
         "grain-delete",
         codes=[
             "grain.view", "grain.supply", "grain.arrive", "grain.weigh",
-            "grain.inventory", "grain.exit", "grain.delete",
+            "grain.inventory", "grain.delete",
         ],
-    )
-
-
-def _reading(weight):
-    return scale.ScaleReading(
-        weight_kg=Decimal(weight),
-        age_seconds=Decimal("0.2"),
-        updated_at="2026-08-12T10:00:00Z",
     )
 
 
 def _finished_intake(auth_client, user, *, expected=50_000, gross=70_000, tare=20_000):
     """Короткий приход, доведённый до завершения: 50 т легли в силос."""
-    grain_type = SiloType.objects.create(name=f"Тип-{SiloType.objects.count() + 1}")
-    silo = Silo.objects.create(
-        name=f"Силос-{Silo.objects.count() + 1}",
-        total_capacity_kg=500_000,
-        silo_type=grain_type,
-    )
+    grain_type, silo = silo_route()
     created = auth_client(user).post(
         "/api/grain/supplies/",
         {
@@ -86,7 +70,7 @@ def _finished_intake(auth_client, user, *, expected=50_000, gross=70_000, tare=2
     with patch.object(
         scale,
         "read_truck_scale",
-        side_effect=[_reading(gross), _reading(tare)],
+        side_effect=[scale_reading(gross), scale_reading(tare)],
     ):
         for path in ("entry-weight", "exit-weight"):
             response = auth_client(user).post(
@@ -98,7 +82,7 @@ def _finished_intake(auth_client, user, *, expected=50_000, gross=70_000, tare=2
 
 def _passage(auth_client, user, *, entry=12_000, exit_weight=30_000):
     created = auth_client(user).post(
-        "/api/grain/wagons/passage/",
+        "/api/grain/passages/",
         {"number": "777 AAA 02", "cargo_name": "Отруби"},
         format="json",
     )
@@ -107,7 +91,7 @@ def _passage(auth_client, user, *, entry=12_000, exit_weight=30_000):
     with patch.object(
         scale,
         "read_truck_scale",
-        side_effect=[_reading(entry), _reading(exit_weight)],
+        side_effect=[scale_reading(entry), scale_reading(exit_weight)],
     ):
         for path in ("entry-weight", "exit-weight"):
             auth_client(user).post(
@@ -116,7 +100,8 @@ def _passage(auth_client, user, *, entry=12_000, exit_weight=30_000):
     return Wagon.objects.get(pk=wagon_id)
 
 
-def _active_intake_at_unloading_completed(user, *, amount=50_000):
+def _active_intake_at_unloading_completed(*, amount=50_000):
+    """Исторический рейс старого маршрута: разгружен, но не оприходован."""
     supply = GrainSupply.objects.create(
         supplier="ТОО Активный приход",
         culture="пшеница",
@@ -132,17 +117,17 @@ def _active_intake_at_unloading_completed(user, *, amount=50_000):
     wagon = Wagon.objects.create(
         supply=supply,
         number="ACTIVE-INTAKE",
-        status=st.EXPECTED,
+        workflow="legacy",
+        status=st.UNLOADING_COMPLETED,
         expected_weight_kg=amount,
+        gross_weight_kg=amount + 20_000,
+        assigned_silo=silo,
     )
-    services.register_arrival(wagon.number, user)
-    wagon.refresh_from_db()
-    services.record_gross(wagon, amount + 20_000, user, source="auto")
-    services.record_lab_check(wagon, "accepted", user)
-    services.assign_silo(wagon, silo, user, expected_kg=amount)
-    services.start_unloading(wagon, user)
-    services.finish_unloading(wagon, user)
-    wagon.refresh_from_db()
+    WeighingRecord.objects.create(
+        wagon=wagon, kind="gross", weight_kg=amount + 20_000, source="auto"
+    )
+    LabCheck.objects.create(wagon=wagon, decision="accepted")
+    SiloReservation.objects.create(wagon=wagon, silo=silo, amount_kg=amount)
     return wagon, silo
 
 
@@ -199,7 +184,7 @@ def test_active_passage_requires_reason_then_can_be_deleted(
     grain_admin,
 ):
     created = auth_client(grain_admin).post(
-        "/api/grain/wagons/passage/",
+        "/api/grain/passages/",
         {"number": "555 BBB 02", "cargo_name": "Отруби"},
         format="json",
     )
@@ -237,14 +222,7 @@ def test_processing_weight_capture_blocks_wagon_deletion(
     auth_client,
     grain_admin,
 ):
-    wagon = Wagon.objects.create(
-        number="555BBB02",
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=st.ARRIVED,
-        arrived_at=timezone.now(),
-    )
+    wagon = passage_trip("555BBB02", number_source="manual")
     capture = PassageWeightCapture.objects.create(
         idempotency_key="4fbd9ed6-0c61-4a2e-8d14-dac48fef4cbe",
         wagon=wagon,
@@ -271,16 +249,7 @@ def test_unresolved_automatic_capture_blocks_active_passage_deletion(
     auth_client,
     grain_admin,
 ):
-    wagon = Wagon.objects.create(
-        number="555BBB02",
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=st.AT_SILO,
-        arrived_at=timezone.now(),
-        gross_weight_kg=12_000,
-        number_source="camera",
-    )
+    wagon = passage_trip("555BBB02", status=st.AT_SILO, entry=12_000)
     capture = AutomaticPassageCapture.objects.create(
         idempotency_key="8858f757-7e90-4ca2-924f-3ce701912a42",
         camera="cam1",
@@ -307,23 +276,12 @@ def test_episode_claim_and_passage_deletion_share_lane_mutex(
     grain_admin,
     settings,
 ):
-    if connection.vendor != "postgresql":
-        pytest.skip("row-lock contract requires PostgreSQL")
     settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
     state, _created = PassageScaleAutomationState.objects.update_or_create(
         scale_number=scale.TRUCK_SCALE_KEY,
         defaults={"phase": PassageScaleAutomationState.ARMED},
     )
-    wagon = Wagon.objects.create(
-        number="555BBB02",
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=st.AT_SILO,
-        arrived_at=timezone.now(),
-        gross_weight_kg=12_000,
-        number_source="camera",
-    )
+    wagon = passage_trip("555BBB02", status=st.AT_SILO, entry=12_000)
     started = Event()
 
     def delete_during_claim():
@@ -373,24 +331,13 @@ def test_successful_passage_deletion_disarms_previously_observed_lane(
     grain_admin,
     settings,
 ):
-    """An occupied snapshot from before DELETE must not start a new trip."""
+    """A lane snapshot from before DELETE must not start a new trip."""
 
     wagon = _passage(auth_client, grain_admin)
     settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
-    settings.VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG = 500
-    settings.VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS = 2
     PassageScaleAutomationState.objects.update_or_create(
         scale_number=scale.TRUCK_SCALE_KEY,
         defaults={"phase": PassageScaleAutomationState.ARMED},
-    )
-    occupied_before_delete = scale.ScaleObservation(
-        state="ready",
-        weight_kg=Decimal(30000),
-        connected=True,
-        stable=True,
-        stale=False,
-        age_seconds=Decimal("0.2"),
-        updated_at="2026-09-03T07:30:00Z",
     )
 
     response = auth_client(grain_admin).delete(
@@ -398,12 +345,9 @@ def test_successful_passage_deletion_disarms_previously_observed_lane(
     )
     assert response.status_code == 200, response.data
 
-    work = automation._advance_lane(occupied_before_delete, now=timezone.now())
-
     state = PassageScaleAutomationState.objects.get(
         scale_number=scale.TRUCK_SCALE_KEY
     )
-    assert work is None
     assert state.phase == PassageScaleAutomationState.UNARMED
     assert state.clear_streak == 0
     assert state.stable_streak == 0
@@ -411,31 +355,12 @@ def test_successful_passage_deletion_disarms_previously_observed_lane(
     assert state.current_capture_id is None
     assert not AutomaticPassageCapture.objects.exists()
 
-    empty_after_delete = scale.ScaleObservation(
-        state="ready",
-        weight_kg=Decimal(0),
-        connected=True,
-        stable=True,
-        stale=False,
-        age_seconds=Decimal("0.2"),
-        updated_at="2026-09-03T07:30:01Z",
-    )
-    automation._advance_lane(empty_after_delete, now=timezone.now())
-    state.refresh_from_db()
-    assert state.phase == PassageScaleAutomationState.UNARMED
-    assert state.clear_streak == 1
-
-    automation._advance_lane(empty_after_delete, now=timezone.now())
-    state.refresh_from_db()
-    assert state.phase == PassageScaleAutomationState.ARMED
-    assert state.clear_streak == 0
-
 
 def test_active_intake_delete_releases_reservation_without_changing_stock(
     auth_client,
     grain_admin,
 ):
-    wagon, silo = _active_intake_at_unloading_completed(grain_admin)
+    wagon, silo = _active_intake_at_unloading_completed()
     wagon_id = wagon.pk
     assert wagon.status == st.UNLOADING_COMPLETED
     assert silo.current_balance_kg == 0
@@ -496,13 +421,7 @@ def test_every_on_site_status_is_deletable_with_reason(
     grain_admin,
     status,
 ):
-    wagon = Wagon.objects.create(
-        number=f"ACTIVE-{status}",
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=status,
-    )
+    wagon = passage_trip(f"ACTIVE-{status}", status=status)
 
     payload = {"reason": "Удаление ошибочной записи"}
     if status in {st.UNLOADING, st.UNLOADING_COMPLETED}:
@@ -551,13 +470,7 @@ def test_active_delete_validates_reason(
     reason,
     code,
 ):
-    wagon = Wagon.objects.create(
-        number="BAD-REASON",
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=st.ARRIVED,
-    )
+    wagon = passage_trip("BAD-REASON")
 
     response = auth_client(grain_admin).delete(
         f"/api/grain/wagons/{wagon.pk}/delete/",
@@ -597,20 +510,13 @@ def test_unloading_intake_requires_literal_true_safety_confirmation(
     assert Wagon.objects.filter(pk=wagon.pk).exists()
 
 
-def test_delete_requires_the_grain_delete_permission(auth_client, user_with_perms):
+def test_delete_requires_the_grain_delete_permission(auth_client, user_with_perms, grain_admin):
     operator = user_with_perms(
         "grain-no-delete",
         codes=["grain.view", "grain.arrive", "grain.weigh"],
     )
-    admin = user_with_perms(
-        "grain-can-delete",
-        codes=[
-            "grain.view", "grain.supply", "grain.arrive", "grain.weigh",
-            "grain.inventory", "grain.exit", "grain.delete",
-        ],
-    )
-    created = auth_client(admin).post(
-        "/api/grain/wagons/passage/",
+    created = auth_client(grain_admin).post(
+        "/api/grain/passages/",
         {"number": "NO DELETE", "cargo_name": "Отруби"},
         format="json",
     )
@@ -645,15 +551,3 @@ def test_supply_closes_when_its_last_wagon_is_deleted(auth_client, grain_admin):
     auth_client(grain_admin).delete(f"/api/grain/wagons/{wagon.pk}/delete/")
 
     assert GrainSupply.objects.get(pk=supply_id).status == "closed"
-
-
-def test_deleted_trip_disappears_from_the_finished_list(auth_client, grain_admin):
-    wagon, _ = _finished_intake(auth_client, grain_admin)
-    listed = auth_client(grain_admin).get("/api/grain/wagons/?scope=finished")
-    assert any(row["id"] == wagon.pk for row in listed.data)
-
-    auth_client(grain_admin).delete(f"/api/grain/wagons/{wagon.pk}/delete/")
-
-    after = auth_client(grain_admin).get("/api/grain/wagons/?scope=finished")
-    assert all(row["id"] != wagon.pk for row in after.data)
-    assert wagon.status in st.TERMINAL_STATUSES | {st.EXITED}

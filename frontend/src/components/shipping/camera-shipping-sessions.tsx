@@ -7,9 +7,9 @@ import { ColorDot, Panel } from "@/components/monoblock/ui";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
+import { Input } from "@/components/ui/input";
 import { api, apiError } from "@/lib/api";
-import { fullDay } from "@/lib/day-analytics";
-import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
+import { colorMeta, isUndeterminedColor } from "@/lib/monoblock-colors";
 import {
   shippingIdentityError,
   shippingIdentityLabel,
@@ -21,30 +21,26 @@ import {
 import type { AlwaysOnColorAnalytics } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { cn, formatDateTime, formatTime, pluralRu } from "@/lib/utils";
+import { cn, formatCount, formatDateTime, formatIsoDate, formatTime, loadErrorText, pluralRu } from "@/lib/utils";
+import { wagonsHeadline } from "@/lib/wagons";
 
-const INPUT_CLASS = "h-10 rounded-md border bg-[var(--background)] px-3 text-sm";
-const countFormat = new Intl.NumberFormat("ru-RU");
 // Сегодняшний список живой: мешки идут каждые несколько секунд.
 const LIVE_POLL_MS = 3_000;
-const UNCLASSIFIED_COLORS = new Set(["unclassified", "unknown"]);
 
 function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; reload: () => Promise<void> }) {
   const inputId = useId();
   const [number, setNumber] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [savedNumber, setSavedNumber] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (saving || !number.trim()) return;
     setSaving(true);
     setError("");
     try {
-      const { data } = await api.post<ShippingSegment>(`/cameras/shipping-segments/${segment.id}/identify/`, {
+      await api.post(`/cameras/shipping-segments/${segment.id}/identify/`, {
         number: number.trim().toUpperCase(),
       });
-      setSavedNumber(data.number);
       await reload();
     } catch (failure) {
       setError(apiError(failure) || "Не удалось сохранить номер. Проверьте права и обновите данные.");
@@ -52,21 +48,15 @@ function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; re
       setSaving(false);
     }
   }
-  if (savedNumber)
-    return (
-      <p role="status" className="text-sm">
-        Номер {savedNumber} сохранён.
-      </p>
-    );
   return (
     <form onSubmit={(event) => void submit(event)} className="space-y-2 rounded-lg bg-[var(--muted)]/50 p-3">
       <label htmlFor={inputId} className="block text-sm font-medium">
         Указать номер отрезка #{segment.id}
       </label>
       <div className="flex flex-wrap gap-2">
-        <input
+        <Input
           id={inputId}
-          className={cn(INPUT_CLASS, "min-w-0 flex-1 uppercase")}
+          className="min-w-0 flex-1 uppercase"
           value={number}
           onChange={(event) => setNumber(event.target.value)}
           maxLength={20}
@@ -158,9 +148,7 @@ function SegmentCard({
         <div className="flex flex-wrap items-center gap-2">
           <h4 className="font-medium">Отрезок #{segment.id}</h4>
           <Badge tone={segment.ended_at ? "muted" : "success"}>{segment.ended_at ? "Закрыт" : "Идёт подсчёт"}</Badge>
-          <span className="ml-auto text-lg font-semibold tabular-nums">
-            {countFormat.format(segment.total_bags)} меш.
-          </span>
+          <span className="ml-auto text-lg font-semibold tabular-nums">{formatCount(segment.total_bags)} меш.</span>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <strong>{segment.number || "Без номера"}</strong>
@@ -207,9 +195,7 @@ function SegmentCard({
 /** Цвета вагона: доли — полосой, точные количества — чипами. «Не определён» всегда в конце. */
 function SessionColors({ colors }: { colors: AlwaysOnColorAnalytics[] }) {
   const ordered = [...colors].sort(
-    (a, b) =>
-      Number(UNCLASSIFIED_COLORS.has(normalizedColor(a.color))) -
-      Number(UNCLASSIFIED_COLORS.has(normalizedColor(b.color))),
+    (a, b) => Number(isUndeterminedColor(a.color)) - Number(isUndeterminedColor(b.color)),
   );
   if (!ordered.length) return null;
   return (
@@ -228,7 +214,7 @@ function SessionColors({ colors }: { colors: AlwaysOnColorAnalytics[] }) {
           <li key={item.color} title={`${item.percent}%`} className="flex items-center gap-1.5 text-xs">
             <ColorDot className={colorMeta(item.color).dot} />
             <span className="text-[var(--muted-foreground)]">{colorMeta(item.color).label}</span>{" "}
-            <span className="font-medium tabular-nums">{countFormat.format(item.total)}</span>
+            <span className="font-medium tabular-nums">{formatCount(item.total)}</span>
           </li>
         ))}
       </ul>
@@ -284,7 +270,7 @@ function SessionCard({
           </Badge>
         )}
         {!session.number && <Badge tone="warning">Без номера</Badge>}
-        <span className="text-lg font-semibold tabular-nums">{countFormat.format(session.total_bags)} меш.</span>
+        <span className="text-lg font-semibold tabular-nums">{formatCount(session.total_bags)} меш.</span>
       </button>
       <div className="px-4 pb-3 pl-11">
         <SessionColors colors={session.colors} />
@@ -305,12 +291,9 @@ function transportCount(sessions: ShippingSession[]) {
   const count = sessions.length;
   const models = new Set(sessions.map((session) => session.recognition_model));
   const only = models.size === 1 ? [...models][0] : null;
+  if (only === "wagon_number") return wagonsHeadline(count);
   const forms: [string, string, string] =
-    only === "wagon_number"
-      ? ["вагон", "вагона", "вагонов"]
-      : only === "vehicle_number"
-        ? ["машина", "машины", "машин"]
-        : ["сессия", "сессии", "сессий"];
+    only === "vehicle_number" ? ["машина", "машины", "машин"] : ["сессия", "сессии", "сессий"];
   return `${count} ${pluralRu(count, forms)}`;
 }
 
@@ -330,7 +313,7 @@ export function CameraShippingSessions({
     day ? `/cameras/shipping-sessions/?${new URLSearchParams({ camera, day })}` : null,
   );
   useVisiblePolling(list.reload, LIVE_POLL_MS, day === today);
-  const failure = list.error || (list.errorStatus ? "Сессии недоступны. Проверьте права доступа." : "");
+  const failure = loadErrorText(list, "Сессии недоступны. Проверьте права доступа.");
   const sessions = list.data?.results ?? [];
   const bags = sessions.reduce((sum, session) => sum + session.total_bags, 0);
   return (
@@ -340,10 +323,10 @@ export function CameraShippingSessions({
           <h3 id={headingId} className="text-base font-semibold">
             Сессии отгрузки
           </h3>
-          {day && <span className="text-sm text-[var(--muted-foreground)]">{fullDay(day)}</span>}
+          {day && <span className="text-sm text-[var(--muted-foreground)]">{formatIsoDate(day)}</span>}
           {sessions.length > 0 && (
             <span className="ml-auto text-sm tabular-nums text-[var(--muted-foreground)]">
-              {transportCount(sessions)} · {countFormat.format(bags)} меш.
+              {transportCount(sessions)} · {formatCount(bags)} меш.
             </span>
           )}
         </div>

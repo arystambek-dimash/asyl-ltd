@@ -99,12 +99,6 @@ class Outbox:
         with self.connect() as db:
             db.execute("UPDATE events SET acknowledged=1 WHERE id=? AND ready=1", (key,))
 
-    def evidence(self, key):
-        """Read an immutable, already finalized capture for photo repair."""
-        with self.connect() as db:
-            row = db.execute("SELECT body,photo FROM events WHERE id=? AND ready=1", (str(key),)).fetchone()
-            return {**json.loads(row["body"]), "photo": row["photo"]} if row else None
-
     def state(self, key, value=None):
         with self.connect() as db:
             if value is not None:

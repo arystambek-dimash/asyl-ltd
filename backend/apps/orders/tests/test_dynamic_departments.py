@@ -1,5 +1,4 @@
 import pytest
-from rest_framework.test import APIClient
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
@@ -10,26 +9,20 @@ from apps.warehouse.models import StockItem
 pytestmark = pytest.mark.django_db
 
 
-def _api(user):
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
-
-
 def _product():
     product = Product.objects.create(
-        name="Мука", color="Red", weight_kg="50", price="100.00")
+        name="Мука", color="Red", weight_kg="50")
     StockItem.objects.create(product=product, bags=100)
     return product
 
 
-def test_order_selects_department_independently_from_client(manager):
+def test_order_selects_department_independently_from_client(manager, api_as):
     department = Department.objects.create(
         code="department-regions", name="Регионы", color="#238C6E", is_default=True)
     client = Client.objects.create_with_user(first_name="Алия", last_name="С", phone="1")
     product = _product()
 
-    response = _api(manager).post("/api/orders/", {
+    response = api_as(manager).post("/api/orders/", {
         "client": client.id,
         "department": department.code,
         "items": [{"product": product.id, "quantity": 2}],
@@ -42,13 +35,13 @@ def test_order_selects_department_independently_from_client(manager):
     assert response.data["department_color"] == "#238C6E"
 
 
-def test_inactive_department_cannot_be_used_for_new_order(manager):
+def test_inactive_department_cannot_be_used_for_new_order(manager, api_as):
     department = Department.objects.create(
         code="old", name="Старый", is_active=False, is_default=False)
     client = Client.objects.create_with_user(first_name="Алия", last_name="С", phone="1")
     product = _product()
 
-    response = _api(manager).post("/api/orders/", {
+    response = api_as(manager).post("/api/orders/", {
         "client": client.id,
         "department": department.code,
         "items": [{"product": product.id, "quantity": 1}],
@@ -57,14 +50,12 @@ def test_inactive_department_cannot_be_used_for_new_order(manager):
     assert response.status_code == 400
 
 
-def test_sales_employee_order_is_forced_to_assigned_department(user_with_perms):
+def test_sales_employee_order_is_forced_to_assigned_department(user_with_perms, api_as):
     assigned = Department.objects.create(
         code="assigned-sales", name="Назначенный", color="#315FD5", is_default=True)
     other = Department.objects.create(
         code="other-sales", name="Другой", color="#D68B2C")
-    user = user_with_perms("assigned-manager", codes=["orders.create"])
-    user.employee.sales_department = assigned
-    user.employee.save(update_fields=["sales_department"])
+    user = user_with_perms("assigned-manager", codes=["orders.create"], department=assigned)
     client = Client.objects.create_with_user(
         first_name="Алия",
         last_name="С",
@@ -73,7 +64,7 @@ def test_sales_employee_order_is_forced_to_assigned_department(user_with_perms):
     )
     product = _product()
 
-    response = _api(user).post("/api/orders/", {
+    response = api_as(user).post("/api/orders/", {
         "client": client.id,
         "department": other.code,
         "items": [{"product": product.id, "quantity": 2}],
@@ -85,7 +76,7 @@ def test_sales_employee_order_is_forced_to_assigned_department(user_with_perms):
     assert Order.objects.get(pk=response.data["id"]).department == assigned.code
 
 
-def test_department_summary_groups_orders(manager):
+def test_department_summary_groups_orders(manager, api_as):
     first = Department.objects.create(
         code="wholesale", name="Оптовый", color="#315FD5", is_default=True)
     second = Department.objects.create(
@@ -97,7 +88,7 @@ def test_department_summary_groups_orders(manager):
     OrderItem.objects.create(order=first_order, product=product, quantity=2, unit_price="100.00")
     OrderItem.objects.create(order=second_order, product=product, quantity=3, unit_price="100.00")
 
-    response = _api(manager).get("/api/orders/department-summary/")
+    response = api_as(manager).get("/api/orders/department-summary/")
 
     assert response.status_code == 200
     rows = {row["code"]: row for row in response.data}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import http.client
 import json
-import logging
 import math
 import urllib.error
 import urllib.parse
@@ -13,15 +12,20 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from threading import Lock
 from time import monotonic
 from typing import Any
 from uuid import uuid4
 
 from django.conf import settings
-from django.core.cache import cache, caches
 from django.db import DatabaseError, connection
 from rest_framework.exceptions import APIException
+
+from apps.common.locks import (
+    acquire_advisory_lock,
+    claim_owned_lease,
+    release_advisory_lock,
+    release_owned_lease,
+)
 
 MAX_RESPONSE_BYTES = 32 * 1024
 WEIGHT_QUANTUM = Decimal("0.01")
@@ -31,10 +35,11 @@ WEIGHT_QUANTUM = Decimal("0.01")
 # until its scale is installed; configuration never falls back across slots.
 WAGON_SCALE_KEY = "wagon"
 TRUCK_SCALE_KEY = "truck"
-# The legacy singular `/truck-scale/reading/` endpoint remains a truck alias.
-# New callers should always choose one of the explicit plural scale routes.
 DEFAULT_SCALE_KEY = TRUCK_SCALE_KEY
 SCALE_KEYS = frozenset({WAGON_SCALE_KEY, TRUCK_SCALE_KEY})
+# Observation states whose weight is a live reading (settled or still moving);
+# every other state carries no weight at all.
+VALID_SCALE_STATES = frozenset({"ready", "unstable"})
 
 CAPTURE_LOCK_PREFIX = "grain:authoritative-scale-capture:v1"
 # Outlive the 60-second Gunicorn request ceiling plus cleanup/release grace.
@@ -51,14 +56,6 @@ _CAPTURE_LEASE_DEADLINE: ContextVar[float | None] = ContextVar(
     "grain_scale_capture_lease_deadline",
     default=None,
 )
-_LOCAL_CAPTURE_LOCK_GUARD = Lock()
-_COMPARE_AND_DELETE = """
-if redis.call('get', KEYS[1]) == ARGV[1] then
-  return redis.call('del', KEYS[1])
-end
-return 0
-"""
-log = logging.getLogger(__name__)
 
 _URL_SETTING_BY_SCALE = {
     WAGON_SCALE_KEY: "WAGON_SCALE_API_URL",
@@ -134,23 +131,14 @@ def authoritative_capture_lock_key(scale_key: str) -> str:
 
 
 def _capture_lock_seconds() -> int:
-    try:
-        timeout = math.ceil(float(settings.TRUCK_SCALE_TIMEOUT_SECONDS))
-    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
-        raise TruckScaleUnavailable() from exc
-    if timeout <= 0:
-        raise TruckScaleUnavailable()
+    timeout = math.ceil(_timeout())
     return max(CAPTURE_LOCK_MIN_SECONDS, timeout + CAPTURE_LOCK_MARGIN_SECONDS)
 
 
 def authoritative_db_timeout_ms() -> int:
     """Bound each PostgreSQL apply statement inside the remaining lease."""
 
-    try:
-        scale_timeout = math.ceil(float(settings.TRUCK_SCALE_TIMEOUT_SECONDS))
-    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
-        raise TruckScaleUnavailable() from exc
-    remaining_seconds = _capture_lock_seconds() - scale_timeout
+    remaining_seconds = _capture_lock_seconds() - math.ceil(_timeout())
     lease_deadline = _CAPTURE_LEASE_DEADLINE.get()
     if lease_deadline is not None:
         remaining_seconds = min(
@@ -179,91 +167,30 @@ def configure_authoritative_db_timeouts() -> None:
         cursor.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
 
 
-def _claim_database_capture(scale_key: str) -> bool:
+def _claim_database_capture(scale_key: str) -> None:
     """Try a PostgreSQL session lock that survives Redis lease expiry."""
 
-    if connection.vendor != "postgresql":
-        return False
-    advisory_id = _CAPTURE_ADVISORY_IDS[scale_key]
     try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT pg_try_advisory_lock(%s, %s)",
-                [CAPTURE_ADVISORY_NAMESPACE, advisory_id],
-            )
-            row = cursor.fetchone()
+        acquired = acquire_advisory_lock(
+            CAPTURE_ADVISORY_NAMESPACE,
+            _CAPTURE_ADVISORY_IDS[scale_key],
+            blocking=False,
+        )
     except DatabaseError as exc:
         connection.close()
         raise TruckScaleUnavailable(
             "Не удалось заблокировать весы в базе данных."
         ) from exc
-    if row != (True,):
+    if not acquired:
         raise TruckScaleCaptureBusy()
-    return True
-
-
-def _release_database_capture(scale_key: str) -> None:
-    advisory_id = _CAPTURE_ADVISORY_IDS[scale_key]
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_unlock(%s, %s)",
-                [CAPTURE_ADVISORY_NAMESPACE, advisory_id],
-            )
-            row = cursor.fetchone()
-        if row != (True,):
-            log.error("PostgreSQL scale advisory lock was not owned at release")
-    except DatabaseError:
-        # Closing the exact session is the fail-closed release for a
-        # session-level advisory lock. PostgreSQL also releases it on worker
-        # death, independently of the finite Redis lease.
-        log.exception("Could not release PostgreSQL scale advisory lock")
-        connection.close()
-
-
-def _redis_release_owned_capture(lock_key: str, owner: str) -> bool | None:
-    backend = caches["default"]
-    adapter = getattr(backend, "_cache", None)
-    get_client = getattr(adapter, "get_client", None)
-    serializer = getattr(adapter, "_serializer", None)
-    if not callable(get_client) or serializer is None:
-        return None
-
-    key = backend.make_and_validate_key(lock_key)
-    client = get_client(key, write=True)
-    encoded_owner = serializer.dumps(owner)
-    return bool(client.eval(_COMPARE_AND_DELETE, 1, key, encoded_owner))
-
-
-def _claim_capture_lock(lock_key: str, owner: str, timeout: int) -> bool:
-    backend = caches["default"]
-    adapter = getattr(backend, "_cache", None)
-    if callable(getattr(adapter, "get_client", None)):
-        return bool(cache.add(lock_key, owner, timeout=timeout))
-    # LocMemCache is process-local and its add is atomic. Guard both add and
-    # compare-delete so local/test threads cannot delete a reacquired owner.
-    with _LOCAL_CAPTURE_LOCK_GUARD:
-        return bool(cache.add(lock_key, owner, timeout=timeout))
-
-
-def _release_capture_lock(lock_key: str, owner: str) -> None:
-    try:
-        released = _redis_release_owned_capture(lock_key, owner)
-        if released is not None:
-            return
-        with _LOCAL_CAPTURE_LOCK_GUARD:
-            if cache.get(lock_key) == owner:
-                cache.delete(lock_key)
-    except Exception:  # pragma: no cover - cache outage during best-effort release
-        log.exception("Could not release authoritative scale capture lock")
 
 
 @contextmanager
 def authoritative_capture(scale_key: str = DEFAULT_SCALE_KEY):
     """Serialize one authoritative physical read through its atomic apply.
 
-    Production Redis provides a cross-worker lease and owner-safe Lua release.
-    Local/test LocMemCache uses an equivalent process-local guarded fallback.
+    The owned cache lease (``apps.common.locks``) keeps other workers out;
+    the PostgreSQL advisory lock stays authoritative after the lease expires.
     """
 
     lock_key = authoritative_capture_lock_key(scale_key)
@@ -271,7 +198,7 @@ def authoritative_capture(scale_key: str = DEFAULT_SCALE_KEY):
     lock_seconds = _capture_lock_seconds()
     lease_deadline = monotonic() + lock_seconds
     try:
-        acquired = _claim_capture_lock(lock_key, owner, lock_seconds)
+        acquired = claim_owned_lease(lock_key, owner, lock_seconds)
     except Exception as exc:
         raise TruckScaleUnavailable("Не удалось заблокировать весы.") from exc
     if not acquired:
@@ -279,31 +206,31 @@ def authoritative_capture(scale_key: str = DEFAULT_SCALE_KEY):
     deadline_token = _CAPTURE_LEASE_DEADLINE.set(lease_deadline)
     database_locked = False
     try:
-        database_locked = _claim_database_capture(scale_key)
+        _claim_database_capture(scale_key)
+        database_locked = True
         yield
     finally:
         try:
             if database_locked:
-                _release_database_capture(scale_key)
+                # PostgreSQL also releases the session lock on worker death,
+                # independently of the finite Redis lease.
+                release_advisory_lock(
+                    CAPTURE_ADVISORY_NAMESPACE, _CAPTURE_ADVISORY_IDS[scale_key]
+                )
         finally:
             try:
-                _release_capture_lock(lock_key, owner)
+                release_owned_lease(lock_key, owner)
             finally:
                 _CAPTURE_LEASE_DEADLINE.reset(deadline_token)
 
 
-def _api_url(scale_key: str = DEFAULT_SCALE_KEY) -> str:
+def _api_url(scale_key: str) -> str:
     try:
         setting_name = _URL_SETTING_BY_SCALE[scale_key]
     except KeyError as exc:
         raise ValueError(f"Unknown truck scale: {scale_key}") from exc
     value = getattr(settings, setting_name, "")
     return value.strip() if isinstance(value, str) else ""
-
-
-def enabled(scale_key: str = DEFAULT_SCALE_KEY) -> bool:
-    """Whether production explicitly configured the scale integration."""
-    return bool(_api_url(scale_key))
 
 
 def _validated_api_url(url: str) -> str:
@@ -332,15 +259,18 @@ def _validated_api_url(url: str) -> str:
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Never turn one scale read into a request to another URL."""
+    """Never turn one local read into a request to another URL."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
-def _open_request(request: urllib.request.Request, timeout: float):
-    # The scale address is infrastructure configuration, not a public URL.
-    # Ignore HTTP(S)_PROXY from the host and never follow redirects from it.
+def open_local_request(request: urllib.request.Request, timeout: float):
+    """Open a request to site infrastructure: the scale PC or the video relay.
+
+    These addresses are infrastructure configuration, not public URLs:
+    ignore HTTP(S)_PROXY from the host and never follow redirects from them.
+    """
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         _NoRedirectHandler(),
@@ -380,17 +310,21 @@ def _invalid_json_constant(_value: str) -> None:
     raise ValueError("non-finite JSON number")
 
 
-def _read_payload(url: str, *, timeout: float | None = None) -> dict[str, Any]:
+def _read_payload(scale_key: str, *, preview: bool = False) -> dict[str, Any]:
+    """Fetch the scale PC's JSON object; ``preview`` uses the short timeout."""
+
+    url = _api_url(scale_key)
+    if not url:
+        raise TruckScaleDisabled()
+    url = _validated_api_url(url)
+    timeout = _preview_timeout() if preview else _timeout()
     try:
         request = urllib.request.Request(
             url,
             headers={"Accept": "application/json"},
             method="GET",
         )
-        with _open_request(
-            request,
-            timeout=_timeout() if timeout is None else timeout,
-        ) as response:
+        with open_local_request(request, timeout=timeout) as response:
             if getattr(response, "status", 200) != 200:
                 raise TruckScaleUnavailable()
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -433,11 +367,26 @@ def _required_flag(payload: dict[str, Any], name: str) -> bool:
     return value
 
 
-def _required_decimal(payload: dict[str, Any], name: str) -> Decimal:
-    value = payload.get(name)
-    if not isinstance(value, Decimal) or not value.is_finite():
+def _nullable_string(payload: dict[str, Any], name: str) -> str | None:
+    """A key the scale PC must always send, with a string or ``null`` value."""
+
+    if name not in payload:
+        raise TruckScaleMalformedResponse()
+    value = payload[name]
+    if value is not None and not isinstance(value, str):
         raise TruckScaleMalformedResponse()
     return value
+
+
+def _status_flags(payload: dict[str, Any]) -> tuple[bool, bool, bool, str | None]:
+    """Return ``(connected, stable, stale, error)`` of one scale response."""
+
+    return (
+        _required_flag(payload, "connected"),
+        _required_flag(payload, "stable"),
+        _required_flag(payload, "stale"),
+        _nullable_string(payload, "error"),
+    )
 
 
 def _optional_decimal(payload: dict[str, Any], name: str) -> Decimal | None:
@@ -449,6 +398,20 @@ def _optional_decimal(payload: dict[str, Any], name: str) -> Decimal | None:
     return value
 
 
+def _required_decimal(payload: dict[str, Any], name: str) -> Decimal:
+    value = _optional_decimal(payload, name)
+    if value is None:
+        raise TruckScaleMalformedResponse()
+    return value
+
+
+def _quantized_weight(weight: Decimal) -> Decimal:
+    try:
+        return weight.quantize(WEIGHT_QUANTUM, rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise TruckScaleMalformedResponse() from exc
+
+
 def _normalized_preview_weight(weight: Decimal | None) -> Decimal | None:
     if weight is None:
         return None
@@ -457,39 +420,16 @@ def _normalized_preview_weight(weight: Decimal | None) -> Decimal | None:
     )
     if weight < 0 or weight > max_weight:
         return None
-    try:
-        return weight.quantize(WEIGHT_QUANTUM, rounding=ROUND_HALF_UP)
-    except InvalidOperation as exc:
-        raise TruckScaleMalformedResponse() from exc
+    return _quantized_weight(weight)
 
 
 def read_truck_scale_observation(
     scale_key: str = DEFAULT_SCALE_KEY,
 ) -> ScaleObservation:
     """Read display state without weakening the authoritative capture path."""
-    url = _api_url(scale_key)
-    if not url:
-        raise TruckScaleDisabled()
-
-    payload = _read_payload(
-        _validated_api_url(url),
-        timeout=_preview_timeout(),
-    )
-    connected = _required_flag(payload, "connected")
-    stable = _required_flag(payload, "stable")
-    stale = _required_flag(payload, "stale")
-
-    if "error" not in payload:
-        raise TruckScaleMalformedResponse()
-    error = payload["error"]
-    if error is not None and not isinstance(error, str):
-        raise TruckScaleMalformedResponse()
-
-    if "updated_at" not in payload:
-        raise TruckScaleMalformedResponse()
-    updated_at = payload["updated_at"]
-    if updated_at is not None and not isinstance(updated_at, str):
-        raise TruckScaleMalformedResponse()
+    payload = _read_payload(scale_key, preview=True)
+    connected, stable, stale, error = _status_flags(payload)
+    updated_at = _nullable_string(payload, "updated_at")
 
     weight = _normalized_preview_weight(
         _optional_decimal(payload, "weight_kg")
@@ -535,20 +475,8 @@ def read_truck_scale_observation(
 
 def read_truck_scale(scale_key: str = DEFAULT_SCALE_KEY) -> ScaleReading:
     """Fetch one fresh, stable scale reading; never retry or accept stale data."""
-    url = _api_url(scale_key)
-    if not url:
-        raise TruckScaleDisabled()
-
-    payload = _read_payload(_validated_api_url(url))
-    connected = _required_flag(payload, "connected")
-    stable = _required_flag(payload, "stable")
-    stale = _required_flag(payload, "stale")
-
-    if "error" not in payload:
-        raise TruckScaleMalformedResponse()
-    error = payload["error"]
-    if error is not None and not isinstance(error, str):
-        raise TruckScaleMalformedResponse()
+    payload = _read_payload(scale_key)
+    connected, stable, stale, error = _status_flags(payload)
     if not connected or not stable or stale or error not in (None, ""):
         raise TruckScaleNotReady()
 
@@ -568,19 +496,11 @@ def read_truck_scale(scale_key: str = DEFAULT_SCALE_KEY) -> ScaleReading:
     if age > max_age:
         raise TruckScaleNotReady("Показание весов устарело.")
 
-    if "updated_at" not in payload:
-        raise TruckScaleMalformedResponse()
-    updated_at = payload["updated_at"]
-    if updated_at is not None and not isinstance(updated_at, str):
-        raise TruckScaleMalformedResponse()
+    # Checked only after readiness: a not-ready scale reports "not ready",
+    # not a malformed timestamp.
+    updated_at = _nullable_string(payload, "updated_at")
 
-    try:
-        normalized_weight = weight.quantize(
-            WEIGHT_QUANTUM,
-            rounding=ROUND_HALF_UP,
-        )
-    except InvalidOperation as exc:
-        raise TruckScaleMalformedResponse() from exc
+    normalized_weight = _quantized_weight(weight)
     if normalized_weight <= 0 or normalized_weight > max_weight:
         raise TruckScaleNotReady("Вес на весах вне допустимого диапазона.")
 

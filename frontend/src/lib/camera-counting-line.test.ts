@@ -121,6 +121,7 @@ describe("verification lines contract", () => {
         expect(apart, `${left.name} / ${right.name}`).toBe(true);
       }
     }
+    expect(lineSetupError(COUNT, lines)).toBeNull();
   });
 
   it("keeps every verification colour clearly apart from the counting line and each other", () => {
@@ -144,14 +145,6 @@ describe("verification lines contract", () => {
       expect(apart(value, hue(COUNT_LINE_COLOR)!)).toBeGreaterThanOrEqual(45);
       for (const other of hues.slice(index + 1)) expect(apart(value, other)).toBeGreaterThanOrEqual(30);
     }
-  });
-
-  it("proposes distinct geometry for every allowed line", () => {
-    const lines: VerificationLine[] = [];
-    for (let index = 0; index < MAX_VERIFICATION_LINES; index += 1) {
-      lines.push(nextVerificationLine(lines, COUNT));
-    }
-    expect(lineSetupError(COUNT, lines)).toBeNull();
   });
 
   it.each<[string, NormalizedLine, VerificationLine[], string]>([

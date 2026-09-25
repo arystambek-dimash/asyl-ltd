@@ -1,15 +1,12 @@
-from decimal import Decimal
-
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
-from apps.common.money import as_money_strings, money_string, primary_currency
-from apps.orders.debt import debt_by_currency
+from apps.accounts.passwords import validate_new_password
+from apps.orders.debt import debt_by_currency, debt_fields
 from apps.sales.access import assigned_department_id, scope_by_client_department
 from apps.sales.models import Department
 
+from .managers import sync_user_names
 from .models import Client, Store
 
 
@@ -23,10 +20,6 @@ class ClientReadSerializer(serializers.ModelSerializer):
     last_name = serializers.CharField(source="user.last_name", read_only=True)
     name = serializers.CharField(read_only=True)
     portal_access_enabled = serializers.SerializerMethodField()
-    password_change_required = serializers.BooleanField(
-        source="user.must_change_password",
-        read_only=True,
-    )
     department_name = serializers.CharField(
         source="department.name",
         allow_null=True,
@@ -54,7 +47,6 @@ class ClientReadSerializer(serializers.ModelSerializer):
             "department_name",
             "user",
             "portal_access_enabled",
-            "password_change_required",
             "currency",
             "debt_total",
             "debt_currency",
@@ -80,21 +72,20 @@ class ClientReadSerializer(serializers.ModelSerializer):
         )
 
     def _debt(self, obj) -> dict:
-        cached = getattr(obj, "_debt_totals_cache", None)
+        cached = getattr(obj, "_debt_fields_cache", None)
         if cached is None:
-            cached = debt_by_currency(obj.orders.all())
-            obj._debt_totals_cache = cached
+            cached = debt_fields(debt_by_currency(obj.orders.all()), fallback=obj.currency)
+            obj._debt_fields_cache = cached
         return cached
 
     def get_debt_by_currency(self, obj):
-        return as_money_strings(self._debt(obj))
+        return self._debt(obj)["debt_by_currency"]
 
     def get_debt_currency(self, obj):
-        return primary_currency(self._debt(obj), fallback=obj.currency)
+        return self._debt(obj)["debt_currency"]
 
     def get_debt_total(self, obj):
-        totals = self._debt(obj)
-        return money_string(totals.get(self.get_debt_currency(obj), Decimal("0")))
+        return self._debt(obj)["debt_total"]
 
 
 class ClientCreateUpdateSerializer(serializers.ModelSerializer):
@@ -170,18 +161,13 @@ class ClientCreateUpdateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        user_update_fields = []
-        for field in ("first_name", "last_name"):
-            if field not in validated_data:
-                continue
-            value = validated_data.pop(field)
-            if getattr(instance.user, field) != value:
-                setattr(instance.user, field, value)
-                user_update_fields.append(field)
-
+        names = {
+            field: validated_data.pop(field)
+            for field in ("first_name", "last_name")
+            if field in validated_data
+        }
         instance = super().update(instance, validated_data)
-        if user_update_fields:
-            instance.user.save(update_fields=user_update_fields)
+        sync_user_names(instance.user, names)
         return instance
 
 
@@ -189,11 +175,7 @@ class ClientPasswordSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate_password(self, value):
-        try:
-            validate_password(value, user=self.context["client"].user)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(exc.messages)
-        return value
+        return validate_new_password(value, user=self.context["client"].user)
 
     def save(self, **kwargs):
         client = self.context["client"]
@@ -206,9 +188,15 @@ class ClientPasswordSerializer(serializers.Serializer):
 
 
 class StoreSerializer(serializers.ModelSerializer):
+    # Последний допустимый день графика оплат: число месяца или день недели (Пн=1).
+    SCHEDULE_MAX_DAY = {"monthly": 31, "weekly": 7}
+
     client_name = serializers.CharField(
         source="client.name",
         read_only=True,
+    )
+    payment_schedule_type = serializers.ChoiceField(
+        choices=Store.SCHEDULE_TYPES, required=False,
     )
 
     class Meta:
@@ -222,7 +210,6 @@ class StoreSerializer(serializers.ModelSerializer):
             "phone",
             "payment_schedule_type",
             "payment_days",
-            "contract_signed_at"
         ]
 
     def get_fields(self):
@@ -234,3 +221,41 @@ class StoreSerializer(serializers.ModelSerializer):
                 request.user,
             )
         return fields
+
+    def validate(self, attrs):
+        # Тот же график, что проверяет форма магазина: кривые дни (строки, 0,
+        # 32) навсегда закрыли бы окно оплаты по отгруженным заказам.
+        if "payment_schedule_type" not in attrs and "payment_days" not in attrs:
+            return attrs
+        schedule_type = attrs.get(
+            "payment_schedule_type",
+            self.instance.payment_schedule_type if self.instance else "none",
+        )
+        days = attrs.get(
+            "payment_days",
+            self.instance.payment_days if self.instance else [],
+        )
+        if schedule_type == "none":
+            attrs["payment_days"] = []
+            return attrs
+        max_day = self.SCHEDULE_MAX_DAY.get(schedule_type)
+        if max_day is None:
+            # Старый магазин с типом вне списка: дни без типа не проверить.
+            raise serializers.ValidationError(
+                {"payment_schedule_type": "Выберите тип графика оплат."}
+            )
+        if (
+            not isinstance(days, list)
+            or not days
+            or any(
+                isinstance(day, bool) or not isinstance(day, int)
+                or not 1 <= day <= max_day
+                for day in days
+            )
+        ):
+            unit = "числа месяца от 1 до 31" if schedule_type == "monthly" else "дни недели от 1 до 7"
+            raise serializers.ValidationError(
+                {"payment_days": f"Укажите {unit}."}
+            )
+        attrs["payment_days"] = sorted(set(days))
+        return attrs

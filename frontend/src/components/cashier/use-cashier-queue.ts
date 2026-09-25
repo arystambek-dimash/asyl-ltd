@@ -5,11 +5,11 @@ import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import type { Order, PaymentQueueItem } from "@/lib/types";
 import { usePagedApi } from "@/lib/use-paged-api";
-import { apiUrl, filtersAreValid, scopeParams, type CashFilters } from "./filters";
+import { apiUrl } from "@/lib/utils";
+import { filtersAreValid, scopeParams, type CashFilters } from "./filters";
 
 /* ── «Оплаты» кассы: данные и действия, общие для вкладок ─────────────── */
-// Хук отдаёт оплаты к подтверждению и списки заказов отдела кассы, а об
-// изменениях сообщает наружу — сводки главной перезагружаются сами.
+// Хук отдаёт оплаты к подтверждению и списки заказов отдела кассы.
 // Оплаты к подтверждению — общая очередь всех отделов; заказы — отдел кассы:
 // «Ждут оплаты» (отгружены, долг не согласован), «К отгрузке» (предоплата)
 // и «К возврату» (переплата — только в кассе на компьютере, `refunds`).
@@ -17,7 +17,6 @@ export function useCashierQueue(
   enabled: boolean,
   queueFilters: CashFilters,
   awaitingFilters: CashFilters,
-  onChanged?: () => Promise<unknown>,
   { refunds = true }: { refunds?: boolean } = {},
 ) {
   const queueActive = enabled && filtersAreValid(queueFilters);
@@ -39,15 +38,12 @@ export function useCashierQueue(
   const [error, setError] = useState("");
   const loadError = pages.find((page) => page.error)?.error ?? "";
 
-  const refresh = useCallback(async () => {
+  const reload = useCallback(async () => {
     await Promise.all([reloadQueue(), reloadAwaiting(), reloadShipment(), reloadRefund()]);
   }, [reloadAwaiting, reloadQueue, reloadRefund, reloadShipment]);
-  async function reloadAll() {
-    await Promise.all([refresh(), onChanged?.()]);
-  }
   // Возврат переплаты по Kaspi QR: строка «К возврату» уходит сразу после его
   // начала, поэтому окно ссылки держит очередь, а показывает вкладка «Оплаты».
-  const qrRefund = useQrRefundWindow(reloadAll);
+  const qrRefund = useQrRefundWindow(reload);
 
   const mutationInFlight = useRef(false);
   async function act(fn: () => Promise<unknown>, done?: string) {
@@ -57,7 +53,7 @@ export function useCashierQueue(
     setError("");
     try {
       await fn();
-      await reloadAll();
+      await reload();
       // Без подтверждения удачное действие выглядит как «ничего не произошло»,
       // и кассир жмёт кнопку второй раз.
       if (done) showSuccess(done);
@@ -77,11 +73,6 @@ export function useCashierQueue(
     loadingMore: pages.some((page) => page.loadingMore),
     /** Самый длинный из открытых списков: опрос перечитывает только первую страницу. */
     longestList: Math.max(...pages.map((page) => page.items.length)),
-    refresh,
-    toReview: queuePage.items,
-    awaiting: awaitingPage.items,
-    toShip: shipmentPage.items,
-    toRefund: refundPage.items,
     queuePage,
     awaitingPage,
     shipmentPage,
@@ -89,7 +80,7 @@ export function useCashierQueue(
     busy,
     error,
     loadError,
-    reload: reloadAll,
+    reload,
     qrRefund,
     confirmPayment: (p: PaymentQueueItem) =>
       act(() => api.post(`/orders/${p.order}/payments/${p.id}/confirm/`), "Оплата подтверждена"),

@@ -19,6 +19,7 @@ concurrency:
 
 env:
   RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+  SITE_URL: https://asyl-ltd.kz
 
 jobs:
   verify:
@@ -135,10 +136,9 @@ jobs:
     outputs:
       public_gates_passed: ${{ steps.frontend_gate.outputs.passed }}
     # Бюджет worst-case: ожидание SSH, два 15-минутных ожидания remote flock,
-    # два полных прогона deploy, публичные health gates и rollback с повторным
-    # ожиданием хоста. Короткий job timeout мог бы отменить шаг rollback именно
-    # после исчерпания retry-бюджета кандидата.
-    timeout-minutes: 120
+    # два полных прогона deploy и публичные health gates. Откат провала и
+    # завершение после таймаута выполняет отдельный job recovery.
+    timeout-minutes: 90
     env:
       PROD_HOST: ${{ secrets.PROD_HOST }}
       PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
@@ -157,98 +157,40 @@ jobs:
       FRONTEND_IMAGE_REF: ghcr.io/${{ github.repository }}-frontend@${{ needs.build.outputs.frontend_digest }}
 
     steps:
+      # Только общая SSH/health-обвязка проверенного коммита.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          sparse-checkout: deploy/ci
+          persist-credentials: false
+
       - name: Validate production deployment configuration
         run: |
           set -euo pipefail
+          . deploy/ci/prod-lib.sh
 
-          fail_if_empty() {
-            name="$1"
-            value="$2"
-            if [ -z "$value" ]; then
-              echo "::error::${name} is required for a production deployment."
-              return 1
-            fi
-          }
-
-          fail_if_empty PROD_HOST "$PROD_HOST"
-          fail_if_empty PROD_PORT "$PROD_PORT"
-          fail_if_empty PROD_USER "$PROD_USER"
-          fail_if_empty PROD_SSH_KEY "$PROD_SSH_KEY"
-          fail_if_empty PROD_SSH_KNOWN_HOSTS "$PROD_SSH_KNOWN_HOSTS"
+          validate_prod_target
           fail_if_empty BACKEND_IMAGE_REF "$BACKEND_IMAGE_REF"
           fail_if_empty FRONTEND_IMAGE_REF "$FRONTEND_IMAGE_REF"
-
-          case "$PROD_HOST" in
-            *[!A-Za-z0-9.:-]*) echo "::error::PROD_HOST contains unsupported characters."; exit 1 ;;
-          esac
-          case "$PROD_PORT" in
-            ''|*[!0-9]*) echo "::error::PROD_PORT must be numeric."; exit 1 ;;
-          esac
-          case "$PROD_USER" in
-            ''|*[!A-Za-z0-9_.-]*) echo "::error::PROD_USER contains unsupported characters."; exit 1 ;;
-          esac
           test "$PROD_APP_DIR" = "/home/$PROD_USER/asyl-ltd"
 
       - name: Deploy over SSH
         id: deploy_release
         run: |
           set -euo pipefail
-
-          test -n "$PROD_HOST"
-          test -n "$PROD_PORT"
-          test -n "$PROD_USER"
-          test -n "$PROD_SSH_KEY"
-          test -n "$PROD_SSH_KNOWN_HOSTS"
-          test -n "$BACKEND_IMAGE_REF"
-          test -n "$FRONTEND_IMAGE_REF"
+          . deploy/ci/prod-lib.sh
 
           # Both scale endpoints are optional, but explicit empty values must
           # still reach the host to disable a stale source deterministically.
           # They and the registry token are streamed over SSH stdin, never
           # embedded in the remote process command line.
-          WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
-          TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
-          OPENAI_API_KEY_B64=$(printf '%s' "$OPENAI_API_KEY" | base64 | tr -d '\n')
-          SHIPPING_WAGON_AI_MODEL_B64=$(printf '%s' "$SHIPPING_WAGON_AI_MODEL" | base64 | tr -d '\n')
-          SHIPPING_WAGON_AI_DETAIL_B64=$(printf '%s' "$SHIPPING_WAGON_AI_DETAIL" | base64 | tr -d '\n')
+          WAGON_SCALE_API_URL_B64=$(b64 "$WAGON_SCALE_API_URL")
+          TRUCK_SCALE_API_URL_B64=$(b64 "$TRUCK_SCALE_API_URL")
+          OPENAI_API_KEY_B64=$(b64 "$OPENAI_API_KEY")
+          SHIPPING_WAGON_AI_MODEL_B64=$(b64 "$SHIPPING_WAGON_AI_MODEL")
+          SHIPPING_WAGON_AI_DETAIL_B64=$(b64 "$SHIPPING_WAGON_AI_DETAIL")
 
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
-          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/asyl_ltd_known_hosts
-          chmod 600 ~/.ssh/asyl_ltd_deploy_key
-          chmod 600 ~/.ssh/asyl_ltd_known_hosts
-
-          run_ssh() {
-            # ServerAlive 15с × 6 — мёртвое соединение обнаруживается за ~1.5
-            # минуты, а не висит десятки минут до job-таймаута.
-            ssh \
-              -i ~/.ssh/asyl_ltd_deploy_key \
-              -p "$PROD_PORT" \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes \
-              -o UserKnownHostsFile="$HOME/.ssh/asyl_ltd_known_hosts" \
-              -o ConnectTimeout=10 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=6 \
-              "$PROD_USER@$PROD_HOST" "$@"
-          }
-
-          # Хостинг может перезагрузить сервер в любой момент. Тридцать пауз —
-          # 5 минут; с worst-case ConnectTimeout весь probe-бюджет около 10.
-          # Ошибку ssh не глотаем: показываем ключ/доступ vs недоступный хост.
-          wait_for_ssh() {
-            for i in $(seq 1 30); do
-              if run_ssh true 2>/tmp/ssh-probe-err.log; then
-                echo "SSH доступен (попытка $i)."
-                return 0
-              fi
-              echo "SSH недоступен, ждём 10с (попытка $i/30)…"
-              sleep 10
-            done
-            echo "::error::Сервер недоступен по SSH. Последняя ошибка ssh:"
-            cat /tmp/ssh-probe-err.log || true
-            return 1
-          }
+          setup_ssh_key
 
           # Extract the candidate deploy runner from the verified commit into
           # a host-only directory. The worktree is not changed until that
@@ -309,11 +251,11 @@ jobs:
             deploy
           fi
 
-          # Compose cannot gate camera-monitor because it is a long-running
-          # Django command without a container healthcheck. This durable probe
+          # The compose healthcheck of camera-monitor proves only that its
+          # loop is alive, not that cameras are healthy. This durable probe
           # also blocks while the /events cursor is pending, stale or failed,
           # so an incomplete backlog can never be finalized as a healthy
-          # release. Any non-zero exit reaches the existing rollback step.
+          # release. Any non-zero exit fails the job, and recovery rolls back.
           # Take the boundary from the production host after container startup
           # to avoid clock skew and any final heartbeat from the old monitor.
           candidate_health_epoch=$(run_ssh date +%s)
@@ -321,247 +263,28 @@ jobs:
           run_ssh \
             "cd '$PROD_APP_DIR' \
              && CAMERA_HEALTH_REQUIRE_SINCE_EPOCH='$candidate_health_epoch' \
-                CAMERA_HEALTH_REQUIRE_EVENTS=1 \
                 ./deploy/health/wait-for-camera-health.sh"
 
       - name: Health check
         run: |
           set -euo pipefail
-          url="${SITE_URL:-https://asyl-ltd.kz}/api/auth/me/"
-          # Бэкенд стартует не мгновенно (миграции, gunicorn) — ждём до 3 минут.
-          for i in $(seq 1 36); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" || true)
-            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
-              echo "API отвечает (HTTP $code) — деплой здоров."
-              exit 0
-            fi
-            echo "API ещё не готов (HTTP $code), попытка $i/36…"
-            sleep 5
-          done
-          echo "::error::API не поднялся после деплоя (последний код: $code)."
-          exit 1
+          . deploy/ci/prod-lib.sh
+          wait_for_public_api
 
       - name: Frontend redirect safety gate
         id: frontend_gate
-        env:
-          SITE_URL: https://asyl-ltd.kz
         run: |
           set -euo pipefail
+          . deploy/ci/prod-lib.sh
 
-          inspect_response() {
-            path="$1"
-            expected_code="$2"
-            headers=$(mktemp)
-            trap 'rm -f "$headers"' RETURN
-
-            code=$(curl -sS --max-time 15 --max-redirs 0 \
-              -D "$headers" -o /dev/null -w '%{http_code}' \
-              "${SITE_URL}${path}")
-            location=$(awk 'tolower($1)=="location:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
-            refresh=$(awk 'tolower($1)=="refresh:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
-
-            if [ "$code" != "$expected_code" ]; then
-              echo "::error::${path} returned HTTP ${code}; expected ${expected_code}."
-              return 1
-            fi
-            if [ -n "$refresh" ]; then
-              echo "::error::${path} returned a forbidden Refresh header."
-              return 1
-            fi
-            case "$location" in
-              ""|/*)
-                case "$location" in
-                  //*) echo "::error::Protocol-relative redirect is forbidden: ${location}"; return 1 ;;
-                esac
-                ;;
-              "${SITE_URL}"|"${SITE_URL}"/*|https://www.asyl-ltd.kz|https://www.asyl-ltd.kz/*) ;;
-              *)
-                echo "::error::Foreign redirect is forbidden: ${location}"
-                return 1
-                ;;
-            esac
-
-            if [ "$path" = "/" ]; then
-              case "$location" in
-                /login|/login\?*|"${SITE_URL}/login"|"${SITE_URL}/login?"*|https://www.asyl-ltd.kz/login|https://www.asyl-ltd.kz/login\?*) ;;
-                *)
-                  echo "::error::Root did not redirect to the expected login page: ${location:-<missing>}"
-                  return 1
-                  ;;
-              esac
-            fi
-          }
-
-          inspect_response / 307
-          inspect_response /login 200
+          inspect_login_flow
           echo "Frontend serves the expected login flow without foreign redirects."
           echo "passed=true" >>"$GITHUB_OUTPUT"
 
-      - name: Roll back failed release
-        if: ${{ failure() }}
-        env:
-          SITE_URL: https://asyl-ltd.kz
-        run: |
-          set -euo pipefail
-
-          test -n "$PROD_HOST"
-          test -n "$PROD_PORT"
-          test -n "$PROD_USER"
-          test -n "$PROD_SSH_KEY"
-          test -n "$PROD_SSH_KNOWN_HOSTS"
-          test "$PROD_APP_DIR" = "/home/$PROD_USER/asyl-ltd"
-
-          case "$PROD_HOST" in
-            *[!A-Za-z0-9.:-]*) echo "::error::PROD_HOST contains unsupported characters."; exit 1 ;;
-          esac
-          case "$PROD_PORT" in
-            ''|*[!0-9]*) echo "::error::PROD_PORT must be numeric."; exit 1 ;;
-          esac
-          case "$PROD_USER" in
-            ''|*[!A-Za-z0-9_.-]*) echo "::error::PROD_USER contains unsupported characters."; exit 1 ;;
-          esac
-
-          WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
-          TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
-          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/asyl_ltd_known_hosts
-          chmod 600 ~/.ssh/asyl_ltd_deploy_key
-          chmod 600 ~/.ssh/asyl_ltd_known_hosts
-
-          run_ssh() {
-            ssh \
-              -i ~/.ssh/asyl_ltd_deploy_key \
-              -p "$PROD_PORT" \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes \
-              -o UserKnownHostsFile="$HOME/.ssh/asyl_ltd_known_hosts" \
-              -o ConnectTimeout=10 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=6 \
-              "$PROD_USER@$PROD_HOST" "$@"
-          }
-
-          wait_for_ssh() {
-            for i in $(seq 1 30); do
-              if run_ssh true 2>/tmp/ssh-rollback-probe-err.log; then
-                echo "SSH доступен для rollback (попытка $i)."
-                return 0
-              fi
-              echo "SSH недоступен для rollback, ждём 10с (попытка $i/30)…"
-              sleep 10
-            done
-            echo "::error::Сервер недоступен для automatic rollback."
-            cat /tmp/ssh-rollback-probe-err.log || true
-            return 1
-          }
-
-          rollback() {
-            # The candidate runner is copied outside the Git checkout before
-            # containers change. It remains available after rollback restores
-            # the previous commit, including during this feature's first run.
-            printf '%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" \
-              | run_ssh \
-              "set -eu \
-               && IFS= read -r GHCR_TOKEN \
-               && IFS= read -r WAGON_SCALE_API_URL_B64 \
-               && IFS= read -r TRUCK_SCALE_API_URL_B64 \
-               && export GHCR_TOKEN WAGON_SCALE_API_URL_B64 TRUCK_SCALE_API_URL_B64 \
-               && cd '$PROD_APP_DIR' \
-               && runner=./.deploy-state/release-state.runner \
-               && test -f \"\$runner\" && test ! -L \"\$runner\" && test -x \"\$runner\" \
-               && APP_DIR='$PROD_APP_DIR' \
-                  EXPECTED_SHA='$RELEASE_SHA' \
-                  GHCR_USER='$GHCR_USER' \
-                  BACKEND_IMAGE_REF='$BACKEND_IMAGE_REF' \
-                  FRONTEND_IMAGE_REF='$FRONTEND_IMAGE_REF' \
-                  \"\$runner\" rollback"
-          }
-
-          wait_for_ssh
-          if ! rollback; then
-            echo "Rollback command failed — waiting for the host and retrying once…"
-            sleep 30
-            wait_for_ssh
-            rollback
-          fi
-
-          # Compose health is necessary but not sufficient. Verify the restored
-          # release through the same public ingress that rejected the candidate.
-          api_url="${SITE_URL}/api/auth/me/"
-          api_healthy=0
-          for i in $(seq 1 36); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$api_url" || true)
-            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
-              api_healthy=1
-              break
-            fi
-            echo "Restored API is not ready (HTTP $code), attempt $i/36…"
-            sleep 5
-          done
-          if [ "$api_healthy" != "1" ]; then
-            echo "::error::Rollback ran, but the restored API is unhealthy."
-            exit 1
-          fi
-
-          inspect_response() {
-            path="$1"
-            expected_code="$2"
-            headers=$(mktemp)
-            trap 'rm -f "$headers"' RETURN
-
-            code=$(curl -sS --max-time 15 --max-redirs 0 \
-              -D "$headers" -o /dev/null -w '%{http_code}' \
-              "${SITE_URL}${path}")
-            location=$(awk 'tolower($1)=="location:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
-            refresh=$(awk 'tolower($1)=="refresh:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
-
-            if [ "$code" != "$expected_code" ]; then
-              echo "::error::${path} returned HTTP ${code}; expected ${expected_code}."
-              return 1
-            fi
-            if [ -n "$refresh" ]; then
-              echo "::error::${path} returned a forbidden Refresh header."
-              return 1
-            fi
-            case "$location" in
-              ""|/*)
-                case "$location" in
-                  //*) echo "::error::Protocol-relative redirect is forbidden: ${location}"; return 1 ;;
-                esac
-                ;;
-              "${SITE_URL}"|"${SITE_URL}"/*|https://www.asyl-ltd.kz|https://www.asyl-ltd.kz/*) ;;
-              *) echo "::error::Foreign redirect is forbidden: ${location}"; return 1 ;;
-            esac
-            if [ "$path" = "/" ]; then
-              case "$location" in
-                /login|/login\?*|"${SITE_URL}/login"|"${SITE_URL}/login?"*|https://www.asyl-ltd.kz/login|https://www.asyl-ltd.kz/login\?*) ;;
-                *) echo "::error::Root did not redirect to the expected login page: ${location:-<missing>}"; return 1 ;;
-              esac
-            fi
-          }
-
-          inspect_response / 307
-          inspect_response /login 200
-          echo "Previous release restored and healthy through public ingress."
-
       - name: Finalize healthy release and clean Docker artifacts
-        if: ${{ success() }}
         run: |
           set -euo pipefail
-
-          run_ssh() {
-            ssh \
-              -i ~/.ssh/asyl_ltd_deploy_key \
-              -p "$PROD_PORT" \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes \
-              -o UserKnownHostsFile="$HOME/.ssh/asyl_ltd_known_hosts" \
-              -o ConnectTimeout=10 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=6 \
-              "$PROD_USER@$PROD_HOST" "$@"
-          }
+          . deploy/ci/prod-lib.sh
 
           finalize() {
             run_ssh \
@@ -581,6 +304,9 @@ jobs:
             finalize
           fi
 
+  # Единственный путь отката: любой провал, отмена или таймаут job deploy.
+  # Кандидат, не прошедший публичные проверки, откатывается; прошедший их —
+  # перепроверяется и финализируется.
   recovery:
     name: Recover failed or timed-out production deploy
     needs: [build, build-backend, deploy]
@@ -610,61 +336,27 @@ jobs:
       RECOVERY_ACTION: ${{ needs.deploy.outputs.public_gates_passed == 'true' && 'finalize' || 'rollback' }}
 
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          sparse-checkout: deploy/ci
+          persist-credentials: false
+
       - name: Restore previous release independently
         run: |
           set -euo pipefail
+          . deploy/ci/prod-lib.sh
 
-          test -n "$PROD_HOST"
-          test -n "$PROD_PORT"
-          test -n "$PROD_USER"
-          test -n "$PROD_SSH_KEY"
-          test -n "$PROD_SSH_KNOWN_HOSTS"
+          validate_prod_target
           test "$PROD_APP_DIR" = "/home/$PROD_USER/asyl-ltd"
 
-          case "$PROD_HOST" in
-            *[!A-Za-z0-9.:-]*) echo "::error::PROD_HOST contains unsupported characters."; exit 1 ;;
-          esac
-          case "$PROD_PORT" in
-            ''|*[!0-9]*) echo "::error::PROD_PORT must be numeric."; exit 1 ;;
-          esac
-          case "$PROD_USER" in
-            ''|*[!A-Za-z0-9_.-]*) echo "::error::PROD_USER contains unsupported characters."; exit 1 ;;
-          esac
+          WAGON_SCALE_API_URL_B64=$(b64 "$WAGON_SCALE_API_URL")
+          TRUCK_SCALE_API_URL_B64=$(b64 "$TRUCK_SCALE_API_URL")
+          setup_ssh_key
 
-          WAGON_SCALE_API_URL_B64=$(printf '%s' "$WAGON_SCALE_API_URL" | base64 | tr -d '\n')
-          TRUCK_SCALE_API_URL_B64=$(printf '%s' "$TRUCK_SCALE_API_URL" | base64 | tr -d '\n')
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$PROD_SSH_KEY" > ~/.ssh/asyl_ltd_deploy_key
-          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/asyl_ltd_known_hosts
-          chmod 600 ~/.ssh/asyl_ltd_deploy_key
-          chmod 600 ~/.ssh/asyl_ltd_known_hosts
-
-          run_ssh() {
-            ssh \
-              -i ~/.ssh/asyl_ltd_deploy_key \
-              -p "$PROD_PORT" \
-              -o IdentitiesOnly=yes \
-              -o StrictHostKeyChecking=yes \
-              -o UserKnownHostsFile="$HOME/.ssh/asyl_ltd_known_hosts" \
-              -o ConnectTimeout=10 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=6 \
-              "$PROD_USER@$PROD_HOST" "$@"
-          }
-
-          wait_for_ssh() {
-            for i in $(seq 1 30); do
-              if run_ssh true 2>/tmp/ssh-recovery-probe-err.log; then
-                echo "SSH is available for independent recovery (attempt $i)."
-                return 0
-              fi
-              echo "SSH unavailable for recovery; waiting 10s ($i/30)…"
-              sleep 10
-            done
-            cat /tmp/ssh-recovery-probe-err.log || true
-            return 1
-          }
-
+          # The candidate runner is copied outside the Git checkout before
+          # containers change. It remains available after rollback restores
+          # the previous commit.
           recover() {
             printf '%s\n%s\n%s\n' "$GHCR_TOKEN" "$WAGON_SCALE_API_URL_B64" "$TRUCK_SCALE_API_URL_B64" \
               | run_ssh \
@@ -694,64 +386,6 @@ jobs:
                   \"\$runner\" '$RECOVERY_ACTION'"
           }
 
-          SITE_URL=https://asyl-ltd.kz
-          inspect_response() {
-            path="$1"
-            expected_code="$2"
-            headers=$(mktemp)
-            trap 'rm -f "$headers"' RETURN
-
-            code=$(curl -sS --max-time 15 --max-redirs 0 \
-              -D "$headers" -o /dev/null -w '%{http_code}' \
-              "${SITE_URL}${path}")
-            location=$(awk 'tolower($1)=="location:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
-            refresh=$(awk 'tolower($1)=="refresh:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")
-
-            if [ "$code" != "$expected_code" ]; then
-              echo "::error::${path} returned HTTP ${code}; expected ${expected_code}."
-              return 1
-            fi
-            if [ -n "$refresh" ]; then
-              echo "::error::${path} returned a forbidden Refresh header."
-              return 1
-            fi
-            case "$location" in
-              ""|/*)
-                case "$location" in
-                  //*) echo "::error::Protocol-relative redirect is forbidden: ${location}"; return 1 ;;
-                esac
-                ;;
-              "${SITE_URL}"|"${SITE_URL}"/*|https://www.asyl-ltd.kz|https://www.asyl-ltd.kz/*) ;;
-              *) echo "::error::Foreign redirect is forbidden: ${location}"; return 1 ;;
-            esac
-            if [ "$path" = "/" ]; then
-              case "$location" in
-                /login|/login\?*|"${SITE_URL}/login"|"${SITE_URL}/login?"*|https://www.asyl-ltd.kz/login|https://www.asyl-ltd.kz/login\?*) ;;
-                *) echo "::error::Root did not redirect to the expected login page: ${location:-<missing>}"; return 1 ;;
-              esac
-            fi
-          }
-
-          verify_public_health() {
-            api_url="${SITE_URL}/api/auth/me/"
-            api_healthy=0
-            for i in $(seq 1 36); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$api_url" || true)
-              if [ "$code" = "401" ] || [ "$code" = "200" ]; then
-                api_healthy=1
-                break
-              fi
-              echo "Public API is not ready (HTTP $code), attempt $i/36…"
-              sleep 5
-            done
-            if [ "$api_healthy" != "1" ]; then
-              echo "::error::Public API did not pass the recovery gate."
-              return 1
-            fi
-            inspect_response / 307 || return 1
-            inspect_response /login 200 || return 1
-          }
-
           wait_for_ssh
           if [ "$RECOVERY_ACTION" = "finalize" ]; then
             echo "Revalidating the candidate before irreversible finalization…"
@@ -768,5 +402,7 @@ jobs:
             recover
           fi
 
+          # Compose health is necessary but not sufficient. Verify the restored
+          # or finalized release through the public ingress.
           verify_public_health
           echo "Independent recovery completed $RECOVERY_ACTION and verified public health."

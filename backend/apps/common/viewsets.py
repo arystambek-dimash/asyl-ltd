@@ -9,3 +9,12 @@ class SerializerViewSetMixin:
         if serializer_class is not None:
             return serializer_class
         return super().get_serializer_class()
+
+
+class NoStoreMixin:
+    """Ни один ответ вью, включая 403/405 и ошибки, не кэшируется."""
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        return response

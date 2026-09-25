@@ -7,11 +7,7 @@ from apps.catalog.models import Product
 from apps.warehouse.models import StockItem
 from apps.orders.models import Order, OrderItem
 
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
+pytestmark = pytest.mark.usefixtures("apipay_department")
 
 
 @pytest.fixture
@@ -26,7 +22,7 @@ def client_and_order(db, make_user):
         iin="990101300123",
     )
     p = Product.objects.create(
-        name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100")
+        name="F", color="Red", weight_kg=Decimal("50")
     )
     StockItem.objects.create(product=p, bags=500)
     o = Order.objects.create(client=c, status="confirmed")
@@ -34,24 +30,8 @@ def client_and_order(db, make_user):
     return user, o
 
 
-def test_create_order_is_pending(db, make_user, auth_client):
-    user = make_user(username="cli", client=True)
-    Client.objects.create_with_user(user=user, first_name="A", last_name="B", phone="1")
-    p = Product.objects.create(
-        name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100")
-    )
-    StockItem.objects.create(product=p, bags=500)
-    r = auth_client(user).post(
-        "/api/portal/orders/",
-        {"items": [{"product": p.id, "quantity": 2}]},
-        format="json",
-    )
-    assert r.status_code == 201
-    assert Order.objects.get(id=r.data["id"]).status == "pending"
-
-
 @patch("apps.orders.apipay.urllib.request.urlopen")
-def test_pay_creates_pending_payment(urlopen, client_and_order, auth_client, settings):
+def test_pay_creates_pending_payment(urlopen, client_and_order, auth_client):
     # Оплата доступна после отгрузки; заявка клиента встаёт в цепочку («принята»).
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
@@ -68,30 +48,27 @@ def test_pay_creates_pending_payment(urlopen, client_and_order, auth_client, set
     assert r.data["has_pending_payment"] is True
 
 
-@pytest.mark.parametrize("method", ["cash"])
-def test_invoice_and_cash_create_requested_payment(
-    client_and_order, auth_client, method
-):
+def test_cash_creates_requested_payment(client_and_order, auth_client):
     user, order = client_and_order
     order.status = "shipped"
     order.save()
 
     response = auth_client(user).post(
-        f"/api/portal/orders/{order.id}/pay/", {"method": method}, format="json"
+        f"/api/portal/orders/{order.id}/pay/", {"method": "cash"}, format="json"
     )
 
     assert response.status_code == 201
     payment = order.payments.get()
-    assert payment.method == method
+    assert payment.method == "cash"
     assert payment.status == "requested"
     order.refresh_from_db()
-    assert order.payment_method == method
+    assert order.payment_method == "cash"
     assert order.settlement_intent == "instant"
 
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_invoice_is_sent_through_apipay_phone_channel(
-    urlopen, client_and_order, auth_client, settings
+    urlopen, client_and_order, auth_client
 ):
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
@@ -129,6 +106,7 @@ def test_client_can_choose_debt_through_payment_endpoint(client_and_order, auth_
     assert response.status_code == 201
     order.refresh_from_db()
     assert order.payment_method == "debt"
+    assert response.data["payment_method"] == "debt"  # ответ — уже обновлённый заказ
     assert order.settlement_intent == "debt"
     assert order.debt_requested is True
     assert not order.payments.exists()
@@ -147,7 +125,7 @@ def test_client_payment_method_must_be_supported(client_and_order, auth_client):
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_changing_client_payment_method_reuses_open_request(
-    urlopen, client_and_order, auth_client, settings
+    urlopen, client_and_order, auth_client
 ):
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
@@ -176,7 +154,7 @@ def test_changing_client_payment_method_reuses_open_request(
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_client_can_release_qr_and_split_remaining_payment(
-    urlopen, client_and_order, auth_client, settings
+    urlopen, client_and_order, auth_client
 ):
     response = urlopen.return_value.__enter__.return_value
     response.read.return_value = json.dumps({
@@ -215,7 +193,7 @@ def test_client_can_release_qr_and_split_remaining_payment(
 
 @patch("apps.orders.apipay.urllib.request.urlopen")
 def test_phone_invoice_stays_reserved_until_cancellation_is_confirmed(
-    urlopen, client_and_order, auth_client, settings
+    urlopen, client_and_order, auth_client
 ):
     response = urlopen.return_value.__enter__.return_value
     response.read.side_effect = [
@@ -282,27 +260,6 @@ def test_pay_blocked_before_shipped(client_and_order, auth_client):
     assert r.status_code == 400
 
 
-def test_truck_blocked_before_confirmed(client_and_order, auth_client):
-    # КАМАЗ вводится на статусе "confirmed"; до этого (pending) — нельзя.
-    user, o = client_and_order
-    o.status = "pending"
-    o.save()
-    r = auth_client(user).patch(
-        f"/api/portal/orders/{o.id}/truck/", {"truck_number": "777"}, format="json"
-    )
-    assert r.status_code == 409
-
-
-def test_truck_set_when_confirmed(client_and_order, auth_client):
-    user, o = client_and_order  # status confirmed
-    r = auth_client(user).patch(
-        f"/api/portal/orders/{o.id}/truck/", {"truck_number": "777ABC"}, format="json"
-    )
-    assert r.status_code == 200
-    o.refresh_from_db()
-    assert o.truck_number == "777ABC"
-
-
 def test_cannot_touch_other_clients_order(db, make_user, auth_client):
     owner = make_user(username="owner", client=True)
     Client.objects.create_with_user(user=owner, first_name="O", last_name="W", phone="1")
@@ -314,3 +271,83 @@ def test_cannot_touch_other_clients_order(db, make_user, auth_client):
         f"/api/portal/orders/{o.id}/pay/", {"method": "card"}, format="json"
     )
     assert r.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("invoice_status", "invoice_id", "can_release"),
+    [
+        ("pending", 501, True),
+        ("paid", 502, False),
+        ("partially_refunded", 503, False),
+        # Создание QR ещё сверяется — сумму не отпускаем.
+        ("creating", None, False),
+    ],
+)
+def test_can_release_follows_server_release_rules(
+    client_and_order, auth_client, invoice_status, invoice_id, can_release
+):
+    from apps.orders.models import ApiPayInvoice, Payment
+
+    user, order = client_and_order
+    order.status = "shipped"
+    order.save()
+    payment = Payment.objects.create(
+        order=order, amount="60", method="kaspi", status="received",
+        recorded_by=user,
+    )
+    ApiPayInvoice.objects.create(
+        payment=payment, invoice_id=invoice_id, channel="qr",
+        status=invoice_status, idempotency_key=f"asyl-payment-{payment.pk}",
+    )
+    client = auth_client(user)
+
+    detail = client.get(f"/api/portal/orders/{order.id}/")
+    [part] = detail.data["payment_parts"]
+    assert part["method_label"] == "QR"
+    assert part["can_release"] is can_release
+    assert part["apipay_invoice"]["invoice_id"] == invoice_id
+
+    released = client.post(
+        f"/api/portal/orders/{order.id}/payments/{payment.id}/release/"
+    )
+    assert (released.status_code == 200) is can_release
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "detail"),
+    [
+        (
+            "api",
+            "invoice_rejected",
+            "Провайдер отклонил счёт",
+        ),
+        (
+            "config",
+            "payment_provider_not_configured",
+            # Клиенту не называем отдел, где не подключён Kaspi.
+            "Счёт на оплату временно недоступен.",
+        ),
+    ],
+)
+def test_portal_maps_provider_errors_like_cashier(
+    client_and_order, auth_client, error, code, detail
+):
+    from apps.orders.apipay import ApiPayAPIError, ApiPayConfigurationError
+
+    user, order = client_and_order
+    order.status = "shipped"
+    order.save()
+    failure = (
+        ApiPayAPIError(422, "invoice_rejected", "Провайдер отклонил счёт", {})
+        if error == "api"
+        else ApiPayConfigurationError("Отдел «Основной»: нет ключа ApiPay")
+    )
+
+    with patch("apps.orders.apipay.create_invoice", side_effect=failure):
+        response = auth_client(user).post(
+            f"/api/portal/orders/{order.id}/pay/", {"method": "kaspi"}, format="json"
+        )
+
+    assert response.status_code == 400
+    assert response.data == {"detail": detail, "code": code}
+    assert not order.payments.filter(status__in=["requested", "received"]).exists()

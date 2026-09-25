@@ -55,7 +55,6 @@ def _camera():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=0,
-        event_compat_total=0,
         event_boundary_validated=True,
     )
 
@@ -69,9 +68,6 @@ def test_page_batches_journal_io_and_checks_each_shift_once(count):
     sql = [q["sql"] for q in queries]
     journal = [q for q in sql if '"cameras_alwaysonimportedevent"' in q]
     shifts = [q for q in sql if '"cameras_alwaysonstockbatch"' in q]
-    print(
-        f"{count} events: total={len(sql)}, journal={len(journal)}, shifts={len(shifts)}"
-    )
     assert result == (count, 0, count)
     assert AlwaysOnImportedEvent.objects.count() == count
     assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == count

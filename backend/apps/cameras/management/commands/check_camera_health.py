@@ -14,7 +14,6 @@ _STATUS_LABELS = {
     "unavailable": "нет данных",
 }
 _EVENT_STATUS_LABELS = {
-    "bootstrap_pending": "переносит историю отгрузки",
     "catching_up": "догоняет журнал",
     "error": "ошибка",
     "legacy": "старый API без /events",
@@ -37,9 +36,6 @@ _EVENT_DETAIL_LABELS = {
     "event journal sync failed": "синхронизация журнала событий завершилась ошибкой",
     "initial event boundary has not been validated": (
         "начальная граница журнала событий ещё не подтверждена"
-    ),
-    "shipping analytics history bootstrap is pending": (
-        "история отгрузки ещё переносится после разделения контуров"
     ),
 }
 
@@ -98,18 +94,6 @@ def human_diagnostics(payload: dict) -> str:
                 f"{event_label}{cursor_text}{detail_text}"
             )
 
-    session_cutover = payload.get("session_cutover") or {}
-    if session_cutover.get("blocking"):
-        sessions = session_cutover.get("sessions") or []
-        session_labels = ", ".join(
-            f"#{row.get('id')} {row.get('camera')} ({row.get('status')})"
-            for row in sessions
-        )
-        lines.append(
-            "Переключение контуров ожидает завершения активных отгрузок"
-            + (f": {session_labels}" if session_labels else ".")
-        )
-
     return "\n".join(lines)
 
 
@@ -128,11 +112,6 @@ class Command(BaseCommand):
             type=float,
             default=None,
             help="Reject a heartbeat recorded before this Unix timestamp",
-        )
-        parser.add_argument(
-            "--fail-on-degraded",
-            action="store_true",
-            help="Return exit 4 when at least one expected stream is unavailable",
         )
         parser.add_argument(
             "--require-events",
@@ -160,8 +139,6 @@ class Command(BaseCommand):
             self.stdout.write(human_diagnostics(payload))
         else:
             self.stdout.write(json.dumps(payload, cls=DjangoJSONEncoder, sort_keys=True))
-        code = health.exit_code(
-            payload, fail_on_degraded=options["fail_on_degraded"]
-        )
+        code = health.exit_code(payload)
         if code:
             raise SystemExit(code)

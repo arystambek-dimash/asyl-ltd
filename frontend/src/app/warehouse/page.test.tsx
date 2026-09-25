@@ -1,49 +1,30 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Me, Product, StockItem, Warehouse } from "@/lib/types";
+import type { Product, StockItem, Warehouse } from "@/lib/types";
+import { apiState } from "@/test-utils/api";
+import { makeMe } from "@/test-utils/factories";
+import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
 import WarehousePage from "./page";
 
-const navigation = vi.hoisted(() => ({ search: "", replace: vi.fn() }));
 const useApiMock = vi.hoisted(() => vi.fn());
 const apiMocks = vi.hoisted(() => ({ post: vi.fn(), patch: vi.fn(), delete: vi.fn() }));
 
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: navigation.replace }),
-  useSearchParams: () => new URLSearchParams(navigation.search),
-}));
+vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/lib/use-api", () => ({ useApi: useApiMock }));
 vi.mock("@/lib/api", () => ({
   api: apiMocks,
   apiError: () => "Ошибка сохранения",
 }));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: ReactNode }) => <>{children}</>,
-}));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) => (
-    <main>
-      <h1>{title}</h1>
-      {actions}
-      {children}
-    </main>
-  ),
-}));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
-const me: Me = {
-  id: 1,
+const me = makeMe({
   username: "warehouse-admin",
   first_name: "",
   last_name: "",
-  is_client: false,
-  is_superuser: false,
-
   permissions: ["warehouse.view", "warehouse.adjust", "catalog.view"],
-  position: null,
-  client_id: null,
-  sales_department: null,
-};
+});
 
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me }) }));
 
@@ -97,37 +78,26 @@ const assignedStock: StockItem = {
   bags: 15,
 };
 
-function apiState<T>(
-  data: T,
-  overrides: Partial<{ loading: boolean; error: string; errorStatus: number | null }> = {},
-) {
-  return {
-    data,
-    loading: false,
-    error: "",
-    errorStatus: null,
-    reload: vi.fn(async () => undefined),
-    setData: vi.fn(),
-    ...overrides,
-  };
+/** useApi по адресу: склады, каталог и остатки двух складов; прочие адреса — пусто. */
+function routeApi({
+  catalog = products,
+  stock1 = [assignedStock],
+  stock2 = [],
+}: { catalog?: Product[]; stock1?: StockItem[]; stock2?: StockItem[] } = {}) {
+  useApiMock.mockImplementation((url: string | null) => {
+    if (url === "/warehouses/") return apiState(warehouses);
+    if (url === "/products/") return apiState(catalog);
+    if (url === "/stock/?warehouse=1") return apiState(stock1);
+    if (url === "/stock/?warehouse=2") return apiState(stock2);
+    return apiState(null);
+  });
 }
 
 describe("WarehousePage multi-warehouse inventory", () => {
   beforeEach(() => {
-    navigation.search = "";
-    navigation.replace.mockReset();
-    navigation.replace.mockImplementation((url: string) => {
-      navigation.search = url.split("?")[1] ?? "";
-    });
+    resetNavigation("/warehouse");
     useApiMock.mockReset();
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/warehouses/") return apiState(warehouses);
-      if (url === "/products/") return apiState(products);
-      if (url === "/stock/") return apiState([assignedStock]);
-      if (url === "/stock/?warehouse=1") return apiState([assignedStock]);
-      if (url === "/stock/?warehouse=2") return apiState([]);
-      return apiState(null);
-    });
+    routeApi();
     me.permissions = ["warehouse.view", "warehouse.adjust", "catalog.view"];
     apiMocks.post.mockReset();
     apiMocks.patch.mockReset();
@@ -147,24 +117,24 @@ describe("WarehousePage multi-warehouse inventory", () => {
     expect(screen.queryByText("Корпус 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Корпус 2")).not.toBeInTheDocument();
     expect(useApiMock).toHaveBeenCalledWith("/stock/?warehouse=2");
-    await waitFor(() => expect(navigation.replace).toHaveBeenCalledWith("/warehouse?warehouse=2", { scroll: false }));
+    await waitFor(() => expect(routerCalls.replace).toEqual(["/warehouse?warehouse=2"]));
+    expect(routerCalls.options).toEqual([{ scroll: false }]);
   });
 
   it("switches the warehouse through the URL and reloads the scoped stock", async () => {
-    navigation.search = "warehouse=1";
+    resetNavigation("/warehouse?warehouse=1");
     const user = userEvent.setup();
-    const view = render(<WarehousePage />);
+    render(<WarehousePage />);
 
     await user.selectOptions(screen.getByLabelText("Склад"), "2");
-    expect(navigation.replace).toHaveBeenCalledWith("/warehouse?warehouse=2", { scroll: false });
-
-    view.rerender(<WarehousePage />);
+    expect(routerCalls.replace).toEqual(["/warehouse?warehouse=2"]);
+    expect(routerCalls.options).toEqual([{ scroll: false }]);
     expect(screen.getByLabelText("Склад")).toHaveValue("2");
     expect(useApiMock).toHaveBeenCalledWith("/stock/?warehouse=2");
   });
 
   it("allows a product stored elsewhere to be added to the selected warehouse", async () => {
-    navigation.search = "warehouse=2";
+    resetNavigation("/warehouse?warehouse=2");
     const user = userEvent.setup();
     render(<WarehousePage />);
 
@@ -185,14 +155,9 @@ describe("WarehousePage multi-warehouse inventory", () => {
   });
 
   it("creates a new product right from the warehouse when the whole catalog is already there", async () => {
-    navigation.search = "warehouse=1";
+    resetNavigation("/warehouse?warehouse=1");
     me.permissions = ["warehouse.view", "warehouse.adjust", "catalog.create"];
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/warehouses/") return apiState(warehouses);
-      if (url === "/products/") return apiState([products[0]]);
-      if (url === "/stock/" || url === "/stock/?warehouse=1") return apiState([assignedStock]);
-      return apiState(null);
-    });
+    routeApi({ catalog: [products[0]] });
     apiMocks.post.mockImplementation(async (url: string) => ({ data: url === "/products/" ? { id: 30 } : {} }));
     const user = userEvent.setup();
     render(<WarehousePage />);
@@ -216,14 +181,9 @@ describe("WarehousePage multi-warehouse inventory", () => {
   });
 
   it("explains why a warehouse keeper without catalog rights cannot add a new product", async () => {
-    navigation.search = "warehouse=1";
+    resetNavigation("/warehouse?warehouse=1");
     me.permissions = ["warehouse.view", "warehouse.adjust"];
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/warehouses/") return apiState(warehouses);
-      if (url === "/products/") return apiState([products[0]]);
-      if (url === "/stock/" || url === "/stock/?warehouse=1") return apiState([assignedStock]);
-      return apiState(null);
-    });
+    routeApi({ catalog: [products[0]] });
     const user = userEvent.setup();
     render(<WarehousePage />);
 
@@ -234,7 +194,7 @@ describe("WarehousePage multi-warehouse inventory", () => {
   });
 
   it("edits a warehouse through the management dialog", async () => {
-    navigation.search = "warehouse=2";
+    resetNavigation("/warehouse?warehouse=2");
     const user = userEvent.setup();
     apiMocks.patch.mockResolvedValue({ data: { ...warehouses[0], name: "Резерв" } });
     render(<WarehousePage />);
@@ -258,7 +218,7 @@ describe("WarehousePage multi-warehouse inventory", () => {
   });
 
   it("creates a warehouse through the management dialog", async () => {
-    navigation.search = "warehouse=2";
+    resetNavigation("/warehouse?warehouse=2");
     const user = userEvent.setup();
     const created: Warehouse = {
       id: 3,
@@ -283,7 +243,7 @@ describe("WarehousePage multi-warehouse inventory", () => {
   });
 
   it("moves stock to another warehouse and previews both balances", async () => {
-    navigation.search = "warehouse=1";
+    resetNavigation("/warehouse?warehouse=1");
     const destinationStock: StockItem = {
       ...assignedStock,
       id: 101,
@@ -291,24 +251,20 @@ describe("WarehousePage multi-warehouse inventory", () => {
       warehouse_name: "Основной склад",
       bags: 4,
     };
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/warehouses/") return apiState(warehouses);
-      if (url === "/products/") return apiState(products);
-      if (url === "/stock/") return apiState([assignedStock, destinationStock]);
-      if (url === "/stock/?warehouse=1") return apiState([assignedStock]);
-      return apiState([]);
-    });
+    routeApi({ stock2: [destinationStock] });
     const user = userEvent.setup();
     render(<WarehousePage />);
 
-    await user.click(screen.getAllByRole("button", { name: "Действия с товаром" })[0]);
-    await user.click(screen.getByRole("menuitem", { name: "Изменить" }));
+    await user.click(screen.getAllByRole("button", { name: "Изменить" })[0]);
     await user.click(screen.getByRole("button", { name: /Перемещение/ }));
     await user.selectOptions(screen.getByLabelText("Склад назначения"), "2");
     await user.type(screen.getByLabelText("Количество мешков"), "10");
 
     expect(screen.getByText("Откуда · Резервный склад")).toBeInTheDocument();
     expect(screen.getByText("Куда · Основной склад")).toBeInTheDocument();
+    // Превью склада назначения: 4 меш. сейчас, 14 после перемещения.
+    expect(screen.getByText((_, element) => element?.textContent === "4 → 14 меш.")).toBeInTheDocument();
+    expect(useApiMock).not.toHaveBeenCalledWith("/stock/");
     expect(screen.getByText("10 меш. будут перенесены без изменения общего остатка.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Переместить 10 меш." }));
@@ -318,37 +274,6 @@ describe("WarehousePage multi-warehouse inventory", () => {
         to_warehouse: 2,
         product: 10,
         bags: 10,
-      }),
-    );
-  });
-
-  it("falls back to the legacy stock API when warehouses are not deployed yet", async () => {
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/warehouses/") {
-        return apiState(null, { error: "Страница не найдена", errorStatus: 404 });
-      }
-      if (url === "/products/") return apiState(products);
-      if (url === "/stock/") return apiState([assignedStock]);
-      return apiState(null);
-    });
-    const user = userEvent.setup();
-
-    render(<WarehousePage />);
-
-    expect(screen.getByLabelText("Склад")).toHaveValue("0");
-    expect(screen.getByRole("option", { name: "Основной склад · основной" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Управление" })).not.toBeInTheDocument();
-    expect(useApiMock).toHaveBeenCalledWith("/stock/");
-
-    await user.click(screen.getByRole("button", { name: "Добавить товар на склад Основной склад" }));
-    await user.selectOptions(await screen.findByLabelText("Товар"), "20");
-    await user.type(screen.getByLabelText("Количество мешков"), "10");
-    await user.click(screen.getByRole("button", { name: "Добавить 10 меш." }));
-
-    await waitFor(() =>
-      expect(apiMocks.post).toHaveBeenCalledWith("/stock/adjust/", {
-        product: 20,
-        delta: 10,
       }),
     );
   });

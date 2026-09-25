@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { Department } from "@/lib/types";
+import { makeDepartment } from "@/test-utils/factories";
 import { DepartmentManager } from "./department-manager";
 
 const mocks = vi.hoisted(() => ({
@@ -22,25 +22,8 @@ vi.mock("@/lib/api", () => ({
   isCanceledRequest: () => false,
 }));
 
-function department(patch: Partial<Department> = {}): Department {
-  return {
-    id: 1,
-    code: "mill",
-    name: "Мельница",
-    color: "#315FD5",
-    is_active: true,
-    is_default: true,
-    order_count: 3,
-    created_at: "2026-01-01T00:00:00Z",
-    apipay_configured: false,
-    apipay_webhook_configured: false,
-    apipay_key_hint: "",
-    apipay_updated_at: null,
-    ...patch,
-  };
-}
-
-const configured = department({
+const configured = makeDepartment({
+  order_count: 3,
   apipay_configured: true,
   apipay_webhook_configured: true,
   apipay_key_hint: "••••ab12",
@@ -49,7 +32,7 @@ const configured = department({
 
 beforeEach(() => {
   mocks.me = { is_superuser: true, permissions: ["sys_permissions.manage"] };
-  mocks.rows = [department()];
+  mocks.rows = [makeDepartment({ order_count: 3 })];
   mocks.get.mockReset();
   mocks.patch.mockReset();
   mocks.post.mockReset();
@@ -129,7 +112,7 @@ it("shows the hint, webhook address and disconnect for a configured department",
   expect(await navigator.clipboard.readText()).toBe(`${window.location.origin}/api/webhooks/apipay/`);
 
   mocks.patch.mockImplementation(async () => {
-    mocks.rows = [department()];
+    mocks.rows = [makeDepartment({ order_count: 3 })];
     return { data: {} };
   });
   await user.click(screen.getByRole("button", { name: "Отключить Kaspi" }));
@@ -141,7 +124,7 @@ it("shows the hint, webhook address and disconnect for a configured department",
 
 it("says the webhook secret is missing when only the key is set", async () => {
   const user = userEvent.setup();
-  mocks.rows = [department({ apipay_configured: true, apipay_key_hint: "••••ab12" })];
+  mocks.rows = [makeDepartment({ apipay_configured: true, apipay_key_hint: "••••ab12" })];
   await openEditor(user);
   expect(screen.getByText("Ключ ••••ab12 · без секрета вебхука")).toBeInTheDocument();
 });
@@ -149,7 +132,7 @@ it("says the webhook secret is missing when only the key is set", async () => {
 it("shows the Kaspi status in the row but no block to a manager who is not a superuser", async () => {
   const user = userEvent.setup();
   mocks.me = { is_superuser: false, permissions: ["sys_permissions.manage"] };
-  mocks.rows = [configured, department({ id: 2, code: "city", name: "Нью-Сити", is_default: false })];
+  mocks.rows = [configured, makeDepartment({ id: 2, code: "city", name: "Нью-Сити", is_default: false })];
   await openEditor(user);
   const dialog = within(screen.getByRole("dialog"));
   expect(dialog.getByText(/Kaspi подключён/)).toBeInTheDocument();

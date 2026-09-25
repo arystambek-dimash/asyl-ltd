@@ -29,7 +29,6 @@ function preview(overrides: Partial<TruckScalePreview> = {}): TruckScalePreview 
     age_seconds: "0.2",
     updated_at: "2026-08-12T12:20:02+05:00",
     observed_at: "2026-08-12T12:20:02+05:00",
-    refresh_mode: "manual",
     ...overrides,
   };
 }
@@ -49,10 +48,10 @@ describe("LiveScaleStatus", () => {
   it("shows the current stable truck weight and keeps it live while the tab is visible", () => {
     mockApi(preview());
 
-    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
+    render(<LiveScaleStatus scaleKey="truck" label="Вывоз" />);
 
     expect(mocks.useApi).toHaveBeenCalledWith("/truck-scales/truck/reading/");
-    expect(mocks.useVisiblePolling).toHaveBeenCalledWith(mocks.reload, 3000, true);
+    expect(mocks.useVisiblePolling).toHaveBeenCalledWith(mocks.reload, 3000, undefined);
     expect(screen.getByText("3,66 т")).toBeInTheDocument();
     expect(screen.getByText("Вывоз · Снимок стабилен")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Весы «Вывоз»: 3,66 т, Снимок стабилен" })).toBeInTheDocument();
@@ -63,7 +62,7 @@ describe("LiveScaleStatus", () => {
     const user = userEvent.setup();
     mockApi(preview());
 
-    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
+    render(<LiveScaleStatus scaleKey="truck" label="Вывоз" />);
 
     expect(mocks.reload).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Обновить весы «Вывоз»" }));
@@ -80,7 +79,7 @@ describe("LiveScaleStatus", () => {
       }),
     );
 
-    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
+    render(<LiveScaleStatus scaleKey="truck" label="Вывоз" />);
 
     expect(screen.getByText("≈ 3,66 т")).toBeInTheDocument();
     expect(screen.getByText("Вывоз · Снимок меняется")).toBeInTheDocument();
@@ -102,7 +101,7 @@ describe("LiveScaleStatus", () => {
       }),
     );
 
-    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
+    render(<LiveScaleStatus scaleKey="truck" label="Вывоз" />);
 
     expect(screen.queryByText(/3,66 т/)).not.toBeInTheDocument();
     expect(screen.getByText("—,— т")).toBeInTheDocument();
@@ -112,25 +111,16 @@ describe("LiveScaleStatus", () => {
   it("hides a retained reading after a CRM network error", () => {
     mockApi(preview(), "Сеть недоступна");
 
-    render(<LiveScaleStatus active scaleKey="truck" label="Вывоз" />);
+    render(<LiveScaleStatus scaleKey="truck" label="Вывоз" />);
 
     expect(screen.queryByText(/3,66 т/)).not.toBeInTheDocument();
     expect(screen.getByText("Вывоз · Нет связи с CRM")).toBeInTheDocument();
   });
 
-  it("does not fetch or render without weighing permission", () => {
-    mockApi(null);
-
-    const { container } = render(<LiveScaleStatus active={false} scaleKey="truck" label="Вывоз" />);
-
-    expect(mocks.useApi).toHaveBeenCalledWith(null);
-    expect(container).toBeEmptyDOMElement();
-  });
-
   it("reads the wagon scale for the intake contour", () => {
     mockApi(preview({ weight_kg: "62340" }));
 
-    render(<LiveScaleStatus active scaleKey="wagon" label="Приход" />);
+    render(<LiveScaleStatus scaleKey="wagon" label="Приход" />);
 
     expect(mocks.useApi).toHaveBeenCalledWith("/truck-scales/wagon/reading/");
     expect(screen.getByRole("group", { name: "Весы «Приход»: 62,34 т, Снимок стабилен" })).toBeInTheDocument();

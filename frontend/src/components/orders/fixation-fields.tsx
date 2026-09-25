@@ -3,31 +3,31 @@
 import { CalendarClock, Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  RECEIVE_METHOD_OPTIONS,
+  receiveMethods,
+  type ReceiveMethod,
+} from "@/components/payments/order-payment-actions";
 import { Segmented } from "@/components/ui/segmented";
-import { ORDER_STATUS_LABELS } from "@/lib/constants";
+import { orderStatusLabel } from "@/lib/constants";
 import { cn, todayLocalIsoDate } from "@/lib/utils";
 
 /** Фиксация статуса и оплаты задним числом — общий блок формы и модалки. */
-export type FixationStatus = "" | "confirmed" | "shipped";
-export type FixationPaymentMethod = "cash" | "kaspi" | "remote";
+type FixationStatus = "" | "confirmed" | "shipped";
 
 export interface FixationDraft {
   date: string;
   status: FixationStatus;
   paid: boolean;
-  paymentMethod: FixationPaymentMethod;
+  paymentMethod: ReceiveMethod;
 }
 
-export const FIXATION_STATUS_OPTIONS: { value: FixationStatus; label: string; caption: string }[] = [
+const FIXATION_STATUS_OPTIONS: { value: FixationStatus; label: string; caption: string }[] = [
   { value: "confirmed", label: "Ожидает загрузки", caption: "Подтверждён, но не отгружен" },
   { value: "shipped", label: "Отгружено", caption: "Склад не списывается" },
 ];
 
-export const FIXATION_METHOD_OPTIONS: { value: FixationPaymentMethod; label: string }[] = [
-  { value: "cash", label: "Наличные" },
-  { value: "kaspi", label: "Kaspi" },
-  { value: "remote", label: "Удалённо" },
-];
+const FIXATION_METHOD_OPTIONS = RECEIVE_METHOD_OPTIONS.map(({ key, label }) => ({ value: key, label }));
 
 export function emptyFixationDraft(): FixationDraft {
   return { date: todayLocalIsoDate(), status: "", paid: false, paymentMethod: "cash" };
@@ -53,11 +53,17 @@ export function fixationPaymentAllowed(draft: FixationDraft, orderStatus?: strin
   return draft.status !== "" || Boolean(orderStatus);
 }
 
-export function fixationDraftError(draft: FixationDraft, { orderStatus }: { orderStatus?: string } = {}) {
+export function fixationDraftError(
+  draft: FixationDraft,
+  { orderStatus, currency }: { orderStatus?: string; currency: string },
+) {
   if (!draft.date) return "Укажите дату.";
   if (draft.date > todayLocalIsoDate()) return "Дата не может быть в будущем.";
   if (draft.paid && !fixationPaymentAllowed(draft, orderStatus)) {
     return "Оплату можно зафиксировать только у подтверждённого или отгруженного заказа.";
+  }
+  if (draft.paid && !receiveMethods(currency).includes(draft.paymentMethod)) {
+    return "QR и удалённая оплата принимаются только в тенге.";
   }
   return "";
 }
@@ -66,7 +72,7 @@ export function fixationDraftError(draft: FixationDraft, { orderStatus }: { orde
 function statusOptions(orderStatus?: string) {
   if (!orderStatus) return FIXATION_STATUS_OPTIONS;
   return [
-    { value: "" as const, label: "Не менять", caption: ORDER_STATUS_LABELS[orderStatus] ?? orderStatus },
+    { value: "" as const, label: "Не менять", caption: orderStatusLabel(orderStatus) },
     ...FIXATION_STATUS_OPTIONS.filter((option) => option.value === "shipped"),
   ];
 }
@@ -75,6 +81,7 @@ export function FixationFields({
   draft,
   onChange,
   canPay,
+  currency,
   /** Статус уже созданного заказа (окно «Зафиксировать»); у нового заказа не задан. */
   orderStatus,
   idPrefix = "fixation",
@@ -82,6 +89,8 @@ export function FixationFields({
   draft: FixationDraft;
   onChange: (draft: FixationDraft) => void;
   canPay: boolean;
+  /** Валюта заказа: Kaspi и удалённая оплата — только в тенге. */
+  currency: string;
   orderStatus?: string;
   idPrefix?: string;
 }) {
@@ -89,6 +98,7 @@ export function FixationFields({
   // Отгруженный заказ: статус не меняем, фиксируем только оплату.
   const shippedAlready = orderStatus === "shipped";
   const paymentAllowed = canPay && fixationPaymentAllowed(draft, orderStatus);
+  const methods = receiveMethods(currency);
 
   return (
     <div className="grid gap-4">
@@ -149,7 +159,7 @@ export function FixationFields({
             <Segmented
               ariaLabel="Способ оплаты"
               value={draft.paymentMethod}
-              options={FIXATION_METHOD_OPTIONS}
+              options={FIXATION_METHOD_OPTIONS.filter((option) => methods.includes(option.value))}
               onChange={(paymentMethod) => update({ paymentMethod })}
             />
           )}

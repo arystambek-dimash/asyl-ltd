@@ -20,19 +20,20 @@
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
-from apps.cameras.shipping_segment_identity import valid_number
 from apps.common.text import match_key
+from apps.common.wagon_numbers import WAGON_NUMBER_LENGTH, wagon_check_digit_ok
 
 # Страны шапки — как в карточке клиента (frontend/src/lib/countries.ts).
 REPORT_COUNTRIES = (
     "Казахстан", "Узбекистан", "Афганистан", "Кыргызстан", "Таджикистан", "Туркменистан",
     "Китай", "Иран", "Россия", "Азербайджан", "Грузия", "Монголия",
 )
-WAGON_NUMBER_LENGTH = 8
+# Как сообщение бота (BotMessage.text): отчёт на 12 вагонов — около 400 символов.
+RAIL_REPORT_MAX_LENGTH = 8192
 KG_PER_TON = Decimal("1000")
 # Грузоподъёмность самых больших вагонов СНГ (полувагон) — 75 т; у владельца
 # вагоны по 68 т. Больше — опечатка в отчёте: бот проводит сам, и «680 тн»
@@ -72,6 +73,10 @@ class ReportIssue:
     subject: str = ""
     # Заказ, из-за которого отчёт похож на дубль (заполняет resolve_report).
     order_id: int | None = None
+
+    def as_dict(self) -> dict:
+        """Причина для журнала бота и предпросмотра: {code, message, line, subject, order_id}."""
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -115,9 +120,14 @@ def bags_for(weight_kg: Decimal, bag_weight_kg: Decimal) -> int | None:
     return int(bags) if rest == 0 else None
 
 
+def decimal_string(value: Decimal) -> str:
+    """«68», «67.5» — без хвостовых нулей и без экспоненты («680», а не «6.8E+2»)."""
+    return format(value.normalize(), "f")
+
+
 def format_tons(value: Decimal) -> str:
     """«68», «67,5» — тонны без хвостовых нулей, с запятой."""
-    return format(value.normalize(), "f").replace(".", ",")
+    return decimal_string(value).replace(".", ",")
 
 
 def _quote(line: str) -> str:
@@ -146,7 +156,7 @@ def wagon_number_status(number: str) -> str:
     """«ok», «length» (не 8 цифр) или «check_digit» (не сходится контрольная цифра)."""
     if len(number) != WAGON_NUMBER_LENGTH or not number.isdigit():
         return "length"
-    return "ok" if valid_number(number, "wagon_number") else "check_digit"
+    return "ok" if wagon_check_digit_ok(number) else "check_digit"
 
 
 def _wagon_issues(wagon: WagonLine, seen: set[str]) -> list[ReportIssue]:
@@ -187,10 +197,7 @@ def parse_rail_report(text) -> RailReport:
         if not line:
             continue
         if match := _WAGON_RE.fullmatch(line):
-            try:
-                tons = Decimal(match["tons"].replace(",", "."))
-            except InvalidOperation:  # pragma: no cover — регулярка пропускает только числа
-                tons = Decimal("0")
+            tons = Decimal(match["tons"].replace(",", "."))
             code = match["code"].strip()
             wagon = WagonLine(len(wagons) + 1, line_no, code, match_key(code), match["number"], tons)
             issues.extend(_wagon_issues(wagon, seen))

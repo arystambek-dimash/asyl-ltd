@@ -26,19 +26,26 @@ from django.db.models import Count, F, Q
 from django.utils import timezone
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 
+from apps.clients.models import Client
 from apps.common.money import MONEY_PLACES
 from apps.common.text import group_digits, plural_ru
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
 from apps.orders.transport import order_wagons
-from apps.shipments.models import ShipmentWagon
 
 from . import llm
 from .models import BotMessage, WhatsAppBotSettings
-from .parsing import KG_PER_TON, RailReport, ReportIssue, format_tons, parse_rail_report
+from .parsing import (
+    KG_PER_TON,
+    RAIL_REPORT_MAX_LENGTH,
+    RailReport,
+    ReportIssue,
+    decimal_string,
+    format_tons,
+    parse_rail_report,
+)
 from .providers.green_api import GreenApiClient, GreenApiError, IncomingMessage
-from .rail import PRICE_MISMATCH, ResolvedReport, apply_rail_report, resolve_report
-from .serializers import RAIL_REPORT_MAX_LENGTH
+from .rail import PRICE_MISMATCH, apply_rail_report, resolve_report
 
 log = logging.getLogger(__name__)
 
@@ -145,16 +152,9 @@ def ingest(incoming: IncomingMessage, bot_settings: WhatsAppBotSettings) -> BotM
 # --- тексты -----------------------------------------------------------------------------------------
 
 
-def _issue(issue: ReportIssue) -> dict:
-    return {
-        "code": issue.code, "message": issue.message, "line": issue.line,
-        "subject": issue.subject, "order_id": issue.order_id,
-    }
-
-
 def _note(code: str, message: str, *, subject: str = "", order_id: int | None = None) -> dict:
     """Причина от бота (не из разбора отчёта) — в том же виде, что причины разбора."""
-    return _issue(ReportIssue(code, message, subject=subject, order_id=order_id))
+    return ReportIssue(code, message, subject=subject, order_id=order_id).as_dict()
 
 
 def _money(value) -> str:
@@ -204,18 +204,17 @@ def review_reply(issues: list[dict], *, show_amounts: bool = False) -> str:
     return text if len(text) <= REPLY_MAX_LENGTH else text[: REPLY_MAX_LENGTH - 1] + "…"
 
 
-def report_summary(report: RailReport, resolved: ResolvedReport | None = None) -> dict:
-    """Итог разбора для строки журнала — без денег: их показывает предпросмотр по правам."""
-    client = resolved.client if resolved is not None else None
+def report_summary(report: RailReport, client: Client | None = None) -> dict:
+    """Итог разбора для строки журнала — без денег: их показывает предпросмотр по правам.
+
+    ``client`` — распознанный клиент: журнал показывает его вместо названия из отчёта.
+    """
     return {
-        "day": report.day.isoformat() if report.day else None,
-        "country": report.country,
         "client_name": report.client_name,
-        "client": {"id": client.pk, "name": client.display_name} if client is not None else None,
+        "client": {"name": client.display_name} if client is not None else None,
         "station": report.station,
         "wagons": len(report.wagons),
-        "tons": format(report.total_tons.normalize(), "f"),
-        "bags": resolved.total_bags if resolved is not None and resolved.total_bags else None,
+        "tons": decimal_string(report.total_tons),
     }
 
 
@@ -244,14 +243,6 @@ def _finish(message: BotMessage, status: str, *, issues=(), reply="", order=None
     message.save()
 
 
-def report_options(bot_settings: WhatsAppBotSettings) -> dict:
-    """Окно дублей (±дней от даты отчёта) и допуск цены из настроек бота — для проведения и предпросмотра."""
-    return {
-        "duplicate_window_days": bot_settings.duplicate_window_days,
-        "price_tolerance_pct": bot_settings.price_tolerance_pct,
-    }
-
-
 def _error_text(detail) -> str:
     if isinstance(detail, dict):
         detail = detail.get("detail", next(iter(detail.values()), ""))
@@ -265,11 +256,10 @@ def _error_issue(exc: APIException) -> dict:
 
 
 def _mark_applied(message: BotMessage, order: Order, bot_settings: WhatsAppBotSettings) -> None:
-    """Проведено: «Проведено: …» цитатой исходного сообщения, вагоны — к сообщению."""
+    """Проведено: «Проведено: …» цитатой исходного сообщения."""
     # Цитата — исходное сообщение; удалось ли её отправить — дело бота.
     reply = applied_reply(order, show_amounts=bot_settings.show_amounts_in_reply) if _quote_id(message) else ""
     _finish(message, BotMessage.APPLIED, order=order, reply=reply)
-    ShipmentWagon.objects.filter(shipment__order=order).update(source_message=message)
 
 
 def _revises_applied(message: BotMessage) -> bool:
@@ -307,7 +297,7 @@ def _review_revision(message: BotMessage, *, quote: bool) -> None:
 
 
 # Ждут бота: новые и упавшие, пока не кончились попытки.
-_PENDING = Q(status__in=(BotMessage.RECEIVED, BotMessage.PARSED)) | Q(
+_PENDING = Q(status=BotMessage.RECEIVED) | Q(
     status=BotMessage.FAILED, attempts__lt=MAX_ATTEMPTS)
 
 
@@ -345,24 +335,23 @@ def _process(message: BotMessage, *, user, bot_settings: WhatsAppBotSettings) ->
     if not is_report_candidate(report, message.text):
         _finish(message, BotMessage.IGNORED)
         return
-    options = report_options(bot_settings)
-    resolved = resolve_report(report, user=user, **options)
-    message.parsed = report_summary(report, resolved)
+    resolved = resolve_report(report, user=user)
+    message.parsed = report_summary(report, resolved.client)
     if resolved.ok:
         try:
             # Точка сохранения: отказ откатывает только проведение.
             with transaction.atomic():
-                order = apply_rail_report(report, user, **options)
+                order = apply_rail_report(report, user)
         except (ValidationError, PermissionDenied) as exc:
             # Отчёт мог провести человек у грузчика («Вставить отчёт»):
             # свежие причины важнее текста отказа.
-            resolved = resolve_report(report, user=user, **options)
-            issues = [_issue(issue) for issue in resolved.issues] or [_error_issue(exc)]
+            resolved = resolve_report(report, user=user)
+            issues = [issue.as_dict() for issue in resolved.issues] or [_error_issue(exc)]
         else:
             _mark_applied(message, order, bot_settings)
             return
     else:
-        issues = [_issue(issue) for issue in resolved.issues]
+        issues = [issue.as_dict() for issue in resolved.issues]
     _finish(message, BotMessage.NEEDS_REVIEW, issues=issues,
             reply=review_reply(issues, show_amounts=bot_settings.show_amounts_in_reply))
 
@@ -420,7 +409,7 @@ def process_message(message: BotMessage, *, user, bot_settings: WhatsAppBotSetti
             _process(locked, user=user, bot_settings=bot_settings)
     except (OperationalError, InterfaceError):
         raise
-    except Exception as exc:  # noqa: BLE001 — сбой одного сообщения не останавливает бота
+    except Exception as exc:  # сбой одного сообщения не останавливает бота
         log.exception("WhatsApp bot message %s failed", message.pk)
         return _fail(message, exc)
     return _attach_draft(locked)
@@ -442,6 +431,10 @@ def _quote_id(message: BotMessage) -> str:
 def send_pending_replies(client: GreenApiClient, *, limit: int = 10) -> int:
     """Отправить ответы цитатой. Сбой провайдера — попытка засчитана, ошибка наверх.
 
+    Текст сбоя в ``error`` сообщения не пишется: там причина сбоя обработки
+    (:func:`_fail`), а сбой Green-API видно в состоянии бота и в «не отправлен
+    (попыток: N)» у ответа.
+
     Отправленным отмечается только тот ответ, что ушёл: если, пока он уходил,
     человек провёл сообщение («Проведено» после «на проверке»), новый ответ
     уйдёт следующим кругом.
@@ -454,9 +447,8 @@ def send_pending_replies(client: GreenApiClient, *, limit: int = 10) -> int:
         same_reply = BotMessage.objects.filter(pk=message.pk, reply=message.reply, reply_sent_at__isnull=True)
         try:
             reply_id = client.send_message(message.chat_id, message.reply, quoted_message_id=_quote_id(message))
-        except GreenApiError as exc:
-            same_reply.update(
-                reply_attempts=F("reply_attempts") + 1, error=str(exc)[:500], updated_at=timezone.now())
+        except GreenApiError:
+            same_reply.update(reply_attempts=F("reply_attempts") + 1, updated_at=timezone.now())
             raise
         same_reply.update(reply_message_id=reply_id[:160], reply_sent_at=timezone.now(), updated_at=timezone.now())
         sent += 1
@@ -489,8 +481,8 @@ def apply_message(message: BotMessage, user, *, text: str | None = None, order: 
     source = message.text if text is None else text
     report = parse_rail_report(source)
     bot_settings = WhatsAppBotSettings.load()
-    applied = apply_rail_report(report, user, order=order, **report_options(bot_settings))
-    message.parsed = report_summary(report)
+    applied = apply_rail_report(report, user, order=order)
+    message.parsed = report_summary(report, applied.client)
     message.resolved_by, message.resolved_at = user, timezone.now()
     _mark_applied(message, applied, bot_settings)
     log_event(
@@ -515,9 +507,7 @@ def ignore_message(message: BotMessage, user) -> BotMessage:
 def status_counts() -> dict[str, int]:
     """Сколько сообщений в каждой вкладке журнала — одним запросом."""
     counts = BotMessage.objects.aggregate(
-        review=Count("pk", filter=Q(status__in=BotMessage.REVIEW_STATUSES)),
-        applied=Count("pk", filter=Q(status=BotMessage.APPLIED)),
-        ignored=Count("pk", filter=Q(status=BotMessage.IGNORED)),
+        **{tab: Count("pk", filter=Q(status__in=statuses)) for tab, statuses in BotMessage.TAB_STATUSES.items()},
         all=Count("pk"),
     )
     return {key: value or 0 for key, value in counts.items()}

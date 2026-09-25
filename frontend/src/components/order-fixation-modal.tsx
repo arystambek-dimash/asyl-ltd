@@ -4,9 +4,11 @@ import { useEffect, useState } from "react";
 import { CalendarClock, LoaderCircle } from "lucide-react";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
+import { ORDER_AWAITING_SHIPMENT_STATUSES } from "@/lib/constants";
 import { useAuth } from "@/store/auth";
 import type { Order } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import {
   FixationFields,
@@ -18,7 +20,7 @@ import {
 
 /** Какие заказы можно зафиксировать задним числом из списка/карточки. */
 export function canFixateOrder(order: Order): boolean {
-  if (["confirmed", "arrived", "loading", "loaded"].includes(order.status)) return true;
+  if (ORDER_AWAITING_SHIPMENT_STATUSES.includes(order.status)) return true;
   return order.status === "shipped" && !order.is_fully_paid;
 }
 
@@ -29,7 +31,7 @@ export function OrderFixationModal({
 }: {
   order: Order | null;
   onClose: () => void;
-  onChanged: (order: Order) => void | Promise<void>;
+  onChanged: () => unknown;
 }) {
   const { me } = useAuth();
   const canPay = can(me, "payments.create");
@@ -54,15 +56,15 @@ export function OrderFixationModal({
   }, [orderId, orderStatus, canPay]);
 
   if (!order) return null;
-  const draftError = fixationDraftError(draft, { orderStatus: order.status });
+  const draftError = fixationDraftError(draft, { orderStatus: order.status, currency: order.currency });
   const nothingToDo = !draft.status && !draft.paid;
 
   async function apply() {
     setBusy(true);
     setError("");
     try {
-      const response = await api.post<Order>(`/orders/${order!.id}/fixate/`, fixationBody(draft));
-      await onChanged(response.data);
+      await api.post(`/orders/${order!.id}/fixate/`, fixationBody(draft));
+      await onChanged();
       onClose();
     } catch (cause) {
       setError(apiError(cause));
@@ -100,17 +102,11 @@ export function OrderFixationModal({
           draft={draft}
           onChange={setDraft}
           canPay={canPay}
+          currency={order.currency}
           orderStatus={order.status}
           idPrefix={`fixation-${order.id}`}
         />
-        {(error || (draftError && draft.date)) && (
-          <p
-            role="alert"
-            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]"
-          >
-            {error || draftError}
-          </p>
-        )}
+        <FormError message={error || (draft.date ? draftError : null)} className="rounded-xl py-2.5 font-medium" />
       </div>
     </Modal>
   );

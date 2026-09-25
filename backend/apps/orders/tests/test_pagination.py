@@ -9,7 +9,7 @@ import pytest
 
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
-from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.models import Order, OrderItem
 
 pytestmark = pytest.mark.django_db
 
@@ -21,8 +21,7 @@ def _client(n):
 
 def _orders(count):
     product = Product.objects.create(
-        name="Мука", color="Red", weight_kg=Decimal("50"),
-        price=Decimal("1000"))
+        name="Мука", color="Red", weight_kg=Decimal("50"))
     for n in range(count):
         order = Order.objects.create(client=_client(n), status="confirmed")
         OrderItem.objects.create(
@@ -73,23 +72,3 @@ def test_clients_and_stores_paginate_on_demand(auth_client, boss):
         "/api/stores/?page=1&page_size=1").json()
     assert paged_stores["count"] == 2
     assert len(paged_stores["results"]) == 1
-
-
-def test_cashier_log_paginates_on_demand(auth_client, user_with_perms):
-    from apps.eventlog.models import EventLog
-
-    cashier = user_with_perms("cashier", codes=["payments.confirm"])
-    order = Order.objects.create(client=_client(1), status="shipped")
-    for n in range(3):
-        EventLog.objects.create(
-            event_type="payment", message=f"Событие {n}", order=order)
-
-    flat = auth_client(cashier).get("/api/orders/cashier-log/").json()
-    assert isinstance(flat, list)
-    assert len(flat) == 3
-
-    paged = auth_client(cashier).get(
-        "/api/orders/cashier-log/?page=1&page_size=2").json()
-    assert set(paged) >= {"count", "next", "previous", "results"}
-    assert paged["count"] == 3
-    assert len(paged["results"]) == 2

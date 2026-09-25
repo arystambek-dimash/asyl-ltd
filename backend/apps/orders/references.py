@@ -1,6 +1,6 @@
 """Least-privilege reference projection used by the staff order form."""
 
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch
 
 from apps.catalog.models import Product
 from apps.clients.models import Client, Store
@@ -38,10 +38,7 @@ def build_order_form_options(user) -> dict:
         .prefetch_related(
             Prefetch(
                 "stock_items",
-                queryset=StockItem.objects.filter(
-                    Q(warehouse__isnull=True) | Q(warehouse__is_active=True)
-                )
-                .select_related("warehouse")
+                queryset=StockItem.objects.filter(warehouse__is_active=True)
                 .order_by("warehouse__name", "warehouse_id", "id"),
                 to_attr="warehouse_stocks",
             )
@@ -56,10 +53,6 @@ def build_order_form_options(user) -> dict:
     )
     warehouses = list(
         Warehouse.objects.filter(is_active=True).order_by("name", "id")
-    )
-    compatibility_warehouse = next(
-        (warehouse for warehouse in warehouses if warehouse.code == "main"),
-        None,
     )
     default_warehouse = next(
         (warehouse for warehouse in warehouses if warehouse.is_default),
@@ -99,11 +92,7 @@ def build_order_form_options(user) -> dict:
             for client in clients
         ],
         "products": [
-            _product_option(
-                product,
-                compatibility_warehouse,
-                default_warehouse,
-            )
+            _product_option(product, default_warehouse)
             for product in products
         ],
         "warehouses": [
@@ -139,57 +128,21 @@ def build_order_form_options(user) -> dict:
     }
 
 
-def _product_stock_projection(
-    product,
-    compatibility_warehouse=None,
-    default_warehouse=None,
-):
-    """Return per-warehouse balances plus deterministic legacy fields."""
-    projected = []
-    by_warehouse = {}
-    stocks = getattr(product, "warehouse_stocks", None)
-    if stocks is None:
-        stocks = product.stock_items.select_related("warehouse").order_by(
-            "warehouse__name", "warehouse_id", "id"
-        )
-    for stock in stocks:
-        warehouse = stock.warehouse or compatibility_warehouse
-        if warehouse is None:
-            continue
-        warehouse_id = warehouse.pk
-        by_warehouse[str(warehouse_id)] = (
-            by_warehouse.get(str(warehouse_id), 0) + stock.bags
-        )
-        projected.append((warehouse, stock.bags))
+def _product_option(product, default_warehouse) -> dict:
+    """Товар формы заказа: остатки по складам и остаток без выбранного склада.
 
-    if not projected:
-        return 0, None, None, {}
-    selected = next(
-        (
-            row
-            for row in projected
-            if default_warehouse is not None and row[0].pk == default_warehouse.pk
-        ),
-        None,
-    )
-    if selected is None:
-        selected = next((row for row in projected if row[0].is_active), projected[0])
-    return selected[1], selected[0].pk, selected[0].name, by_warehouse
-
-
-def _product_option(product, compatibility_warehouse, default_warehouse):
-    bags, warehouse_id, warehouse_name, stock_by_warehouse = (
-        _product_stock_projection(
-            product,
-            compatibility_warehouse,
-            default_warehouse,
-        )
-    )
+    ``available_bags`` форма показывает, пока склад не выбран: остаток склада
+    по умолчанию, иначе первого склада с карточкой товара. Остатки приходят
+    предзагруженными (``warehouse_stocks``) только по действующим складам.
+    """
+    stock_by_warehouse: dict[str, int] = {
+        str(stock.warehouse_id): stock.bags for stock in product.warehouse_stocks
+    }
+    default_key = str(default_warehouse.pk) if default_warehouse is not None else None
+    available = stock_by_warehouse.get(default_key, next(iter(stock_by_warehouse.values()), 0))
     return {
         "id": product.id,
         "label": str(product),
-        "available_bags": bags,
-        "warehouse": warehouse_id,
-        "warehouse_name": warehouse_name,
+        "available_bags": available,
         "stock_by_warehouse": stock_by_warehouse,
     }

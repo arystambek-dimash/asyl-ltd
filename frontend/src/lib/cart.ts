@@ -9,7 +9,7 @@ export interface CartLine {
 
 // Те же пределы, что у POST /portal/orders/ (MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS).
 export const MAX_CART_QUANTITY = 1_000_000;
-export const MAX_CART_LINES = 100;
+const MAX_CART_LINES = 100;
 
 /** Количество мешков: целое, не меньше 0 и не больше предела заказа. */
 export function clampQuantity(value: number): number {

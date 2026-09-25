@@ -1,72 +1,39 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { AttachmentChip } from "@/components/task-attachment";
+import TasksPage from "./page";
 
-const mocks = vi.hoisted(() => ({
-  get: vi.fn(),
+vi.mock("@/store/auth", () => ({
+  useAuth: () => ({ me: { permissions: ["tasks.create"] }, loading: false }),
 }));
-
-vi.mock("next/image", () => ({
-  default: ({ alt, unoptimized, ...props }: ComponentProps<"img"> & { unoptimized?: boolean }) => {
-    void unoptimized;
-    // Next image optimization is unrelated to signed attachment renewal.
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img alt={alt ?? ""} {...props} />;
-  },
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/voice-recorder", () => ({ VoiceRecorder: () => null }));
+vi.mock("@/lib/use-api", () => ({
+  useApi: () => ({ data: [], loading: false, error: "", reload: vi.fn() }),
 }));
-
 vi.mock("@/lib/api", () => ({
-  api: { get: mocks.get },
-  apiError: () => "Ошибка вложения",
-  blobApiError: async () => "Ошибка вложения",
+  api: { get: vi.fn() },
+  apiError: () => "Ошибка",
 }));
 
-describe("Task attachment renewal", () => {
-  beforeEach(() => {
-    mocks.get.mockReset();
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      value: vi.fn(() => "blob:renewed-voice"),
-    });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      value: vi.fn(),
-    });
-  });
-
-  it("renews and materializes voice as a blob before native audio uses it", async () => {
-    mocks.get
-      .mockResolvedValueOnce({ data: { url: "/api/task-attachments/4/?token=fresh" } })
-      .mockResolvedValueOnce({ data: new Blob(["OggS voice"], { type: "audio/ogg" }) });
+describe("Task photos preview", () => {
+  it("показывает два снимка с одинаковым именем без коллизии ключей", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const user = userEvent.setup();
-    const { container } = render(
-      <AttachmentChip taskId={3} attachmentId={4} kind="voice" url="/expired" name="voice.ogg" />,
-    );
+    render(<TasksPage />);
 
-    await user.click(screen.getByRole("button", { name: "Прослушать голосовое" }));
+    await user.click(screen.getByRole("button", { name: "Поставить задачу" }));
+    await user.click(screen.getByRole("button", { name: "Срок, голос, фото" }));
+    // Камера телефона часто называет каждый снимок image.jpg.
+    await user.upload(screen.getByLabelText("Фото"), [
+      new File(["a"], "image.jpg", { type: "image/jpeg" }),
+      new File(["b"], "image.jpg", { type: "image/jpeg" }),
+    ]);
 
-    await waitFor(() => expect(container.querySelector("audio")).toHaveAttribute("src", "blob:renewed-voice"));
-    expect(mocks.get).toHaveBeenNthCalledWith(1, "/tasks/3/attachments/4/url/");
-    expect(mocks.get).toHaveBeenNthCalledWith(2, "/api/task-attachments/4/?token=fresh", {
-      responseType: "blob",
-    });
-  });
-
-  it("renews a lazily loaded photo after its original URL expires", async () => {
-    mocks.get.mockResolvedValueOnce({ data: { url: "/api/task-attachments/8/?token=fresh" } });
-    render(<AttachmentChip taskId={7} attachmentId={8} kind="photo" url="/expired" name="photo.jpg" />);
-
-    fireEvent.error(screen.getByRole("img", { name: "photo.jpg" }));
-
-    await waitFor(() =>
-      expect(screen.getByRole("img", { name: "photo.jpg" })).toHaveAttribute(
-        "src",
-        "/api/task-attachments/8/?token=fresh",
-      ),
-    );
-    expect(mocks.get).toHaveBeenCalledWith("/tasks/7/attachments/8/url/");
+    const duplicateKeyWarned = consoleError.mock.calls.some((call) => String(call[0]).includes("same key"));
+    consoleError.mockRestore();
+    expect(screen.getAllByText("image.jpg")).toHaveLength(2);
+    expect(duplicateKeyWarned).toBe(false);
   });
 });

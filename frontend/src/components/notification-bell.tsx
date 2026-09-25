@@ -25,7 +25,7 @@ export function NotificationBell() {
   const list = items ?? [];
   const unread = list.filter((n) => !n.is_read).length;
 
-  useDismiss(ref, () => setOpen(false), open);
+  useDismiss(ref, () => setOpen(false), open, { returnFocusRef: triggerRef });
 
   async function markRead(id: number) {
     try {
@@ -38,17 +38,7 @@ export function NotificationBell() {
   }
 
   return (
-    <div
-      className="relative"
-      ref={ref}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || !open) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }}
-    >
+    <div className="relative" ref={ref}>
       <button
         ref={triggerRef}
         type="button"

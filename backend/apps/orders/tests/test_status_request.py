@@ -3,7 +3,6 @@ from unittest.mock import patch
 import pytest
 from rest_framework.exceptions import ValidationError
 
-from apps.cameras import recordings
 from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
 from apps.clients.models import Client
@@ -134,12 +133,13 @@ def test_set_status_endpoint_operator_gets_202(auth_client, operator):
     assert r.status_code == 202
     assert r.data["applied"] is False
     assert r.data["request"]["to_status"] == "shipped"
-    assert r.data["request"]["to_status_label"] == "Отгружено"
 
 
-def test_completed_shipment_rollback_restores_stock_deletes_video_and_audits(
+def test_completed_shipment_rollback_restores_stock_and_audits_without_camera_pc(
     auth_client, boss
 ):
+    """Откат не ходит на ПК камер: API удаления записей там нет, видео
+    уходит по сроку хранения MediaMTX, а сетевые вызовы держали бы склад."""
     product = Product.objects.create(name="Архив", color="Red", weight_kg="50")
     receive_stock(product, 20, boss)
     order = _order()
@@ -157,9 +157,8 @@ def test_completed_shipment_rollback_restores_stock_deletes_video_and_audits(
     )
     assert StockItem.objects.get(product=product).bags == 13
 
-    with patch(
-        "apps.cameras.recordings.delete_session_segments", return_value=2
-    ) as delete:
+    camera_pc_called = AssertionError("откат не должен обращаться к ПК камер")
+    with patch("apps.cameras.ai._call", side_effect=camera_pc_called):
         response = auth_client(boss).post(
             f"/api/orders/{order.id}/rollback-shipment/",
             {"status": "confirmed", "reason": "Ошибочно выбран заказ"},
@@ -172,52 +171,12 @@ def test_completed_shipment_rollback_restores_stock_deletes_video_and_audits(
     assert order.status == "confirmed"
     assert StockItem.objects.get(product=product).bags == 20
     assert not Shipment.objects.filter(order=order).exists()
-    assert session.recording_stream == ""
-    delete.assert_called_once()
+    assert session.recording_stream == "cam2ai"
+    assert "сроку хранения" in session.error
     event = EventLog.objects.get(event_type="shipment_rollback", order=order)
     assert event.user == boss
     assert event.payload["reason"] == "Ошибочно выбран заказ"
-    assert event.payload["recording_segments_deleted"] == 2
-
-
-def test_shipment_rollback_continues_when_camera_pc_is_unavailable(auth_client, boss):
-    product = Product.objects.create(
-        name="Локальная запись", color="Blue", weight_kg="50"
-    )
-    receive_stock(product, 12, boss)
-    order = _order()
-    OrderItem.objects.create(order=order, product=product, quantity=4, unit_price="10")
-    services.request_status_change(order, "shipped", boss, bags_loaded=4)
-    session = AiCountingSession.objects.create(
-        order=order,
-        camera="cam3",
-        status=AiCountingSession.CLOSED,
-        started_by=boss,
-        closed_by=boss,
-        ended_at=order.shipment.shipped_at,
-        recording_stream="cam3ai",
-        final_total=4,
-    )
-
-    with patch(
-        "apps.cameras.recordings.delete_session_segments",
-        side_effect=recordings.RecordingUnavailable("offline"),
-    ):
-        response = auth_client(boss).post(
-            f"/api/orders/{order.id}/rollback-shipment/",
-            {"status": "confirmed", "reason": "Повторная обработка заказа"},
-            format="json",
-        )
-
-    assert response.status_code == 200
-    order.refresh_from_db()
-    session.refresh_from_db()
-    assert order.status == "confirmed"
-    assert StockItem.objects.get(product=product).bags == 12
-    assert session.recording_stream == "cam3ai"
-    assert "сроку хранения" in session.error
-    event = EventLog.objects.get(event_type="shipment_rollback", order=order)
-    assert event.payload["recording_cleanup_pending_session_ids"] == [session.pk]
+    assert event.payload["recording_session_ids"] == [session.pk]
 
 
 def test_shipment_rollback_requires_permission_and_reason(auth_client, operator, boss):
@@ -247,6 +206,16 @@ def test_set_status_endpoint_editor_applies(auth_client, manager):
     assert r.status_code == 200
     assert r.data["applied"] is True
     assert r.data["order"]["status"] == "shipped"
+
+
+def test_set_status_rejects_unknown(auth_client, manager):
+    o = _order()
+    r = auth_client(manager).post(
+        f"/api/orders/{o.id}/set-status/", {"status": "nonsense"}, format="json"
+    )
+    assert r.status_code == 400
+    o.refresh_from_db()
+    assert o.status == "confirmed"
 
 
 def test_approve_endpoint(auth_client, operator, manager):
@@ -308,13 +277,10 @@ def test_regular_editor_endpoint_rejects_internal_status(auth_client, manager):
     assert o.status == "confirmed"
 
 
-def test_superuser_cannot_bypass_internal_status_flow(make_user):
-    root = make_user(username="root")
-    root.is_superuser = True
-    root.save(update_fields=["is_superuser"])
+def test_superuser_cannot_bypass_internal_status_flow(admin_user):
     o = _order()
     with pytest.raises(ValidationError) as exc:
-        services.request_status_change(o, "loaded", root)
+        services.request_status_change(o, "loaded", admin_user)
 
     assert exc.value.detail["code"] == "status_not_available"
     o.refresh_from_db()
@@ -324,7 +290,7 @@ def test_superuser_cannot_bypass_internal_status_flow(make_user):
 
 def test_manual_completed_status_runs_full_shipping_flow(auth_client, manager):
     product = Product.objects.create(
-        name="Мука", color="Red", weight_kg="50", price="100.00"
+        name="Мука", color="Red", weight_kg="50"
     )
     receive_stock(product, 100, manager)
     order = _order()
@@ -349,7 +315,7 @@ def test_manual_completed_status_runs_full_shipping_flow(auth_client, manager):
 
 def test_manual_completed_without_count_uses_order_quantity(auth_client, manager):
     product = Product.objects.create(
-        name="Мука", color="Blue", weight_kg="25", price="100.00"
+        name="Мука", color="Blue", weight_kg="25"
     )
     receive_stock(product, 20, manager)
     order = _order()

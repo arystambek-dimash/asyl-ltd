@@ -1,7 +1,12 @@
 "use client";
 import * as React from "react";
-import { ChevronDown, Globe } from "lucide-react";
 import { Chip } from "@/components/ui/chip";
+import {
+  COUNTRY_MASK_INPUT,
+  CountryMaskField,
+  isAriaInvalid,
+  useCaretRestore,
+} from "@/components/ui/country-mask-field";
 import { MARKET_COUNTRIES, OTHER_COUNTRY, countryFlag } from "@/lib/countries";
 import {
   PLATE_COUNTRIES,
@@ -36,15 +41,11 @@ export interface PlateInputProps extends Omit<
 }
 
 const COUNTRY_NAMES = Object.fromEntries(MARKET_COUNTRIES.map((country) => [country.iso, country.name]));
-
-function caretAfterChars(text: string, count: number): number {
-  let seen = 0;
-  for (let index = 0; index < text.length; index++) {
-    if (seen === count) return index;
-    if (text[index] !== " ") seen++;
-  }
-  return text.length;
-}
+const COUNTRY_OPTIONS = [
+  ...PLATE_COUNTRIES.map((iso) => ({ value: iso, label: `${countryFlag(iso)} ${COUNTRY_NAMES[iso] ?? iso}` })),
+  { value: "", label: `🌐 ${OTHER_COUNTRY}` },
+];
+const isPlateChar = (char: string) => char !== " ";
 
 /**
  * Номер машины одним полем: флаг страны с прозрачным выбором KZ/KG/UZ/RU/Другая,
@@ -74,7 +75,6 @@ export const PlateInput = React.forwardRef<HTMLInputElement, PlateInputProps>(
     // другой страны, и она залипала бы на неоднозначном номере.
     const [picked, setPicked] = React.useState<PlateCountry | null | undefined>(undefined);
     const [focused, setFocused] = React.useState(false);
-    const pendingCaret = React.useRef<number | null>(null);
 
     const preferred = picked === undefined ? plateCountryIso(defaultCountry) : picked;
     const compact = normalizePlate(value);
@@ -83,7 +83,7 @@ export const PlateInput = React.forwardRef<HTMLInputElement, PlateInputProps>(
     // Старый свободный текст («самовывоз») показываем как записан.
     const text = /^[0-9A-Z]*$/.test(compact) ? display.text : value;
     const hint = text === display.text ? display.hint : "";
-    const invalid = props["aria-invalid"] === true || props["aria-invalid"] === "true";
+    const invalid = isAriaInvalid(props["aria-invalid"]);
     // Номер с ошибкой форма объясняет сама — мягкое предупреждение её бы только дублировало.
     const softWarning = warning && !focused && !invalid ? plateWarning(compact, kind) : null;
     const lg = size === "lg";
@@ -91,13 +91,7 @@ export const PlateInput = React.forwardRef<HTMLInputElement, PlateInputProps>(
       ? "text-2xl font-bold tracking-wide tabular-nums"
       : "text-base font-medium tracking-wide tabular-nums sm:text-sm";
 
-    React.useLayoutEffect(() => {
-      const input = inputRef.current;
-      if (pendingCaret.current === null || !input || document.activeElement !== input) return;
-      const position = caretAfterChars(text, pendingCaret.current);
-      pendingCaret.current = null;
-      input.setSelectionRange(position, position);
-    });
+    const pendingCaret = useCaretRestore(inputRef, text, isPlateChar);
 
     function handleInput(event: React.ChangeEvent<HTMLInputElement>) {
       const raw = event.target.value;
@@ -126,83 +120,52 @@ export const PlateInput = React.forwardRef<HTMLInputElement, PlateInputProps>(
     }
 
     const control = (
-      <div
-        className={cn(
-          "flex w-full overflow-hidden rounded-md border border-[var(--input)] bg-[var(--background)] shadow-sm transition-[border-color,box-shadow] focus-within:border-[var(--ring)] focus-within:ring-2 focus-within:ring-[var(--ring)]/20",
-          lg ? "h-14" : "h-10",
-          invalid &&
-            "border-[var(--destructive)] focus-within:border-[var(--destructive)] focus-within:ring-[var(--destructive)]/20",
-          disabled && "cursor-not-allowed bg-[var(--muted)] opacity-70",
-          className,
-        )}
-      >
-        <div className="relative flex shrink-0 items-center gap-1.5 border-r border-[var(--input)] pl-3 pr-2 text-sm transition-colors hover:bg-[var(--accent)]">
-          {country ? (
+      <CountryMaskField
+        badge={
+          country && (
             <>
               <span aria-hidden className="text-base leading-none">
                 {countryFlag(country)}
               </span>
               <span className="text-xs font-semibold">{country}</span>
             </>
-          ) : (
-            <Globe aria-hidden className="size-4 text-[var(--muted-foreground)]" />
-          )}
-          <ChevronDown aria-hidden className="size-3.5 text-[var(--muted-foreground)]" />
-          <select
-            aria-label={kind === "trailer" ? "Страна прицепа" : "Страна тягача"}
-            value={country ?? ""}
-            onChange={handleCountry}
-            disabled={disabled}
-            className="absolute inset-0 cursor-pointer opacity-0 disabled:cursor-not-allowed"
-          >
-            {PLATE_COUNTRIES.map((iso) => (
-              <option key={iso} value={iso}>
-                {countryFlag(iso)} {COUNTRY_NAMES[iso] ?? iso}
-              </option>
-            ))}
-            <option value="">🌐 {OTHER_COUNTRY}</option>
-          </select>
-        </div>
-        {/* 16px на телефоне: iOS не зумит страницу при фокусе. Подсказка того же размера, иначе съедет. */}
-        <div className="relative min-w-0 flex-1">
-          {hint && (
-            <div
-              aria-hidden
-              className={cn(
-                "pointer-events-none absolute inset-0 flex items-center overflow-hidden whitespace-pre px-3",
-                textClass,
-              )}
-            >
-              <span className="invisible">{text}</span>
-              <span className="text-[var(--muted-foreground)]/50">{hint}</span>
-            </div>
-          )}
-          <input
-            ref={inputRef}
-            type="text"
-            autoCapitalize="characters"
-            autoComplete="off"
-            autoCorrect="off"
-            spellCheck={false}
-            {...props}
-            value={text}
-            onChange={handleInput}
-            onFocus={(event) => {
-              setFocused(true);
-              onFocus?.(event);
-            }}
-            onBlur={(event) => {
-              setFocused(false);
-              onBlur?.(event);
-            }}
-            disabled={disabled}
-            className={cn(
-              "relative h-full w-full bg-transparent px-3 outline-none disabled:cursor-not-allowed",
-              textClass,
-            )}
-          />
-        </div>
-      </div>
+          )
+        }
+        country={{
+          label: kind === "trailer" ? "Страна прицепа" : "Страна тягача",
+          value: country ?? "",
+          options: COUNTRY_OPTIONS,
+          onChange: handleCountry,
+        }}
+        text={text}
+        hint={hint}
+        textClassName={textClass}
+        invalid={invalid}
+        disabled={disabled}
+        className={cn(lg && "h-14", className)}
+      >
+        <input
+          ref={inputRef}
+          type="text"
+          autoCapitalize="characters"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          {...props}
+          value={text}
+          onChange={handleInput}
+          onFocus={(event) => {
+            setFocused(true);
+            onFocus?.(event);
+          }}
+          onBlur={(event) => {
+            setFocused(false);
+            onBlur?.(event);
+          }}
+          disabled={disabled}
+          className={cn(COUNTRY_MASK_INPUT, textClass)}
+        />
+      </CountryMaskField>
     );
     if (!warning) return control;
     return (

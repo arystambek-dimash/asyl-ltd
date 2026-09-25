@@ -6,21 +6,12 @@ describe("safeBackPath", () => {
     expect(safeBackPath("/accounting?view=debts")).toBe("/accounting?view=debts");
   });
 
-  it.each([["https://evil.example"], ["//evil"], [null]])("rejects unsafe input %s", (value) => {
-    expect(safeBackPath(value)).toBeNull();
-  });
-
-  it("rejects backslash bypass /\\evil.com", () => {
-    expect(safeBackPath("/\\evil.com")).toBeNull();
-  });
-
-  it("rejects tab bypass /\\t/evil.com", () => {
-    expect(safeBackPath("/\t/evil.com")).toBeNull();
-  });
-
-  it("rejects javascript: protocol", () => {
-    expect(safeBackPath("javascript:alert(1)")).toBeNull();
-  });
+  it.each([["https://evil.example"], ["//evil"], [null], ["/\\evil.com"], ["/\t/evil.com"], ["javascript:alert(1)"]])(
+    "rejects unsafe input %s",
+    (value) => {
+      expect(safeBackPath(value)).toBeNull();
+    },
+  );
 
   it("preserves query and hash in safe paths", () => {
     expect(safeBackPath("/orders/1?x=1#y")).toBe("/orders/1?x=1#y");

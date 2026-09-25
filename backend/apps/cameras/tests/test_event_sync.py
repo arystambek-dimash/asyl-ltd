@@ -5,7 +5,6 @@ from io import BytesIO
 from unittest.mock import patch
 
 import pytest
-from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.cameras import (
@@ -14,9 +13,9 @@ from apps.cameras import (
     continuous,
     event_sync,
     health,
-    production,
-    production_repair,
+    production_runs,
 )
+from apps.cameras.color_resolution import camera_color_key
 from apps.cameras.event_protocol import EVENT_PAGE_LIMIT
 from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
@@ -29,7 +28,6 @@ from apps.cameras.models import (
     CameraHealthState,
     ContinuousCameraRole,
     MonoblockCameraSettings,
-    ShippingAnalyticsBootstrap,
     ShippingDailyAnalytics,
 )
 
@@ -121,6 +119,35 @@ def _page(
     }
 
 
+def _parse(
+    events: list[dict],
+    *,
+    camera: str = "cam3",
+    after_id: int = 0,
+    **page,
+) -> event_sync.EventPage:
+    return event_sync.parse_page(
+        _page(events, after_id=after_id, **page),
+        camera=camera,
+        after_id=after_id,
+    )
+
+
+def _apply(
+    page: event_sync.EventPage,
+    *,
+    camera: str = "cam3",
+    after_id: int = 0,
+    **options,
+):
+    return event_sync.apply_page(
+        camera=camera,
+        page=page,
+        requested_after_id=after_id,
+        **options,
+    )
+
+
 def test_ai_client_reads_the_bounded_camera_event_page():
     response = _page([])
     with patch.object(ai, "_call", return_value=response) as call:
@@ -129,7 +156,6 @@ def test_ai_client_reads_the_bounded_camera_event_page():
     call.assert_called_once_with(
         "GET",
         "/events?after_id=2&limit=500&cam=cam3&contract_version=2",
-        none_on_404=True,
         max_response_bytes=ai.EVENT_PAGE_MAX_BYTES,
     )
 
@@ -148,7 +174,6 @@ def test_sync_backfills_from_event_zero_not_the_stale_snapshot_total():
         camera="cam3",
         last_total=48578,
         last_per_color={"red": 35808, "blue": 10327, "green": 2443},
-        last_mode="always_on",
     )
     AlwaysOnDailyAnalytics.objects.create(
         camera="cam3",
@@ -168,16 +193,9 @@ def test_sync_backfills_from_event_zero_not_the_stale_snapshot_total():
         result = event_sync.sync_camera("cam3")
 
     request.assert_called_once_with("cam3", 0, 500)
-    assert result == event_sync.SyncResult(True, 2, 0, 1, 2, True)
+    assert result == event_sync.SyncResult(2, 0, 1, 2, True)
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_event_id == 2
-    assert cursor.last_total == 48580
-    assert cursor.event_compat_total == 48580
-    assert cursor.last_per_color == {
-        "red": 35810,
-        "blue": 10327,
-        "green": 2443,
-    }
     assert cursor.event_sync_supported is True
     assert cursor.event_boundary_validated is True
     assert cursor.event_caught_up_at is not None
@@ -192,21 +210,9 @@ def test_sync_backfills_from_event_zero_not_the_stale_snapshot_total():
 
 
 def test_replaying_an_applied_page_does_not_count_events_twice():
-    page = event_sync.parse_page(
-        _page([_event(1, 1), _event(2, 2)]),
-        camera="cam3",
-        after_id=0,
-    )
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (2, 0)
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (0, 0)
+    page = _parse([_event(1, 1), _event(2, 2)])
+    assert _apply(page)[:2] == (2, 0)
+    assert _apply(page)[:2] == (0, 0)
 
     assert AlwaysOnImportedEvent.objects.count() == 2
     assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == 2
@@ -214,34 +220,22 @@ def test_replaying_an_applied_page_does_not_count_events_twice():
 
 
 def test_ordered_event_colors_create_new_runs_and_replay_is_idempotent():
-    page = event_sync.parse_page(
-        _page(
-            [
-                _event(1, 1, class_name="Red_50"),
-                _event(2, 2, class_name="Green_50"),
-                _event(3, 3, class_name="Blue_50"),
-                _event(4, 4, class_name="Red_50"),
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
+    page = _parse(
+        [
+            _event(1, 1, class_name="Red_50"),
+            _event(2, 2, class_name="Green_50"),
+            _event(3, 3, class_name="Blue_50"),
+            _event(4, 4, class_name="Red_50"),
+        ],
     )
 
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (4, 0)
+    assert _apply(page)[:2] == (4, 0)
     runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
     assert [row.color for row in runs] == ["red", "green", "blue", "red"]
     assert [row.model_bags for row in runs] == [1, 1, 1, 1]
     assert [row.ended_at for row in runs] == [_at(1), _at(2), _at(3), None]
 
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (0, 0)
+    assert _apply(page)[:2] == (0, 0)
     assert AlwaysOnImportedEvent.objects.count() == 4
     assert AlwaysOnProductionRun.objects.count() == 4
     row = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
@@ -250,27 +244,19 @@ def test_ordered_event_colors_create_new_runs_and_replay_is_idempotent():
 
 
 def test_classified_color_brand_and_sku_are_persisted_and_drive_analytics():
-    page = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    1,
-                    class_name="Red_50",
-                    color="Blue_50",
-                    brand="korol",
-                )
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
+    page = _parse(
+        [
+            _event(
+                1,
+                1,
+                class_name="Red_50",
+                color="Blue_50",
+                brand="korol",
+            )
+        ],
     )
 
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (1, 0)
+    assert _apply(page)[:2] == (1, 0)
 
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.class_name == "Red_50"
@@ -303,9 +289,21 @@ def test_invalid_classification_enrichment_is_rejected(field, value):
     event[field] = value
 
     with pytest.raises(event_sync.EventSyncError, match=field):
-        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+        _parse([event])
 
     assert not AlwaysOnImportedEvent.objects.exists()
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [None, 1, "2026-09-01T10:00:00", "2026-02-30T10:00:00+05:00"],
+)
+def test_invalid_event_created_at_is_a_sync_error(created_at):
+    event = _event(1, 1)
+    event["created_at"] = created_at
+
+    with pytest.raises(event_sync.EventSyncError, match="created_at"):
+        _parse([event])
 
 
 def test_non_boolean_continuous_analytics_marker_is_rejected():
@@ -316,7 +314,7 @@ def test_non_boolean_continuous_analytics_marker_is_rejected():
         event_sync.EventSyncError,
         match="continuous_analytics",
     ):
-        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+        _parse([event])
 
 
 @pytest.mark.parametrize("analytics_scope", [None, "", "legacy", True])
@@ -328,7 +326,7 @@ def test_event_analytics_scope_is_a_required_closed_contract(analytics_scope):
         event_sync.EventSyncError,
         match="analytics_scope",
     ):
-        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+        _parse([event])
 
 
 def test_legacy_unscoped_event_blocks_deploy_without_touching_either_ledger():
@@ -336,7 +334,7 @@ def test_legacy_unscoped_event_blocks_deploy_without_touching_either_ledger():
 
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
     current = {
-        "cameras": ["cam3"],
+        "camera_sources": ["cam3"],
         "source": "sub",
         "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
         "processors": [],
@@ -381,7 +379,6 @@ def test_replayed_event_cannot_change_classification_enrichment():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=0,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
     )
@@ -402,28 +399,20 @@ def test_replayed_event_cannot_change_classification_enrichment():
         total_after=1,
         applied_to_analytics=True,
     )
-    page = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    1,
-                    class_name="Red_50",
-                    color="Blue_50",
-                    brand="korol",
-                )
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
+    page = _parse(
+        [
+            _event(
+                1,
+                1,
+                class_name="Red_50",
+                color="Blue_50",
+                brand="korol",
+            )
+        ],
     )
 
     with pytest.raises(event_sync.EventSyncError, match="changed contents"):
-        event_sync.apply_page(
-            camera="cam3",
-            page=page,
-            requested_after_id=0,
-        )
+        _apply(page)
 
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_event_id == 0
@@ -432,32 +421,12 @@ def test_replayed_event_cannot_change_classification_enrichment():
 
 
 def test_stale_concurrent_page_cannot_overwrite_the_newer_caught_up_state():
-    old_page = event_sync.parse_page(
-        _page([_event(1, 1)]),
-        camera="cam3",
-        after_id=0,
-    )
-    newer_page = event_sync.parse_page(
-        _page([_event(2, 2)], after_id=1, has_more=True),
-        camera="cam3",
-        after_id=1,
-    )
-    event_sync.apply_page(
-        camera="cam3",
-        page=old_page,
-        requested_after_id=0,
-    )
-    event_sync.apply_page(
-        camera="cam3",
-        page=newer_page,
-        requested_after_id=1,
-    )
+    old_page = _parse([_event(1, 1)])
+    newer_page = _parse([_event(2, 2)], after_id=1, has_more=True)
+    _apply(old_page)
+    _apply(newer_page, after_id=1)
 
-    stale_result = event_sync.apply_page(
-        camera="cam3",
-        page=old_page,
-        requested_after_id=0,
-    )
+    stale_result = _apply(old_page)
 
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert stale_result == (0, 0, 2)
@@ -467,12 +436,8 @@ def test_stale_concurrent_page_cannot_overwrite_the_newer_caught_up_state():
 
 
 def test_page_cursor_and_crm_updates_roll_back_together():
-    page = event_sync.parse_page(
-        _page([_event(1, 1), _event(2, 2)]),
-        camera="cam3",
-        after_id=0,
-    )
-    original = analytics.record_model_delta
+    page = _parse([_event(1, 1), _event(2, 2)])
+    original = analytics.record_counted_bag
     calls = 0
 
     def fail_second(**kwargs):
@@ -482,13 +447,9 @@ def test_page_cursor_and_crm_updates_roll_back_together():
             raise RuntimeError("database write failed")
         return original(**kwargs)
 
-    with patch.object(analytics, "record_model_delta", side_effect=fail_second):
+    with patch.object(analytics, "record_counted_bag", side_effect=fail_second):
         with pytest.raises(RuntimeError, match="database write failed"):
-            event_sync.apply_page(
-                camera="cam3",
-                page=page,
-                requested_after_id=0,
-            )
+            _apply(page)
 
     assert not AlwaysOnImportedEvent.objects.exists()
     assert not AlwaysOnDailyAnalytics.objects.exists()
@@ -526,27 +487,19 @@ def test_session_event_is_durable_but_not_added_to_always_on_analytics():
 
 
 def test_legacy_ai_scoped_session_advances_cursor_without_ai_production():
-    page = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    1,
-                    mode="session",
-                    continuous_analytics=True,
-                    analytics_scope=ANALYTICS_SCOPE_AI247,
-                )
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
+    page = _parse(
+        [
+            _event(
+                1,
+                1,
+                mode="session",
+                continuous_analytics=True,
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            )
+        ],
     )
 
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (0, 1)
+    assert _apply(page)[:2] == (0, 1)
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.applied_to_analytics is False
     assert imported.applied_to_production is False
@@ -558,34 +511,22 @@ def test_legacy_ai_scoped_session_advances_cursor_without_ai_production():
 
 def test_flagged_session_event_updates_continuous_analytics_exactly_once():
     _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
-    page = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    1,
-                    mode="session",
-                    continuous_analytics=True,
-                    analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-                    color="Green_50",
-                    brand="pioneer",
-                )
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
+    page = _parse(
+        [
+            _event(
+                1,
+                1,
+                mode="session",
+                continuous_analytics=True,
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+                color="Green_50",
+                brand="pioneer",
+            )
+        ],
     )
 
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (1, 0)
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )[:2] == (0, 0)
+    assert _apply(page)[:2] == (1, 0)
+    assert _apply(page)[:2] == (0, 0)
 
     imported = AlwaysOnImportedEvent.objects.get()
     assert imported.mode == "session"
@@ -601,38 +542,23 @@ def test_flagged_session_event_updates_continuous_analytics_exactly_once():
 
 def test_shipping_and_ai247_events_use_separate_analytics_ledgers():
     _set_role("cam2", ANALYTICS_SCOPE_SHIPPING)
-    ai_page = event_sync.parse_page(
-        _page([_event(1, 1, analytics_scope=ANALYTICS_SCOPE_AI247)]),
-        camera="cam3",
-        after_id=0,
-    )
-    shipping_page = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    1,
-                    mode="session",
-                    camera="cam2",
-                    continuous_analytics=True,
-                    analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-                )
-            ]
-        ),
+    ai_page = _parse([_event(1, 1, analytics_scope=ANALYTICS_SCOPE_AI247)])
+    shipping_page = _parse(
+        [
+            _event(
+                1,
+                1,
+                mode="session",
+                camera="cam2",
+                continuous_analytics=True,
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            )
+        ],
         camera="cam2",
-        after_id=0,
     )
 
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=ai_page,
-        requested_after_id=0,
-    )[:2] == (1, 0)
-    assert event_sync.apply_page(
-        camera="cam2",
-        page=shipping_page,
-        requested_after_id=0,
-    )[:2] == (1, 0)
+    assert _apply(ai_page)[:2] == (1, 0)
+    assert _apply(shipping_page, camera="cam2")[:2] == (1, 0)
     assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == 1
     assert ShippingDailyAnalytics.objects.get(camera="cam2").model_total == 1
     assert sum(
@@ -652,7 +578,7 @@ def test_sync_follows_pages_until_the_upstream_is_caught_up():
         ("cam3", 0, 500),
         ("cam3", 1, 500),
     ]
-    assert result == event_sync.SyncResult(True, 2, 0, 2, 2, True)
+    assert result == event_sync.SyncResult(2, 0, 2, 2, True)
 
 
 def test_pending_enrichment_does_not_claim_event_stream_is_caught_up():
@@ -660,54 +586,22 @@ def test_pending_enrichment_does_not_claim_event_stream_is_caught_up():
     with patch.object(ai, "count_events", return_value=response):
         result = event_sync.sync_camera("cam3")
 
-    assert result == event_sync.SyncResult(True, 0, 0, 1, 0, False)
+    assert result == event_sync.SyncResult(0, 0, 1, 0, False)
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_event_id == 0
     assert cursor.event_boundary_validated is False
     assert cursor.event_caught_up_at is None
 
 
-def test_explicit_404_keeps_legacy_snapshot_mode_only_before_cutover():
-    AlwaysOnCounterCursor.objects.create(camera="cam3", last_total=10)
-    with patch.object(ai, "count_events", return_value=None):
-        result = event_sync.sync_camera("cam3")
-    assert not result.supported
-    assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id is None
+def test_events_404_is_a_sync_failure_not_a_legacy_mode():
+    """A proxy or a wrong AI URL answering 404 must not switch off the journal."""
+    with patch.object(ai, "_request", return_value=(404, {"error": "not found"})):
+        assert continuous._sync_camera_events("cam3") is None
 
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        last_event_id=0,
-        event_compat_total=10,
-        event_sync_supported=True,
-    )
-    with patch.object(ai, "count_events", return_value=None):
-        with pytest.raises(event_sync.EventSyncError, match="disappeared"):
-            event_sync.sync_camera("cam3")
-
-
-def test_snapshot_is_ignored_after_event_mode_cutover():
-    AlwaysOnCounterCursor.objects.create(
-        camera="cam3",
-        last_total=10,
-        last_event_id=0,
-        event_compat_total=10,
-        event_sync_supported=True,
-    )
-    analytics.record_snapshot(
-        {
-            "processors": [
-                {
-                    "cam": "cam3",
-                    "total": 20,
-                    "mode": "always_on",
-                    "running": True,
-                    "per_color": {"Red_50": 20},
-                }
-            ]
-        }
-    )
-
-    assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_total == 10
-    assert not AlwaysOnDailyAnalytics.objects.exists()
+    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
+    assert cursor.has_sync_failure
+    assert cursor.event_sync_supported is None
+    assert cursor.last_event_id is None
 
 
 @pytest.mark.parametrize(
@@ -739,24 +633,16 @@ def test_late_event_for_a_posted_stock_shift_is_counted_without_production():
 
     event = _event(1, 1)
     occurred_at = _at(1)
-    day = production.business_day_for(occurred_at)
+    day = production_runs.business_day_for(occurred_at)
     AlwaysOnStockBatch.objects.create(
         camera="cam3",
         business_day=day,
-        scheduled_for=production.scheduled_for(day),
+        scheduled_for=production_runs.scheduled_for(day),
         status=AlwaysOnStockBatch.POSTED,
     )
-    page = event_sync.parse_page(
-        _page([event]),
-        camera="cam3",
-        after_id=0,
-    )
+    page = _parse([event])
 
-    processed, ignored, cursor_id = event_sync.apply_page(
-        camera="cam3",
-        page=page,
-        requested_after_id=0,
-    )
+    processed, ignored, cursor_id = _apply(page)
 
     assert (processed, ignored, cursor_id) == (1, 0, 1)
     imported = AlwaysOnImportedEvent.objects.get(camera="cam3", upstream_event_id=1)
@@ -767,56 +653,7 @@ def test_late_event_for_a_posted_stock_shift_is_counted_without_production():
     assert not AlwaysOnProductionRun.objects.exists()
 
     # A replay of the same page recomputes the same eligibility and stays idempotent.
-    assert event_sync.apply_page(camera="cam3", page=page, requested_after_id=1) == (
-        0,
-        0,
-        1,
-    )
-
-
-def test_reconcile_uses_snapshots_only_for_an_explicit_legacy_404():
-    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
-    current = {
-        "cameras": ["cam3"],
-        "source": "sub",
-        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
-        "processors": [
-            {
-                "cam": "cam3",
-                "total": 4,
-                "mode": "always_on",
-                "running": True,
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-            }
-        ],
-    }
-    with (
-        patch.object(ai, "always_on_status", return_value=current),
-        patch.object(
-            event_sync,
-            "sync_camera",
-            return_value=event_sync.SyncResult(False, 0, 0, 0, None, False),
-        ),
-        patch.object(analytics, "record_snapshot") as snapshot,
-    ):
-        continuous.reconcile()
-    snapshot.assert_called_once_with(
-        current,
-        cameras={"cam3"},
-        analytics_scopes={"cam3": ANALYTICS_SCOPE_AI247},
-    )
-
-    with (
-        patch.object(ai, "always_on_status", return_value=current),
-        patch.object(
-            event_sync,
-            "sync_camera",
-            side_effect=ai.AiUnavailable("timeout"),
-        ),
-        patch.object(analytics, "record_snapshot") as snapshot,
-    ):
-        continuous.reconcile()
-    snapshot.assert_not_called()
+    assert _apply(page, after_id=1) == (0, 0, 1)
 
 
 def test_policy_put_failure_does_not_starve_healthy_event_import():
@@ -826,12 +663,12 @@ def test_policy_put_failure_does_not_starve_healthy_event_import():
         always_on_camera_sources=["cam3"],
     )
     current = {
-        "cameras": ["cam3"],
+        "camera_sources": ["cam3"],
         "source": "sub",
         "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
         "processors": [],
     }
-    synced = event_sync.SyncResult(True, 0, 0, 1, 0, True)
+    synced = event_sync.SyncResult(0, 0, 1, 0, True)
 
     with (
         patch.object(ai, "always_on_status", return_value=current),
@@ -851,42 +688,6 @@ def test_policy_put_failure_does_not_starve_healthy_event_import():
     ]
 
 
-def test_policy_put_failure_never_guesses_scope_for_legacy_snapshot():
-    _set_role("cam2", ANALYTICS_SCOPE_SHIPPING)
-    MonoblockCameraSettings.objects.create(camera_sources=["cam2"])
-    current = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        # A legacy reply cannot prove whether this running processor still
-        # owns the pre-change role, so its aggregate is not safe to route.
-        "processors": [
-            {
-                "cam": "cam2",
-                "total": 1,
-                "mode": "always_on",
-                "running": True,
-                "per_color": {"Red_50": 1},
-            }
-        ],
-    }
-    unsupported = event_sync.SyncResult(False, 0, 0, 1, None, False)
-
-    with (
-        patch.object(ai, "always_on_status", return_value=current),
-        patch.object(
-            ai,
-            "configure_always_on",
-            side_effect=ai.AiUnavailable("policy PUT failed"),
-        ),
-        patch.object(event_sync, "sync_camera", return_value=unsupported),
-    ):
-        with pytest.raises(ai.AiUnavailable, match="policy PUT failed"):
-            continuous.reconcile()
-
-    assert not AlwaysOnDailyAnalytics.objects.exists()
-    assert not ShippingDailyAnalytics.objects.exists()
-
-
 def test_failed_remove_then_same_scope_reactivation_reaches_fresh_synced_tail():
     _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
     row = MonoblockCameraSettings.objects.create(
@@ -897,13 +698,12 @@ def test_failed_remove_then_same_scope_reactivation_reaches_fresh_synced_tail():
         camera="cam3",
         last_total=9,
         last_event_id=9,
-        event_compat_total=9,
         event_sync_supported=True,
         event_boundary_validated=True,
         event_caught_up_at=_at(9),
     )
     still_running_shipping = {
-        "cameras": ["cam3"],
+        "camera_sources": ["cam3"],
         "source": "sub",
         "analytics_scopes": {"cam3": ANALYTICS_SCOPE_SHIPPING},
         "processors": [],
@@ -919,7 +719,7 @@ def test_failed_remove_then_same_scope_reactivation_reaches_fresh_synced_tail():
         patch.object(
             event_sync,
             "sync_camera",
-            return_value=event_sync.SyncResult(True, 0, 0, 1, 9, True),
+            return_value=event_sync.SyncResult(0, 0, 1, 9, True),
         ),
     ):
         with pytest.raises(ai.AiUnavailable, match="remove PUT failed"):
@@ -935,7 +735,7 @@ def test_failed_remove_then_same_scope_reactivation_reaches_fresh_synced_tail():
     row.camera_sources = ["cam3"]
     row.save(update_fields=["camera_sources", "updated_at"])
     running_shipping = {
-        "cameras": ["cam3"],
+        "camera_sources": ["cam3"],
         "source": "sub",
         "analytics_scopes": {"cam3": ANALYTICS_SCOPE_SHIPPING},
         "processors": [
@@ -978,156 +778,13 @@ def test_failed_remove_then_same_scope_reactivation_reaches_fresh_synced_tail():
     assert not AlwaysOnProductionRun.objects.exists()
 
 
-def test_initial_shipping_bootstrap_covers_cutover_tail_and_is_idempotent():
-    _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
-    MonoblockCameraSettings.objects.create(camera_sources=["cam3"])
-    marker = ShippingAnalyticsBootstrap.objects.create(camera="cam3")
-    AlwaysOnCounterCursor.objects.create(
-        camera="cam3",
-        last_total=5,
-        last_per_color={"red": 5},
-        last_mode="always_on",
-    )
-    legacy = AlwaysOnDailyAnalytics.objects.create(
-        camera="cam3",
-        day=timezone.localdate(_at(1)),
-        model_total=5,
-        model_per_color={"red": 5},
-        model_per_brand={"korol": 5},
-        adjustment=-1,
-    )
-    ai_tail = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    6,
-                    mode="session",
-                    continuous_analytics=True,
-                    analytics_scope=ANALYTICS_SCOPE_AI247,
-                )
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
-    )
-    assert event_sync.apply_page(
-        camera="cam3",
-        page=ai_tail,
-        requested_after_id=0,
-    )[:2] == (1, 0)
-    imported_tail = AlwaysOnImportedEvent.objects.get(upstream_event_id=1)
-    assert imported_tail.applied_to_analytics is False
-    assert imported_tail.applied_to_production is False
-    assert imported_tail.applied_to_shipping_bootstrap is True
-    legacy.refresh_from_db()
-    assert legacy.model_total == 6
-    assert not AlwaysOnProductionRun.objects.exists()
-    assert not AlwaysOnStockBatch.objects.exists()
-    running_shipping = {
-        "cameras": ["cam3"],
-        "source": "sub",
-        "analytics_scopes": {"cam3": ANALYTICS_SCOPE_SHIPPING},
-        "processors": [
-            {
-                "cam": "cam3",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-        ],
-    }
-    first_shipping_event = _event(
-        2,
-        1,
-        analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-    )
-
-    with (
-        patch.object(ai, "always_on_status", return_value=running_shipping),
-        patch.object(
-            ai,
-            "count_events",
-            return_value=_page([first_shipping_event], after_id=1),
-        ),
-    ):
-        continuous.reconcile()
-
-    marker.refresh_from_db()
-    assert marker.scope_confirmed_at is not None
-    assert marker.completed_at is not None
-    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
-    assert cursor.event_boundary_validated is True
-    assert cursor.event_caught_up_at is not None
-    shipping = ShippingDailyAnalytics.objects.get(camera="cam3", day=legacy.day)
-    assert shipping.model_total == 7
-    assert shipping.model_per_color == {"red": 7}
-    assert shipping.model_per_brand == {"unclassified": 2, "korol": 5}
-    assert shipping.adjustment == -1
-    assert shipping.total == 6
-    legacy.refresh_from_db()
-    assert legacy.model_total == 6
-    assert legacy.adjustment == -1
-    assert not AlwaysOnProductionRun.objects.exists()
-    with pytest.raises(
-        production_repair.ProductionRepairError,
-        match="not reserved for AI 24/7",
-    ):
-        production_repair.rebuild_event_production_runs(
-            camera="cam3",
-            local_day=timezone.localdate(_at(1)),
-        )
-
-    with (
-        patch.object(ai, "always_on_status", return_value=running_shipping),
-        patch.object(
-            ai,
-            "count_events",
-            return_value=_page([], after_id=2),
-        ),
-    ):
-        continuous.reconcile()
-
-    shipping.refresh_from_db()
-    assert shipping.model_total == 7
-    assert shipping.adjustment == -1
-
-    delayed_ai = event_sync.parse_page(
-        _page([_event(3, 7, analytics_scope=ANALYTICS_SCOPE_AI247)], after_id=2),
-        camera="cam3",
-        after_id=2,
-    )
-    with pytest.raises(event_sync.EventSyncError, match="violates camera role"):
-        event_sync.apply_page(
-            camera="cam3",
-            page=delayed_ai,
-            requested_after_id=2,
-        )
-    assert not AlwaysOnImportedEvent.objects.filter(upstream_event_id=3).exists()
-
-
-def test_shipping_generation_reset_requires_confirmed_initial_bootstrap():
+def test_shipping_generation_reset_is_rejected():
     _set_role("cam3", ANALYTICS_SCOPE_SHIPPING)
     AlwaysOnCounterCursor.objects.create(camera="cam3", last_total=5)
-    page = event_sync.parse_page(
-        _page(
-            [
-                _event(
-                    1,
-                    1,
-                    analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-                )
-            ]
-        ),
-        camera="cam3",
-        after_id=0,
-    )
+    page = _parse([_event(1, 1, analytics_scope=ANALYTICS_SCOPE_SHIPPING)])
 
     with pytest.raises(event_sync.EventSyncError, match="reset is not authorized"):
-        event_sync.apply_page(camera="cam3", page=page, requested_after_id=0)
+        _apply(page)
 
     assert not AlwaysOnImportedEvent.objects.exists()
     assert not ShippingDailyAnalytics.objects.exists()
@@ -1138,19 +795,18 @@ def test_removing_an_event_camera_performs_and_retries_a_final_drain():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=9,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
         event_caught_up_at=_at(9),
     )
     before_stop = {
-        "cameras": ["cam3"],
+        "camera_sources": ["cam3"],
         "source": "sub",
         "analytics_scopes": {"cam3": ANALYTICS_SCOPE_AI247},
         "processors": [],
     }
     after_stop = {
-        "cameras": [],
+        "camera_sources": [],
         "source": "sub",
         "analytics_scopes": {},
         "processors": [],
@@ -1177,7 +833,7 @@ def test_removing_an_event_camera_performs_and_retries_a_final_drain():
         patch.object(
             event_sync,
             "sync_camera",
-            return_value=event_sync.SyncResult(True, 0, 0, 1, 9, True),
+            return_value=event_sync.SyncResult(0, 0, 1, 9, True),
         ) as sync,
     ):
         continuous.reconcile()
@@ -1191,14 +847,13 @@ def test_reconcile_recovers_a_crash_after_remote_stop_before_second_barrier():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=9,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
         event_caught_up_at=_at(9),
     )
     event_sync.request_stop_drain("cam3")
     stopped = {
-        "cameras": [],
+        "camera_sources": [],
         "source": "sub",
         "analytics_scopes": {},
         "processors": [],
@@ -1220,22 +875,6 @@ def test_reconcile_recovers_a_crash_after_remote_stop_before_second_barrier():
     assert cursor.event_caught_up_at is not None
 
 
-def test_database_fences_snapshot_updates_during_an_old_image_rollback():
-    page = event_sync.parse_page(
-        _page([_event(1, 1)]),
-        camera="cam3",
-        after_id=0,
-    )
-    event_sync.apply_page(camera="cam3", page=page, requested_after_id=0)
-
-    with pytest.raises(IntegrityError), transaction.atomic():
-        AlwaysOnCounterCursor.objects.filter(camera="cam3").update(last_total=2)
-
-    cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
-    assert cursor.last_total == cursor.event_compat_total == 1
-    assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == 1
-
-
 def test_initial_event_boundary_mismatch_is_rejected_without_double_counting():
     AlwaysOnCounterCursor.objects.create(camera="cam3", last_total=100)
     AlwaysOnDailyAnalytics.objects.create(
@@ -1243,73 +882,55 @@ def test_initial_event_boundary_mismatch_is_rejected_without_double_counting():
         day=timezone.localdate(_at(1)),
         model_total=100,
     )
-    page = event_sync.parse_page(
-        _page([_event(1, 50)]),
-        camera="cam3",
-        after_id=0,
-    )
+    page = _parse([_event(1, 50)])
 
     with pytest.raises(event_sync.EventSyncError, match="boundary"):
-        event_sync.apply_page(camera="cam3", page=page, requested_after_id=0)
+        _apply(page)
 
     assert not AlwaysOnImportedEvent.objects.exists()
     assert AlwaysOnDailyAnalytics.objects.get(camera="cam3").model_total == 100
     assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id is None
 
 
-def test_non_404_event_capability_is_one_way_even_if_the_first_page_is_bad():
+def test_event_capability_is_one_way_even_if_the_first_page_is_bad():
     malformed = {"events": [], "next_after_id": 1, "has_more": False}
     with patch.object(ai, "count_events", return_value=malformed):
         with pytest.raises(event_sync.EventSyncError):
             event_sync.sync_camera("cam3")
 
     assert AlwaysOnCounterCursor.objects.get(camera="cam3").event_sync_supported is True
-    with patch.object(ai, "count_events", return_value=None):
-        with pytest.raises(event_sync.EventSyncError, match="disappeared"):
+
+
+def test_known_event_capability_is_not_rewritten_on_every_poll():
+    with patch.object(ai, "count_events", return_value=_page([])):
+        with patch.object(
+            event_sync,
+            "_mark_events_observed",
+            wraps=event_sync._mark_events_observed,
+        ) as observed:
             event_sync.sync_camera("cam3")
+            event_sync.sync_camera("cam3")
+
+    observed.assert_called_once_with("cam3")
+    assert AlwaysOnCounterCursor.objects.get(camera="cam3").event_sync_supported is True
 
 
 def test_pre_boundary_inflight_page_cannot_complete_a_required_final_drain():
-    first = event_sync.parse_page(
-        _page([_event(1, 1)]),
-        camera="cam3",
-        after_id=0,
+    first = _parse([_event(1, 1)])
+    _apply(first, synced_at=_at(1))
+    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
+        event_drain_required_at=_at(5), event_caught_up_at=None
     )
-    event_sync.apply_page(
-        camera="cam3",
-        page=first,
-        requested_after_id=0,
-        synced_at=_at(1),
-    )
-    event_sync.require_fresh_drain("cam3", required_at=_at(5))
 
-    stale = event_sync.parse_page(
-        _page([_event(2, 2)], after_id=1),
-        camera="cam3",
-        after_id=1,
-    )
-    event_sync.apply_page(
-        camera="cam3",
-        page=stale,
-        requested_after_id=1,
-        synced_at=_at(4),
-    )
+    stale = _parse([_event(2, 2)], after_id=1)
+    _apply(stale, after_id=1, synced_at=_at(4))
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_event_id == 2
     assert cursor.event_caught_up_at is None
     assert cursor.event_drain_required_at == _at(5)
 
-    empty = event_sync.parse_page(
-        _page([], after_id=2),
-        camera="cam3",
-        after_id=2,
-    )
-    event_sync.apply_page(
-        camera="cam3",
-        page=empty,
-        requested_after_id=2,
-        synced_at=_at(6),
-    )
+    empty = _parse([], after_id=2)
+    _apply(empty, after_id=2, synced_at=_at(6))
     cursor.refresh_from_db()
     assert cursor.event_caught_up_at == _at(6)
     assert cursor.event_drain_required_at is None
@@ -1320,19 +941,19 @@ def test_event_source_and_mode_are_closed_contract_enums():
     event["source"] = "other"
 
     with pytest.raises(event_sync.EventSyncError, match="source"):
-        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+        _parse([event])
 
     event = _event(1, 1)
     event["mode"] = "alwayson"
     with pytest.raises(event_sync.EventSyncError, match="mode"):
-        event_sync.parse_page(_page([event]), camera="cam3", after_id=0)
+        _parse([event])
 
 
 def test_journal_identity_binds_once_and_detects_sqlite_recreation():
     first_payload = _page([_event(1, 1)])
     first_payload["journal_id"] = "11111111-1111-4111-8111-111111111111"
     first = event_sync.parse_page(first_payload, camera="cam3", after_id=0)
-    event_sync.apply_page(camera="cam3", page=first, requested_after_id=0)
+    _apply(first)
 
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.event_journal_id == "11111111-1111-4111-8111-111111111111"
@@ -1345,11 +966,7 @@ def test_journal_identity_binds_once_and_detects_sqlite_recreation():
         after_id=1,
     )
     with pytest.raises(event_sync.EventSyncError, match="identity changed"):
-        event_sync.apply_page(
-            camera="cam3",
-            page=recreated,
-            requested_after_id=1,
-        )
+        _apply(recreated, after_id=1)
 
     cursor.refresh_from_db()
     assert cursor.last_event_id == 1
@@ -1359,7 +976,6 @@ def test_late_journal_identity_requires_manual_continuity_verification():
     cursor = AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=9,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
     )
@@ -1368,11 +984,7 @@ def test_late_journal_identity_requires_manual_continuity_verification():
     page = event_sync.parse_page(payload, camera="cam3", after_id=9)
 
     with pytest.raises(event_sync.EventSyncError, match="manual continuity"):
-        event_sync.apply_page(
-            camera="cam3",
-            page=page,
-            requested_after_id=9,
-        )
+        _apply(page, after_id=9)
 
     cursor.refresh_from_db()
     assert cursor.event_journal_id is None
@@ -1434,7 +1046,7 @@ def test_verified_classification_payloads_never_invent_a_colour():
     with patch.object(ai, "count_events", return_value=_page(events)):
         result = event_sync.sync_camera("cam3")
 
-    assert result == event_sync.SyncResult(True, 4, 0, 1, 4, True)
+    assert result == event_sync.SyncResult(4, 0, 1, 4, True)
     daily = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
     assert daily.model_total == 4
     assert daily.model_per_color == {"unknown": 2, "white": 1, "green": 1}
@@ -1453,7 +1065,7 @@ def test_verified_classification_payloads_never_invent_a_colour():
         "unknown_unknown",
     ]
     colors = ["unknown", "white", "green", "unknown"]
-    assert [production_repair._event_color(row) for row in rows] == colors
+    assert [camera_color_key(row.color, row.class_name) for row in rows] == colors
     runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
     assert [(run.color, run.model_bags) for run in runs] == [(color, 1) for color in colors]
 
@@ -1465,11 +1077,7 @@ def test_classification_still_pending_is_never_imported_as_final():
         "classification_status": "pending",
     }
     later = _event(3, 3, color="Green_50", brand="korol")
-    page = event_sync.parse_page(
-        _page([recognized, pending, later], has_more=True),
-        camera="cam3",
-        after_id=0,
-    )
+    page = _parse([recognized, pending, later], has_more=True)
 
     assert [event.upstream_event_id for event in page.events] == [1]
     assert page.next_after_id == 1
@@ -1479,7 +1087,7 @@ def test_classification_still_pending_is_never_imported_as_final():
     with patch.object(ai, "count_events", return_value=_page([recognized, pending, later])):
         result = event_sync.sync_camera("cam3")
 
-    assert result == event_sync.SyncResult(True, 1, 0, 1, 1, False)
+    assert result == event_sync.SyncResult(1, 0, 1, 1, False)
     cursor = AlwaysOnCounterCursor.objects.get(camera="cam3")
     assert cursor.last_event_id == 1
     assert cursor.event_caught_up_at is None
@@ -1543,6 +1151,6 @@ def test_a_full_page_of_verified_events_is_read_and_imported(extra_lines):
         assert len(ai.count_events("cam3", 0, EVENT_PAGE_LIMIT)["events"]) == EVENT_PAGE_LIMIT
         result = event_sync.sync_camera("cam3", max_pages=1)
 
-    assert result == event_sync.SyncResult(True, EVENT_PAGE_LIMIT, 0, 1, EVENT_PAGE_LIMIT, True)
+    assert result == event_sync.SyncResult(EVENT_PAGE_LIMIT, 0, 1, EVENT_PAGE_LIMIT, True)
     assert AlwaysOnCounterCursor.objects.get(camera="cam3").last_event_id == EVENT_PAGE_LIMIT
     assert AlwaysOnImportedEvent.objects.count() == EVENT_PAGE_LIMIT

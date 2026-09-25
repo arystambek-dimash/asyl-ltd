@@ -1,11 +1,11 @@
 import logging
 import os
-import time
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from apps.cameras import ai, continuous, health
+from apps.common.daemon import RUNNING, every, run_supervised_loop
 
 log = logging.getLogger(__name__)
 
@@ -29,53 +29,46 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         interval = max(5, options["interval"])
-        while True:
-            started = time.monotonic()
+        run_supervised_loop(
+            self.tick,
+            once=bool(options["once"]),
+            heartbeat_file=settings.CAMERA_MONITOR_HEARTBEAT_FILE,
+            label="Camera monitor",
+            pause=every(interval),
+            # Let Docker restart a broken one-shot startup, while a long
+            # running monitor survives transient failures and retries: every
+            # iteration reopens a connection broken by a PostgreSQL restart.
+            retry_errors=(Exception,),
+        )
+
+    def tick(self) -> str:
+        state = health.monitor_once()
+        self.stdout.write(
+            f"camera-health status={state.status} observed={state.observed_status} "
+            f"online={state.online_count}/{state.expected_count} "
+            f"failures={state.failure_streak} recoveries={state.recovery_streak}"
+        )
+        if ai.enabled():
             try:
-                state = health.monitor_once()
+                always_on = continuous.reconcile()
                 self.stdout.write(
-                    f"camera-health status={state.status} observed={state.observed_status} "
-                    f"online={state.online_count}/{state.expected_count} "
-                    f"failures={state.failure_streak} recoveries={state.recovery_streak}"
+                    "camera-ai always-on="
+                    + ",".join(always_on.get("camera_sources") or [])
                 )
-                if ai.enabled():
-                    try:
-                        always_on = continuous.reconcile()
-                        self.stdout.write(
-                            "camera-ai always-on="
-                            + ",".join(always_on.get("cameras", []))
-                        )
-                    except Exception:
-                        # A control-plane failure must not disable the separate
-                        # wagon OCR path for this monitor iteration.
-                        log.exception("Always-on AI reconciliation failed")
-                    try:
-                        wagon_number = continuous.reconcile_wagon_number()
-                        self.stdout.write(
-                            "camera-ai wagon-number="
-                            + str(wagon_number.get("camera") or "unassigned")
-                        )
-                    except Exception:
-                        log.exception("Wagon-number camera reconciliation failed")
-                    if self.wagon_plate_poll_enabled():
-                        try:
-                            # Камера вместо датчика прибытия: увидела табличку —
-                            # приход открывается сам. Свой период опроса внутри и
-                            # не зависит от optional role-assignment API.
-                            plate = continuous.poll_wagon_plate()
-                            if plate.get("created"):
-                                self.stdout.write(
-                                    f"camera-ai wagon-arrival=#{plate['created']}"
-                                )
-                        except Exception:
-                            log.exception("Wagon plate polling failed")
             except Exception:
-                # Let Docker restart a broken one-shot startup, while a long
-                # running monitor survives transient DB failures and retries.
-                log.exception("Camera monitor iteration failed")
-                if options["once"]:
-                    raise
-            if options["once"]:
-                return
-            elapsed = time.monotonic() - started
-            time.sleep(max(1, interval - elapsed))
+                # A control-plane failure must not disable the separate
+                # wagon OCR path for this monitor iteration.
+                log.exception("Always-on AI reconciliation failed")
+            if self.wagon_plate_poll_enabled():
+                try:
+                    # Камера вместо датчика прибытия: увидела табличку —
+                    # приход открывается сам. Камеру берёт из настройки CRM
+                    # (MonoblockCameraSettings), свой период опроса внутри.
+                    plate = continuous.poll_wagon_plate()
+                    if plate.get("created"):
+                        self.stdout.write(
+                            f"camera-ai wagon-arrival=#{plate['created']}"
+                        )
+                except Exception:
+                    log.exception("Wagon plate polling failed")
+        return RUNNING

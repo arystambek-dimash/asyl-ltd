@@ -9,7 +9,6 @@ authentication-free view that trusts only the signature. This mirrors
 from __future__ import annotations
 
 from django.core import signing
-from django.http import FileResponse
 from rest_framework.exceptions import NotFound
 
 from apps.common.signed_media import SignedMediaView
@@ -21,10 +20,11 @@ SIGNING_SALT = "grain.weighing.photo"
 PHOTO_LINK_MAX_AGE_SECONDS = 60 * 60
 KIND_WEIGHING = "weighing"
 KIND_UNASSIGNED = "unassigned"
+KIND_EVIDENCE = "evidence"
 _MODELS = {
     KIND_WEIGHING: WeighingRecord,
     KIND_UNASSIGNED: UnassignedWeighing,
-    "evidence": WeighingPhotoDelivery,
+    KIND_EVIDENCE: WeighingPhotoDelivery,
 }
 
 
@@ -71,7 +71,4 @@ class WeighingPhotoView(SignedMediaView):
             handle = instance.photo.open("rb")
         except OSError as exc:
             raise NotFound("Файл фото не найден") from exc
-        response = FileResponse(handle, content_type="image/jpeg")
-        response["Cache-Control"] = "private, no-store"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
+        return self.file_response(handle)

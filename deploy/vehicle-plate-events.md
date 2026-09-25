@@ -1,10 +1,9 @@
 # Vehicle plate recognition: production integration
 
-The active export workflow is **weight-first**: Asyl LTD reads one stable truck
+The export workflow is **weight-first**: Asyl LTD reads one stable truck
 scale value and only then asks the camera-PC to recognize the vehicle in the
-saved ROI. The older camera-first webhook remains documented below for audit
-history and rollback compatibility, but it must not drive the same physical
-lane at the same time.
+saved ROI. The webhook below only stores plate events; it never reads the scale
+or changes a trip.
 
 The camera-PC posts metadata for a confirmed stationary vehicle. It never
 posts, requests, or stores a photo or a video in Asyl-LTD.
@@ -58,8 +57,9 @@ switch to avoid an event-retry gap.
 The body is a JSON object. Unknown future fields are ignored. The required
 stable fields are `schema_version`, `event_id`, `event_type`, `detected_at`,
 `vehicle_number`, `camera`, `source`, `stationary_seconds`, and
-`confirmation`. The full example also includes optional metadata projections:
-`bbox`, `vehicle_roi`, `image`, and `models`.
+`confirmation`. The full example also includes optional metadata
+(`bbox`, `vehicle_roi`, `image`, `models`); the CRM accepts it but stores only
+the validated stable fields.
 
 ```json
 {
@@ -131,10 +131,6 @@ curl --fail-with-body --request POST \
   --data @vehicle-plate-event.json
 ```
 
-The internal CRM journal is available through `GET /api/vehicle-plate-events`
-to staff with `events.view`; it supports the documented date, camera, plate and
-pagination filters. It contains metadata only.
-
 ### Operator diagnostics and ROI
 
 The export-camera tab in `/grain` reads the configuration-aware bootstrap
@@ -187,8 +183,8 @@ The operator creates an export passage first. The existing commands remain the
 only business trigger:
 
 ```http
-POST /api/grain/wagons/<wagon-id>/entry-weight/
-POST /api/grain/wagons/<wagon-id>/exit-weight/
+POST /api/grain/passages/<wagon-id>/entry-weight/
+POST /api/grain/passages/<wagon-id>/exit-weight/
 Content-Type: application/json
 Idempotency-Key: <canonical lowercase UUID>
 
@@ -275,7 +271,6 @@ Backend production settings:
 ```dotenv
 AI_SERVICE_URL=http://<TAILSCALE-IP-CAMERA-PC>:8890
 AI_SERVICE_API_KEY=<same 32-512 character plaintext key whose SHA-256 is on camera-PC>
-VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0
 VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=1
 VEHICLE_PLATE_AUTO_SCALE_ENABLED=0
 VEHICLE_PLATE_WEIGHT_FIRST_CAMERA=cam1
@@ -283,8 +278,7 @@ VEHICLE_PLATE_WEIGHT_FIRST_SOURCE=main
 VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS=12
 ```
 
-Legacy camera-first mode cannot run together with either weight-triggered
-mode. Manual weight-first and automatic scale polling may coexist because both
+Manual weight-first and the automatic collector may coexist because both
 share the physical-scale mutex and Camera-PC idempotency contract. On
 camera-PC the matching lane must be on-demand only:
 
@@ -302,32 +296,22 @@ slots are deliberately limited to `cam1..cam32`, matching the static aliases.
 
 The protected production `.env` is the source of these non-secret toggles.
 `AI_SERVICE_API_KEY` remains backend-only. Rollback to plain manual weighing
-sets all three mode flags to `0`; it does not remove capture audit rows or
+sets both mode flags to `0`; it does not remove capture audit rows or
 migrations.
 
 ## Automatic scale-first truck export (default off)
 
-`passage-scale-monitor` continuously observes physical occupancy; one separate
-worker processes the durable OCR queue and another delivers photos. Camera and
-photo I/O never hold the physical scale mutex or pause observation polling.
-The queue lives in PostgreSQL, not in executor memory.
-
-The lane starts unarmed and requires confirmed fresh empty readings. Occupied
-weight must stay stable within tolerance for `stable_weight_seconds` (10 seconds
-by default). A strict scale read then persists the sample before any OCR call.
-A confirmed empty streak releases the physical lane even when the previous
-capture is still recognizing/applying. Completing an older capture never resets
-or replaces the current vehicle's lane state.
-
-The first observed empty reading fences further live OCR attempts for that
-capture. Observation outages and process restarts also fence camera results;
-an equal weight on a later truck is not evidence of identity. Cached results
-from before the gap may still apply; later/uncertain results retain the sample
-for operator review. A delayed first dispatch (over five seconds) never asks a
-camera to identify a potentially different vehicle. Existing UUIDs use the
-lookup-only retry endpoint after an uncertain network outcome. Known no-match
-results may request another live attempt only while occupancy continuity and
-the strict weight are still confirmed.
+The independent weighbridge collector (`deploy/weighbridge/README.md`) owns
+physical polling, the stable-weight edge, re-arming and the Camera-PC OCR call.
+It commits every capture with its weight, UUID, photo and recognition result to
+its SQLite outbox. `passage-scale-monitor` (`manage.py monitor_passage_scale`)
+imports that outbox once the durable marker `/var/lib/weighbridge/enabled`
+exists; without the marker it reports `disabled` and never reads the scale. The
+same process runs bounded background workers for photo delivery, plate
+identity and the wagon arch. The importer replays each capture idempotently by
+its UUID: a recognized plate is applied to its trip, a capture without a usable
+plate is applied as an unidentified weighing, and a business conflict is parked
+for the operator.
 
 A new front-facing truck opens an entry, including a blank-number entry when
 only the direction was recognized. An exact recognized plate can close its
@@ -346,23 +330,18 @@ processing, assigned/unassigned, and failed attempts, including departure
 before stability or a scale observation outage. An observed candidate weight
 is never presented as a confirmed weighing.
 
-Every persisted automatic sample creates a `WeighingPhotoDelivery`. Its worker
-tries one immediate main-stream snapshot through the existing go2rtc connection,
-independently of OCR. This is allowed only within five seconds of the sample
-and while the same occupancy remains confirmed; a response crossing a departure
-or observation gap is discarded. This live snapshot is never retried for an
-old weighing. Without go2rtc, UUID-bound Camera-PC evidence remains available.
-
-Subsequent attempts fetch only
-`GET /cameras/<cam>/vehicle-recognition/<uuid>/frame`. They retry after
+Every imported sample creates a `WeighingPhotoDelivery` that keeps the frame
+the collector shipped with it. A later truck is never photographed to fill a
+missing frame: the worker fetches only
+`GET /cameras/<cam>/vehicle-recognition/<uuid>/frame`, retrying after
 5/15/60/300 seconds and then every 30 minutes for up to seven days. Photo
 failures cannot undo a weight. Each delivery is leased in the database, can
 survive restart, and re-resolves its target after network I/O so operator
 assignment cannot strand the photo or overwrite a weight. Saved evidence from
-another attempt of the same capture can be reused. Late camera frames after
-an occupancy gap are rejected. The manual weight-first path uses the same
-UUID delivery queue. A Celery beat sweep (`grain.retry_weighing_photos`, every
-30 seconds) provides recovery even when automatic weighing is disabled.
+another attempt of the same capture can be reused. The manual weight-first
+path uses the same UUID delivery queue. `passage-scale-monitor` runs the photo
+worker on every loop, so delivery recovers even when automatic weighing is
+disabled.
 
 Photo statuses are `pending`, `retrying`, `saved`, `unavailable`. Photos stay
 under private `MEDIA_ROOT/grain/` and use one-hour signed URLs; there is no
@@ -372,37 +351,27 @@ Frames already missing from both CRM and Camera-PC cannot be reconstructed.
 
 The CRM polls
 `GET /api/grain/automatic-passage-scale/runtime/` independently from
-Camera-PC, so a camera diagnostics outage cannot hide `recognizing`,
-`applying`, or a latched `manual_required` state. The response exposes only a
-safe operation UUID, stage, action, wagon ID, retry flag, and bounded error
+Camera-PC. It projects the collector heartbeat the monitor imports and falls
+back to the durable lane state when that heartbeat is stale. The response
+exposes only a safe operation UUID, stage, action, wagon ID, retry flag, and bounded error
 code—never the recognized plate, weight, upstream address, or raw payload.
 The same response includes the active `stable_weight_seconds`. Grain viewers
 may read the durable value through
 `GET /api/grain/automatic-passage-scale/settings/`; only a superuser may change
-it with an exact integer from 2 through 60 via `PATCH` or `PUT`. The Camera Gate
-screen polls this setting and exposes the editor only to a superuser. Changing
-it while a candidate is stabilizing resets that candidate, so the newly chosen
-full interval must pass before OCR.
-Turning the kill switch off stops new work and parks already-saved pending
-weights for manual review. It does not erase the capture/evidence journal.
-`monitor_passage_scale --once` remains the synchronous diagnostic path; the
-long-running command uses continuous polling and independent workers.
+it with an exact integer from 2 through 60 via `PATCH`. The Camera Gate
+screen shows the value from the runtime poll and exposes the editor only to a
+superuser. The monitor hands a changed value to the collector through its
+outbox on the next poll.
+`monitor_passage_scale --once` runs one import pass and one wagon-arch pass.
 
 ```dotenv
-VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0
 VEHICLE_PLATE_AUTO_SCALE_ENABLED=1
 VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS=1
 VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG=500
-VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS=2
 VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS=3
 VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG=50
-VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS=3
 VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS=60
 ```
-
-`VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS` remains accepted only for
-configuration compatibility. It no longer controls the occupied trigger; the
-durable UI/API setting `stable_weight_seconds` is authoritative.
 
 The heartbeat contract retains its existing timeout margin. Manual physical
 operations share the lane mutex and cannot race unfinished automatic samples.
@@ -416,149 +385,20 @@ safely reported as unavailable and will never arm automation. Update that edge
 behavior (or add a durable `stable_episode_id`) and validate a full
 empty-entry-clear-loaded-exit-clear rehearsal before rollout.
 
-## Legacy camera-first truck export (disabled in weight-first mode)
-
-The following section describes the older webhook-driven implementation. Keep
-`VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0` when weight-first is enabled. It is
-retained only for historical event ingestion and an explicit rollback; do not
-run both coordinators on `cam1`.
-
-Production can apply fresh `cam1` / `main` plate events directly to the truck
-export workflow. This is deliberately a fail-closed v1 integration: the camera
-payload does not claim whether an observation is an entry or an exit, so the
-backend derives the action only from the current, locked CRM state for that
-vehicle number.
-
-That inference remains a v1 limitation: the event has no explicit entry/exit
-phase or shared visit identifier. It also correlates the two observations by
-the OCR-normalized plate, so an OCR mismatch on the second pass cannot safely
-close the first trip and may look like a different vehicle. Enable automation
-only after both real passes have been validated at this ROI; otherwise keep it
-off and use the manual workflow.
-
-This mode relies on one physical-site assumption: the configured `cam1` ROI is
-the truck scale itself. The first confirmed stop is the empty truck's entry
-weighing; the truck then leaves that ROI to load while remaining on site; its
-second distinct stop in the same ROI is the loaded truck's final weighing. It
-must not be enabled if `cam1` observes a general driveway, if a truck can leave
-and re-enter the ROI merely to reposition, or if the second ROI visit is not
-the final weighing. Leaving the entry ROI does not by itself change the CRM
-trip to outside or completed.
-
-For an eligible fresh event, the backend performs this sequence:
-
-1. A first `cam1` / `main` event for a plate with no active export trip triggers
-   one live read from the configured truck scale. A fresh, stable positive
-   reading creates the export, records its entry weight and entry time, and
-   leaves the trip on site for loading.
-2. A second distinct event for the same plate can become the final weighing
-   only when exactly one compatible active export exists and the configured
-   minimum trip time has passed. One live scale read records the exit weight;
-   it must be greater than the entry weight. The backend then calculates net
-   export weight and completes the trip.
-3. The event UUID remains the idempotency boundary. Concurrent delivery of the
-   same UUID is protected by a short processing lease and cannot start a
-   second parallel scale read or create a duplicate trip or weighing. A
-   lane-global mutex serializes different plate events on `cam1` / `main`.
-   Automatic and explicit operator weighing share two capture barriers: a
-   finite Redis lease and a PostgreSQL session advisory lock acquired before
-   the live read and held through the atomic apply. PostgreSQL releases the
-   advisory lock when its worker connection dies, so Redis TTL expiry cannot
-   admit a second reader. Apply transactions also set transaction-local
-   `lock_timeout` and `statement_timeout` below the remaining Redis lease
-   budget; a blocked write fails closed instead of applying an old sample.
-
-There is no periodic scale polling or automatic scale retry. Each eligible
-plate event gets at most one authoritative live scale request for its entire
-lifetime. A processed duplicate performs no read. If the scale attempt fails,
-the event becomes permanently `manual_required`; retrying the same UUID cannot
-read a later value that may belong to another vehicle. Once the freshness
-window expires, the backend likewise never associates the current scale value
-with the old camera event.
-
-The settings are backend-only environment variables; none belongs in the
-browser:
+## Export trip settings
 
 ```dotenv
-# Django, local Compose and production Compose all default to 0.
-# Set 1 on the production host only after the physical preflight below.
-VEHICLE_PLATE_AUTO_EXPORT_ENABLED=1
 VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME=Отруби
-VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS=15
 VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS=60
 ```
 
 `VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME` is the explicit server-side cargo used
 for automatically created exports. Configure it to the site's real outgoing
-product rather than relying on a frontend form default. The event-age setting
-must remain short because `/api/v1/weight` exposes the current scale value, not
-a historical sample. The minimum trip interval is a safety guard against
-treating an immediate ROI re-entry as a loaded exit. The same interval is also
-a cooldown after a completed camera-created export: another event for that
-plate during the cooldown is sent to manual review instead of opening a new
-trip.
-
-Processing results are recorded on the plate event. Successful actions are
-`entry` or `exit`; `manual_entry` identifies the existing operator-selected
-fallback, while `ignored` is used for an event outside the configured lane.
-Permanent safety failures such as a stale event, ambiguous active trip,
-incompatible trip state, entry/exit observations that are too close, or an
-exit weight not greater than the entry weight do not mutate the trip and
-require operator review. An unavailable, not-ready, stale or malformed scale,
-or a capture mutex already owned by another manual or automatic weighing, is
-also a one-shot permanent `manual_required` result. The accepted webhook still
-returns its normal `201` for a new event or `200` for a duplicate, so the
-camera-PC outbox does not retry and accidentally capture another vehicle's
-later weight.
-
-A new automatic entry is also blocked while any on-site export has a blank or
-unknown plate: that open trip may belong to the newly observed truck. The
-event becomes `manual_required` with `unidentified_active_passage`, without a
-scale read or trip mutation. An operator must identify, complete or otherwise
-safely resolve the existing trip before automation may create another entry.
-
-Only a database/unexpected server failure or a concurrent duplicate of the
-same UUID while its original request is still in flight can return a temporary
-5xx. An expired processing lease becomes `processing_interrupted` and requires
-manual recovery; it is never reclaimed for a second scale read. A different
-event that finds the lane/capture mutex busy also goes directly to manual
-recovery with a normal successful webhook response.
-
-When `VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0`, webhook ingestion itself remains
-successful: new events receive the normal `201`, duplicates receive `200`, and
-the events stay available for the existing manual candidate flow. Disabled
-automation does not return a retryable error, so the camera-PC outbox does not
-retry an already accepted event forever.
-
-The existing manual export form and explicit entry/exit weighing actions are
-the recovery path. Operators must use them when automation is disabled, an
-event is marked failed, the freshness window has elapsed, the plate is
-ambiguous, or the physical route did not follow the assumption above. Manual
-recovery must not reuse a stale event's current scale reading.
-
-### Disable or roll back automatic export
-
-1. Set `VEHICLE_PLATE_AUTO_EXPORT_ENABLED=0` in the protected production host
-   environment and redeploy/recreate the backend through the normal immutable
-   release path. This is the automation kill switch; it does not disable the
-   authenticated webhook or the vehicle journal.
-2. Confirm new plate events are still stored and that operators can use the
-   manual export and weighing controls. Do not stop or reset the camera-PC
-   database, bag counter, wagon integration, or truck scale.
-3. Leave already accepted events, trips and weighing records intact. Do not
-   delete them or reverse their migrations as part of an application rollback.
-4. If the application release itself must be rolled back, use the normal image
-   rollback described below while keeping the kill switch at `0`. Re-enable
-   automation only after the deployed code, `cam1` ROI geometry and both real
-   weighing passes have been verified again.
-
-Before explicitly setting `VEHICLE_PLATE_AUTO_EXPORT_ENABLED=1` on the
-production host, verify that `cam1/main` covers only the truck scale, the first
-pass is the empty entry, the second pass is the loaded final weighing, OCR
-returns the same normalized plate on both passes, the truck scale reports a
-fresh stable value, there are no unresolved on-site exports with blank plates,
-and the manual entry/exit controls still work. Keep the default `0` if any part
-of this physical preflight is uncertain.
+product rather than relying on a frontend form default. The minimum trip
+interval is a safety guard against treating an immediate re-weighing as a
+loaded exit. The same interval is also a cooldown after a completed automatic
+export: another weighing for that plate during the cooldown is sent to manual
+review instead of opening a new trip.
 
 ## Safe rollout and rollback
 
@@ -570,11 +410,11 @@ of this physical preflight is uncertain.
    off.
 2. From the server repository, validate without printing interpolated secrets:
    `docker compose -f docker-compose.prod.yml config --quiet`.
-3. Deploy Asyl first with `AUTO_EXPORT=0`, `WEIGHT_FIRST=1` and
-   `AUTO_SCALE=0`. The additive capture/state migration runs during normal
-   startup. On a test vehicle, verify the manual weight-first path uses one
-   scale read, the saved number matches the camera and its capture is
-   `completed`; repeat the same request UUID and verify no second weighing.
+3. Deploy Asyl first with `WEIGHT_FIRST=1` and `AUTO_SCALE=0`. The additive
+   capture/state migration runs during normal startup. On a test vehicle,
+   verify the manual weight-first path uses one scale read, the saved number
+   matches the camera and its capture is `completed`; repeat the same request
+   UUID and verify no second weighing.
 4. Verify the empty scale produces fresh stable low readings, then rehearse the
    automatic process in a controlled window: clear -> empty entry -> clear ->
    loaded exit -> clear. Only then set `VEHICLE_PLATE_AUTO_SCALE_ENABLED=1`.
@@ -598,7 +438,7 @@ To disable weight-first without touching bag counting, set
 `VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=0` and recreate only the normal application
 release. Existing vehicle events and capture audit remain in the CRM. Do not
 reset the camera-PC SQLite database or its counters as part of this rollback.
-Automatic polling has an independent immediate business kill switch:
+Automatic weighing has an independent immediate business kill switch:
 `VEHICLE_PLATE_AUTO_SCALE_ENABLED=0`.
 
 ## Camera orientation: front = entry, rear = exit
@@ -697,9 +537,10 @@ fine-tuning of the current model, and promotion to
 `models/vehicle-orientation.trained.pt` only if the candidate is at least as
 accurate as the model in service (and at least 0.95 with every class recall at
 least 0.90). The service reloads the promoted file on the next recognition
-without a restart; `GET /vehicle-orientation` (and the `orientation` block of
-`/api/cameras/vehicle-plate-runtime/` via `ai.vehicle_orientation_info()`)
-shows dataset counts and the last training report. Deleting the trained file
+without a restart; `GET /vehicle-orientation` (and the `camera_pc` field of the
+superuser-only `GET /api/grain/orientation-samples/summary/` via
+`ai.vehicle_orientation_info()`, cached for 30 s) shows dataset counts and the
+last training report. Deleting the trained file
 on the PC returns to the shipped base model. `VEHICLE_ORIENTATION_DATASET_ENABLED=0`
 stops the export.
 
@@ -815,12 +656,3 @@ site leaving plausibly heavier books without a model call (event payload
 `weak_plate: true`), a front weak plate is always checked on the frame. The
 collector part reaches production only through
 `activate-weighbridge.yml` with `upgrade=true` on an empty scale.
-
-## Late bag events after a posted shift
-
-A Camera-PC restart-gap backfill can deliver bag events whose shift is already
-posted to stock. Since 2026-09-05 `apps/cameras/event_sync.py` no longer
-refuses such a page (which froze the cam3 journal and failed every deploy
-health gate): the bag is counted in the still-open daily analytics, the
-imported row keeps `applied_to_production=False`, and a warning names the
-camera and count. The posted batch is never mutated.

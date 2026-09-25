@@ -25,10 +25,7 @@ from typing import Any
 
 from django.conf import settings
 
-# Как у BotMessage.KINDS: обычное сообщение, правка и удаление.
-MESSAGE = "message"
-EDITED = "edited"
-DELETED = "deleted"
+from ..models import BotMessage
 
 # Тип сообщения → (контейнер данных, поле текста). Ответ цитатой приходит
 # как quotedMessage с тем же контейнером, что и расширенный текст.
@@ -45,10 +42,6 @@ _REQUEST_TIMEOUT_SECONDS = 15
 
 class GreenApiError(RuntimeError):
     """Провайдер недоступен или ответил не так, как описано в документации."""
-
-
-class GreenApiNotConfigured(GreenApiError):
-    """Не заданы WHATSAPP_BOT_INSTANCE_ID / WHATSAPP_BOT_API_TOKEN."""
 
 
 class GreenApiOutcomeUnknown(GreenApiError):
@@ -79,7 +72,7 @@ class IncomingMessage:
     chat_name: str
     sender_id: str
     sender_name: str
-    kind: str
+    kind: str  # BotMessage.MESSAGE / EDITED / DELETED
     text: str
     # Правка и удаление: идентификатор исходного сообщения (stanzaId).
     target_id: str
@@ -113,7 +106,7 @@ def incoming_message(body) -> IncomingMessage | None:
     if not message_id or not chat_id:
         return None
     message_type = data.get("typeMessage")
-    kind, text, target_id = MESSAGE, "", ""
+    kind, text, target_id = BotMessage.MESSAGE, "", ""
     if isinstance(message_type, str) and message_type in _TEXT_TYPES:
         container, key = _TEXT_TYPES[message_type]
         raw = _dict(data.get(container)).get(key)
@@ -121,11 +114,11 @@ def incoming_message(body) -> IncomingMessage | None:
         text = raw if isinstance(raw, str) else ""
     elif message_type == "editedMessage":
         payload = _dict(data.get("editedMessageData"))
-        kind, target_id = EDITED, _text(payload.get("stanzaId"))
+        kind, target_id = BotMessage.EDITED, _text(payload.get("stanzaId"))
         raw = payload.get("textMessage") or payload.get("caption")
         text = raw if isinstance(raw, str) else ""
     elif message_type == "deletedMessage":
-        kind, target_id = DELETED, _text(_dict(data.get("deletedMessageData")).get("stanzaId"))
+        kind, target_id = BotMessage.DELETED, _text(_dict(data.get("deletedMessageData")).get("stanzaId"))
     else:
         return None
     return IncomingMessage(
@@ -153,7 +146,7 @@ class GreenApiClient:
 
     def __init__(self, *, api_url: str, instance_id: str, token: str, receive_timeout: int, opener=None):
         if not instance_id or not token:
-            raise GreenApiNotConfigured("Не заданы WHATSAPP_BOT_INSTANCE_ID и WHATSAPP_BOT_API_TOKEN")
+            raise GreenApiError("Не заданы WHATSAPP_BOT_INSTANCE_ID и WHATSAPP_BOT_API_TOKEN")
         self.api_url = api_url.rstrip("/")
         self.instance_id = instance_id
         self._token = token
@@ -161,13 +154,12 @@ class GreenApiClient:
         self._open = opener or urllib.request.urlopen
 
     @classmethod
-    def from_settings(cls, opener=None) -> GreenApiClient:
+    def from_settings(cls) -> GreenApiClient:
         return cls(
             api_url=settings.WHATSAPP_BOT_API_URL,
             instance_id=settings.WHATSAPP_BOT_INSTANCE_ID,
             token=settings.WHATSAPP_BOT_API_TOKEN,
             receive_timeout=settings.WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS,
-            opener=opener,
         )
 
     def _call(self, http_method: str, api_method: str, *, suffix: str = "", query: str = "",

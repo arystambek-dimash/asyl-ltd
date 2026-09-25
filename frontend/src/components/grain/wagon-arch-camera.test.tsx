@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/components/camera-stream", () => ({
   CameraStream: ({ src }: { src: string }) => <div data-testid="camera-stream" data-src={src} />,
 }));
-vi.mock("@/lib/use-video-box", () => ({ useVideoBox: () => ({ left: 0, top: 0, width: 640, height: 360 }) }));
+vi.mock("@/lib/use-video-box", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/use-video-box")>()),
+  useVideoBox: () => ({ left: 0, top: 0, width: 640, height: 360 }),
+}));
 vi.mock("@/lib/use-api", () => ({
   useApi: () => ({ data: mocks.runtime, loading: false, error: "", reload: mocks.reload, setData: mocks.setData }),
 }));
@@ -94,14 +97,7 @@ describe("WagonArchCameraPanel", () => {
     expect(mocks.polling).toHaveBeenLastCalledWith(mocks.reload, 5000, true);
   });
 
-  it("keeps «Изменить зону» enabled through a background poll (m1)", () => {
-    // useApi is mocked with loading:false always, so this asserts the button no longer
-    // reads a `loading` flag at all: it stays enabled whenever runtime data is present.
-    render(<WagonArchCameraPanel />);
-    expect(screen.getByRole("button", { name: "Изменить зону" })).toBeEnabled();
-  });
-
-  it("shows «—» in the status rows before the first runtime response, not «выключена» (m9)", () => {
+  it("shows «—» in the status rows before the first runtime response, not «выключена»", () => {
     mocks.runtime = null;
     render(<WagonArchCameraPanel />);
     const rows = screen.getAllByText("—");
@@ -171,6 +167,25 @@ describe("WagonArchCameraPanel", () => {
     expect(mocks.polling).toHaveBeenLastCalledWith(mocks.reload, 5000, false);
   });
 
+  it("does not accept a saved zone without area, like the vehicle camera", async () => {
+    const user = userEvent.setup();
+    const flatZone = {
+      ...ZONE,
+      points: [
+        { x: 0.1, y: 0.1 },
+        { x: 0.5, y: 0.5 },
+        { x: 0.9, y: 0.9 },
+      ],
+    };
+    mocks.put.mockResolvedValueOnce({ data: { saved: true, applied_to_monitor: true, zone: flatZone } });
+    render(<WagonArchCameraPanel />);
+    await user.click(screen.getByRole("button", { name: "Изменить зону" }));
+    await user.click(screen.getByRole("button", { name: "Сохранить зону" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Некорректный ответ сохранения зоны");
+    expect(mocks.setData).not.toHaveBeenCalledWith(expect.objectContaining({ zone: flatZone }));
+    expect(screen.getByRole("button", { name: "Сохранить зону" })).toBeInTheDocument();
+  });
+
   it("resumes polling and makes no PUT when the editor is cancelled", async () => {
     const user = userEvent.setup();
     render(<WagonArchCameraPanel />);
@@ -196,21 +211,19 @@ describe("WagonArchCameraPanel", () => {
 describe("WagonArchCameraPanel — камера проходной", () => {
   it("показывает закреплённую камеру, кнопку назначения и примечание", () => {
     render(
-      <WagonArchCameraPanel
-        assignedCamera="cam8"
-        syncStatus="synced"
-        assignAction={<button type="button">Назначить камеру</button>}
-      />,
+      <WagonArchCameraPanel assignedCamera="cam8" assignAction={<button type="button">Назначить камеру</button>} />,
     );
-    expect(screen.getByText("cam8 · синхронизирована")).toBeInTheDocument();
+    // Назначение — настройка CRM, без статуса синхронизации с ПК камер.
+    expect(screen.getByText("cam8")).toBeInTheDocument();
+    expect(screen.queryByText(/ожидает связь/)).toBeNull();
     expect(screen.getByRole("button", { name: "Назначить камеру" })).toBeInTheDocument();
     expect(screen.getByText(/Эта камера отвечает только за номера вагонов/)).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("предупреждает, когда камера номеров и камера арки разные", () => {
-    render(<WagonArchCameraPanel assignedCamera="cam3" syncStatus="pending" />);
-    expect(screen.getByText("cam3 · ожидает связь")).toBeInTheDocument();
+    render(<WagonArchCameraPanel assignedCamera="cam3" />);
+    expect(screen.getByText("cam3")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Камера номеров (cam3) и камера арки (cam8) должны совпадать.");
   });
 

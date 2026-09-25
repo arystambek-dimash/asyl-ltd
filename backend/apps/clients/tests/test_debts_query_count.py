@@ -39,7 +39,7 @@ def _debts(api):
 
 def test_debts_query_count_does_not_grow_with_data(boss):
     product = Product.objects.create(
-        name="P", color="Red", weight_kg="50", price="100.00")
+        name="P", color="Red", weight_kg="50")
     api = APIClient()
     api.force_authenticate(boss)
 
@@ -63,7 +63,7 @@ def test_debts_query_count_does_not_grow_with_data(boss):
 def test_debts_skip_settled_orders_but_recheck_the_rest(boss):
     """Погашенные по payment_status не считаются; остальные проверяются по факту."""
     product = Product.objects.create(
-        name="P", color="Red", weight_kg="50", price="100.00")
+        name="P", color="Red", weight_kg="50")
     api = APIClient()
     api.force_authenticate(boss)
     client = Client.objects.create_with_user(first_name="Дана", last_name="X", phone="70001")

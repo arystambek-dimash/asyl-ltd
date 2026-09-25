@@ -1,16 +1,13 @@
-import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from decimal import Decimal
 from threading import Event, Lock
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 import pytest
-from django.db import close_old_connections, connection
+from django.db import close_old_connections
 from django.utils import timezone
 
-from apps.catalog.models import Product
-from apps.clients.models import Client
 from apps.orders.apipay import (
     ApiPayAPIError,
     apply_invoice_status,
@@ -21,110 +18,18 @@ from apps.orders.models import (
     ApiPayInvoice,
     ApiPayRefund,
     Order,
-    OrderItem,
     Payment,
     PaymentRefund,
 )
 from apps.orders.services import create_client_payment
+from apps.orders.tests.apipay_fakes import ProviderResponse, shipped_order
 
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
-
-
-class ProviderResponse:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def read(self):
-        return json.dumps(self.payload).encode("utf-8")
-
-
-def _order(*, total="100.00", client_user=None, currency="KZT"):
-    client = Client.objects.create_with_user(
-        user=client_user,
-        first_name="Платёжный",
-        last_name="Клиент",
-        phone="87762838451",
-    )
-    product = Product.objects.create(
-        name="Регрессионный товар",
-        color="Red",
-        weight_kg="50",
-        price=total,
-    )
-    order = Order.objects.create(
-        client=client,
-        status="shipped",
-        currency=currency,
-    )
-    OrderItem.objects.create(
-        order=order,
-        product=product,
-        quantity=1,
-        unit_price=Decimal(total),
-    )
-    return order
-
-
-@patch("apps.orders.apipay.urllib.request.urlopen")
-def test_staff_mixed_payment_issues_only_the_phone_invoice(
-    urlopen, auth_client, accountant, settings,
-):
-    """Касса выставляет провайдеру только счёт на оплату, но не QR.
-
-    QR в CRM отмечается уже после POS-терминала: деньги получены, и запрос
-    к платёжному сервису попросил бы клиента заплатить второй раз.
-    """
-    settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
-    urlopen.side_effect = [ProviderResponse({"id": 701, "status": "processing"})]
-    order = _order()
-
-    response = auth_client(accountant).post(
-        f"/api/orders/{order.id}/payments/",
-        {
-            "parts": [
-                {"method": "cash", "amount": "20.00"},
-                {
-                    "method": "invoice",
-                    "amount": "30.00",
-                    "phone_number": "87762838451",
-                },
-                {"method": "kaspi", "amount": "50.00"},
-            ],
-            "note": "сервер выдаёт только счёт",
-        },
-        format="json",
-    )
-
-    assert response.status_code == 201
-    rows = {row["method"]: row for row in response.data}
-    assert rows["cash"]["provider"] is None
-    assert rows["invoice"]["provider"]["invoice_id"] == 701
-    assert rows["invoice"]["provider"]["channel"] == "phone"
-    # QR остаётся обычной оплатой без счёта — подтвердит касса вручную.
-    assert rows["kaspi"]["provider"] is None
-    assert rows["kaspi"]["confirmation_mode"] == "manual"
-
-    assert urlopen.call_count == 1, "к провайдеру ушёл только телефонный счёт"
-    phone_request = urlopen.call_args_list[0].args[0]
-    assert phone_request.full_url.endswith("/invoices")
-    assert json.loads(phone_request.data)["phone_number"] == "87762838451"
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
 
 def test_cashier_qr_never_calls_the_payment_provider(auth_client, accountant):
     """Одиночный QR из кассы — отметка о POS-терминале, а не онлайн-счёт."""
-    order = _order()
+    order = shipped_order()
 
     response = auth_client(accountant).post(
         f"/api/orders/{order.id}/payments/",
@@ -139,57 +44,9 @@ def test_cashier_qr_never_calls_the_payment_provider(auth_client, accountant):
     assert not ApiPayInvoice.objects.exists()
 
 
-def test_qr_from_a_staff_recorder_is_confirmed_without_manual_queue(
-    auth_client, accountant, payment_recorder,
-):
-    """CRM QR is a received till payment, regardless of confirmer permission."""
-    order = _order()
-    created = auth_client(payment_recorder).post(
-        f"/api/orders/{order.id}/payments/",
-        {"method": "kaspi", "amount": "50.00"},
-        format="json",
-    )
-
-    queue = auth_client(accountant).get("/api/orders/payments-queue/")
-
-    assert queue.status_code == 200
-    assert created.data["status"] == "confirmed"
-    assert created.data["id"] not in [row["id"] for row in queue.data]
-
-
-def test_mixed_provider_failure_rejects_every_part(auth_client, accountant):
-    """Сбой провайдера откатывает всю смешанную оплату, а не половину."""
-    order = _order()
-
-    def issue(payment, *, channel, user, phone_number=None):
-        assert user == accountant
-        raise ApiPayAPIError(503, "provider_unavailable", "Временно недоступно", {})
-
-    with patch("apps.orders.views.create_invoice", side_effect=issue):
-        response = auth_client(accountant).post(
-            f"/api/orders/{order.id}/payments/",
-            {
-                "parts": [
-                    {"method": "cash", "amount": "20.00"},
-                    {
-                        "method": "invoice",
-                        "amount": "30.00",
-                        "phone_number": "87762838451",
-                    },
-                    {"method": "kaspi", "amount": "50.00"},
-                ],
-            },
-            format="json",
-        )
-
-    assert response.status_code == 400
-    assert response.data["code"] == "provider_unavailable"
-    assert set(order.payments.values_list("status", flat=True)) == {"rejected"}
-
-
 def test_single_invoice_failure_rejects_the_payment(auth_client, accountant):
     """Не выставился счёт — оплата не остаётся висеть в очереди кассы."""
-    order = _order()
+    order = shipped_order()
 
     with patch(
         "apps.orders.views.create_invoice",
@@ -213,7 +70,7 @@ def test_single_invoice_failure_rejects_the_payment(auth_client, accountant):
 def test_rejected_payment_restore_cannot_overbook_remaining_balance(
     auth_client, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     rejected = Payment.objects.create(
         order=order,
         amount="60.00",
@@ -247,7 +104,7 @@ def test_restore_legacy_rejected_invoice_issues_provider_invoice(
 ):
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     urlopen.return_value = ProviderResponse({"id": 705, "status": "processing"})
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="40.00",
@@ -276,7 +133,7 @@ def test_restore_legacy_rejected_invoice_issues_provider_invoice(
 def test_provider_payment_cannot_be_manually_confirmed_or_reopened(
     auth_client, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -320,7 +177,7 @@ def test_portal_does_not_release_or_reuse_staff_owned_pending_payment(
     auth_client, accountant, make_user,
 ):
     user = make_user(username="payment-owner", client=True)
-    order = _order(client_user=user)
+    order = shipped_order(client_user=user)
     staff_payment = Payment.objects.create(
         order=order,
         amount="40.00",
@@ -354,7 +211,7 @@ def test_portal_debt_choice_does_not_bulk_reject_pending_payments(
     auth_client, accountant, make_user,
 ):
     user = make_user(username="debt-owner", client=True)
-    order = _order(client_user=user)
+    order = shipped_order(client_user=user)
     pending = Payment.objects.create(
         order=order,
         amount="40.00",
@@ -377,64 +234,10 @@ def test_portal_debt_choice_does_not_bulk_reject_pending_payments(
     assert order.debt_requested is False
 
 
-@patch("apps.orders.apipay.api_request")
-def test_explicit_apipay_refund_supports_paid_qr_without_cash_fallback(
-    api_request, auth_client, accountant,
-):
-    # Kaspi не возвращает оплату по QR запросом /invoices/{id}/refund
-    # (refund_requires_buyer_confirmation) — касса получает ссылку для покупателя.
-    api_request.return_value = {
-        "id": 42,
-        "status": "awaiting_customer",
-        "customer_url": "https://qr.apipay.kz/refund/token",
-        "link_expires_at": "2026-09-18T10:00:00+00:00",
-    }
-    order = _order()
-    payment = Payment.objects.create(
-        order=order,
-        amount="100.00",
-        method="kaspi",
-        status="confirmed",
-        confirmed_by=accountant,
-        confirmed_at=timezone.now(),
-    )
-    ApiPayInvoice.objects.create(
-        payment=payment,
-        invoice_id=707,
-        idempotency_key=f"asyl-payment-{payment.id}",
-        channel="qr",
-        status="paid",
-    )
-
-    response = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/refund/",
-        {
-            "mode": "apipay",
-            "amount": "10.00",
-            "reason": "Проверка явного режима",
-        },
-        format="json",
-    )
-
-    assert response.status_code == 201
-    assert response.data["method"] == "apipay_qr"
-    assert response.data["status"] == "pending"
-    assert response.data["qr_refund"]["customer_url"] == "https://qr.apipay.kz/refund/token"
-    local_refund = PaymentRefund.objects.get(payment=payment)
-    assert local_refund.method == "apipay_qr"
-    assert local_refund.status == "pending"
-    payment.refresh_from_db()
-    assert payment.refunded_amount == Decimal("0.00")
-    assert payment.pending_refund_amount == Decimal("10.00")
-    api_request.assert_called_once_with(
-        "POST", "/qr-refunds/links", {}, credentials=ANY,
-    )
-
-
 def test_summary_report_uses_net_amount_after_refunds(
     auth_client, boss,
 ):
-    order = _order(total="300.00")
+    order = shipped_order(total="300.00")
     cash = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -491,7 +294,7 @@ def test_summary_report_uses_net_amount_after_refunds(
 def test_error_to_pending_restores_reservation_only_when_capacity_allows(
     accountant, other_reservation, expected_status,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="40.00",
@@ -532,7 +335,7 @@ def test_error_to_pending_restores_reservation_only_when_capacity_allows(
 def test_late_old_qr_payment_keeps_payable_replacement_visible_and_reserved(
     auth_client, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     old_payment = Payment.objects.create(
         order=order,
         amount="60.00",
@@ -597,7 +400,7 @@ def test_late_old_qr_payment_keeps_payable_replacement_visible_and_reserved(
 def test_late_qr_payment_keeps_received_cash_as_visible_conflict(
     auth_client, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     old_payment = Payment.objects.create(
         order=order,
         amount="60.00",
@@ -648,7 +451,7 @@ def test_legacy_no_amount_reuse_respects_every_other_reservation(
     accountant, make_user,
 ):
     user = make_user(username="legacy-payment-owner", client=True)
-    order = _order(client_user=user)
+    order = shipped_order(client_user=user)
     own_payment = Payment.objects.create(
         order=order,
         amount="20.00",
@@ -695,7 +498,7 @@ def test_legacy_no_amount_reuse_respects_every_other_reservation(
 def test_invoice_money_received_status_never_regresses(
     accountant, current_status, incoming_status,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -731,7 +534,7 @@ def test_invoice_money_received_status_never_regresses(
 def test_create_response_cannot_overwrite_paid_and_keeps_qr_fields(
     api_request_mock, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -775,7 +578,7 @@ def test_create_response_cannot_overwrite_paid_and_keeps_qr_fields(
 def test_qr_recovery_search_preserves_existing_fields_without_post(
     api_request_mock, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -819,7 +622,7 @@ def test_create_money_response_confirms_payment_immediately(
     accountant,
     provider_status,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -847,7 +650,7 @@ def test_create_error_payload_maps_provider_invoice_before_raising(
     api_request_mock,
     accountant,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -881,7 +684,7 @@ def test_cancel_paid_response_confirms_instead_of_rejecting(
     api_request_mock,
     accountant,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -913,7 +716,7 @@ def test_cancel_paid_response_confirms_instead_of_rejecting(
 
 
 def test_paid_status_reconciles_soft_deleted_order(accountant):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -953,7 +756,7 @@ def test_refund_amount_mismatch_keeps_mapping_and_original_reservation(
             "status": "completed",
         }
     }
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -995,13 +798,12 @@ def test_refund_amount_mismatch_keeps_mapping_and_original_reservation(
 
 
 def test_crm_has_no_way_to_issue_a_qr(auth_client, accountant):
-    """Выдать QR из CRM нельзя ни одной ручкой.
+    """Общая выдача счёта не выпускает QR из CRM.
 
-    Раньше для этого был отдельный эндпоинт `kaspi-qr`, а общая выдача счёта
-    принимала метод «kaspi». Оба входа закрыты: QR в кассе означает уже
-    прошедший POS-терминал, и счёт по нему выставлять нечего.
+    QR в кассе означает уже прошедший POS-терминал, и счёт по нему выставлять
+    нечего.
     """
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -1010,12 +812,9 @@ def test_crm_has_no_way_to_issue_a_qr(auth_client, accountant):
         recorded_by=accountant,
     )
 
-    legacy = auth_client(accountant).post(
-        f"/api/payment-transactions/{payment.id}/kaspi-qr/")
     issue = auth_client(accountant).post(
         f"/api/payment-transactions/{payment.id}/issue/")
 
-    assert legacy.status_code == 404, "старая ручка выдачи QR удалена"
     assert issue.status_code == 404, "общая выдача счёта метод «kaspi» не обслуживает"
     assert not ApiPayInvoice.objects.filter(payment=payment).exists()
 
@@ -1024,7 +823,7 @@ def test_crm_has_no_way_to_issue_a_qr(auth_client, accountant):
 def test_cancel_response_cannot_downgrade_paid_webhook(
     api_request_mock, accountant,
 ):
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",
@@ -1061,10 +860,7 @@ def test_cancel_response_cannot_downgrade_paid_webhook(
 def test_concurrent_create_invoice_calls_provider_once_and_preserves_qr(
     accountant,
 ):
-    if connection.vendor != "postgresql":
-        pytest.skip("PostgreSQL advisory lock is production serialization")
-
-    order = _order()
+    order = shipped_order()
     payment = Payment.objects.create(
         order=order,
         amount="100.00",

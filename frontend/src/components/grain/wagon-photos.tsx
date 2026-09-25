@@ -2,7 +2,7 @@
 
 import { Camera } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { apiFileUrl } from "@/lib/grain";
+import { apiFileUrl } from "@/lib/api-file-url";
 import type { GrainWagon } from "@/lib/types";
 import { photoStatusLabel } from "@/lib/weighing-evidence";
 import { formatDateTime } from "@/lib/utils";

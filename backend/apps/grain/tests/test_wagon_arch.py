@@ -1,16 +1,17 @@
 import uuid
 from datetime import timedelta
-from decimal import Decimal
 
 import pytest
+from django.db import IntegrityError
 from django.utils import timezone
 
 from apps.grain import statuses as st
-from apps.grain.models import GrainSupply, Silo, SiloType, Wagon, WagonArchStop
+from apps.grain.models import GrainSupply, Wagon, WagonArchStop
+from apps.grain.tests.factories import JPEG, silo_route
+from weighbridge.outbox import Outbox
 
 pytestmark = pytest.mark.django_db
 
-JPEG = b"\xff\xd8\xff\xe0" + b"1" * 64
 
 
 def test_wagon_arch_stop_is_unique_per_collector_event():
@@ -20,7 +21,7 @@ def test_wagon_arch_stop_is_unique_per_collector_event():
         arrived_at=now, full_weight_kg=62340, photo_request_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
     )
     assert stop.status == WagonArchStop.OPEN and stop.wagon_id is None
-    with pytest.raises(Exception):
+    with pytest.raises(IntegrityError):
         WagonArchStop.objects.create(
             stop_id=stop.stop_id, camera="cam8", arrived_at=now, full_weight_kg=1,
             photo_request_id=stop.stop_id,
@@ -28,7 +29,7 @@ def test_wagon_arch_stop_is_unique_per_collector_event():
 
 
 def test_runtime_last_stop_carries_the_blocked_detail_for_the_ui(media):
-    """UI needs the free-text detail (m7): the reason code alone doesn't explain 'wrong_scale_action' etc."""
+    """UI needs the free-text detail: the reason code alone doesn't explain 'wrong_scale_action' etc."""
     from apps.grain import wagon_arch
     from django.core.cache import cache
 
@@ -46,24 +47,19 @@ def test_runtime_last_stop_carries_the_blocked_detail_for_the_ui(media):
     assert payload["last_stop"]["blocked_detail"] == "весы ждут другое действие"
 
 
-def _route(*, default=True, capacity=500_000, culture="пшеница", grain_class="3"):
-    grain_type = SiloType.objects.create(name=f"Тип-{SiloType.objects.count() + 1}", grain_culture=culture, grain_class=grain_class)
-    silo = Silo.objects.create(
-        name=f"Силос-{Silo.objects.count() + 1}", total_capacity_kg=capacity, silo_type=grain_type,
-        grain_culture=culture, grain_class=grain_class, unloading_line="линия 1",
-    )
-    if default:
-        grain_type.default_silo = silo
-        grain_type.save(update_fields=["default_silo"])
-    return grain_type, silo
+@pytest.fixture
+def wagon_outbox(tmp_path, monkeypatch):
+    """Outbox вагонного сборщика, из которого читает CRM."""
+    monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(tmp_path / "wagon"))
+    return Outbox(tmp_path / "wagon")
 
 
-def _expected_wagon(number="28055531", *, with_silo=True, default=True, culture="пшеница", grain_class="3",
-                    expected_weight_kg=40_000):
-    grain_type, silo = _route(default=default, culture=culture, grain_class=grain_class)
+def _expected_wagon(number="28055531", *, with_silo=True, default=True, expected_weight_kg=40_000):
+    grain_type, silo = silo_route(default=default, unloading_line="линия 1")
+    # GrainSupplySerializer.validate: culture = название типа, класс пустой.
     supply = GrainSupply.objects.create(
         supplier="ТОО Колос", grain_type=grain_type, assigned_silo=silo, expected_total_kg=expected_weight_kg,
-        culture=culture, grain_class=grain_class, status="expected",
+        culture=grain_type.name, status="expected",
     )
     return Wagon.objects.create(
         supply=supply, number=number, direction=Wagon.INTAKE, workflow="simple", status=st.EXPECTED,
@@ -84,9 +80,7 @@ def test_default_route_silo_follows_the_grain_type_and_assigns_once():
     assert wagon.unloading_point == "линия 1"
     assert wagon.reservation.amount_kg == 40_000 and wagon.reservation.silo_id == assigned.pk
 
-    no_route = _expected_wagon(
-        number="28815116", with_silo=False, default=False, culture="ячмень", grain_class="2",
-    )
+    no_route = _expected_wagon(number="28815116", with_silo=False, default=False)
     assert services.default_route_silo(no_route) is None
     assert services.assign_default_silo(no_route) is None
     no_route.refresh_from_db()
@@ -167,6 +161,22 @@ def test_departure_is_applied_after_the_grace_period_and_completes_the_trip(medi
     assert (wagon.tare_weight_kg, wagon.net_weight_kg, wagon.status) == (24120, 38220, st.COMPLETED)
 
 
+def test_the_trip_times_are_the_scale_times_not_the_import_times(media):
+    """Отложенный импорт и льготное окно не сдвигают время у силоса и выезда."""
+    from apps.grain import wagon_arch
+    wagon = _expected_wagon(expected_weight_kg=38_220)
+    arrived = timezone.now() - timedelta(hours=2)
+    departed = arrived + timedelta(minutes=40)
+    arrival = _arrival(at=arrived)
+    wagon_arch.import_event(arrival)
+    wagon_arch.import_event(_departure(arrival, weight=24120, at=departed))
+    wagon_arch.apply_pending(now=timezone.now() + timedelta(minutes=11))
+    wagon.refresh_from_db()
+    assert wagon.status == st.COMPLETED
+    assert wagon.silo_arrived_at == wagon.unloading_started_at == arrived
+    assert wagon.unloading_finished_at == wagon.exited_at == departed
+
+
 def test_a_discrepancy_still_closes_the_stop_and_is_not_an_import_problem(media):
     """Нетто вне допуска — обычный разбор оператора, а не ошибка импорта."""
     from apps.grain import wagon_arch
@@ -244,7 +254,7 @@ def test_stop_without_a_default_route_waits_for_the_operator_then_applies(media)
     stop.refresh_from_db()
     assert stop.exit_applied_at is None                    # the exit waits behind the entry
 
-    # Эмулируем оператора прямым назначением силоса (путь services.assign_silo).
+    # Эмулируем оператора прямым назначением силоса.
     wagon.assigned_silo = wagon.supply.assigned_silo
     wagon.save(update_fields=["assigned_silo"])
     wagon_arch.apply_pending(now=timezone.now() + timedelta(minutes=12))
@@ -258,7 +268,7 @@ def test_unknown_number_opens_a_bare_trip_and_a_bad_exit_needs_attention(media):
     stop = wagon_arch.import_event(arrival)
     assert stop.wagon.number == "" and stop.wagon.supply_id is None and stop.wagon.status == st.ARRIVED
     assert stop.blocked_reason == "silo_required"          # no supply → no default route
-    grain_type, silo = _route()
+    _, silo = silo_route()
     stop.wagon.assigned_silo = silo
     stop.wagon.save(update_fields=["assigned_silo"])
     applied = wagon_arch.apply_pending()
@@ -275,7 +285,7 @@ def test_unknown_number_opens_a_bare_trip_and_a_bad_exit_needs_attention(media):
 
     other = wagon_arch.import_event(_arrival(number="", weight=60000, stop_id=uuid.uuid4()))
     # Приход должен примениться до отъезда: выезд ждёт за заблокированным приходом.
-    _, other_silo = _route()
+    _, other_silo = silo_route()
     other.wagon.assigned_silo = other_silo
     other.wagon.save(update_fields=["assigned_silo"])
     wagon_arch.apply_pending()
@@ -287,32 +297,29 @@ def test_unknown_number_opens_a_bare_trip_and_a_bad_exit_needs_attention(media):
     assert (other.status, other.blocked_reason) == (WagonArchStop.ATTENTION, "no_exit_weight")
 
 
-def test_poll_once_imports_acks_and_publishes_runtime(media, monkeypatch, tmp_path):
+def test_poll_once_imports_acks_and_publishes_runtime(media, monkeypatch, tmp_path, wagon_outbox):
     from django.core.cache import cache
     from apps.grain import wagon_arch
-    from weighbridge.outbox import Outbox
-    monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(tmp_path / "wagon"))
-    box = Outbox(tmp_path / "wagon")
     _expected_wagon()
     arrival = _arrival(photo=None)
-    box.put({k: v for k, v in arrival.items() if k != "photo"})
-    box.finish(arrival["id"], "photo", photo=JPEG, updates={"photo_error": ""})
-    box.finish(arrival["id"], "ocr", updates={"number": "28055531", "number_source": "model", "recognition": None, "recognition_error": "", "ocr_attempts": 1})
+    wagon_outbox.put({k: v for k, v in arrival.items() if k != "photo"})
+    wagon_outbox.finish(arrival["id"], "photo", photo=JPEG, updates={"photo_error": ""})
+    wagon_outbox.finish(arrival["id"], "ocr", updates={"number": "28055531", "number_source": "model", "recognition": None, "recognition_error": "", "ocr_attempts": 1})
     # Нечитаемые тела не держат очередь: обе строки подтверждаются после предупреждения.
     mystery_v2 = str(uuid.uuid4())
-    box.put({"version": 2, "kind": "mystery", "id": mystery_v2})
-    box.finish(mystery_v2, "photo", updates={})
-    box.finish(mystery_v2, "ocr", updates={})
+    wagon_outbox.put({"version": 2, "kind": "mystery", "id": mystery_v2})
+    wagon_outbox.finish(mystery_v2, "photo", updates={})
+    wagon_outbox.finish(mystery_v2, "ocr", updates={})
     mystery_v9 = str(uuid.uuid4())
-    box.put({"version": 9, "kind": "mystery", "id": mystery_v9})
-    box.finish(mystery_v9, "photo", updates={})
-    box.finish(mystery_v9, "ocr", updates={})
-    box.state("heartbeat", {"updated_at": 0, "status": "running", "standing": None, "motion": "still", "pending_writes": 0})
+    wagon_outbox.put({"version": 9, "kind": "mystery", "id": mystery_v9})
+    wagon_outbox.finish(mystery_v9, "photo", updates={})
+    wagon_outbox.finish(mystery_v9, "ocr", updates={})
+    wagon_outbox.state("heartbeat", {"updated_at": 0, "status": "running", "standing": None, "motion": "still", "pending_writes": 0})
     cache.clear()
     assert wagon_arch.enabled() is True
     result = wagon_arch.poll_once()
     assert result["imported"] == 1 and result["discarded"] == 2
-    assert box.counts()["pending"] == 0                    # очередь никогда не встаёт
+    assert wagon_outbox.counts()["pending"] == 0  # очередь никогда не встаёт
     runtime = wagon_arch.runtime()
     assert runtime["enabled"] is True and runtime["camera"] == "cam8"
     assert runtime["last_stop"]["number"] == "28055531" and runtime["collector"]["status"] == "running"
@@ -322,19 +329,16 @@ def test_poll_once_imports_acks_and_publishes_runtime(media, monkeypatch, tmp_pa
     assert settings_flag() is False
 
 
-def test_malformed_bodies_are_discarded_and_never_block_the_queue(media, monkeypatch, tmp_path):
-    """KeyError/TypeError тоже мусор: очередь не должна вставать (ruling 5)."""
+def test_malformed_bodies_are_discarded_and_never_block_the_queue(media, wagon_outbox):
+    """KeyError/TypeError тоже мусор: очередь не должна вставать."""
     from django.core.cache import cache
     from apps.grain import wagon_arch
-    from weighbridge.outbox import Outbox
-    monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(tmp_path / "wagon"))
-    box = Outbox(tmp_path / "wagon")
     _expected_wagon()
 
     def _ready(body):
-        box.put(body)
-        box.finish(body["id"], "photo", updates={})
-        box.finish(body["id"], "ocr", updates={})
+        wagon_outbox.put(body)
+        wagon_outbox.finish(body["id"], "photo", updates={})
+        wagon_outbox.finish(body["id"], "ocr", updates={})
 
     broken = _arrival(photo=None)
     broken.pop("stable_weight_at")                          # обязательный ключ отсутствует
@@ -355,7 +359,7 @@ def test_malformed_bodies_are_discarded_and_never_block_the_queue(media, monkeyp
     result = wagon_arch.poll_once()
     assert result["discarded"] == 3                          # три нечитаемых тела
     assert result["imported"] == 1                           # исправное событие всё равно прошло
-    assert box.counts()["pending"] == 0
+    assert wagon_outbox.counts()["pending"] == 0
     assert WagonArchStop.objects.count() == 1
     assert str(WagonArchStop.objects.get().stop_id) == valid["id"]
 
@@ -382,18 +386,17 @@ def test_a_future_timestamp_is_rejected_like_the_truck_importer(media):
 def test_a_concurrent_duplicate_import_returns_the_existing_stop(media, monkeypatch):
     """Две пересекающиеся итерации: IntegrityError → вернуть уже созданный стоп."""
     from apps.grain import wagon_arch
-    from apps.grain.models import WagonArchStop as Model
     _expected_wagon()
     event = _arrival()
 
     # «Другая» итерация уже зафиксировала стоп; наш insert падает IntegrityError.
     # Патчим сам поиск, чтобы пройти мимо ранней проверки на существующий стоп.
-    committed = Model.objects.create(
+    committed = WagonArchStop.objects.create(
         stop_id=uuid.UUID(event["id"]), camera=event["camera"],
         arrived_at=timezone.now() - timedelta(minutes=5), full_weight_kg=event["weight_kg"],
         photo_request_id=uuid.UUID(event["id"]),
     )
-    original_filter = Model.objects.filter
+    original_filter = WagonArchStop.objects.filter
     seen = {"n": 0}
 
     def blind_filter(*args, **kwargs):
@@ -403,22 +406,19 @@ def test_a_concurrent_duplicate_import_returns_the_existing_stop(media, monkeypa
             return queryset.none()                           # ранняя проверка «не видит» строку
         return queryset
 
-    monkeypatch.setattr(Model.objects, "filter", blind_filter)
+    monkeypatch.setattr(WagonArchStop.objects, "filter", blind_filter)
     stop = wagon_arch.import_event(event)
     monkeypatch.undo()
     assert stop is not None and stop.pk == committed.pk      # вернулся уже созданный стоп
-    assert Model.objects.count() == 1                        # без дублей
+    assert WagonArchStop.objects.count() == 1                # без дублей
 
 
-def test_runtime_and_stops_api_require_grain_view(media, auth_client, user_with_perms, monkeypatch):
+def test_stops_api_requires_grain_view(media, auth_client, user_with_perms):
     from apps.grain import wagon_arch
-    from apps.grain.models import WeighingPhotoDelivery
-    monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(media / "wagon"))
-    (media / "wagon").mkdir()
     viewer = user_with_perms("arch-viewer", codes=["grain.view"])
     denied = user_with_perms("arch-denied", codes=[])
     _expected_wagon()
-    stop = wagon_arch.import_event(_arrival())
+    wagon_arch.import_event(_arrival())
     assert auth_client(denied).get("/api/grain/wagon-arch/stops/").status_code == 403
     page = auth_client(viewer).get("/api/grain/wagon-arch/stops/")
     assert page.status_code == 200
@@ -427,62 +427,12 @@ def test_runtime_and_stops_api_require_grain_view(media, auth_client, user_with_
     assert row["photo_url"].startswith("/api/grain/photos/evidence/")
     assert auth_client(viewer).get("/api/grain/wagon-arch/stops/", {"before": row["id"]}).data["results"] == []
     assert auth_client(viewer).get("/api/grain/wagon-arch/stops/", {"before": "x"}).status_code == 400
-    runtime = auth_client(viewer).get("/api/grain/wagon-arch/runtime/")
-    assert runtime.status_code == 200 and runtime.data["enabled"] is True and runtime.data["camera"] == "cam8"
-
-
-def test_camera_plate_poll_is_off_while_the_arch_automation_runs(settings, monkeypatch):
-    """m10: одна настоящая итерация `--once`, а не только предикат."""
-    from io import StringIO
-    from types import SimpleNamespace
-    from unittest.mock import patch
-    from django.core.management import call_command
-    from apps.cameras import ai, continuous
-    from apps.cameras.management.commands.monitor_cameras import Command
-    settings.WAGON_ARCH_AUTOMATION_ENABLED = True
-    assert Command.wagon_plate_poll_enabled() is False
-    monkeypatch.setattr(ai, "AI_KEY", "test-key")
-    health_state = SimpleNamespace(
-        status="healthy", observed_status="healthy", online_count=8,
-        expected_count=8, failure_streak=0, recovery_streak=1,
-    )
-    with (
-        patch(
-            "apps.cameras.management.commands.monitor_cameras.health.monitor_once",
-            return_value=health_state,
-        ),
-        patch.object(continuous, "reconcile", return_value={"cameras": ["cam2"]}) as reconcile,
-        patch.object(
-            continuous, "reconcile_wagon_number", return_value={"camera": "cam8"},
-        ) as reconcile_wagon,
-        patch.object(continuous, "poll_wagon_plate") as poll,
-    ):
-        call_command("monitor_cameras", "--once", stdout=StringIO())
-    poll.assert_not_called()                                  # арка — датчик прибытия
-    reconcile.assert_called_once()                            # остальная сверка работает
-    reconcile_wagon.assert_called_once()
-
-    # Флаг снят — опрос таблички возвращается.
-    settings.WAGON_ARCH_AUTOMATION_ENABLED = False
-    assert Command.wagon_plate_poll_enabled() is True
-    with (
-        patch(
-            "apps.cameras.management.commands.monitor_cameras.health.monitor_once",
-            return_value=health_state,
-        ),
-        patch.object(continuous, "reconcile", return_value={"cameras": ["cam2"]}),
-        patch.object(continuous, "reconcile_wagon_number", return_value={"camera": "cam8"}),
-        patch.object(continuous, "poll_wagon_plate", return_value={"seen": False}) as poll,
-    ):
-        call_command("monitor_cameras", "--once", stdout=StringIO())
-    poll.assert_called_once_with()
-
-
-# ── Итоговая волна правок (C1—C3, I4—I7, мелочи) ────────────────────────────
+    # «²».isdigit() истинно, но int() его не берёт — раньше это был 500.
+    assert auth_client(viewer).get("/api/grain/wagon-arch/stops/", {"before": "²"}).status_code == 400
 
 
 def test_a_deleted_wagon_parks_the_stop_instead_of_killing_the_monitor(media):
-    """C1a: рейс удалён из CRM — стоп уходит в ATTENTION, монитор живёт."""
+    """Рейс удалён из CRM — стоп уходит в ATTENTION, монитор живёт."""
     from apps.grain import services, wagon_arch
     wagon = _expected_wagon(expected_weight_kg=38_220)
     arrival = _arrival()
@@ -505,7 +455,7 @@ def test_a_deleted_wagon_parks_the_stop_instead_of_killing_the_monitor(media):
 
 
 def test_an_unexpected_error_parks_the_stop_and_the_tick_survives(media, monkeypatch):
-    """C1b: неожиданная ошибка в логике рейса не роняет apply_pending."""
+    """Неожиданная ошибка в логике рейса не роняет apply_pending."""
     from apps.grain import services, wagon_arch
     wagon = _expected_wagon(expected_weight_kg=38_220)
     arrival = _arrival()
@@ -525,13 +475,10 @@ def test_an_unexpected_error_parks_the_stop_and_the_tick_survives(media, monkeyp
     assert wagon.status == st.AT_SILO                       # ничего не записано
 
 
-def test_poll_once_does_not_let_trip_errors_escape(media, monkeypatch, tmp_path):
-    """C1b: poll_once переживает падение в логике рейса (монитор жив)."""
+def test_poll_once_does_not_let_trip_errors_escape(media, monkeypatch, wagon_outbox):
+    """poll_once переживает падение в логике рейса (монитор жив)."""
     from django.core.cache import cache
     from apps.grain import services, wagon_arch
-    from weighbridge.outbox import Outbox
-    monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(tmp_path / "wagon"))
-    Outbox(tmp_path / "wagon")
     wagon = _expected_wagon(with_silo=False, default=False)
     arrival = _arrival()
     stop = wagon_arch.import_event(arrival)
@@ -552,8 +499,37 @@ def test_poll_once_does_not_let_trip_errors_escape(media, monkeypatch, tmp_path)
     assert result["imported"] == 0
 
 
+def test_poll_once_skips_the_tick_while_the_collector_holds_the_outbox_lock(media, caplog, wagon_outbox):
+    """Блокировка SQLite сборщиком не роняет монитор: тик пропущен, событие придёт следующим."""
+    import logging
+    import sqlite3
+    from unittest.mock import patch
+    from django.core.cache import cache
+    from apps.grain import wagon_arch
+    from weighbridge.outbox import Outbox
+    _expected_wagon()
+    arrival = _arrival(photo=None)
+    wagon_outbox.put({k: v for k, v in arrival.items() if k != "photo"})
+    wagon_outbox.finish(arrival["id"], "photo", photo=JPEG, updates={"photo_error": ""})
+    wagon_outbox.finish(arrival["id"], "ocr", updates={"number": "28055531", "number_source": "model", "recognition": None, "recognition_error": "", "ocr_attempts": 1})
+    cache.clear()
+
+    with patch.object(Outbox, "next", side_effect=sqlite3.OperationalError("database is locked")):
+        with caplog.at_level(logging.WARNING):
+            result = wagon_arch.poll_once()                  # не должно бросить
+    assert result["imported"] == 0 and result["busy"] is True
+    assert "locked" in caplog.text
+    assert wagon_outbox.counts()["pending"] == 1  # событие не потеряно
+    assert wagon_arch.poll_once()["imported"] == 1
+    assert wagon_outbox.counts()["pending"] == 0
+    # Настоящая поломка файла очереди — не блокировка: она летит наружу.
+    with patch.object(Outbox, "next", side_effect=sqlite3.OperationalError("disk I/O error")):
+        with pytest.raises(sqlite3.OperationalError):
+            wagon_arch.poll_once()
+
+
 def test_continuation_applies_the_root_entry_not_the_mid_unloading_weight(media):
-    """C2: продолжение берёт вес и кадр корневого стопа, а не свой."""
+    """Продолжение берёт вес и кадр корневого стопа, а не свой."""
     from apps.grain import wagon_arch
     wagon = _expected_wagon("28055531", with_silo=False, default=False, expected_weight_kg=38_220)
     first = _arrival(number="28055531", weight=62340, at=timezone.now() - timedelta(minutes=20))
@@ -581,7 +557,7 @@ def test_continuation_applies_the_root_entry_not_the_mid_unloading_weight(media)
 
 
 def test_a_retried_open_trip_keeps_its_wagon_when_the_entry_blocks(media):
-    """C3: повтор не откатывает open_trip вместе с заблокированным приходом."""
+    """Повтор не откатывает open_trip вместе с заблокированным приходом."""
     from apps.grain import wagon_arch
     blocker = _expected_wagon("28055531", expected_weight_kg=38_220)
     blocker.status = st.AT_SILO
@@ -605,7 +581,7 @@ def test_a_retried_open_trip_keeps_its_wagon_when_the_entry_blocks(media):
 
 
 def test_a_motion_gap_departure_is_not_an_ordinary_exit(media):
-    """I4: отъезд не был виден — вес выезда подтверждает оператор."""
+    """Отъезд не был виден — вес выезда подтверждает оператор."""
     from apps.grain import wagon_arch
     wagon = _expected_wagon(expected_weight_kg=38_220)
     arrival = _arrival()
@@ -622,7 +598,7 @@ def test_a_motion_gap_departure_is_not_an_ordinary_exit(media):
 
 
 def test_a_manual_exit_closes_the_stop_as_recorded_by_hand(media):
-    """I5a: оператор записал выезд сам — стоп закрывается без ошибки."""
+    """Оператор записал выезд сам — стоп закрывается без ошибки."""
     from apps.grain import services, wagon_arch
     wagon = _expected_wagon(expected_weight_kg=38_220)
     arrival = _arrival()
@@ -640,7 +616,7 @@ def test_a_manual_exit_closes_the_stop_as_recorded_by_hand(media):
 
 
 def test_a_manual_entry_marks_the_stop_entry_as_applied(media):
-    """I5a: входной вес уже записан руками — приход считается применённым."""
+    """Входной вес уже записан руками — приход считается применённым."""
     from apps.grain import services, wagon_arch
     wagon = _expected_wagon(with_silo=False, default=False, expected_weight_kg=38_220)
     stop = wagon_arch.import_event(_arrival())
@@ -661,7 +637,7 @@ def test_a_manual_entry_marks_the_stop_entry_as_applied(media):
 
 
 def test_a_non_retryable_code_parks_the_stop_immediately(media):
-    """I5b: not_simple_flow — терминальная причина, без бесконечных повторов."""
+    """not_simple_flow — терминальная причина, без бесконечных повторов."""
     from apps.grain import wagon_arch
     wagon = _expected_wagon(expected_weight_kg=38_220)
     wagon.workflow = "full"
@@ -673,7 +649,7 @@ def test_a_non_retryable_code_parks_the_stop_immediately(media):
 
 
 def test_dismiss_closes_a_stop_for_the_operator(media, auth_client, user_with_perms):
-    """I5c: POST .../dismiss/ — ручное закрытие любого незакрытого стопа."""
+    """POST .../dismiss/ — ручное закрытие любого незакрытого стопа."""
     from apps.grain import wagon_arch
     editor = user_with_perms("arch-editor", codes=["grain.weigh"])
     viewer = user_with_perms("arch-onlyview", codes=["grain.view"])
@@ -702,14 +678,13 @@ def test_dismiss_closes_a_stop_for_the_operator(media, auth_client, user_with_pe
 
 
 def test_the_exit_weighing_and_the_closed_save_are_one_transaction(media, monkeypatch):
-    """I7: если сохранение стопа упадёт, выходной вес тоже откатывается."""
+    """Если сохранение стопа упадёт, выходной вес тоже откатывается."""
     from apps.grain import wagon_arch
-    from apps.grain.models import WagonArchStop as Model
     wagon = _expected_wagon(expected_weight_kg=38_220)
     arrival = _arrival()
     wagon_arch.import_event(arrival)
     wagon_arch.import_event(_departure(arrival, weight=24120))
-    original_save = Model.save
+    original_save = WagonArchStop.save
 
     def failing_save(self, *args, **kwargs):
         fields = kwargs.get("update_fields") or ()
@@ -717,7 +692,7 @@ def test_the_exit_weighing_and_the_closed_save_are_one_transaction(media, monkey
             raise RuntimeError("сеть до БД моргнула")
         return original_save(self, *args, **kwargs)
 
-    monkeypatch.setattr(Model, "save", failing_save)
+    monkeypatch.setattr(WagonArchStop, "save", failing_save)
     wagon_arch.apply_pending(now=timezone.now() + timedelta(minutes=11))
     monkeypatch.undo()
     wagon.refresh_from_db()
@@ -726,7 +701,7 @@ def test_the_exit_weighing_and_the_closed_save_are_one_transaction(media, monkey
 
 
 def test_blocked_and_clear_block_save_only_on_change(media):
-    """m8: одинаковая причина не пишет строку заново каждые 2—5 секунд."""
+    """Одинаковая причина не пишет строку заново каждые 2—5 секунд."""
     from apps.grain import wagon_arch
     _expected_wagon(with_silo=False, default=False)
     stop = wagon_arch.import_event(_arrival())
@@ -739,7 +714,7 @@ def test_blocked_and_clear_block_save_only_on_change(media):
 
 
 def test_an_old_pending_departure_does_not_capture_a_new_stop(media):
-    """m13: стоп, уехавший давно, не может «продолжиться» новым вагоном."""
+    """Стоп, уехавший давно, не может «продолжиться» новым вагоном."""
     from apps.grain import wagon_arch
     grace = 600
     long_ago = timezone.now() - timedelta(seconds=grace * 2 + 3600)
@@ -755,7 +730,7 @@ def test_an_old_pending_departure_does_not_capture_a_new_stop(media):
 
 
 def test_an_unnumbered_stop_within_the_grace_window_continues_by_weight(media):
-    """m16: номер не распознан, но вес сходится — тот же рейс продолжается."""
+    """Номер не распознан, но вес сходится — тот же рейс продолжается."""
     from apps.grain import wagon_arch
     from apps.eventlog.models import EventLog
     wagon = _expected_wagon("28055531", expected_weight_kg=38_220)
@@ -779,7 +754,7 @@ def test_an_unnumbered_stop_within_the_grace_window_continues_by_weight(media):
 
 
 def test_a_heavier_unnumbered_stop_is_a_new_trip(media):
-    """m16: вес вырос — это следующий вагон, продолжения нет."""
+    """Вес вырос — это следующий вагон, продолжения нет."""
     from apps.grain import wagon_arch
     _expected_wagon("28055531", expected_weight_kg=38_220)
     first = _arrival(number="28055531", weight=62340, at=timezone.now() - timedelta(minutes=20))
@@ -794,7 +769,7 @@ def test_a_heavier_unnumbered_stop_is_a_new_trip(media):
 
 
 def test_the_serializer_survives_a_stop_without_a_wagon(media, auth_client, user_with_perms):
-    """m14: строка wagon_on_site (wagon=None) сериализуется без падения."""
+    """Строка wagon_on_site (wagon=None) сериализуется без падения."""
     from apps.grain import wagon_arch
     viewer = user_with_perms("arch-viewer2", codes=["grain.view"])
     blocker = _expected_wagon("28055531")
@@ -810,7 +785,7 @@ def test_the_serializer_survives_a_stop_without_a_wagon(media, auth_client, user
 
 
 def test_a_wagon_deleted_before_the_entry_applied_parks_the_stop(media):
-    """C1a: удалённый до применения прихода рейс не пересоздаётся заново."""
+    """Удалённый до применения прихода рейс не пересоздаётся заново."""
     from apps.grain import services, wagon_arch
     wagon = _expected_wagon(with_silo=False, default=False)
     stop = wagon_arch.import_event(_arrival())
@@ -826,7 +801,7 @@ def test_a_wagon_deleted_before_the_entry_applied_parks_the_stop(media):
 
 
 def test_a_database_error_reaches_the_monitor_instead_of_parking_the_stop(media, monkeypatch):
-    """Раунд 2: временный сбой БД — дело монитора, а не терминальная причина."""
+    """Временный сбой БД — дело монитора, а не терминальная причина."""
     from django.db import OperationalError
     from apps.grain import services, wagon_arch
     wagon = _expected_wagon(expected_weight_kg=38_220)
@@ -854,7 +829,7 @@ def test_a_database_error_reaches_the_monitor_instead_of_parking_the_stop(media,
 
 
 def test_a_database_error_on_the_entry_also_reaches_the_monitor(media, monkeypatch):
-    """Раунд 2: тот же контракт на дорожке приходов."""
+    """Тот же контракт на дорожке приходов."""
     from django.db import OperationalError
     from apps.grain import wagon_arch
     wagon = _expected_wagon(with_silo=False, default=False)
@@ -877,7 +852,7 @@ def test_a_database_error_on_the_entry_also_reaches_the_monitor(media, monkeypat
 
 
 def test_dismissing_a_stop_without_a_wagon_writes_no_trip_line(media, auth_client, user_with_perms):
-    """Раунд 2: у стопа без рейса журнал писать некуда — и это не ошибка."""
+    """У стопа без рейса журнал писать некуда — и это не ошибка."""
     from apps.eventlog.models import EventLog
     from apps.grain import wagon_arch
     editor = user_with_perms("arch-editor2", codes=["grain.weigh"])

@@ -22,7 +22,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from apps.catalog.models import ClientPrice, Product, ProductAlias
 from apps.catalog.services import remember_product_alias
 from apps.clients.models import Client
-from apps.common.money import money_string
+from apps.common.money import CURRENCY_CODES, money_string
 from apps.common.text import dictionary_key, match_key
 from apps.eventlog.services import log_event
 from apps.orders.backdate import backdate_moment
@@ -36,11 +36,14 @@ from apps.shipments.models import ShipmentWagon
 from apps.shipments.services import RailWagon, rail_bags_mismatch, ship_rail_report
 from apps.warehouse.services import resolve_warehouse, stock_balances
 
-from .models import DEFAULT_DUPLICATE_WINDOW_DAYS, BotClientProfile, WhatsAppBotSettings
+from .models import (
+    DEFAULT_DUPLICATE_WINDOW_DAYS,
+    DEFAULT_PRICE_TOLERANCE_PCT,
+    BotClientProfile,
+    WhatsAppBotSettings,
+)
 from .parsing import RailReport, ReportIssue, bags_for, format_tons
 
-# Цена клиента дальше этого от цены прошлого вагонного заказа — на разбор.
-DEFAULT_PRICE_TOLERANCE_PCT = Decimal("15")
 # Ручной вагонный заказ того же клиента с теми же мешками в пределах ±2 дней —
 # вероятно, этот отчёт уже внесли руками.
 MANUAL_DUPLICATE_DAYS = 2
@@ -109,7 +112,7 @@ def remember_client_profile(name: str, client: Client, currency: str, user) -> B
     долг не тому клиенту. Такое название меняет сотрудник без отдела.
     """
     key = dictionary_key(name, "название клиента", BotClientProfile._meta.get_field("name").max_length)
-    if currency not in dict(Client.CURRENCIES):
+    if currency not in CURRENCY_CODES:
         raise ValidationError({"detail": "Выберите валюту: KZT или USD", "code": "invalid_currency"})
     _assert_client_in_scope(user, client)
     # Под блокировкой профиля: два разбора одного названия не перетрут друг друга молча.
@@ -218,7 +221,8 @@ def _resolve_wagons(report: RailReport, products: dict[str, Product], issues: li
     wagons = []
     for wagon in report.wagons:
         product = products.get(wagon.code_key)
-        if product is None:
+        # Вес 0 т — уже причина разбора («вес должен быть больше нуля»), не «не делится на мешки».
+        if product is None or wagon.weight_kg <= 0:
             continue
         bags = bags_for(wagon.weight_kg, product.weight_kg)
         if bags is None:
@@ -318,31 +322,41 @@ def _stock_warnings(items: list[ResolvedItem]) -> list[ReportIssue]:
     ]
 
 
-def configured_duplicate_window_days() -> int:
-    """±дней от даты отчёта из настроек бота — у бота, у грузчика и в журнале одинаково.
+@dataclass(frozen=True)
+class ReportThresholds:
+    """Пороги проверки отчёта из настроек бота — у бота, у грузчика и в журнале одинаково."""
 
-    Вагоны ходят по кругу, поэтому окно, а не «когда-либо». Строку настроек не
-    создаёт: на сервере её может ещё не быть — тогда ``DEFAULT_DUPLICATE_WINDOW_DAYS`` (3).
-    """
-    configured = (
+    # ±дней от даты отчёта: вагоны ходят по кругу, поэтому окно, а не «когда-либо».
+    duplicate_window_days: int = DEFAULT_DUPLICATE_WINDOW_DAYS
+    # Цена клиента дальше этого от цены прошлого вагонного заказа — на разбор.
+    price_tolerance_pct: Decimal = DEFAULT_PRICE_TOLERANCE_PCT
+
+
+def report_thresholds() -> ReportThresholds:
+    """Пороги из настроек бота. Строку настроек не создаёт: на сервере её может
+    ещё не быть — тогда значения по умолчанию (±3 дня, 15%)."""
+    row = (
         WhatsAppBotSettings.objects.filter(singleton=True)
-        .values_list("duplicate_window_days", flat=True)
+        .values_list("duplicate_window_days", "price_tolerance_pct")
         .first()
     )
-    return configured or DEFAULT_DUPLICATE_WINDOW_DAYS
+    if row is None:
+        return ReportThresholds()
+    window_days, tolerance = row
+    return ReportThresholds(window_days or DEFAULT_DUPLICATE_WINDOW_DAYS, tolerance)
 
 
-def _shipped_wagon_duplicates(report: RailReport, day: date, window_days: int | None) -> list[ReportIssue]:
+def _shipped_wagon_duplicates(report: RailReport, day: date, window_days: int) -> list[ReportIssue]:
     """Вагоны отчёта, уже отгруженные в живом заказе с датой в пределах ±``window_days`` от ``day``.
 
     Дата отгрузки вагона — дата его отчёта (:func:`apps.shipments.services.ship_rail_report`
     датирует отгрузку днём отчёта). Повторно присланный отчёт — той же датой;
-    тот же вагон через неделю — новый рейс, а не дубль. ``None`` — из настроек бота.
+    тот же вагон через неделю — новый рейс, а не дубль.
     """
     numbers = [wagon.number for wagon in report.wagons]
     if not numbers:
         return []
-    window = timedelta(days=configured_duplicate_window_days() if window_days is None else window_days)
+    window = timedelta(days=window_days)
     shipped = ShipmentWagon.objects.select_related("shipment").filter(
         number__in=numbers,
         shipment__order__deleted_at__isnull=True,
@@ -408,21 +422,17 @@ def _resolve_goods(
     return products, wagons, _group_items(report, wagons)
 
 
-def resolve_report(
-    report: RailReport,
-    *,
-    user=None,
-    duplicate_window_days: int | None = None,
-    price_tolerance_pct: Decimal | int = DEFAULT_PRICE_TOLERANCE_PCT,
-) -> ResolvedReport:
+def resolve_report(report: RailReport, *, user=None) -> ResolvedReport:
     """Сопоставить разобранный отчёт с базой. Ничего не пишет.
 
     Проверяет всё сразу (а не до первой ошибки): человеку на разборе нужен
     полный список причин. ``issues`` пустой — отчёт можно проводить.
 
     ``user`` — чей это предпросмотр: клиент чужого отдела — причина разбора,
-    и его цены и заказы сотруднику не показываются.
+    и его цены и заказы сотруднику не показываются. Окно дублей и допуск
+    цены — из настроек бота (:func:`report_thresholds`).
     """
+    thresholds = report_thresholds()
     issues = _day_issues(report)
     client, currency, profile = (
         _resolve_client(report.client_name, issues) if report.client_name else (None, "", None)
@@ -437,9 +447,9 @@ def resolve_report(
     products, wagons, items = _resolve_goods(report, issues)
     priced = client is not None and not foreign
     if priced:
-        items = _price_items(items, client, currency, Decimal(price_tolerance_pct), issues)
+        items = _price_items(items, client, currency, thresholds.price_tolerance_pct, issues)
     day = report.day or timezone.localdate()
-    issues.extend(_shipped_wagon_duplicates(report, day, duplicate_window_days))
+    issues.extend(_shipped_wagon_duplicates(report, day, thresholds.duplicate_window_days))
     if priced and items:
         issues.extend(_manual_order_duplicates(client, day, sum(item.bags for item in items)))
     return ResolvedReport(
@@ -526,9 +536,8 @@ def _assert_client_in_scope(user, client: Client, message: str = "Клиент �
         raise PermissionDenied(message)
 
 
-@transaction.atomic
-def create_rail_order(resolved: ResolvedReport, user) -> Order:
-    """Подтверждённый вагонный заказ по отчёту — по образцу ``repeat_order``.
+def _create_rail_order(resolved: ResolvedReport, client: Client, day: date, user) -> Order:
+    """Подтверждённый вагонный заказ по отчёту: заказ, позиции и ``confirm_order``.
 
     Остаток не проверяется: вагон уже уехал, нехватку показывает
     ``resolved.warnings``, а списание в минус пишет журнал склада. Цены —
@@ -539,14 +548,7 @@ def create_rail_order(resolved: ResolvedReport, user) -> Order:
     сводки по дате создания видят его в день отгрузки. Подтверждение и запись
     «Заказ по отчёту о вагонах» остаются с настоящим временем — это аудит.
     """
-    _assert_can_create(user)
-    client, day = _require_resolved(resolved)
     report = resolved.report
-    client = Client.objects.select_for_update().get(pk=client.pk)
-    # Под блокировкой и по свежему клиенту: ``confirm_order`` отдел не
-    # проверяет (заявки — общая очередь), а этот сервис зовут не только из
-    # :func:`conduct_rail_report`.
-    _assert_client_in_scope(user, client)
     order = Order.objects.create(
         client=client,
         currency=resolved.currency,
@@ -589,13 +591,7 @@ def create_rail_order(resolved: ResolvedReport, user) -> Order:
 
 
 @transaction.atomic
-def conduct_rail_report(
-    report: RailReport,
-    user,
-    *,
-    duplicate_window_days: int | None = None,
-    price_tolerance_pct: Decimal | int = DEFAULT_PRICE_TOLERANCE_PCT,
-) -> Order:
+def conduct_rail_report(report: RailReport, user) -> Order:
     """Провести отчёт: заказ, подтверждение, вагоны, склад и долг — одной транзакцией.
 
     Проверки повторяются под блокировкой клиента: бот и человек, проводящие
@@ -604,28 +600,21 @@ def conduct_rail_report(
     """
     assert_can_conduct(user)
 
-    def resolve() -> ResolvedReport:
-        return resolve_report(
-            report, duplicate_window_days=duplicate_window_days, price_tolerance_pct=price_tolerance_pct)
-
-    client, _ = _require_resolved(resolve())
-    # Отказ — до записи; под блокировкой клиента заказ проверяет это ещё раз.
+    client, _ = _require_resolved(resolve_report(report))
+    # Отказ — до записи.
     _assert_client_in_scope(user, client)
     Client.objects.select_for_update().filter(pk=client.pk).first()
-    resolved = resolve()
-    _, day = _require_resolved(resolved)
-    order = create_rail_order(resolved, user)
+    # Под блокировкой и по свежему клиенту — с отделом сотрудника:
+    # ``confirm_order`` отдел не проверяет (заявки — общая очередь).
+    resolved = resolve_report(report, user=user)
+    client, day = _require_resolved(resolved)
+    order = _create_rail_order(resolved, client, day, user)
     ship_rail_report(order, resolved.wagons, user, station=report.station, shipped_day=day)
     order.refresh_from_db()
     return order
 
 
-def resolve_order_report(
-    report: RailReport,
-    order: Order,
-    *,
-    duplicate_window_days: int | None = None,
-) -> ResolvedReport:
+def resolve_order_report(report: RailReport, order: Order) -> ResolvedReport:
     """Отчёт для заранее внесённого вагонного заказа («Отгрузить по отчёту»). Ничего не пишет.
 
     Клиент, валюта, отдел и цены — из заказа: название клиента в отчёте
@@ -655,7 +644,8 @@ def resolve_order_report(
         if mismatch:
             issues.append(ReportIssue(
                 "rail_bags_mismatch", f"Мешки не совпадают — {mismatch}. Поправьте заказ.", order_id=order.pk))
-    issues.extend(_shipped_wagon_duplicates(report, report.day or timezone.localdate(), duplicate_window_days))
+    issues.extend(_shipped_wagon_duplicates(
+        report, report.day or timezone.localdate(), report_thresholds().duplicate_window_days))
     return ResolvedReport(
         report=report,
         client=client,
@@ -670,13 +660,7 @@ def resolve_order_report(
 
 
 @transaction.atomic
-def ship_order_by_report(
-    report: RailReport,
-    order: Order,
-    user,
-    *,
-    duplicate_window_days: int | None = None,
-) -> Order:
+def ship_order_by_report(report: RailReport, order: Order, user) -> Order:
     """Отгрузить заранее внесённый вагонный заказ по отчёту — под блокировкой заказа.
 
     Заказ, склад и долг не создаются заново: вагоны, станция и день отчёта
@@ -689,27 +673,19 @@ def ship_order_by_report(
     # проводящий тот же отчёт новым заказом, увидит вагоны этой отгрузки.
     order = lock_live_order(order, user)
     Client.objects.select_for_update().filter(pk=order.client_id).first()
-    resolved = resolve_order_report(report, order, duplicate_window_days=duplicate_window_days)
+    resolved = resolve_order_report(report, order)
     _, day = _require_resolved(resolved)
     ship_rail_report(order, resolved.wagons, user, station=report.station, shipped_day=day)
     order.refresh_from_db()
     return order
 
 
-def apply_rail_report(
-    report: RailReport,
-    user,
-    *,
-    order: Order | None = None,
-    duplicate_window_days: int | None = None,
-    price_tolerance_pct: Decimal | int = DEFAULT_PRICE_TOLERANCE_PCT,
-) -> Order:
+def apply_rail_report(report: RailReport, user, *, order: Order | None = None) -> Order:
     """«Провести» у грузчика и в журнале бота: новый отчёт — заказ, подтверждение
     и отгрузка; с ``order`` — отгрузка заранее внесённого заказа."""
     if order is None:
-        return conduct_rail_report(
-            report, user, duplicate_window_days=duplicate_window_days, price_tolerance_pct=price_tolerance_pct)
-    return ship_order_by_report(report, order, user, duplicate_window_days=duplicate_window_days)
+        return conduct_rail_report(report, user)
+    return ship_order_by_report(report, order, user)
 
 
 def remember_report_product(code: str, product: Product, user) -> ProductAlias:

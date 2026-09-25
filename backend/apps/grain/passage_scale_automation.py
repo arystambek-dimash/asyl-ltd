@@ -1,46 +1,42 @@
-"""Durable automatic passage flow: scale edge -> OCR -> trip status.
+"""Automatic passage apply: collector weight + OCR -> trip status.
 
-The scale controller is pull-only, so this module deliberately implements a
-fail-closed edge detector in PostgreSQL.  It starts unarmed, triggers once only
-after confirmed empty -> stable occupied observations, and will not re-arm
-until several fresh zero readings have been observed.  Missing, stale or
-unstable data never counts as an empty scale.
+The independent weighbridge collector owns the scale edge detector and the
+camera call; its outbox importer replays every saved weighing through
+``_apply_recognized_capture``. This module also keeps the operator-editable
+lane timing and the runtime projection the UI reads.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from datetime import UTC, timedelta
+from datetime import timedelta
 from decimal import Decimal
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import APIException, ValidationError
 
 from apps.cameras import ai as camera_ai
 from apps.cameras.models import VehiclePlateEvent
+from apps.common.datetimes import parse_aware_datetime
 from apps.eventlog.services import log_event
 
 from . import scale, services
-from . import statuses as st
 from .models import (
     PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS,
     AutomaticPassageCapture,
     PassageScaleAutomationState,
-    PassageWeightCapture,
     UnassignedWeighing,
 )
-from .weighing_photos import attach_photo, queue_photo
-from .vehicle_weight_capture import (
-    _api_exception_parts,
-    _canonical_timestamp,
-    _safe_ai_payload,
-    _terminal_ai_error,
+from .plate_recognition import (
+    RECOGNITION_FIELDS,
+    api_exception_parts,
+    apply_recognition,
+    recognized_at_for,
+    safe_ai_payload,
 )
 
 log = logging.getLogger(__name__)
@@ -59,34 +55,6 @@ PUBLIC_RUNTIME_STATES = {
 _runtime_cache_read_failed = False
 _runtime_cache_write_failed = False
 
-# Recognition failures that a second OCR attempt cannot fix: the lane applies
-# the weight without a plate right away instead of asking Camera-PC again.
-RECOGNITION_FAILURES_WITHOUT_RETRY = frozenset(
-    {
-        "vehicle_recognition_auth_failed",
-        "vehicle_recognition_not_configured",
-        "vehicle_camera_not_configured",
-        "vehicle_roi_unavailable",
-        "vehicle_model_unavailable",
-        "vehicle_recognition_idempotency_conflict",
-    }
-)
-
-
-@dataclass(frozen=True, slots=True)
-class MonitorIteration:
-    state: str
-    capture_id: int | None = None
-    action: str = ""
-    wagon_id: int | None = None
-    error_code: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class _Work:
-    kind: str
-    capture_id: int
-
 
 class _CaptureRejected(Exception):
     def __init__(self, code: str, detail: str, *, status_code: int = 409) -> None:
@@ -94,38 +62,6 @@ class _CaptureRejected(Exception):
         self.detail = detail
         self.status_code = status_code
         super().__init__(detail)
-
-
-def _processing_lease(stage: str) -> timedelta:
-    if stage == AutomaticPassageCapture.RECOGNIZING:
-        timeout = float(settings.VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS)
-        return timedelta(seconds=max(90.0, timeout * 3.0 + 15.0))
-    timeout = float(settings.TRUCK_SCALE_TIMEOUT_SECONDS)
-    return timedelta(seconds=max(10.0, timeout + 5.0))
-
-
-def _retry_delay() -> timedelta:
-    return timedelta(
-        seconds=max(1.0, float(settings.VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS))
-    )
-
-
-def _is_empty(observation: scale.ScaleObservation) -> bool:
-    return (
-        observation.state == "ready"
-        and observation.weight_kg is not None
-        and observation.weight_kg
-        <= Decimal(settings.VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG)
-    )
-
-
-def _is_occupied(observation: scale.ScaleObservation) -> bool:
-    return (
-        observation.state == "ready"
-        and observation.weight_kg is not None
-        and observation.weight_kg
-        > Decimal(settings.VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG)
-    )
 
 
 def _reset_candidate(state: PassageScaleAutomationState, *, phase: str) -> None:
@@ -139,215 +75,6 @@ def _save_state(state: PassageScaleAutomationState, *fields: str) -> None:
     state.save(update_fields=[*fields, "updated_at"])
 
 
-@transaction.atomic
-def _discard_unobserved_candidate() -> None:
-    """Require a new full interval after a scale observation outage."""
-
-    state = (
-        PassageScaleAutomationState.objects.select_for_update()
-        .filter(scale_number=scale.TRUCK_SCALE_KEY)
-        .first()
-    )
-    if state is None or state.phase != PassageScaleAutomationState.STABILIZING:
-        return
-    _reset_candidate(state, phase=PassageScaleAutomationState.ARMED)
-    _save_state(
-        state,
-        "phase",
-        "stable_streak",
-        "stability_started_at",
-        "candidate_weight_kg",
-    )
-
-
-def _rearm_lane(state: PassageScaleAutomationState) -> None:
-    state.phase = PassageScaleAutomationState.ARMED
-    state.clear_streak = 0
-    state.stable_streak = 0
-    state.stability_started_at = None
-    state.candidate_weight_kg = None
-    state.current_capture = None
-    _save_state(
-        state,
-        "phase",
-        "clear_streak",
-        "stable_streak",
-        "stability_started_at",
-        "candidate_weight_kg",
-        "current_capture",
-    )
-
-
-def _mark_interrupted_claim(
-    state: PassageScaleAutomationState,
-    capture: AutomaticPassageCapture,
-    *,
-    now,
-) -> None:
-    capture.status = AutomaticPassageCapture.FAILED
-    capture.stage = AutomaticPassageCapture.DONE
-    capture.retryable = False
-    capture.response_status = 409
-    capture.error_code = "automatic_scale_capture_interrupted"
-    capture.error_detail = (
-        "Чтение весов прервалось до сохранения показания; вес не записан."
-    )
-    # Nothing was recorded, so a fresh clear edge is all the lane needs.
-    capture.requires_acknowledgement = False
-    capture.processing_started_at = None
-    capture.completed_at = now
-    capture.save(
-        update_fields=[
-            "status",
-            "stage",
-            "retryable",
-            "requires_acknowledgement",
-            "response_status",
-            "error_code",
-            "error_detail",
-            "processing_started_at",
-            "completed_at",
-            "updated_at",
-        ]
-    )
-    if state.current_capture_id == capture.pk:
-        state.phase = PassageScaleAutomationState.AWAITING_CLEAR
-        _save_state(state, "phase")
-
-
-def _claim_existing_work(
-    state: PassageScaleAutomationState,
-    capture: AutomaticPassageCapture,
-    *,
-    now,
-) -> _Work | None:
-    if capture.status != AutomaticPassageCapture.PROCESSING:
-        if (
-            state.current_capture_id == capture.pk
-            and state.phase != PassageScaleAutomationState.AWAITING_CLEAR
-        ):
-            state.phase = PassageScaleAutomationState.AWAITING_CLEAR
-            state.clear_streak = 0
-            _save_state(state, "phase", "clear_streak")
-        return None
-
-    if capture.stage == AutomaticPassageCapture.CLAIMED:
-        lease_start = capture.processing_started_at or capture.updated_at
-        if lease_start >= now - _processing_lease(capture.stage):
-            return None
-        _mark_interrupted_claim(state, capture, now=now)
-        return None
-
-    if capture.stage not in {
-        AutomaticPassageCapture.RECOGNIZING,
-        AutomaticPassageCapture.APPLYING,
-    }:
-        _mark_interrupted_claim(state, capture, now=now)
-        return None
-
-    if capture.retryable:
-        if capture.updated_at > now - _retry_delay():
-            return None
-    else:
-        lease_start = capture.processing_started_at or capture.updated_at
-        if lease_start >= now - _processing_lease(capture.stage):
-            return None
-
-    if (
-        capture.stage == AutomaticPassageCapture.RECOGNIZING
-        and capture.needs_new_attempt
-    ):
-        if (
-            capture.departure_observed_at
-            or capture.cleared_at
-            or capture.recognition_valid_until
-            or state.current_capture_id != capture.pk
-        ):
-            _mark_plate_unresolved(
-                capture,
-                now=now,
-                code="vehicle_recognition_vehicle_left",
-                detail="Нельзя подтвердить присутствие той же машины; повторное чтение номера остановлено.",
-            )
-            return _Work("apply", capture.pk)
-        # Camera-PC gave a terminal answer for the previous attempt; ask again
-        # with a fresh scale read and a new UUID while the truck still stands.
-        capture.needs_new_attempt = False
-        capture.retryable = False
-        capture.processing_started_at = now
-        capture.error_code = ""
-        capture.error_detail = ""
-        capture.response_status = None
-        capture.save(
-            update_fields=[
-                "needs_new_attempt",
-                "retryable",
-                "processing_started_at",
-                "error_code",
-                "error_detail",
-                "response_status",
-                "updated_at",
-            ]
-        )
-        return _Work("recognize_again", capture.pk)
-
-    was_retryable = capture.retryable
-    if (
-        capture.stage == AutomaticPassageCapture.RECOGNIZING
-        and was_retryable
-        and capture.recognition_attempts
-        >= settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS
-        and capture.final_lookup_attempted
-    ):
-        # The last allowed camera call never produced a plate. The weight is
-        # still a real weighing: apply it without a number.
-        _mark_plate_unresolved(
-            capture,
-            now=now,
-            code="vehicle_recognition_attempts_exhausted",
-            detail="Номер не распознан после допустимых повторов.",
-        )
-        return _Work("apply", capture.pk)
-
-    capture.retryable = False
-    capture.processing_started_at = now
-    capture.error_code = ""
-    capture.error_detail = ""
-    capture.response_status = None
-    update_fields = [
-        "retryable",
-        "processing_started_at",
-        "error_code",
-        "error_detail",
-        "response_status",
-        "updated_at",
-    ]
-    if capture.stage == AutomaticPassageCapture.RECOGNIZING:
-        if (
-            was_retryable
-            and capture.recognition_attempts
-            < settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS
-        ):
-            capture.recognition_attempts += 1
-            update_fields.append("recognition_attempts")
-        elif (
-            capture.recognition_attempts
-            >= settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS
-            and not capture.final_lookup_attempted
-        ):
-            # A timeout on the last normal call still has an unknown remote
-            # outcome. Permit one separately recorded lookup-only request.
-            capture.final_lookup_attempted = True
-            update_fields.append("final_lookup_attempted")
-    capture.save(update_fields=update_fields)
-    return _Work(
-        "recognize_retry"
-        if capture.stage == AutomaticPassageCapture.RECOGNIZING
-        else "apply",
-        capture.pk,
-    )
-
-
 def _mark_plate_unresolved(
     capture: AutomaticPassageCapture,
     *,
@@ -356,7 +83,6 @@ def _mark_plate_unresolved(
     detail: str,
 ) -> None:
     capture.plate_unresolved = True
-    capture.needs_new_attempt = False
     capture.stage = AutomaticPassageCapture.APPLYING
     capture.retryable = False
     capture.response_status = None
@@ -366,7 +92,6 @@ def _mark_plate_unresolved(
     capture.save(
         update_fields=[
             "plate_unresolved",
-            "needs_new_attempt",
             "stage",
             "retryable",
             "response_status",
@@ -376,398 +101,6 @@ def _mark_plate_unresolved(
             "updated_at",
         ]
     )
-
-
-@transaction.atomic
-def _claim_pending_work(*, now) -> tuple[bool, _Work | None]:
-    """Resume persisted OCR/apply work before depending on another scale poll."""
-
-    state = (
-        PassageScaleAutomationState.objects.select_for_update()
-        .filter(scale_number=scale.TRUCK_SCALE_KEY)
-        .first()
-    )
-    if state is None or state.phase != PassageScaleAutomationState.PROCESSING:
-        return False, None
-    if state.current_capture_id is None:
-        state.phase = PassageScaleAutomationState.UNARMED
-        state.clear_streak = 0
-        state.stable_streak = 0
-        state.stability_started_at = None
-        state.candidate_weight_kg = None
-        _save_state(
-            state,
-            "phase",
-            "clear_streak",
-            "stable_streak",
-            "stability_started_at",
-            "candidate_weight_kg",
-        )
-        return True, None
-    capture = AutomaticPassageCapture.objects.select_for_update().get(
-        pk=state.current_capture_id
-    )
-    work = _claim_existing_work(state, capture, now=now)
-    # This iteration is exclusively recovery, even when recovery terminalizes
-    # the capture. Do not immediately touch hardware or advance another lane
-    # phase in the same second.
-    return True, work
-
-
-def _disarm_lane(state: PassageScaleAutomationState) -> None:
-    state.phase = PassageScaleAutomationState.UNARMED
-    state.clear_streak = 0
-    state.stable_streak = 0
-    state.stability_started_at = None
-    state.candidate_weight_kg = None
-    state.current_capture = None
-    _save_state(
-        state,
-        "phase",
-        "clear_streak",
-        "stable_streak",
-        "stability_started_at",
-        "candidate_weight_kg",
-        "current_capture",
-    )
-
-
-def _reset_idle_lane(state: PassageScaleAutomationState) -> None:
-    if state.phase not in {
-        PassageScaleAutomationState.UNARMED,
-        PassageScaleAutomationState.ARMED,
-        PassageScaleAutomationState.STABILIZING,
-    }:
-        return
-    if (
-        state.phase == PassageScaleAutomationState.UNARMED
-        and state.clear_streak == 0
-        and state.stable_streak == 0
-        and state.stability_started_at is None
-        and state.candidate_weight_kg is None
-        and state.current_capture_id is None
-    ):
-        return
-    _disarm_lane(state)
-
-
-@transaction.atomic
-def prepare_monitor_start() -> None:
-    """Fence idle scale edges that may have changed while the process was down."""
-
-    state = (
-        PassageScaleAutomationState.objects.select_for_update()
-        .filter(scale_number=scale.TRUCK_SCALE_KEY)
-        .first()
-    )
-    if state is not None:
-        _reset_idle_lane(state)
-
-
-@transaction.atomic
-def _prepare_disabled_lane(*, now) -> None:
-    """Cancel resumable work before operators switch to the manual path."""
-
-    state = (
-        PassageScaleAutomationState.objects.select_for_update()
-        .filter(scale_number=scale.TRUCK_SCALE_KEY)
-        .first()
-    )
-    if state is None:
-        return
-    if state.phase in {
-        PassageScaleAutomationState.UNARMED,
-        PassageScaleAutomationState.ARMED,
-        PassageScaleAutomationState.STABILIZING,
-    }:
-        _reset_idle_lane(state)
-        return
-    if state.phase == PassageScaleAutomationState.AWAITING_CLEAR:
-        capture = (
-            AutomaticPassageCapture.objects.select_for_update().get(
-                pk=state.current_capture_id
-            )
-            if state.current_capture_id is not None
-            else None
-        )
-        unresolved_failure = capture is not None and capture.needs_operator
-        if not unresolved_failure:
-            # New automated work is disabled, so a terminal/acknowledged
-            # episode must not keep manual controls locked forever. Re-enable
-            # starts UNARMED and still requires a new confirmed clear streak.
-            _disarm_lane(state)
-        return
-    if state.phase != PassageScaleAutomationState.PROCESSING:
-        return
-    if state.current_capture_id is None:
-        state.phase = PassageScaleAutomationState.UNARMED
-        state.clear_streak = 0
-        state.stable_streak = 0
-        state.stability_started_at = None
-        state.candidate_weight_kg = None
-        _save_state(
-            state,
-            "phase",
-            "clear_streak",
-            "stable_streak",
-            "stability_started_at",
-            "candidate_weight_kg",
-        )
-        return
-
-    capture = AutomaticPassageCapture.objects.select_for_update().get(
-        pk=state.current_capture_id
-    )
-    if capture.status == AutomaticPassageCapture.PROCESSING:
-        capture.status = AutomaticPassageCapture.FAILED
-        capture.stage = AutomaticPassageCapture.DONE
-        capture.retryable = False
-        capture.response_status = 409
-        capture.error_code = "automatic_scale_disabled"
-        capture.error_detail = (
-            "Автоматические весы выключены; завершите операцию вручную."
-        )
-        capture.processing_started_at = None
-        capture.completed_at = now
-        capture.save(
-            update_fields=[
-                "status",
-                "stage",
-                "retryable",
-                "response_status",
-                "error_code",
-                "error_detail",
-                "processing_started_at",
-                "completed_at",
-                "updated_at",
-            ]
-        )
-    state.phase = PassageScaleAutomationState.AWAITING_CLEAR
-    state.clear_streak = 0
-    state.stable_streak = 0
-    state.stability_started_at = None
-    state.candidate_weight_kg = None
-    _save_state(
-        state,
-        "phase",
-        "clear_streak",
-        "stable_streak",
-        "stability_started_at",
-        "candidate_weight_kg",
-    )
-
-
-@transaction.atomic
-def _advance_lane(
-    observation: scale.ScaleObservation,
-    *,
-    now,
-    recover_work: bool = True,
-) -> _Work | None:
-    state, _created = (
-        PassageScaleAutomationState.objects.select_for_update().get_or_create(
-            scale_number=scale.TRUCK_SCALE_KEY,
-            defaults={"phase": PassageScaleAutomationState.UNARMED},
-        )
-    )
-    from .outbox_importer import enabled as collector_enabled
-    if collector_enabled():
-        return None  # Activation shares this lane lock; only the collector samples now.
-    capture = None
-    if state.current_capture_id is not None:
-        capture = AutomaticPassageCapture.objects.select_for_update().get(
-            pk=state.current_capture_id
-        )
-
-    manual_capture_pending = PassageWeightCapture.objects.filter(
-        status=PassageWeightCapture.PROCESSING,
-    ).exists()
-    if manual_capture_pending and state.phase in {
-        PassageScaleAutomationState.UNARMED,
-        PassageScaleAutomationState.ARMED,
-        PassageScaleAutomationState.STABILIZING,
-    }:
-        # An in-flight weight-first request reserves this physical lane until
-        # its weight is stored/failed. A manually registered passage without a
-        # weight does not: automation weighs it when its plate is recognized.
-        _reset_idle_lane(state)
-        return None
-
-    if state.phase == PassageScaleAutomationState.PROCESSING:
-        if capture is None:
-            state.phase = PassageScaleAutomationState.UNARMED
-            state.clear_streak = 0
-            state.stable_streak = 0
-            state.stability_started_at = None
-            state.candidate_weight_kg = None
-            _save_state(
-                state,
-                "phase",
-                "clear_streak",
-                "stable_streak",
-                "stability_started_at",
-                "candidate_weight_kg",
-            )
-            return None
-        if recover_work:
-            work = _claim_existing_work(state, capture, now=now)
-            if state.phase == PassageScaleAutomationState.PROCESSING:
-                return work
-        else:
-            # Physical occupancy is independent of the OCR/apply worker.
-            # Even a failed business operation must not hide the next truck.
-            if _is_empty(observation):
-                if capture.departure_observed_at is None:
-                    capture.departure_observed_at = now
-                    capture.save(update_fields=["departure_observed_at", "updated_at"])
-                state.clear_streak += 1
-                if (
-                    state.clear_streak
-                    >= settings.VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS
-                ):
-                    capture.cleared_at = now
-                    capture.save(update_fields=["cleared_at", "updated_at"])
-                    _rearm_lane(state)
-                else:
-                    _save_state(state, "clear_streak")
-            elif state.clear_streak:
-                state.clear_streak = 0
-                _save_state(state, "clear_streak")
-            return None
-
-    if state.phase == PassageScaleAutomationState.AWAITING_CLEAR:
-        unresolved_failure = (
-            recover_work and capture is not None and capture.needs_operator
-        )
-        if (
-            capture is not None
-            and unresolved_failure
-            and capture.cleared_at is not None
-        ):
-            # Physical clearing and operator resolution are independent. Keep
-            # the lane visibly blocked until a human acknowledges the failed
-            # operation, even if the vehicle has already driven away.
-            return None
-        if not _is_empty(observation):
-            if state.clear_streak:
-                state.clear_streak = 0
-                _save_state(state, "clear_streak")
-            return None
-        if capture is not None and capture.departure_observed_at is None:
-            capture.departure_observed_at = now
-            capture.save(update_fields=["departure_observed_at", "updated_at"])
-        state.clear_streak += 1
-        if state.clear_streak < settings.VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:
-            _save_state(state, "clear_streak")
-            return None
-        if capture is not None and capture.cleared_at is None:
-            capture.cleared_at = now
-            capture.save(update_fields=["cleared_at", "updated_at"])
-        if capture is not None and unresolved_failure:
-            state.clear_streak = 0
-            _save_state(state, "clear_streak")
-            log.warning(
-                "Automatic passage scale remains blocked for acknowledgement "
-                "capture_id=%s",
-                capture.pk,
-            )
-            return None
-        _rearm_lane(state)
-        log.info("Automatic passage scale re-armed after confirmed clear")
-        return None
-
-    if state.phase == PassageScaleAutomationState.UNARMED:
-        if not _is_empty(observation):
-            if state.clear_streak:
-                state.clear_streak = 0
-                _save_state(state, "clear_streak")
-            return None
-        state.clear_streak += 1
-        if state.clear_streak >= settings.VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:
-            state.phase = PassageScaleAutomationState.ARMED
-            state.clear_streak = 0
-            _save_state(state, "phase", "clear_streak")
-            log.info("Automatic passage scale armed after safe startup clear")
-        else:
-            _save_state(state, "clear_streak")
-        return None
-
-    if state.phase == PassageScaleAutomationState.ARMED:
-        if not _is_occupied(observation):
-            return None
-        state.phase = PassageScaleAutomationState.STABILIZING
-        state.stable_streak = 1
-        state.stability_started_at = now
-        state.candidate_weight_kg = observation.weight_kg
-        _save_state(
-            state,
-            "phase",
-            "stable_streak",
-            "stability_started_at",
-            "candidate_weight_kg",
-        )
-        return None
-
-    elif state.phase == PassageScaleAutomationState.STABILIZING:
-        if not _is_occupied(observation):
-            _reset_candidate(state, phase=PassageScaleAutomationState.ARMED)
-            _save_state(
-                state,
-                "phase",
-                "stable_streak",
-                "stability_started_at",
-                "candidate_weight_kg",
-            )
-            return None
-        tolerance = Decimal(settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG)
-        candidate = state.candidate_weight_kg
-        started_at = state.stability_started_at
-        if (
-            candidate is None
-            or started_at is None
-            or now < started_at
-            or abs(observation.weight_kg - candidate) > tolerance
-        ):
-            state.stable_streak = 1
-            state.stability_started_at = now
-            state.candidate_weight_kg = observation.weight_kg
-            _save_state(
-                state,
-                "stable_streak",
-                "stability_started_at",
-                "candidate_weight_kg",
-            )
-            return None
-        state.stable_streak += 1
-        stable_for = (now - started_at).total_seconds()
-        if stable_for < state.stable_weight_seconds or state.stable_streak < 2:
-            _save_state(state, "stable_streak")
-            return None
-
-    capture = AutomaticPassageCapture.objects.create(
-        idempotency_key=uuid4(),
-        scale_number=scale.TRUCK_SCALE_KEY,
-        camera=settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA,
-        trigger_weight_kg=observation.weight_kg,
-        processing_started_at=now,
-    )
-    state.phase = PassageScaleAutomationState.PROCESSING
-    state.clear_streak = 0
-    state.stable_streak = 0
-    state.stability_started_at = None
-    state.candidate_weight_kg = None
-    state.current_capture = capture
-    _save_state(
-        state,
-        "phase",
-        "clear_streak",
-        "stable_streak",
-        "stability_started_at",
-        "candidate_weight_kg",
-        "current_capture",
-    )
-    log.info("Claimed automatic passage scale episode capture_id=%s", capture.pk)
-    return _Work("capture", capture.pk)
 
 
 def _reading_from_capture(capture: AutomaticPassageCapture) -> scale.ScaleReading:
@@ -787,137 +120,60 @@ def _reading_from_capture(capture: AutomaticPassageCapture) -> scale.ScaleReadin
     )
 
 
-@transaction.atomic
-def _persist_scale_sample(
-    capture_id: int,
-    reading: scale.ScaleReading,
-    *,
-    stable_weight_at,
-) -> AutomaticPassageCapture:
-    capture = AutomaticPassageCapture.objects.select_for_update().get(pk=capture_id)
-    if (
-        capture.status != AutomaticPassageCapture.PROCESSING
-        or capture.stage != AutomaticPassageCapture.CLAIMED
-    ):
-        raise _CaptureRejected(
-            "automatic_scale_state_changed",
-            "Состояние автоматического взвешивания изменилось.",
-        )
-    weight_kg = services._whole_scale_weight_kg(reading)
-    if weight_kg <= settings.VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:
-        raise _CaptureRejected(
-            "automatic_scale_candidate_cleared",
-            "Машина покинула весы до контрольного чтения.",
-        )
-    if capture.trigger_weight_kg is None or abs(
-        reading.weight_kg - capture.trigger_weight_kg
-    ) > Decimal(settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG):
-        raise _CaptureRejected(
-            "automatic_scale_candidate_changed",
-            "Вес изменился до контрольного чтения; автоматическая операция остановлена.",
-        )
-    capture.weight_kg = weight_kg
-    capture.scale_age_seconds = reading.age_seconds
-    capture.scale_updated_at = reading.updated_at or ""
-    capture.stable_weight_at = stable_weight_at
-    capture.attempt_request_id = capture.idempotency_key
-    capture.attempt_stable_weight_at = stable_weight_at
-    capture.stage = AutomaticPassageCapture.RECOGNIZING
-    capture.recognition_attempts = 1
-    capture.processing_started_at = timezone.now()
-    capture.save(
-        update_fields=[
-            "weight_kg",
-            "scale_age_seconds",
-            "scale_updated_at",
-            "stable_weight_at",
-            "attempt_request_id",
-            "attempt_stable_weight_at",
-            "stage",
-            "recognition_attempts",
-            "processing_started_at",
-            "updated_at",
-        ]
-    )
-    queue_photo(capture.camera, capture.idempotency_key, capture=capture)
-    return capture
-
-
 def _attempt_request_id(capture: AutomaticPassageCapture) -> UUID:
     return capture.attempt_request_id or capture.idempotency_key
+
+
+def park_capture(capture: AutomaticPassageCapture, reason: str) -> UnassignedWeighing:
+    """Keep the capture's stable weight as an operator-resolvable weighing (once)."""
+
+    item, _ = UnassignedWeighing.objects.get_or_create(
+        capture=capture,
+        defaults={
+            "weight_kg": capture.weight_kg,
+            "stable_weight_at": capture.stable_weight_at,
+            "scale_number": capture.scale_number,
+            "scale_age_seconds": capture.scale_age_seconds,
+            "scale_updated_at": capture.scale_updated_at,
+            "camera": capture.camera,
+            "photo_request_id": _attempt_request_id(capture),
+            "vehicle_number": capture.vehicle_number,
+            "orientation": capture.orientation,
+            "reason": reason,
+        },
+    )
+    return item
+
+
+def park_failed_capture(capture: AutomaticPassageCapture) -> UnassignedWeighing | None:
+    """A failed capture with a stable weight goes to the operator's queue.
+
+    The weight is resolved there instead of an acknowledge-only failure, so
+    the capture no longer requires an acknowledgement. Callers hold its lock.
+    """
+
+    if (
+        capture.status != AutomaticPassageCapture.FAILED
+        or capture.weight_kg is None
+        or capture.stable_weight_at is None
+    ):
+        return None
+    item = park_capture(capture, capture.error_code or "automatic_passage_apply_failed")
+    capture.requires_acknowledgement = False
+    capture.save(update_fields=["requires_acknowledgement", "updated_at"])
+    return item
 
 
 def _attempt_stable_weight_at(capture: AutomaticPassageCapture):
     return capture.attempt_stable_weight_at or capture.stable_weight_at
 
 
-@transaction.atomic
-def _persist_next_attempt(
-    capture_id: int,
-    reading: scale.ScaleReading,
-    *,
-    stable_weight_at,
-) -> AutomaticPassageCapture:
-    """Bind a fresh strict read to the next Camera-PC attempt.
-
-    If the truck has left or a different weight is now on the scale, the
-    original sample is applied without a plate instead of asking the camera
-    about a vehicle that is no longer the one we weighed.
-    """
-
-    capture = AutomaticPassageCapture.objects.select_for_update().get(pk=capture_id)
-    if (
-        capture.status != AutomaticPassageCapture.PROCESSING
-        or capture.stage != AutomaticPassageCapture.RECOGNIZING
-    ):
-        raise _CaptureRejected(
-            "automatic_scale_state_changed",
-            "Состояние автоматического взвешивания изменилось.",
-        )
-    now = timezone.now()
-    tolerance = Decimal(settings.VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG)
-    if (
-        capture.departure_observed_at
-        or capture.cleared_at
-        or capture.recognition_valid_until
-        or capture.weight_kg is None
-        or abs(reading.weight_kg - Decimal(capture.weight_kg)) > tolerance
-    ):
-        _mark_plate_unresolved(
-            capture,
-            now=now,
-            code="vehicle_recognition_vehicle_left",
-            detail="Машина уехала до повторного распознавания; вес записан без номера.",
-        )
-        return capture
-    attempt = capture.recognition_attempts + 1
-    capture.recognition_attempts = attempt
-    capture.attempt_request_id = uuid5(capture.idempotency_key, f"attempt-{attempt}")
-    capture.attempt_stable_weight_at = stable_weight_at
-    capture.processing_started_at = now
-    capture.save(
-        update_fields=[
-            "recognition_attempts",
-            "attempt_request_id",
-            "attempt_stable_weight_at",
-            "processing_started_at",
-            "updated_at",
-        ]
-    )
-    queue_photo(capture.camera, capture.attempt_request_id, capture=capture)
-    return capture
-
-
 def _store_orientation(capture: AutomaticPassageCapture, payload) -> None:
     """Keep the latest decisive front/rear verdict across OCR attempts."""
 
-    label, confidence = camera_ai.vehicle_orientation(payload)
-    if not label:
-        return
-    capture.orientation = label
-    capture.orientation_confidence = (
-        None if confidence is None else Decimal(str(round(confidence, 6)))
-    )
+    label, _confidence = camera_ai.vehicle_orientation(payload)
+    if label:
+        capture.orientation = label
 
 
 @transaction.atomic
@@ -939,39 +195,16 @@ def _persist_recognition(
             "Операция не ожидает результат распознавания.",
         )
 
-    recognized_at = parse_datetime(str(payload.get("recognized_at") or ""))
-    response_trigger = parse_datetime(str(payload.get("stable_weight_at") or ""))
-    expected_trigger = _attempt_stable_weight_at(capture)
-    if (
-        recognized_at is None
-        or timezone.is_naive(recognized_at)
-        or response_trigger is None
-        or timezone.is_naive(response_trigger)
-        or expected_trigger is None
-        or response_trigger != expected_trigger
-    ):
+    recognized_at = recognized_at_for(payload, _attempt_stable_weight_at(capture))
+    if recognized_at is None:
         raise _CaptureRejected(
             "vehicle_recognition_malformed",
             "Camera-PC вернул некорректные временные метки.",
             status_code=502,
         )
 
-    cutoffs = [
-        value
-        for value in (capture.departure_observed_at, capture.recognition_valid_until)
-        if value
-    ]
-    if cutoffs and recognized_at >= min(cutoffs):
-        _mark_plate_unresolved(
-            capture,
-            now=timezone.now(),
-            code="vehicle_recognition_after_departure",
-            detail="Ответ камеры получен для кадра после освобождения весов; нужна проверка.",
-        )
-        return capture
-
     confirmation = payload["confirmation"]
-    safe_payload = _safe_ai_payload(payload)
+    safe_payload = safe_ai_payload(payload)
     event_defaults = {
         "vehicle_number": str(payload["vehicle_number"]),
         "camera": capture.camera,
@@ -1000,38 +233,17 @@ def _persist_recognition(
             "Идентификатор распознавания уже принадлежит другому событию.",
         )
 
-    capture.camera_source = str(payload["source"])
-    capture.vehicle_number = str(payload["vehicle_number"])
-    capture.recognized_at = recognized_at
-    capture.confirmation_votes = int(confirmation["votes"])
-    capture.detector_confidence = Decimal(str(confirmation["detector_confidence"]))
-    capture.ocr_confidence = Decimal(str(confirmation["ocr_confidence"]))
-    capture.ai_payload_json = safe_payload
+    apply_recognition(
+        capture, payload, recognized_at=recognized_at, safe_payload=safe_payload
+    )
     _store_orientation(capture, payload)
     capture.vehicle_plate_event = event
-    capture.stage = AutomaticPassageCapture.APPLYING
-    capture.response_status = 200
-    capture.retryable = False
-    capture.error_code = ""
-    capture.error_detail = ""
     capture.processing_started_at = timezone.now()
     capture.save(
         update_fields=[
-            "camera_source",
-            "vehicle_number",
-            "recognized_at",
-            "confirmation_votes",
-            "detector_confidence",
-            "ocr_confidence",
-            "ai_payload_json",
+            *RECOGNITION_FIELDS,
             "orientation",
-            "orientation_confidence",
             "vehicle_plate_event",
-            "stage",
-            "response_status",
-            "retryable",
-            "error_code",
-            "error_detail",
             "processing_started_at",
             "updated_at",
         ]
@@ -1047,28 +259,12 @@ def _finish_error(
     code: str,
     detail: str,
     retryable: bool,
-    ai_payload: dict | None = None,
-    requires_acknowledgement: bool = True,
 ) -> AutomaticPassageCapture:
-    state = PassageScaleAutomationState.objects.select_for_update().get(
-        scale_number=scale.TRUCK_SCALE_KEY
-    )
     capture = AutomaticPassageCapture.objects.select_for_update().get(pk=capture_id)
     if capture.status != AutomaticPassageCapture.PROCESSING:
         return capture
 
-    may_retry = retryable and (
-        capture.stage == AutomaticPassageCapture.APPLYING
-        or (
-            capture.stage == AutomaticPassageCapture.RECOGNIZING
-            and (
-                capture.recognition_attempts
-                < settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS
-                or not capture.final_lookup_attempted
-            )
-        )
-    )
-    capture.retryable = may_retry
+    capture.retryable = retryable
     capture.response_status = status_code
     capture.error_code = code[:64]
     capture.error_detail = detail[:300]
@@ -1081,87 +277,15 @@ def _finish_error(
         "processing_started_at",
         "updated_at",
     ]
-    if ai_payload is not None:
-        capture.ai_payload_json = _safe_ai_payload(ai_payload)
-        update_fields.append("ai_payload_json")
-    if not may_retry:
+    if not retryable:
         capture.status = AutomaticPassageCapture.FAILED
         capture.stage = AutomaticPassageCapture.DONE
-        capture.requires_acknowledgement = requires_acknowledgement
+        capture.requires_acknowledgement = True
         capture.completed_at = timezone.now()
         update_fields.extend(
             ["status", "stage", "requires_acknowledgement", "completed_at"]
         )
-        if state.current_capture_id == capture.pk:
-            state.phase = PassageScaleAutomationState.AWAITING_CLEAR
-            _save_state(state, "phase")
     capture.save(update_fields=update_fields)
-    return capture
-
-
-@transaction.atomic
-def _resolve_recognition_failure(
-    capture_id: int,
-    *,
-    status_code: int,
-    code: str,
-    detail: str,
-    ai_payload: dict | None = None,
-) -> AutomaticPassageCapture:
-    """Decide what a terminal Camera-PC answer without a plate means.
-
-    While attempts remain and the failure is not a configuration problem, the
-    capture waits for another OCR attempt against a fresh scale read. When the
-    camera cannot help any more, the weighing is applied without a plate. The
-    lane is never latched for an operator here.
-    """
-
-    capture = AutomaticPassageCapture.objects.select_for_update().get(pk=capture_id)
-    if (
-        capture.status != AutomaticPassageCapture.PROCESSING
-        or capture.stage != AutomaticPassageCapture.RECOGNIZING
-    ):
-        return capture
-    if ai_payload is not None:
-        capture.ai_payload_json = _safe_ai_payload(ai_payload)
-        _store_orientation(capture, ai_payload)
-    now = timezone.now()
-    may_try_again = (
-        code not in RECOGNITION_FAILURES_WITHOUT_RETRY
-        and capture.recognition_attempts
-        < settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS
-    )
-    if may_try_again:
-        capture.needs_new_attempt = True
-        capture.retryable = True
-        capture.response_status = status_code
-        capture.error_code = code[:64]
-        capture.error_detail = detail[:300]
-        capture.processing_started_at = None
-        capture.save(
-            update_fields=[
-                "ai_payload_json",
-                "orientation",
-                "orientation_confidence",
-                "needs_new_attempt",
-                "retryable",
-                "response_status",
-                "error_code",
-                "error_detail",
-                "processing_started_at",
-                "updated_at",
-            ]
-        )
-        return capture
-    capture.save(
-        update_fields=[
-            "ai_payload_json",
-            "orientation",
-            "orientation_confidence",
-            "updated_at",
-        ]
-    )
-    _mark_plate_unresolved(capture, now=now, code=code, detail=detail)
     return capture
 
 
@@ -1171,9 +295,6 @@ def _finish_success(
     *,
     result: services.VehiclePlateAutomationResult,
 ) -> AutomaticPassageCapture:
-    state = PassageScaleAutomationState.objects.select_for_update().get(
-        scale_number=scale.TRUCK_SCALE_KEY
-    )
     capture = AutomaticPassageCapture.objects.select_for_update().get(pk=capture_id)
     if capture.status != AutomaticPassageCapture.PROCESSING:
         return capture
@@ -1212,9 +333,6 @@ def _finish_success(
             "updated_at",
         ]
     )
-    if state.current_capture_id == capture.pk:
-        state.phase = PassageScaleAutomationState.AWAITING_CLEAR
-        _save_state(state, "phase")
     log.info(
         "Automatic passage scale applied capture_id=%s action=%s wagon_id=%s",
         capture.pk,
@@ -1228,8 +346,8 @@ def _finish_success(
 def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
     # Applying the durable weight/OCR pair is the only step that mutates the
     # passage business state.  Keep the shared lane mutex through that DB-only
-    # operation and its terminal capture update so disabling automation or a
-    # manual mutation can never interleave between "applied" and "completed".
+    # operation and its terminal capture update so a manual mutation can never
+    # interleave between "applied" and "completed".
     scale.configure_authoritative_db_timeouts()
     state = (
         PassageScaleAutomationState.objects.select_for_update()
@@ -1280,7 +398,7 @@ def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
             retryable=False,
         )
     except APIException as error:
-        detail, code = _api_exception_parts(error)
+        detail, code = api_exception_parts(error)
         return _finish_error(
             capture_id,
             status_code=int(error.status_code),
@@ -1315,21 +433,7 @@ def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
     if not result.retryable and capture.weight_kg is not None:
         # Preserve a business conflict as an operator-resolvable weighing.
         # The physical lane continues; its result is never guessed away.
-        item, _ = UnassignedWeighing.objects.get_or_create(
-            capture=capture,
-            defaults={
-                "weight_kg": capture.weight_kg,
-                "stable_weight_at": capture.stable_weight_at,
-                "scale_number": capture.scale_number,
-                "scale_age_seconds": capture.scale_age_seconds,
-                "scale_updated_at": capture.scale_updated_at,
-                "camera": capture.camera,
-                "photo_request_id": _attempt_request_id(capture),
-                "vehicle_number": capture.vehicle_number,
-                "orientation": capture.orientation,
-                "reason": result.error or "passage_state_conflict",
-            },
-        )
+        item = park_capture(capture, result.error or "passage_state_conflict")
         capture.error_code = item.reason
         capture.save(update_fields=["error_code", "updated_at"])
         return _finish_success(
@@ -1352,249 +456,6 @@ def _apply_recognized_capture(capture_id: int) -> AutomaticPassageCapture:
         ),
         retryable=result.retryable,
     )
-
-
-def _after_recognition_failure(capture: AutomaticPassageCapture) -> AutomaticPassageCapture:
-    """Apply immediately when the failure was resolved into a plate-less apply."""
-
-    if (
-        capture.status == AutomaticPassageCapture.PROCESSING
-        and capture.stage == AutomaticPassageCapture.APPLYING
-    ):
-        return _apply_recognized_capture(capture.pk)
-    return capture
-
-
-def _recognize_capture(
-    capture_id: int,
-    *,
-    retry_only: bool,
-) -> AutomaticPassageCapture:
-    capture = AutomaticPassageCapture.objects.get(pk=capture_id)
-    if capture.stage == AutomaticPassageCapture.APPLYING:
-        return _apply_recognized_capture(capture_id)
-    try:
-        trigger = _attempt_stable_weight_at(capture)
-        if trigger is None:
-            raise _CaptureRejected(
-                "automatic_scale_sample_missing",
-                "Время стабильного веса не сохранено.",
-            )
-        recognize = (
-            camera_ai.retry_vehicle_recognition_from_camera
-            if retry_only
-            else camera_ai.recognize_vehicle_from_camera
-        )
-        payload = recognize(
-            capture.camera,
-            _attempt_request_id(capture),
-            _canonical_timestamp(trigger),
-        )
-        _persist_recognition(capture_id, payload)
-    except _CaptureRejected as error:
-        # The stored sample is unusable (or the state moved on): nothing to
-        # apply, nothing for an operator to repair.
-        return _finish_error(
-            capture_id,
-            status_code=error.status_code,
-            code=error.code,
-            detail=error.detail,
-            retryable=False,
-            requires_acknowledgement=False,
-        )
-    except camera_ai.AiProtocolError:
-        return _after_recognition_failure(
-            _resolve_recognition_failure(
-                capture_id,
-                status_code=502,
-                code="vehicle_recognition_malformed",
-                detail="Camera-PC вернул некорректный результат распознавания.",
-            )
-        )
-    except camera_ai.AiUnavailable:
-        return _finish_error(
-            capture_id,
-            status_code=503,
-            code="vehicle_recognition_unavailable",
-            detail="Связь с Camera-PC прервалась; сохранённый запрос будет повторён.",
-            retryable=True,
-        )
-    except camera_ai.AiError as error:
-        status_code, code, detail, retryable = _terminal_ai_error(error)
-        if retryable:
-            return _finish_error(
-                capture_id,
-                status_code=status_code,
-                code=code,
-                detail=detail,
-                retryable=True,
-                ai_payload=error.payload,
-            )
-        return _after_recognition_failure(
-            _resolve_recognition_failure(
-                capture_id,
-                status_code=status_code,
-                code=code,
-                detail=detail,
-                ai_payload=error.payload,
-            )
-        )
-    return _apply_recognized_capture(capture_id)
-
-
-def _recognize_again(capture_id: int) -> AutomaticPassageCapture:
-    """Second and later OCR attempts for a truck still standing on the scale."""
-
-    capture = AutomaticPassageCapture.objects.get(pk=capture_id)
-    if capture.stage == AutomaticPassageCapture.APPLYING:
-        return _apply_recognized_capture(capture_id)
-    try:
-        with scale.authoritative_capture(scale.TRUCK_SCALE_KEY):
-            read_started_at = timezone.now()
-            reading = scale.read_truck_scale(scale.TRUCK_SCALE_KEY)
-            stable_weight_at = read_started_at - timedelta(
-                seconds=float(reading.age_seconds)
-            )
-            capture = _persist_next_attempt(
-                capture_id,
-                reading,
-                stable_weight_at=stable_weight_at,
-            )
-        if capture.stage == AutomaticPassageCapture.APPLYING:
-            return _apply_recognized_capture(capture_id)
-        return _recognize_capture(capture_id, retry_only=False)
-    except _CaptureRejected as error:
-        return _finish_error(
-            capture_id,
-            status_code=error.status_code,
-            code=error.code,
-            detail=error.detail,
-            retryable=False,
-            requires_acknowledgement=False,
-        )
-    except APIException as error:
-        # The scale could not confirm the truck is still there. Each failed
-        # look costs one attempt so a dead scale cannot spin forever; once
-        # attempts run out the original sample is applied without a plate.
-        detail, code = _api_exception_parts(error)
-        return _after_recognition_failure(
-            _defer_next_attempt(capture_id, status_code=int(error.status_code), code=code, detail=detail)
-        )
-
-
-@transaction.atomic
-def _defer_next_attempt(
-    capture_id: int,
-    *,
-    status_code: int,
-    code: str,
-    detail: str,
-) -> AutomaticPassageCapture:
-    capture = AutomaticPassageCapture.objects.select_for_update().get(pk=capture_id)
-    if (
-        capture.status != AutomaticPassageCapture.PROCESSING
-        or capture.stage != AutomaticPassageCapture.RECOGNIZING
-    ):
-        return capture
-    now = timezone.now()
-    capture.recognition_attempts += 1
-    if (
-        capture.recognition_attempts
-        >= settings.VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS
-    ):
-        capture.save(update_fields=["recognition_attempts", "updated_at"])
-        _mark_plate_unresolved(capture, now=now, code=code, detail=detail)
-        return capture
-    capture.needs_new_attempt = True
-    capture.retryable = True
-    capture.response_status = status_code
-    capture.error_code = code[:64]
-    capture.error_detail = detail[:300]
-    capture.processing_started_at = None
-    capture.save(
-        update_fields=[
-            "recognition_attempts",
-            "needs_new_attempt",
-            "retryable",
-            "response_status",
-            "error_code",
-            "error_detail",
-            "processing_started_at",
-            "updated_at",
-        ]
-    )
-    return capture
-
-
-def _capture_new_episode(capture_id: int, *, recognize=True) -> AutomaticPassageCapture:
-    try:
-        with scale.authoritative_capture(scale.TRUCK_SCALE_KEY):
-            read_started_at = timezone.now()
-            reading = scale.read_truck_scale(scale.TRUCK_SCALE_KEY)
-            stable_weight_at = read_started_at - timedelta(
-                seconds=float(reading.age_seconds)
-            )
-            capture = _persist_scale_sample(
-                capture_id,
-                reading,
-                stable_weight_at=stable_weight_at,
-            )
-        # The physical scale mutex must never be held during camera I/O.
-        if not recognize:
-            AutomaticPassageCapture.objects.filter(pk=capture_id).update(
-                recognition_dispatched=False,
-                processing_started_at=None,
-            )
-            capture.refresh_from_db()
-            return capture
-        return _recognize_capture(capture_id, retry_only=False)
-    except _CaptureRejected as error:
-        # No sample was stored: the lane just needs a fresh clear edge.
-        return _finish_error(
-            capture_id,
-            status_code=error.status_code,
-            code=error.code,
-            detail=error.detail,
-            retryable=False,
-            requires_acknowledgement=False,
-        )
-    except APIException as error:
-        detail, code = _api_exception_parts(error)
-        return _finish_error(
-            capture_id,
-            status_code=int(error.status_code),
-            code=code,
-            detail=detail,
-            retryable=False,
-            requires_acknowledgement=False,
-        )
-
-
-def _attach_capture_photo(capture: AutomaticPassageCapture) -> None:
-    """Best-effort evidence photo after the weight is already committed."""
-
-    if capture.status != AutomaticPassageCapture.COMPLETED:
-        return
-    try:
-        attach_photo(capture.camera, _attempt_request_id(capture))
-    except Exception:  # noqa: BLE001 - a photo must never break the loop
-        log.exception("Automatic passage photo failed capture_id=%s", capture.pk)
-
-
-def _run_work(work: _Work, *, attach_photo_after=True) -> AutomaticPassageCapture:
-    if work.kind == "capture":
-        capture = _capture_new_episode(work.capture_id)
-    elif work.kind == "recognize_retry":
-        capture = _recognize_capture(work.capture_id, retry_only=True)
-    elif work.kind == "recognize_again":
-        capture = _recognize_again(work.capture_id)
-    elif work.kind == "apply":
-        capture = _apply_recognized_capture(work.capture_id)
-    else:
-        raise RuntimeError(f"Unknown passage scale work: {work.kind}")
-    if attach_photo_after:
-        _attach_capture_photo(capture)
-    return capture
 
 
 def _active_runtime_payload(
@@ -1677,25 +538,6 @@ def _load_runtime() -> object:
     return payload
 
 
-def _publish_runtime(*, now, unavailable: bool = False) -> dict:
-    state = (
-        PassageScaleAutomationState.objects.select_related("current_capture")
-        .filter(scale_number=scale.TRUCK_SCALE_KEY)
-        .first()
-    )
-    capture = state.current_capture if state is not None else None
-    payload = {
-        "enabled": True,
-        "stable_weight_seconds": _stable_weight_seconds(state),
-        "state": _public_state(state, capture, unavailable=unavailable),
-        "last_checked_at": now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-        "heartbeat_stale": False,
-        "active": _active_runtime_payload(capture),
-    }
-    _store_runtime(payload)
-    return payload
-
-
 def _durable_lane() -> tuple[
     PassageScaleAutomationState | None,
     AutomaticPassageCapture | None,
@@ -1736,12 +578,7 @@ def update_scale_automation_settings(
 ) -> dict:
     """Update lane timing without letting an in-flight candidate fire early."""
 
-    state, _created = (
-        PassageScaleAutomationState.objects.select_for_update().get_or_create(
-            scale_number=scale.TRUCK_SCALE_KEY,
-            defaults={"phase": PassageScaleAutomationState.UNARMED},
-        )
-    )
+    state = services.lock_passage_lane()
     previous = int(state.stable_weight_seconds)
     changed = previous != stable_weight_seconds
     update_fields = ["stable_weight_seconds"] if changed else []
@@ -1794,16 +631,11 @@ def acknowledge_failure(
     user,
     now=None,
 ) -> dict:
-    """Acknowledge one terminal failure and require a new physical clear edge."""
+    """Acknowledge one terminal failure and release the lane it latched."""
 
     current = now or timezone.now()
     with transaction.atomic():
-        state, _created = (
-            PassageScaleAutomationState.objects.select_for_update().get_or_create(
-                scale_number=scale.TRUCK_SCALE_KEY,
-                defaults={"phase": PassageScaleAutomationState.UNARMED},
-            )
-        )
+        state = services.lock_passage_lane()
         try:
             capture = AutomaticPassageCapture.objects.select_for_update().get(
                 idempotency_key=idempotency_key
@@ -1855,13 +687,9 @@ def acknowledge_failure(
                 getattr(user, "pk", None),
             )
         if state.current_capture_id == capture.pk:
-            # ``cleared_at`` belongs to the failed episode and may predate a
-            # manual fallback now occupying the same scale.  Never reuse it to
-            # arm automation: post-ack observations must prove a fresh clear.
-            _disarm_lane(state)
+            services.reset_passage_lane(state)
 
-    if settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED:
-        return _publish_runtime(now=current)
+    # The collector's importer owns the runtime projection; never overwrite it.
     return scale_automation_runtime(now=current)
 
 
@@ -1870,31 +698,21 @@ def scale_automation_runtime(*, now=None) -> dict:
 
     if not settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED:
         durable_state, durable_capture = _durable_lane()
-        if (
-            _public_state(
-                durable_state,
-                durable_capture,
-                unavailable=False,
-            )
+        # The kill switch stops new automation; it must not hide an
+        # unresolved operation that still requires an explicit audit ack.
+        manual_required = (
+            _public_state(durable_state, durable_capture, unavailable=False)
             == "manual_required"
-        ):
-            # The kill switch stops new automation; it must not hide an
-            # unresolved operation that still requires an explicit audit ack.
-            return {
-                "enabled": False,
-                "stable_weight_seconds": _stable_weight_seconds(durable_state),
-                "state": "manual_required",
-                "last_checked_at": None,
-                "heartbeat_stale": False,
-                "active": _active_runtime_payload(durable_capture),
-            }
+        )
         return {
             "enabled": False,
             "stable_weight_seconds": _stable_weight_seconds(durable_state),
-            "state": "disabled",
+            "state": "manual_required" if manual_required else "disabled",
             "last_checked_at": None,
             "heartbeat_stale": False,
-            "active": None,
+            "active": (
+                _active_runtime_payload(durable_capture) if manual_required else None
+            ),
         }
     current = now or timezone.now()
     payload = _load_runtime()
@@ -1903,10 +721,9 @@ def scale_automation_runtime(*, now=None) -> dict:
         or payload.get("state") not in PUBLIC_RUNTIME_STATES
     ):
         return _durable_runtime_fallback()
-    checked = parse_datetime(str(payload.get("last_checked_at") or ""))
+    checked = parse_aware_datetime(payload.get("last_checked_at"))
     stale = (
         checked is None
-        or timezone.is_naive(checked)
         or checked > current + timedelta(seconds=5)
         or checked
         < current
@@ -1919,129 +736,10 @@ def scale_automation_runtime(*, now=None) -> dict:
                 last_checked_at if isinstance(last_checked_at, str) else None
             )
         )
-    durable_state, durable_capture = _durable_lane()
-    stable_weight_seconds = _stable_weight_seconds(durable_state)
-    if payload.get("collector"):
-        return {**payload, "stable_weight_seconds": stable_weight_seconds, "heartbeat_stale": False}
-    durable_public_state = _public_state(
-        durable_state,
-        durable_capture,
-        unavailable=False,
-    )
-    if durable_public_state in {
-        "candidate",
-        "recognizing",
-        "applying",
-    } and (
-        durable_state is not None
-        and durable_state.phase == PassageScaleAutomationState.PROCESSING
-    ):
-        # Hardware/OCR work intentionally runs outside the claim transaction.
-        # Its durable stage is authoritative while Redis may still contain the
-        # previous idle poll, so expose progress immediately from PostgreSQL.
-        return {
-            "enabled": True,
-            "stable_weight_seconds": stable_weight_seconds,
-            "state": durable_public_state,
-            "last_checked_at": payload.get("last_checked_at"),
-            "heartbeat_stale": False,
-            "active": _active_runtime_payload(durable_capture),
-        }
-    if durable_public_state == "manual_required":
-        return {
-            "enabled": True,
-            "stable_weight_seconds": stable_weight_seconds,
-            "state": "manual_required",
-            "last_checked_at": payload.get("last_checked_at"),
-            "heartbeat_stale": False,
-            "active": _active_runtime_payload(durable_capture),
-        }
-    if (
-        durable_state is not None
-        and durable_state.phase == PassageScaleAutomationState.AWAITING_CLEAR
-        and payload.get("state") != "unavailable"
-    ):
-        return {
-            "enabled": True,
-            "stable_weight_seconds": stable_weight_seconds,
-            "state": "awaiting_clear",
-            "last_checked_at": payload.get("last_checked_at"),
-            "heartbeat_stale": False,
-            "active": _active_runtime_payload(durable_capture),
-        }
+    # Only the collector's importer publishes the runtime; the lane timing is
+    # read from PostgreSQL so a settings change shows before the next poll.
     return {
-        "enabled": True,
-        "stable_weight_seconds": stable_weight_seconds,
-        "state": payload["state"],
-        "last_checked_at": payload.get("last_checked_at"),
+        **payload,
+        "stable_weight_seconds": scale_automation_settings()["stable_weight_seconds"],
         "heartbeat_stale": False,
-        "active": payload.get("active"),
     }
-
-
-def monitor_once(*, now=None) -> MonitorIteration:
-    """Execute one sequential poll and any claimed durable work."""
-
-    current = now or timezone.now()
-    if not settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED:
-        _prepare_disabled_lane(now=current)
-        payload = {
-            "enabled": False,
-            "stable_weight_seconds": scale_automation_settings()[
-                "stable_weight_seconds"
-            ],
-            "state": "disabled",
-            "last_checked_at": current.astimezone(UTC)
-            .isoformat()
-            .replace("+00:00", "Z"),
-            "heartbeat_stale": False,
-            "active": None,
-        }
-        _store_runtime(payload)
-        return MonitorIteration(state="disabled")
-
-    pending, pending_work = _claim_pending_work(now=current)
-    if pending:
-        capture = _run_work(pending_work) if pending_work is not None else None
-        payload = _publish_runtime(now=timezone.now())
-        return MonitorIteration(
-            state=str(payload["state"]),
-            capture_id=capture.pk if capture is not None else None,
-            action=capture.action if capture is not None else "",
-            wagon_id=capture.wagon_id if capture is not None else None,
-            error_code=capture.error_code if capture is not None else "",
-        )
-
-    try:
-        observation = scale.read_truck_scale_observation(scale.TRUCK_SCALE_KEY)
-    except APIException as error:
-        _discard_unobserved_candidate()
-        _publish_runtime(now=current, unavailable=True)
-        code = error.get_codes()
-        return MonitorIteration(
-            state="unavailable",
-            error_code=str(code)
-            if isinstance(code, str)
-            else "truck_scale_unavailable",
-        )
-
-    work = _advance_lane(observation, now=current)
-    capture = _run_work(work) if work is not None else None
-
-    dependency_unavailable = observation.state in {
-        "disconnected",
-        "unavailable",
-        "stale",
-        "malformed",
-    }
-    payload = _publish_runtime(
-        now=timezone.now(),
-        unavailable=dependency_unavailable,
-    )
-    return MonitorIteration(
-        state=str(payload["state"]),
-        capture_id=capture.pk if capture is not None else None,
-        action=capture.action if capture is not None else "",
-        wagon_id=capture.wagon_id if capture is not None else None,
-        error_code=capture.error_code if capture is not None else "",
-    )

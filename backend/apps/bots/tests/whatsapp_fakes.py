@@ -3,15 +3,18 @@ from datetime import UTC, datetime
 
 from django.utils import timezone
 
-from apps.bots.providers.green_api import DELETED, EDITED, MESSAGE, GreenApiError, IncomingMessage, Notification
+from apps.bots.models import BotMessage
+from apps.bots.providers.green_api import GreenApiError, IncomingMessage, Notification
 
 GROUP = "120363043968066561@g.us"
 JIN = "998901112233@c.us"
+# Получатель отчётов о вагонах (настройки бота): номер без «+».
+DINARA = "77011234567"
 SENT_AT = datetime(2026, 9, 19, 9, 30, tzinfo=UTC)
 
 
-def incoming(text="", *, message_id="MSG1", chat_id=GROUP, sender_id=JIN, kind=MESSAGE, target_id="",
-             sent_at=SENT_AT):
+def incoming(text="", *, message_id="MSG1", chat_id=GROUP, sender_id=JIN, kind=BotMessage.MESSAGE,
+             target_id="", sent_at=SENT_AT):
     return IncomingMessage(
         message_id=message_id, chat_id=chat_id, chat_name="Отгрузка вагонов", sender_id=sender_id,
         sender_name="Джин-Син", kind=kind, text=text, target_id=target_id, sent_at=sent_at,
@@ -19,11 +22,12 @@ def incoming(text="", *, message_id="MSG1", chat_id=GROUP, sender_id=JIN, kind=M
 
 
 def edited(text, *, target_id="MSG1", message_id="EDIT1", sender_id=JIN):
-    return incoming(text, message_id=message_id, kind=EDITED, target_id=target_id, sender_id=sender_id)
+    return incoming(
+        text, message_id=message_id, kind=BotMessage.EDITED, target_id=target_id, sender_id=sender_id)
 
 
 def deleted(*, target_id="MSG1", message_id="DEL1"):
-    return incoming(message_id=message_id, kind=DELETED, target_id=target_id)
+    return incoming(message_id=message_id, kind=BotMessage.DELETED, target_id=target_id)
 
 
 def bot_alive(row, *, polled_at=None):
@@ -33,16 +37,27 @@ def bot_alive(row, *, polled_at=None):
     return row
 
 
-def webhook_body(message: IncomingMessage) -> dict:
-    """Тело уведомления incomingMessageReceived с текстом сообщения."""
+def webhook(message_data, *, id_message="MSG1", type_webhook="incomingMessageReceived", **extra):
+    """Уведомление Green-API о сообщении Джин-Сина в группе отгрузки."""
     return {
-        "typeWebhook": "incomingMessageReceived",
-        "timestamp": int(message.sent_at.timestamp()),
-        "idMessage": message.message_id,
-        "senderData": {"chatId": message.chat_id, "chatName": message.chat_name, "sender": message.sender_id,
-                       "senderName": message.sender_name},
-        "messageData": {"typeMessage": "textMessage", "textMessageData": {"textMessage": message.text}},
+        "typeWebhook": type_webhook,
+        "instanceData": {"idInstance": 1101000001, "wid": "77010000000@c.us", "typeInstance": "whatsapp"},
+        "timestamp": int(SENT_AT.timestamp()),
+        "idMessage": id_message,
+        "senderData": {
+            "chatId": GROUP,
+            "chatName": "Отгрузка вагонов",
+            "sender": JIN,
+            "senderName": "Jin",
+            "senderContactName": "Джин-Син",
+        },
+        "messageData": message_data,
+        **extra,
     }
+
+
+def text_webhook(text, **options):
+    return webhook({"typeMessage": "textMessage", "textMessageData": {"textMessage": text}}, **options)
 
 
 class FakeGreenApi:

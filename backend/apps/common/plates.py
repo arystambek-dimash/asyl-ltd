@@ -91,16 +91,6 @@ def _matches(compact: str) -> list[tuple[str, re.Match]]:
     ]
 
 
-def detect_plate_country(compact: str) -> str | None:
-    """ISO-код страны номера — только для отображения флага.
-
-    Неоднозначный номер (01123ABC: юрлицо Узбекистана или Кыргызстан без
-    «KG») и незнакомый формат дают ``None``.
-    """
-    countries = {country for country, _ in _matches(normalize_plate(compact))}
-    return countries.pop() if len(countries) == 1 else None
-
-
 def is_known_plate(compact: str) -> bool:
     """Номер подходит под один из известных форматов KZ, KG, UZ, RU."""
     return bool(_matches(normalize_plate(compact)))

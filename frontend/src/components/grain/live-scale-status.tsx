@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Живое показание весов в шапке. Опрос раз в 3 с укладывается в серверный
- * лимит превью (30 запросов в минуту) и останавливается на скрытой вкладке.
+ * лимит превью (THROTTLE_TRUCK_SCALE_PREVIEW) и останавливается на скрытой вкладке.
  */
 const LIVE_SCALE_POLL_MS = 3_000;
 
@@ -65,21 +65,9 @@ function displayState(data: TruckScalePreview | null, loading: boolean, error: s
   };
 }
 
-export function LiveScaleStatus({
-  active,
-  scaleKey,
-  label,
-}: {
-  active: boolean;
-  scaleKey: "truck" | "wagon";
-  label: string;
-}) {
-  const { data, loading, error, reload } = useApi<TruckScalePreview>(
-    active ? `/truck-scales/${scaleKey}/reading/` : null,
-  );
-  useVisiblePolling(reload, LIVE_SCALE_POLL_MS, active);
-
-  if (!active) return null;
+export function LiveScaleStatus({ scaleKey, label }: { scaleKey: "truck" | "wagon"; label: string }) {
+  const { data, loading, error, reload } = useApi<TruckScalePreview>(`/truck-scales/${scaleKey}/reading/`);
+  useVisiblePolling(reload, LIVE_SCALE_POLL_MS);
 
   const display = displayState(data, loading, error);
   const accessibleLabel = `Весы «${label}»: ${display.value}, ${display.label}`;

@@ -1,6 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Product, Warehouse } from "@/lib/types";
 
@@ -31,14 +30,7 @@ vi.mock("@/lib/api", () => ({
   api: { post: mocks.post, patch: mocks.patch },
   apiError: (error: Error) => error.message,
 }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children, actions }: { children: ReactNode; actions?: ReactNode }) => (
-    <main>
-      {actions}
-      {children}
-    </main>
-  ),
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
 const warehouse: Warehouse = {
   id: 4,

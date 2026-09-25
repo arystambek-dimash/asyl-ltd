@@ -9,12 +9,9 @@ from __future__ import annotations
 import base64
 import http.client
 import io
-import json
 import logging
 import math
 import re
-import urllib.parse
-import urllib.request
 from datetime import timedelta
 
 from django.conf import settings
@@ -24,28 +21,21 @@ from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
 from PIL import Image
 
-from . import ai, transport_recognition
+from apps.common import openai_responses
+from apps.common.openai_responses import OpenAIResponseError, safe_response_id
+from apps.common.wagon_numbers import is_wagon_number
+
+from . import ai
 from .models import ShippingLoadingSegment as Segment
 
 MAX_FRAME_AGE = timedelta(seconds=15)
 MAX_JPEG_BYTES = 4 * 1024 * 1024
 MAX_IDENTITY_ATTEMPTS = 3
-MODELS = {"vehicle_number": "/vehicle-number/detect", "wagon_number": "/wagon-number/detect"}
 logger = logging.getLogger(__name__)
 
 
-def _response_id(value):
-    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value) else ""
-
-
-class RecognitionFailure(ValueError):
+class RecognitionFailure(OpenAIResponseError):
     """A safe diagnosis; never retains upstream bodies, images, or credentials."""
-
-    def __init__(self, code, *, retryable=False, response_id=""):
-        super().__init__(code)
-        self.code = code
-        self.retryable = retryable
-        self.response_id = _response_id(response_id)
 
 
 class NumberRejected(RecognitionFailure):
@@ -56,15 +46,20 @@ class InvalidLoadingZone(ValueError):
     pass
 
 
+def is_valid_loading_zone(zone):
+    """[x1, y1, x2, y2] — a non-empty rectangle in normalized image coordinates."""
+    return (
+        isinstance(zone, list) and len(zone) == 4
+        and all(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1 for value in zone)
+        and zone[0] < zone[2] and zone[1] < zone[3]
+    )
+
+
 def recognition_frame(original, zone):
     """Use the segment's immutable zone for both models, keeping full evidence."""
     if zone is None:
         return original
-    if (
-        not isinstance(zone, list) or len(zone) != 4
-        or any(type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1 for value in zone)
-        or zone[0] >= zone[2] or zone[1] >= zone[3]
-    ):
+    if not is_valid_loading_zone(zone):
         raise InvalidLoadingZone("Invalid saved loading zone")
     with Image.open(io.BytesIO(original)) as image:
         width, height = image.size
@@ -80,21 +75,6 @@ def recognition_frame(original, zone):
     if len(frame) > MAX_JPEG_BYTES:
         raise ValueError("Loading zone JPEG is too large")
     return frame
-
-
-def valid_number(value, model):
-    if not isinstance(value, str):
-        return ""
-    number = re.sub(r"[\s-]+", "", value.upper())
-    if model == "vehicle_number":
-        if number.startswith("KZ") and ai.VEHICLE_PLATE_RE.fullmatch(number[2:]):
-            number = number[2:]
-        return number if ai.VEHICLE_PLATE_RE.fullmatch(number) else ""
-    if model != "wagon_number" or re.fullmatch(r"[0-9]{8}", number) is None:
-        return ""
-    products = (int(digit) * (2 if index % 2 == 0 else 1) for index, digit in enumerate(number[:7]))
-    total = sum(value // 10 + value % 10 for value in products)
-    return number if int(number[-1]) == (-total) % 10 else ""
 
 
 def _available(now, segment_id=None):
@@ -156,17 +136,7 @@ def _claim_photo(segment_id=None):
 
 def capture_frame(camera):
     """One main-stream JPEG request, bounded to four seconds and four MB."""
-    stream = ai.camera_id(camera) + "main"
-    endpoint = settings.GO2RTC_API_URL.rstrip("/")
-    if not endpoint:
-        return None
-    query = urllib.parse.urlencode({"src": stream})
-    request = urllib.request.Request(f"{endpoint}/api/frame.jpeg?{query}", headers={"Accept": "image/jpeg"})
-    with urllib.request.urlopen(request, timeout=4) as response:
-        if response.status != 200:
-            return None
-        frame = response.read(MAX_JPEG_BYTES + 1)
-    return frame if len(frame) <= MAX_JPEG_BYTES and frame.startswith(b"\xff\xd8\xff") else None
+    return ai.camera_frame_jpeg(ai.camera_id(camera) + "main", timeout=4, max_bytes=MAX_JPEG_BYTES)
 
 
 def capture_once(segment_id=None):
@@ -257,15 +227,13 @@ def _renew_lease(segment_id, lease):
 
 
 def primary_number(frame, model):
-    if model not in MODELS:
+    """One camera-PC OCR attempt; any failure reads as no number, so GPT gets the same frame."""
+    if model not in ai.NUMBER_MODELS:
         return ""
-    status, payload = ai._request(
-        "POST", MODELS[model], raw_body=frame, content_type="image/jpeg",
-        timeout_seconds=ai.WAGON_PLATE_TIMEOUT,
-    )
-    if status != 200:
-        raise ai.AiError(status, "Primary shipping OCR is unavailable")
-    return valid_number(transport_recognition.number_from_payload(payload, model), model)
+    try:
+        return ai.valid_transport_number(ai.number_from_payload(ai.detect_number(model, frame), model), model)
+    except (ai.AiUnavailable, ai.AiError, http.client.HTTPException, OSError, ValueError, TypeError):
+        return ""
 
 
 GPT_SCHEMA = {
@@ -298,7 +266,7 @@ abstain."""
 
 
 def gpt_number(frame, *, recognition_model=None):
-    if recognition_model is not None and recognition_model not in MODELS:
+    if recognition_model is not None and recognition_model not in ai.NUMBER_MODELS:
         raise ValueError("invalid_recognition_model")
     wagon = recognition_model == "wagon_number"
     model = (
@@ -332,66 +300,15 @@ def gpt_number(frame, *, recognition_model=None):
         "text": {"format": {"type": "json_schema", "name": "loading_transport_number", "strict": True, "schema": schema}},
     }
     logger.info("Shipping OCR request model=%s detail=%s transport=%s", model, detail, recognition_model or "vehicle_number")
-    client = http.client.HTTPSConnection("api.openai.com", timeout=45)
     try:
-        client.request("POST", "/v1/responses", body=json.dumps(body).encode(), headers={
-            "Authorization": "Bearer " + settings.OPENAI_API_KEY, "Content-Type": "application/json",
-        })
-        response = client.getresponse()
-        if response.status != 200:
-            if response.status in (401, 403):
-                raise RecognitionFailure("openai_authentication_failed")
-            if response.status == 429:
-                raise RecognitionFailure("openai_rate_limited", retryable=True)
-            if response.status in (408, 409, 425) or 500 <= response.status <= 599:
-                raise RecognitionFailure("openai_unavailable", retryable=True)
-            raise RecognitionFailure("openai_request_rejected")
-        raw = response.read(128 * 1024 + 1)
-        if len(raw) > 128 * 1024:
-            raise RecognitionFailure("openai_invalid_response")
-        try:
-            payload = json.loads(raw)
-        except (ValueError, TypeError) as exc:
-            raise RecognitionFailure("openai_invalid_response") from exc
-    except (http.client.HTTPException, OSError) as exc:
-        raise RecognitionFailure("openai_unavailable", retryable=True) from exc
-    finally:
-        client.close()
-    if not isinstance(payload, dict):
-        raise RecognitionFailure("openai_invalid_response")
-    response_id = _response_id(payload.get("id"))
-    if payload.get("status") != "completed":
-        details = payload.get("incomplete_details")
-        reason = details.get("reason") if isinstance(details, dict) else None
-        if reason == "max_output_tokens":
-            raise RecognitionFailure("openai_output_limit", response_id=response_id)
-        if reason == "content_filter":
-            raise RecognitionFailure("openai_refused", response_id=response_id)
-        raise RecognitionFailure("openai_incomplete", retryable=True, response_id=response_id)
-    outputs = payload.get("output")
-    if not isinstance(outputs, list) or any(not isinstance(item, dict) for item in outputs):
-        raise RecognitionFailure("openai_invalid_response", response_id=response_id)
-    texts = []
-    for output in outputs:
-        if output.get("type") != "message" or output.get("role") != "assistant":
-            continue
-        parts = output.get("content")
-        if not isinstance(parts, list) or any(not isinstance(part, dict) for part in parts):
-            raise RecognitionFailure("openai_invalid_response", response_id=response_id)
-        if any(part.get("type") == "refusal" for part in parts):
-            raise RecognitionFailure("openai_refused", response_id=response_id)
-        texts.extend(part.get("text") for part in parts if part.get("type") == "output_text")
-    if len(texts) != 1 or not isinstance(texts[0], str):
-        raise RecognitionFailure("openai_invalid_response", response_id=response_id)
-    try:
-        result = json.loads(texts[0])
-    except (ValueError, TypeError) as exc:
-        raise RecognitionFailure("openai_invalid_response", response_id=response_id) from exc
+        result, response_id = openai_responses.request_json(body)
+    except OpenAIResponseError as exc:
+        raise RecognitionFailure(exc.code, retryable=exc.retryable, response_id=exc.response_id) from exc
     if not isinstance(result, dict) or set(result) != set(GPT_SCHEMA["required"]):
         raise RecognitionFailure("openai_invalid_response", response_id=response_id)
     if (not isinstance(result["number"], str) or type(result["number_clear"]) is not bool
             or not isinstance(result["recognition_model"], str)
-            or result["recognition_model"] not in (*MODELS, "unknown")):
+            or result["recognition_model"] not in (*ai.NUMBER_MODELS, "unknown")):
         raise RecognitionFailure("openai_invalid_response", response_id=response_id)
     if not result["number_clear"] or not result["number"].strip():
         raise NumberRejected("number_unreadable", response_id=response_id)
@@ -399,12 +316,26 @@ def gpt_number(frame, *, recognition_model=None):
         recognition_model is not None and result["recognition_model"] != recognition_model
     ):
         raise NumberRejected("transport_type_mismatch", response_id=response_id)
-    number = valid_number(result["number"], result["recognition_model"])
+    number = ai.valid_transport_number(result["number"], result["recognition_model"])
     if not number:
-        eight_digits = re.fullmatch(r"[0-9]{8}", re.sub(r"[\s-]+", "", result["number"]))
+        eight_digits = is_wagon_number(re.sub(r"[\s-]+", "", result["number"]))
         code = "wagon_checksum_invalid" if result["recognition_model"] == "wagon_number" and eight_digits else "number_invalid_format"
         raise NumberRejected(code, response_id=response_id)
     return number, result["recognition_model"], response_id
+
+
+def fallback_number(frame, model):
+    """GPT fallback for a segment or a manual check configured for ``model``.
+
+    Only wagons narrow the prompt (stencil digits); trucks are read with the
+    general prompt. Either way the answer must be the configured transport.
+    """
+    number, recognised, response_id = (
+        gpt_number(frame, recognition_model=model) if model == "wagon_number" else gpt_number(frame)
+    )
+    if number and model and recognised != model:
+        raise NumberRejected("transport_type_mismatch", response_id=response_id)
+    return number, recognised, response_id
 
 
 @transaction.atomic
@@ -419,7 +350,7 @@ def _finish_failure(segment_id, lease, error, *, retry=False, response_id=""):
         segment.identity_status = "unidentified"
         segment.identity_next_attempt_at = None
     segment.identity_error = error[:128]
-    segment.identity_response_id = _response_id(response_id)
+    segment.identity_response_id = safe_response_id(response_id)
     segment.identity_lease_until = None
     segment.save(update_fields=["identity_status", "identity_error", "identity_response_id", "identity_lease_until", "identity_next_attempt_at"])
     logger.warning(
@@ -438,7 +369,7 @@ def process_once(segment_id=None):
     try:
         with segment.photo.open("rb") as source:
             frame = source.read(MAX_JPEG_BYTES + 1)
-        if len(frame) > MAX_JPEG_BYTES or not frame.startswith(b"\xff\xd8\xff"):
+        if len(frame) > MAX_JPEG_BYTES or not frame.startswith(ai.JPEG_MAGIC):
             raise ValueError("invalid JPEG")
     except (OSError, ValueError):
         _finish_failure(segment.pk, lease, "photo_unavailable")
@@ -460,10 +391,7 @@ def process_once(segment_id=None):
         if primary is None:
             return True
         if primary:
-            try:
-                number = primary_number(frame, model)
-            except (ai.AiUnavailable, ai.AiError, http.client.HTTPException, OSError, ValueError, TypeError):
-                number = ""
+            number = primary_number(frame, model)
     if not number:
         lease = _renew_lease(segment.pk, lease)
         if lease is None:
@@ -472,13 +400,7 @@ def process_once(segment_id=None):
             _finish_failure(segment.pk, lease, "fallback_not_configured")
             return True
         try:
-            expected_model = model
-            number, model, response_id = (
-                gpt_number(frame, recognition_model="wagon_number")
-                if expected_model == "wagon_number" else gpt_number(frame)
-            )
-            if number and expected_model and model != expected_model:
-                raise NumberRejected("transport_type_mismatch", response_id=response_id)
+            number, model, response_id = fallback_number(frame, model)
         except RecognitionFailure as exc:
             _finish_failure(segment.pk, lease, exc.code, retry=exc.retryable, response_id=exc.response_id)
             return True

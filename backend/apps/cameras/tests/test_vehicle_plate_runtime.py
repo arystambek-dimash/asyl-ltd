@@ -95,14 +95,6 @@ def grain_viewer(user_with_perms):
     )
 
 
-@pytest.fixture
-def superuser(django_user_model):
-    return django_user_model.objects.create_superuser(
-        username="vehicle-roi-root",
-        password="pass12345",
-    )
-
-
 def test_vehicle_runtime_ai_helpers_use_canonical_upstream_paths():
     with patch.object(ai, "_request", return_value=(200, INFO)) as request:
         assert ai.vehicle_number_info() == INFO
@@ -147,8 +139,6 @@ def test_vehicle_runtime_requires_grain_view_permission(
     api_client,
     django_user_model,
 ):
-    response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
-    assert response.status_code in (401, 403)
     response = api_client.get("/api/cameras/vehicle-plate-runtime/")
     assert response.status_code in (401, 403)
 
@@ -158,7 +148,7 @@ def test_vehicle_runtime_requires_grain_view_permission(
         is_client=True,
     )
     api_client.force_authenticate(client_user)
-    response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+    response = api_client.get("/api/cameras/vehicle-plate-runtime/")
     assert response.status_code == 403
 
     staff_without_permission = django_user_model.objects.create_user(
@@ -166,8 +156,31 @@ def test_vehicle_runtime_requires_grain_view_permission(
         password="pass12345",
     )
     api_client.force_authenticate(staff_without_permission)
-    response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+    response = api_client.get("/api/cameras/vehicle-plate-runtime/")
     assert response.status_code == 403
+
+
+def test_vehicle_runtime_routes_split_read_and_roi_save(
+    api_client,
+    grain_viewer,
+    admin_user,
+):
+    """Bootstrap URL only reads the configured camera; the <cam> URL only saves its ROI."""
+    api_client.force_authenticate(admin_user)
+    with patch.object(ai, "save_vehicle_roi") as save:
+        response = api_client.put(
+            "/api/cameras/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "main"},
+            format="json",
+        )
+    assert response.status_code == 405
+    save.assert_not_called()
+
+    api_client.force_authenticate(grain_viewer)
+    with patch.object(ai, "vehicle_number_info") as info:
+        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+    assert response.status_code == 405
+    info.assert_not_called()
 
 
 def test_vehicle_runtime_projects_safe_live_status_and_roi(api_client, grain_viewer):
@@ -176,18 +189,26 @@ def test_vehicle_runtime_projects_safe_live_status_and_roi(api_client, grain_vie
         patch.object(ai, "vehicle_number_info", return_value=deepcopy(INFO)) as info,
         patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)) as roi,
     ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
 
     assert response.status_code == 200
     assert response["Cache-Control"] == "no-store"
     assert response.data["camera"] == "cam1"
     assert response.data["source"] == "main"
     assert response.data["stream"] == "cam1main"
-    assert response.data["diagnostic"] == "online"
     assert response.data["monitor"]["plate_detections"] == 8
     assert response.data["monitor"]["stationary_admissions"] == 3
     assert response.data["monitor"]["ocr_attempts"] == 7
-    assert response.data["monitor"]["stop_gate"]["dwell_seconds"] == 3.0
+    assert set(response.data["monitor"]) == {
+        "status",
+        "source",
+        "has_error",
+        "scanned_frames",
+        "plate_detections",
+        "stationary_admissions",
+        "ocr_attempts",
+        "confirmed_events",
+    }
     assert response.data["roi"] == ROI
     rendered = repr(response.data)
     for private_value in (
@@ -218,10 +239,9 @@ def test_vehicle_runtime_projects_weight_first_readiness_without_legacy_monitor(
         patch.object(ai, "vehicle_number_info", return_value=info),
         patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
     ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
 
     assert response.status_code == 200
-    assert response.data["diagnostic"] == "on_demand_ready"
     assert response.data["weight_first_enabled"] is True
     assert response.data["on_demand_enabled"] is True
     assert response.data["on_demand_camera_configured"] is True
@@ -235,40 +255,24 @@ def test_vehicle_runtime_projects_independent_automatic_scale_state(
 ):
     settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
     settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = False
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = "sub"
     info = deepcopy(INFO)
     info["automation"].update(enabled=False, configured_cameras=[], monitors={})
-    scale_runtime = {
-        "enabled": True,
-        "state": "recognizing",
-        "last_checked_at": "2026-09-03T07:30:00Z",
-        "heartbeat_stale": False,
-        "active": {
-            "request_id": "c4e7a4b1-7d77-4700-9ca7-f37b82083815",
-            "stage": "recognizing",
-            "action": None,
-            "wagon_id": None,
-            "retryable": False,
-            "error_code": None,
-        },
-    }
     api_client.force_authenticate(grain_viewer)
 
     with (
         patch.object(ai, "vehicle_number_info", return_value=info),
         patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
-        patch(
-            "apps.cameras.api_views.vehicle_runtime.scale_automation_runtime",
-            return_value=scale_runtime,
-        ),
     ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
 
     assert response.status_code == 200
-    assert response.data["diagnostic"] == "on_demand_ready"
     assert response.data["weight_first_enabled"] is False
-    assert response.data["scale_automation"] == scale_runtime
+    # The automatic scale alone switches the lane to the on-demand source; its
+    # state is served only by /grain/automatic-passage-scale/runtime/.
+    assert response.data["source"] == "sub"
+    assert "scale_automation" not in response.data
     assert response.data["monitor"] is None
-    assert "weight_kg" not in repr(response.data["scale_automation"])
 
 
 @pytest.mark.parametrize(
@@ -305,7 +309,6 @@ def test_vehicle_runtime_bootstrap_uses_configured_weight_first_camera_and_sourc
     assert response.data["camera"] == "cam7"
     assert response.data["source"] == configured_source
     assert response.data["stream"] == expected_stream
-    assert response.data["diagnostic"] == "on_demand_ready"
     assert response.data["on_demand_camera_configured"] is True
     info_request.assert_called_once_with()
     roi_request.assert_called_once_with("cam7")
@@ -332,91 +335,39 @@ def test_vehicle_runtime_weight_first_is_not_ready_for_wrong_roi_source(
     assert response.status_code == 200
     assert response.data["source"] == "sub"
     assert response.data["stream"] == "cam1"
-    assert response.data["diagnostic"] == "on_demand_roi_source_mismatch"
+    assert response.data["roi"]["source"] == "main"
 
 
 @pytest.mark.parametrize(
-    ("mutate", "diagnostic"),
+    ("field", "value"),
     [
-        (lambda value: value.update(enabled=False), "model_disabled"),
-        (lambda value: value.update(ready=False), "model_not_ready"),
-        (
-            lambda value: value["automation"].update(enabled=False),
-            "automation_disabled",
-        ),
-        (
-            lambda value: value["automation"].update(configured_cameras=[]),
-            "camera_not_configured",
-        ),
-        (
-            lambda value: value["automation"].update(monitors={}),
-            "monitor_missing",
-        ),
+        ("scanned_frames", "secret-bad-value"),
+        ("source", "sub"),
+        ("cam", "cam2"),
     ],
 )
-def test_vehicle_runtime_explains_missing_pipeline_stage(
+def test_vehicle_runtime_rejects_malformed_monitor_without_leaking_it(
     api_client,
     grain_viewer,
-    mutate,
-    diagnostic,
-):
-    info = deepcopy(INFO)
-    mutate(info)
-    api_client.force_authenticate(grain_viewer)
-    with (
-        patch.object(ai, "vehicle_number_info", return_value=info),
-        patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
-    ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
-    assert response.status_code == 200
-    assert response.data["diagnostic"] == diagnostic
-
-
-def test_vehicle_runtime_rejects_malformed_upstream_without_leaking_it(
-    api_client,
-    grain_viewer,
+    field,
+    value,
 ):
     malformed = deepcopy(INFO)
-    malformed["automation"]["monitors"]["cam1"]["scanned_frames"] = "secret-bad-value"
+    malformed["automation"]["monitors"]["cam1"][field] = value
     api_client.force_authenticate(grain_viewer)
     with (
         patch.object(ai, "vehicle_number_info", return_value=malformed),
         patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
     ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
+
     assert response.status_code == 502
     assert response["Cache-Control"] == "no-store"
     assert response.data == {
         "detail": "AI-сервис вернул некорректный статус модели",
         "code": "ai_invalid_response",
     }
-    assert "secret-bad-value" not in repr(response.data)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("source", "sub"), ("cam", "cam2")],
-)
-def test_vehicle_runtime_rejects_monitor_identity_mismatch(
-    api_client,
-    grain_viewer,
-    field,
-    value,
-):
-    mismatched = deepcopy(INFO)
-    mismatched["automation"]["monitors"]["cam1"][field] = value
-    api_client.force_authenticate(grain_viewer)
-    with (
-        patch.object(ai, "vehicle_number_info", return_value=mismatched),
-        patch.object(ai, "vehicle_roi", return_value=deepcopy(ROI)),
-    ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
-
-    assert response.status_code == 502
-    assert response.data == {
-        "detail": "AI-сервис вернул некорректный статус модели",
-        "code": "ai_invalid_response",
-    }
+    assert value not in repr(response.data)
 
 
 def test_vehicle_runtime_maps_unavailable_service_to_safe_no_store_error(
@@ -427,7 +378,7 @@ def test_vehicle_runtime_maps_unavailable_service_to_safe_no_store_error(
     with patch.object(
         ai, "vehicle_number_info", side_effect=ai.AiUnavailable("secret host")
     ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
     assert response.status_code == 502
     assert response["Cache-Control"] == "no-store"
     assert response.data == {
@@ -447,7 +398,7 @@ def test_vehicle_runtime_does_not_forward_upstream_error_detail(
         "vehicle_number_info",
         side_effect=ai.AiError(503, r"failed at C:\secret\model.pt"),
     ):
-        response = api_client.get("/api/cameras/cam1/vehicle-plate-runtime/")
+        response = api_client.get("/api/cameras/vehicle-plate-runtime/")
     assert response.status_code == 503
     assert response["Cache-Control"] == "no-store"
     assert response.data == {
@@ -476,9 +427,9 @@ def test_vehicle_roi_put_requires_superuser_and_is_never_cached(
 
 def test_vehicle_roi_put_forwards_body_and_projects_safe_response(
     api_client,
-    superuser,
+    admin_user,
 ):
-    api_client.force_authenticate(superuser)
+    api_client.force_authenticate(admin_user)
     body = {"points": ROI["points"], "enabled": True, "source": "main"}
     with patch.object(
         ai, "save_vehicle_roi", return_value=(200, deepcopy(SAVED_ROI))
@@ -500,7 +451,7 @@ def test_vehicle_roi_put_forwards_body_and_projects_safe_response(
 
 def test_vehicle_roi_put_uses_configured_weight_first_substream(
     api_client,
-    superuser,
+    admin_user,
     settings,
 ):
     settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
@@ -512,7 +463,7 @@ def test_vehicle_roi_put_uses_configured_weight_first_substream(
         "cam": "cam7",
         "source": "sub",
     }
-    api_client.force_authenticate(superuser)
+    api_client.force_authenticate(admin_user)
 
     with patch.object(
         ai,
@@ -532,9 +483,9 @@ def test_vehicle_roi_put_uses_configured_weight_first_substream(
 
 def test_vehicle_roi_put_preserves_saved_refresh_pending_response(
     api_client,
-    superuser,
+    admin_user,
 ):
-    api_client.force_authenticate(superuser)
+    api_client.force_authenticate(admin_user)
     pending = {
         **deepcopy(SAVED_ROI),
         "applied_to_monitor": False,
@@ -575,10 +526,10 @@ def test_vehicle_roi_put_preserves_saved_refresh_pending_response(
 )
 def test_vehicle_roi_put_rejects_invalid_body_before_network(
     api_client,
-    superuser,
+    admin_user,
     body,
 ):
-    api_client.force_authenticate(superuser)
+    api_client.force_authenticate(admin_user)
     with patch.object(ai, "save_vehicle_roi") as save:
         response = api_client.put(
             "/api/cameras/cam1/vehicle-plate-runtime/", body, format="json"
@@ -593,11 +544,64 @@ def test_vehicle_roi_put_rejects_invalid_body_before_network(
     save.assert_not_called()
 
 
+def test_vehicle_roi_put_maps_a_non_json_upstream_400_like_a_json_one(
+    api_client,
+    admin_user,
+):
+    """A non-JSON 400 from the camera PC is the same rejection, not «unknown camera»."""
+    api_client.force_authenticate(admin_user)
+    with patch.object(
+        ai, "save_vehicle_roi", side_effect=ai.AiError(400, "AI-сервис: ошибка 400")
+    ):
+        response = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "main"},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    assert response.data == {
+        "detail": "Некорректная область распознавания",
+        "code": "ai_error",
+    }
+
+
+def test_vehicle_roi_put_expects_weight_first_source_only_on_its_camera(
+    api_client,
+    admin_user,
+    settings,
+):
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = False
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = "cam7"
+    settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE = "sub"
+    api_client.force_authenticate(admin_user)
+    saved = {**deepcopy(SAVED_ROI), "cam": "cam7", "source": "sub"}
+    with patch.object(ai, "save_vehicle_roi", return_value=(200, saved)) as save:
+        weight_camera = api_client.put(
+            "/api/cameras/cam7/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True},
+            format="json",
+        )
+        other_camera = api_client.put(
+            "/api/cameras/cam1/vehicle-plate-runtime/",
+            {"points": ROI["points"], "enabled": True, "source": "sub"},
+            format="json",
+        )
+
+    save.assert_called_once()
+    assert save.call_args.args[1]["source"] == "sub"
+    assert weight_camera.status_code == 200
+    assert weight_camera.data["roi"]["source"] == "sub"
+    assert other_camera.status_code == 400
+    assert other_camera.data["code"] == "invalid_vehicle_roi"
+
+
 def test_vehicle_roi_put_defaults_omitted_source_to_main(
     api_client,
-    superuser,
+    admin_user,
 ):
-    api_client.force_authenticate(superuser)
+    api_client.force_authenticate(admin_user)
     body = {"points": ROI["points"], "enabled": True}
     expected = {**body, "source": "main"}
     with patch.object(
@@ -611,17 +615,25 @@ def test_vehicle_roi_put_defaults_omitted_source_to_main(
     save.assert_called_once_with("cam1", expected)
 
 
-def test_vehicle_roi_put_maps_malformed_upstream_to_safe_502(
+@pytest.mark.parametrize(
+    "saved",
+    [
+        {
+            **SAVED_ROI,
+            "points": "private malformed response",
+            "error": r"C:\secret\vehicle-rois.json",
+        },
+        {**SAVED_ROI, "source": "sub"},
+    ],
+    ids=["malformed", "non_main_source"],
+)
+def test_vehicle_roi_put_maps_invalid_saved_response_to_safe_502(
     api_client,
-    superuser,
+    admin_user,
+    saved,
 ):
-    api_client.force_authenticate(superuser)
-    malformed = {
-        **deepcopy(SAVED_ROI),
-        "points": "private malformed response",
-        "error": r"C:\secret\vehicle-rois.json",
-    }
-    with patch.object(ai, "save_vehicle_roi", return_value=(200, malformed)):
+    api_client.force_authenticate(admin_user)
+    with patch.object(ai, "save_vehicle_roi", return_value=(200, deepcopy(saved))):
         response = api_client.put(
             "/api/cameras/cam1/vehicle-plate-runtime/",
             {"points": ROI["points"], "enabled": True, "source": "main"},
@@ -635,23 +647,3 @@ def test_vehicle_roi_put_maps_malformed_upstream_to_safe_502(
         "code": "ai_invalid_response",
     }
     assert "secret" not in repr(response.data)
-
-
-def test_vehicle_roi_put_rejects_saved_response_for_non_main_source(
-    api_client,
-    superuser,
-):
-    api_client.force_authenticate(superuser)
-    malformed = {**deepcopy(SAVED_ROI), "source": "sub"}
-    with patch.object(ai, "save_vehicle_roi", return_value=(200, malformed)):
-        response = api_client.put(
-            "/api/cameras/cam1/vehicle-plate-runtime/",
-            {"points": ROI["points"], "enabled": True, "source": "main"},
-            format="json",
-        )
-
-    assert response.status_code == 502
-    assert response.data == {
-        "detail": "AI-сервис вернул некорректный результат сохранения ROI",
-        "code": "ai_invalid_response",
-    }

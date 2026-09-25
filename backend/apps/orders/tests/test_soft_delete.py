@@ -9,10 +9,8 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.db import close_old_connections
 from rest_framework.exceptions import ValidationError
-from rest_framework.test import APIClient
 from apps.cameras.models import AiCountingSession
-from apps.catalog.models import Product
-from apps.clients.models import Client, Store
+from apps.clients.models import Client
 from apps.orders import services as order_services
 from apps.orders.models import Order, OrderItem, Payment, StatusChangeRequest
 from apps.shipments.models import Shipment
@@ -20,20 +18,10 @@ from apps.shipments.models import Shipment
 pytestmark = pytest.mark.django_db
 
 
-def _api(user):
-    c = APIClient()
-    c.force_authenticate(user)
-    return c
-
-
-def _product():
-    return Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
-
-
 def _order(client, product, qty=2, status="shipped", payment_status="unpaid",
-           paid=None, store=None):
+           paid=None):
     order = Order.objects.create(
-        client=client, store=store, status=status, payment_status=payment_status)
+        client=client, status=status, payment_status=payment_status)
     OrderItem.objects.create(
         order=order, product=product, quantity=qty, unit_price="100.00")
     if paid is not None:
@@ -43,11 +31,11 @@ def _order(client, product, qty=2, status="shipped", payment_status="unpaid",
 
 # ── Механика корзины ──────────────────────────────────────────────────────
 
-def test_delete_moves_to_trash_not_gone(manager):
-    p = _product()
+def test_delete_moves_to_trash_not_gone(manager, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
-    r = _api(manager).delete(f"/api/orders/{o.id}/")
+    r = auth_client(manager).delete(f"/api/orders/{o.id}/")
     assert r.status_code == 204
     # Физически заказ на месте, но помечен удалённым.
     o.refresh_from_db()
@@ -57,8 +45,8 @@ def test_delete_moves_to_trash_not_gone(manager):
     assert not Order.objects.filter(pk=o.pk).exists()
 
 
-def test_delete_cannot_hide_order_with_open_ai_session(manager):
-    product = _product()
+def test_delete_cannot_hide_order_with_open_ai_session(manager, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone="open-ai-delete",
     )
@@ -70,7 +58,7 @@ def test_delete_cannot_hide_order_with_open_ai_session(manager):
         started_by=manager,
     )
 
-    response = _api(manager).delete(f"/api/orders/{order.id}/")
+    response = auth_client(manager).delete(f"/api/orders/{order.id}/")
 
     assert response.status_code == 400
     assert response.data["code"] == "ai_session_active"
@@ -81,14 +69,14 @@ def test_delete_cannot_hide_order_with_open_ai_session(manager):
 
 
 @pytest.mark.parametrize("status", ["arrived", "loading", "loaded"])
-def test_delete_cannot_hide_active_loading_without_ai(manager, status):
-    product = _product()
+def test_delete_cannot_hide_active_loading_without_ai(manager, status, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone=f"active-delete-{status}",
     )
     order = _order(client, product, status=status)
 
-    response = _api(manager).delete(f"/api/orders/{order.id}/")
+    response = auth_client(manager).delete(f"/api/orders/{order.id}/")
 
     assert response.status_code == 400
     assert response.data["code"] == "active_loading"
@@ -96,46 +84,46 @@ def test_delete_cannot_hide_active_loading_without_ai(manager, status):
     assert order.deleted_at is None
 
 
-def test_deleted_order_hidden_from_list(manager):
-    p = _product()
+def test_deleted_order_hidden_from_list(manager, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o1 = _order(c, p)
     o2 = _order(c, p)
-    _api(manager).delete(f"/api/orders/{o2.id}/")
-    ids = [row["id"] for row in _api(manager).get("/api/orders/").data]
+    auth_client(manager).delete(f"/api/orders/{o2.id}/")
+    ids = [row["id"] for row in auth_client(manager).get("/api/orders/").data]
     assert o1.id in ids
     assert o2.id not in ids
 
 
-def test_trash_lists_deleted_and_restore_brings_back(manager):
-    p = _product()
+def test_trash_lists_deleted_and_restore_brings_back(manager, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
-    _api(manager).delete(f"/api/orders/{o.id}/")
+    auth_client(manager).delete(f"/api/orders/{o.id}/")
 
-    trash = _api(manager).get("/api/orders/trash/")
+    trash = auth_client(manager).get("/api/orders/trash/")
     assert trash.status_code == 200
     assert [row["id"] for row in trash.data] == [o.id]
 
-    r = _api(manager).post(f"/api/orders/{o.id}/restore/")
+    r = auth_client(manager).post(f"/api/orders/{o.id}/restore/")
     assert r.status_code == 200
     assert r.data["deleted_at"] is None
     assert r.data["deleted_by_name"] is None
     o.refresh_from_db()
     assert o.deleted_at is None
     # Снова в списке, в корзине пусто.
-    assert o.id in [row["id"] for row in _api(manager).get("/api/orders/").data]
-    assert _api(manager).get("/api/orders/trash/").data == []
+    assert o.id in [row["id"] for row in auth_client(manager).get("/api/orders/").data]
+    assert auth_client(manager).get("/api/orders/trash/").data == []
 
 
-def test_trash_preview_is_bounded_and_reports_full_count(manager):
-    product = _product()
+def test_trash_preview_is_bounded_and_reports_full_count(manager, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     orders = [_order(client, product, status="draft") for _ in range(6)]
     for order in orders:
-        _api(manager).delete(f"/api/orders/{order.id}/")
+        auth_client(manager).delete(f"/api/orders/{order.id}/")
 
-    response = _api(manager).get("/api/orders/trash-preview/")
+    response = auth_client(manager).get("/api/orders/trash-preview/")
 
     assert response.status_code == 200
     assert response.data["count"] == 6
@@ -143,37 +131,37 @@ def test_trash_preview_is_bounded_and_reports_full_count(manager):
     assert response.data["results"][0]["id"] == orders[-1].id
 
 
-def test_restore_of_live_order_fails(manager):
-    p = _product()
+def test_restore_of_live_order_fails(manager, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
-    r = _api(manager).post(f"/api/orders/{o.id}/restore/")
+    r = auth_client(manager).post(f"/api/orders/{o.id}/restore/")
     assert r.status_code == 400  # не в корзине
 
 
-def test_editor_purge_deletes_non_financial_draft_from_trash(manager):
-    p = _product()
+def test_editor_purge_deletes_non_financial_draft_from_trash(manager, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
 
     # Живой заказ навсегда не удалить — сначала корзина.
-    assert _api(manager).delete(f"/api/orders/{o.id}/purge/").status_code == 400
+    assert auth_client(manager).delete(f"/api/orders/{o.id}/purge/").status_code == 400
 
-    _api(manager).delete(f"/api/orders/{o.id}/")
-    r = _api(manager).delete(f"/api/orders/{o.id}/purge/")
+    auth_client(manager).delete(f"/api/orders/{o.id}/")
+    r = auth_client(manager).delete(f"/api/orders/{o.id}/purge/")
     assert r.status_code == 204
     # Не проведённый черновик исчез совсем вместе с позициями.
     assert not Order.all_objects.filter(pk=o.id).exists()
-    assert _api(manager).get("/api/orders/trash/").data == []
+    assert auth_client(manager).get("/api/orders/trash/").data == []
 
 
-def test_purge_hides_shipped_order_but_preserves_financial_records(manager):
-    product = _product()
+def test_purge_hides_shipped_order_but_preserves_financial_records(manager, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     order = _order(client, product, paid="100.00")
-    _api(manager).delete(f"/api/orders/{order.id}/")
+    auth_client(manager).delete(f"/api/orders/{order.id}/")
 
-    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+    response = auth_client(manager).delete(f"/api/orders/{order.id}/purge/")
 
     assert response.status_code == 204
     retained = Order.all_objects.get(pk=order.id)
@@ -181,13 +169,13 @@ def test_purge_hides_shipped_order_but_preserves_financial_records(manager):
     assert retained.purged_by == manager
     assert not Order.all_objects.deleted().filter(pk=order.id).exists()
     assert order.id not in [
-        row["id"] for row in _api(manager).get("/api/orders/trash/").data
+        row["id"] for row in auth_client(manager).get("/api/orders/trash/").data
     ]
     assert Payment.objects.filter(order_id=order.id).exists()
 
 
-def test_purge_hides_order_but_preserves_ai_history(manager):
-    p = _product()
+def test_purge_hides_order_but_preserves_ai_history(manager, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
     AiCountingSession.objects.create(
@@ -195,9 +183,9 @@ def test_purge_hides_order_but_preserves_ai_history(manager):
         camera="cam2",
         status=AiCountingSession.CLOSED,
     )
-    _api(manager).delete(f"/api/orders/{o.id}/")
+    auth_client(manager).delete(f"/api/orders/{o.id}/")
 
-    response = _api(manager).delete(f"/api/orders/{o.id}/purge/")
+    response = auth_client(manager).delete(f"/api/orders/{o.id}/purge/")
 
     assert response.status_code == 204
     retained = Order.all_objects.get(pk=o.pk)
@@ -207,35 +195,31 @@ def test_purge_hides_order_but_preserves_ai_history(manager):
     assert AiCountingSession.objects.filter(order_id=o.pk).exists()
 
 
-def test_purge_hides_order_but_preserves_shipment_history(manager):
-    product = _product()
+def test_purge_hides_order_but_preserves_shipment_history(manager, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone="shipment-history",
     )
     order = _order(client, product, status="draft")
-    shipment = Shipment.objects.create(
-        order=order,
-        truck_number="01ABC01",
-        bags_loaded=2,
-    )
-    _api(manager).delete(f"/api/orders/{order.id}/")
+    shipment = Shipment.objects.create(order=order, bags_loaded=2)
+    auth_client(manager).delete(f"/api/orders/{order.id}/")
 
-    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+    response = auth_client(manager).delete(f"/api/orders/{order.id}/purge/")
 
     assert response.status_code == 204
     assert Order.all_objects.get(pk=order.pk).purged_at is not None
     assert Shipment.objects.filter(pk=shipment.pk, order_id=order.pk).exists()
 
 
-def test_purge_retains_non_draft_business_document_without_relations(manager):
-    product = _product()
+def test_purge_retains_non_draft_business_document_without_relations(manager, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone="pending-business-document",
     )
     order = _order(client, product, status="pending")
-    _api(manager).delete(f"/api/orders/{order.id}/")
+    auth_client(manager).delete(f"/api/orders/{order.id}/")
 
-    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+    response = auth_client(manager).delete(f"/api/orders/{order.id}/purge/")
 
     assert response.status_code == 204
     retained = Order.all_objects.get(pk=order.pk)
@@ -244,8 +228,8 @@ def test_purge_retains_non_draft_business_document_without_relations(manager):
     assert not Order.all_objects.deleted().filter(pk=order.pk).exists()
 
 
-def test_purge_retains_draft_with_status_approval_history(manager):
-    product = _product()
+def test_purge_retains_draft_with_status_approval_history(manager, make_product, auth_client):
+    product = make_product()
     client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone="approval-history",
     )
@@ -255,17 +239,17 @@ def test_purge_retains_draft_with_status_approval_history(manager):
         to_status="cancelled",
         requested_by=manager,
     )
-    _api(manager).delete(f"/api/orders/{order.id}/")
+    auth_client(manager).delete(f"/api/orders/{order.id}/")
 
-    response = _api(manager).delete(f"/api/orders/{order.id}/purge/")
+    response = auth_client(manager).delete(f"/api/orders/{order.id}/purge/")
 
     assert response.status_code == 204
     assert Order.all_objects.get(pk=order.pk).purged_at is not None
     assert StatusChangeRequest.objects.filter(pk=request.pk).exists()
 
 
-def test_purged_business_document_cannot_be_restored(manager):
-    product = _product()
+def test_purged_business_document_cannot_be_restored(manager, make_product):
+    product = make_product()
     client = Client.objects.create_with_user(
         first_name="A", last_name="B", phone="purged-restore",
     )
@@ -283,17 +267,17 @@ def test_purged_business_document_cannot_be_restored(manager):
     assert retained.purged_at is not None
 
 
-def test_purge_requires_edit_permission(operator):
-    p = _product()
+def test_purge_requires_edit_permission(operator, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p, status="draft")
     Order.all_objects.filter(pk=o.pk).update(deleted_at="2026-07-16T00:00:00Z")
-    assert _api(operator).delete(f"/api/orders/{o.id}/purge/").status_code == 403
+    assert auth_client(operator).delete(f"/api/orders/{o.id}/purge/").status_code == 403
 
 
 @pytest.mark.django_db(transaction=True)
-def test_purge_rechecks_order_after_concurrent_restore(manager):
-    product = _product()
+def test_purge_rechecks_order_after_concurrent_restore(manager, make_product):
+    product = make_product()
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="race")
     order = _order(client, product, status="draft")
     order_services.soft_delete_order(order, manager)
@@ -351,43 +335,28 @@ def test_purge_rechecks_order_after_concurrent_restore(manager):
 
 # ── Удалённый заказ НЕ влияет на отчёты (главное) ─────────────────────────
 
-def test_deleted_order_excluded_from_client_debts(manager, boss):
-    p = _product()
+def test_deleted_order_excluded_from_client_debts(manager, boss, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     _order(c, p, qty=3)                       # долг 300 — остаётся
     doomed = _order(c, p, qty=5)              # долг 500 — удалим
-    _api(manager).delete(f"/api/orders/{doomed.id}/")
+    auth_client(manager).delete(f"/api/orders/{doomed.id}/")
 
-    r = _api(boss).get("/api/clients/debts/")
+    r = auth_client(boss).get("/api/clients/debts/")
     row = next((x for x in r.data if x["client_id"] == c.id), None)
     assert row is not None
     assert row["debt_total"] == "300.00"      # без удалённого
     assert row["orders_count"] == 1
 
 
-def test_deleted_order_excluded_from_store_debts(manager, boss):
-    p = _product()
-    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
-    store = Store.objects.create(client=c, name="S",
-                                 payment_schedule_type="monthly", payment_days=[25])
-    _order(c, p, qty=2, store=store)          # 200 остаётся
-    doomed = _order(c, p, qty=4, store=store)  # 400 удалим
-    _api(manager).delete(f"/api/orders/{doomed.id}/")
-
-    r = _api(boss).get("/api/stores/debts/")
-    row = next((x for x in r.data if x["store_id"] == store.id), None)
-    assert row is not None
-    assert Decimal(row["debt_total"]) == Decimal("200.00")
-
-
-def test_deleted_order_excluded_from_client_history(manager, boss):
-    p = _product()
+def test_deleted_order_excluded_from_client_history(manager, boss, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     kept = _order(c, p, qty=2, paid="200.00", payment_status="settled")  # выручка 200
     doomed = _order(c, p, qty=5)                                          # 500 удалим
-    _api(manager).delete(f"/api/orders/{doomed.id}/")
+    auth_client(manager).delete(f"/api/orders/{doomed.id}/")
 
-    r = _api(boss).get(f"/api/clients/{c.id}/history/")
+    r = auth_client(boss).get(f"/api/clients/{c.id}/history/")
     assert r.status_code == 200
     assert Decimal(r.data["summary"]["revenue"]) == Decimal("200.00")
     assert Decimal(r.data["summary"]["debt"]) == Decimal("0")
@@ -396,39 +365,38 @@ def test_deleted_order_excluded_from_client_history(manager, boss):
     assert all(row["order_id"] == kept.id for row in r.data["payments"])
 
 
-def test_deleted_order_excluded_from_debts_endpoint(manager, boss):
-    p = _product()
-    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
-    keep = _order(c, p, qty=2)
-    doomed = _order(c, p, qty=3)
-    _api(manager).delete(f"/api/orders/{doomed.id}/")
-    rows = {row["client_id"]: row for row in _api(boss).get("/api/clients/debts/").data}
-    # Удалённый заказ не участвует в долге: остался только keep (2 × 100).
-    assert rows[c.id]["orders_count"] == 1
-    assert rows[c.id]["debt_total"] == str(keep.total_amount)
-
-
-def test_deleted_order_not_in_payments_queue(manager, accountant):
-    p = _product()
+def test_deleted_order_not_in_payments_queue(manager, accountant, make_product, auth_client):
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     o = _order(c, p)
     Payment.objects.create(order=o, amount="100", status="received")
-    _api(manager).delete(f"/api/orders/{o.id}/")
-    r = _api(accountant).get("/api/orders/payments-queue/?stage=received")
+    auth_client(manager).delete(f"/api/orders/{o.id}/")
+    r = auth_client(accountant).get("/api/orders/payments-queue/")
     assert o.id not in [row["order"] for row in r.data]
 
 
-def test_deleted_order_not_in_transactions_journal(manager, accountant):
-    """Корзина не должна попадать ни в строки журнала, ни в итог кассы."""
-    p = _product()
+def test_transactions_journal_keeps_money_of_shipped_order_from_trash(manager, accountant, make_product, auth_client):
+    """Корзина прячет отгруженный заказ, но не его деньги: журнал и итог кассы их хранят."""
+    p = make_product()
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     live = _order(c, p, paid="1000.00")
     trashed = _order(c, p, paid="7777.00")
-    _api(manager).delete(f"/api/orders/{trashed.id}/")
+    auth_client(manager).delete(f"/api/orders/{trashed.id}/")
 
-    r = _api(accountant).get("/api/payment-transactions/")
-    assert trashed.id not in [row["order"] for row in r.data["results"]]
-    assert live.id in [row["order"] for row in r.data["results"]]
-    # Итог кассы считает только живой заказ, а не 8777.
+    r = auth_client(accountant).get("/api/payment-transactions/")
+    assert {row["order"] for row in r.data["results"]} == {live.id, trashed.id}
+    assert r.data["summary"]["paid_by_currency"]["KZT"] == "8777.00"
+    assert r.data["summary"]["paid_by_method"]["KZT"]["cash"] == "8777.00"
+
+
+def test_transactions_journal_skips_unshipped_order_from_trash(manager, accountant, make_product, auth_client):
+    p = make_product()
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
+    live = _order(c, p, paid="1000.00")
+    trashed = _order(c, p, status="confirmed")
+    Payment.objects.create(order=trashed, amount="500.00", status="rejected")
+    auth_client(manager).delete(f"/api/orders/{trashed.id}/")
+
+    r = auth_client(accountant).get("/api/payment-transactions/")
+    assert [row["order"] for row in r.data["results"]] == [live.id]
     assert r.data["summary"]["paid_by_currency"]["KZT"] == "1000.00"
-    assert r.data["summary"]["paid_by_method"]["KZT"]["cash"] == "1000.00"

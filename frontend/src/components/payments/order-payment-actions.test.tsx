@@ -1,8 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { OrderPaymentActions, paymentAmountProblem } from "./order-payment-actions";
-import type { Me, Order } from "@/lib/types";
+import { OrderPaymentActions } from "./order-payment-actions";
+import type { Order } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 
 const postMock = vi.hoisted(() => vi.fn());
 
@@ -11,7 +12,7 @@ vi.mock("@/lib/api", () => ({
   apiError: () => "Ошибка оплаты",
 }));
 
-const me = { id: 1, username: "cashier", permissions: ["payments.create"], is_superuser: false } as unknown as Me;
+const me = makeMe({ username: "cashier", permissions: ["payments.create"] });
 
 const order = {
   id: 156,
@@ -49,7 +50,6 @@ describe("OrderPaymentActions", () => {
 
     expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Отправить удалённый счёт/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Запросить оплату/ })).not.toBeInTheDocument();
   });
 
   it("receives cash for the full remainder by default", async () => {
@@ -64,17 +64,16 @@ describe("OrderPaymentActions", () => {
     expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
       amount: "707000",
       method: "cash",
-      stage: "received",
     });
     expect(onChanged).toHaveBeenCalledWith(expect.stringContaining("долг уменьшен"));
   });
 
-  it("receives Kaspi QR as money already on hand", async () => {
+  it("receives QR at the till terminal as money already on hand", async () => {
     const user = userEvent.setup();
     render(<OrderPaymentActions order={order} me={me} onChanged={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
-    await user.click(screen.getByRole("button", { name: /Kaspi QR/ }));
+    await user.click(screen.getByRole("button", { name: "QR" }));
     await user.clear(screen.getByLabelText("Сумма"));
     await user.type(screen.getByLabelText("Сумма"), "0.01");
     await user.click(screen.getByRole("button", { name: "Принять" }));
@@ -82,7 +81,6 @@ describe("OrderPaymentActions", () => {
     expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
       amount: "0.01",
       method: "kaspi",
-      stage: "received",
     });
   });
 
@@ -99,7 +97,6 @@ describe("OrderPaymentActions", () => {
     expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
       amount: "707000",
       method: "remote",
-      stage: "received",
     });
   });
 
@@ -115,8 +112,6 @@ describe("OrderPaymentActions", () => {
     expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
       amount: "707000",
       method: "invoice",
-      stage: "requested",
-      channel: "remote",
       phone_number: "87001234567",
     });
   });
@@ -154,17 +149,25 @@ describe("OrderPaymentActions", () => {
     expect(screen.getByLabelText("Сумма")).toHaveValue(7000);
     await user.clear(screen.getByLabelText("Сумма"));
     await user.type(screen.getByLabelText("Сумма"), "8000");
-    expect(screen.getByText("Сумма больше остатка к оплате.")).toBeInTheDocument();
+    expect(screen.getByText(/^Доступно не более 7\s000\.$/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Принять" })).toBeDisabled();
   });
 
   it("offers only cash for dollar orders", async () => {
     const user = userEvent.setup();
-    render(<OrderPaymentActions order={{ ...order, currency: "USD" } as Order} me={me} onChanged={vi.fn()} />);
+    // Долларовому заказу сервер открывает только наличные и не открывает счёт на телефон.
+    const dollarOrder = {
+      ...order,
+      currency: "USD",
+      payment_open_methods: ["cash"],
+      payment_request_open: false,
+    } as Order;
+    render(<OrderPaymentActions order={dollarOrder} me={me} onChanged={vi.fn()} />);
 
     expect(screen.queryByRole("button", { name: /Отправить удалённый счёт/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
-    expect(screen.queryByRole("button", { name: /Kaspi QR/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Удалённая оплата/ })).not.toBeInTheDocument();
   });
 
   it("takes a prepayment before shipment only as money already at the till", async () => {
@@ -179,16 +182,13 @@ describe("OrderPaymentActions", () => {
     expect(dialog).toHaveTextContent("предоплата");
     expect(dialog).not.toHaveTextContent("долг");
     expect(screen.getByRole("button", { name: /Наличные/ })).toBeInTheDocument();
-    // Свой Kaspi-терминал кассы, а не Kaspi QR через ApiPay — тот откроется после отгрузки.
-    expect(screen.getByRole("button", { name: /Kaspi-терминал/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Kaspi QR/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "QR" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Удалённая оплата/ })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Принять" }));
 
     expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
       amount: "707000",
       method: "cash",
-      stage: "received",
     });
     expect(onChanged).toHaveBeenCalledWith(expect.stringContaining("Предоплата"));
     expect(onChanged).not.toHaveBeenCalledWith(expect.stringContaining("долг"));
@@ -223,7 +223,7 @@ describe("OrderPaymentActions", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Принять оплату" });
     expect(within(dialog).getByLabelText("Сумма")).toHaveValue(500);
-    expect(within(dialog).getByRole("button", { name: /Kaspi-терминал/ })).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByRole("button", { name: "QR" })).toHaveAttribute("aria-pressed", "true");
     expect(within(dialog).getByRole("alert")).toHaveTextContent("Оплата не прошла");
     expect(onAutoOpened).toHaveBeenCalledOnce();
   });
@@ -247,9 +247,7 @@ describe("OrderPaymentActions", () => {
     expect(container).toBeEmptyDOMElement();
     rerender(<OrderPaymentActions order={{ ...order, remaining_amount: "0" } as Order} me={me} onChanged={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
-    rerender(
-      <OrderPaymentActions order={order} me={{ ...me, permissions: ["payments.view"] } as Me} onChanged={vi.fn()} />,
-    );
+    rerender(<OrderPaymentActions order={order} me={{ ...me, permissions: ["payments.view"] }} onChanged={vi.fn()} />);
     expect(container).toBeEmptyDOMElement();
   });
 
@@ -261,18 +259,5 @@ describe("OrderPaymentActions", () => {
     expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Отправить удалённый счёт/ })).toBeDisabled();
     expect(screen.getByText("Окно оплаты магазина закрыто")).toBeInTheDocument();
-  });
-});
-
-describe("paymentAmountProblem", () => {
-  it("accepts tiyn precision within the remainder", () => {
-    expect(paymentAmountProblem("0.01", 100)).toBe("");
-    expect(paymentAmountProblem("1", 100)).toBe("");
-  });
-
-  it("rejects empty, fractional tiyn and excess amounts", () => {
-    expect(paymentAmountProblem("", 100)).toMatch(/больше нуля/);
-    expect(paymentAmountProblem("0.001", 100)).toMatch(/тиына/);
-    expect(paymentAmountProblem("1.01", 100)).toMatch(/больше остатка/);
   });
 });

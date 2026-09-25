@@ -6,7 +6,8 @@ import os
 import sys
 from pathlib import Path
 
-DEFAULT_PIDFILE = "/tmp/celerybeat/celerybeat.pid"
+# Тот же путь, что --pidfile у celery beat в обоих compose.
+PIDFILE = "/tmp/celerybeat/celerybeat.pid"
 
 
 def check_pidfile(path: str | Path) -> tuple[bool, str]:
@@ -35,9 +36,7 @@ def check_pidfile(path: str | Path) -> tuple[bool, str]:
 
 
 def main() -> int:
-    healthy, message = check_pidfile(
-        os.environ.get("CELERY_BEAT_PID_FILE", DEFAULT_PIDFILE)
-    )
+    healthy, message = check_pidfile(PIDFILE)
     print(message, file=sys.stdout if healthy else sys.stderr)
     return 0 if healthy else 1
 

@@ -23,8 +23,7 @@ def test_range_covers_old_days_zero_fills_and_keeps_today_and_lifetime_separate(
     assert camera['all_time_total'] == 105
     assert [row['total'] for row in camera['history']] == [10, 0, 0]
     assert camera['colors'] == [{'color':'Red_50', 'total':10, 'percent':100.0}]
-    assert result['period_total'] == 10
-    assert result['model_all_time_total'] == 105
+    assert result['all_time_total'] == 105
     assert camera['date_from'] == start.isoformat()
 
 
@@ -45,8 +44,8 @@ def test_range_api_preserves_contour_isolation(auth_client, user_with_perms):
     client = auth_client(user)
     query = f'?date_from={today}&date_to={today}'
     response = client.get('/api/cameras/shipping-continuous-analytics/'+query)
-    assert response.data['period_total'] == 7
+    assert response.data['cameras'][0]['period_total'] == 7
     assert [row['camera'] for row in response.data['cameras']] == ['cam2']
     hidden = client.get('/api/cameras/always-on-analytics/'+query+'&camera=cam2')
     assert hidden.data['cameras'] == []
-    assert hidden.data['period_total'] == 0
+    assert hidden.data['total'] == 0

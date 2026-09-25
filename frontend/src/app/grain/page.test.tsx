@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { apiState, pagedState } from "@/test-utils/api";
+
 import GrainPage from "./page";
 import PassagePage from "./passages/page";
 
@@ -19,7 +21,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
 }));
 vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => localDayMock() }));
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: { post: postMock },
   apiError: () => "Не удалось оформить вывоз",
 }));
@@ -42,26 +45,8 @@ vi.mock("@/store/auth", () => ({
     me: { id: 1, username: "operator", permissions: ["grain.arrive", "grain.weigh"] },
   }),
 }));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: ReactNode }) => children,
-}));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({
-    children,
-    actions,
-    description,
-  }: {
-    children: ReactNode;
-    actions?: ReactNode;
-    description?: string;
-  }) => (
-    <main>
-      {actions}
-      {description && <p>{description}</p>}
-      {children}
-    </main>
-  ),
-}));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("@/components/grain/grain-toolbar", () => ({
   GrainToolbar: ({ direction, onPassage }: { direction: "intake" | "passage"; onPassage: () => void }) => (
     <div aria-label="Панель операций" data-direction={direction}>
@@ -122,36 +107,53 @@ vi.mock("@/components/ui/modal", () => ({
     ) : null,
 }));
 
-describe("Grain passage creation", () => {
-  beforeEach(() => {
-    localDayMock.mockReturnValue(TODAY);
-    postMock.mockReset();
-    postMock.mockResolvedValue({ data: { id: 91, number: "123 ABC" } });
-    pushMock.mockReset();
-    reloadMock.mockReset();
-    pagedApiMock.mockReset();
-    useApiMock.mockReset();
-    useApiMock.mockReturnValue({ data: [], loading: false, error: "", reload: reloadMock });
-    visiblePollingMock.mockReset();
-    pagedApiMock.mockReturnValue({
-      items: [],
-      count: 0,
-      hasMore: false,
-      loading: false,
-      loadingMore: false,
-      error: "",
-      reload: reloadMock,
-      loadMore: vi.fn(),
-    });
-  });
+/** Распознанный камерой номер, который оператор может взять в вывоз. */
+const candidate = {
+  event_id: "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19",
+  vehicle_number: "123ABC02",
+  camera: "cam1",
+  source: "main",
+  detected_at: "2026-08-25T12:30:00.000Z",
+  stationary_seconds: 3.4,
+  ocr_confidence: 0.96,
+};
 
+/** Страница списка рейсов; обновляет её общий reloadMock. */
+const trips = (items: unknown[] = [], fields: { loading?: boolean } = {}) =>
+  pagedState(items, { reload: reloadMock, ...fields });
+
+/** Последний вызов опроса списка рейсов (10 с): третий аргумент — идёт ли опрос. */
+const lastListPoll = () =>
+  visiblePollingMock.mock.calls.filter(([poll, interval]) => poll === reloadMock && interval === 10_000).at(-1);
+
+beforeEach(() => {
+  localDayMock.mockReturnValue(TODAY);
+  postMock.mockReset();
+  postMock.mockResolvedValue({ data: { id: 91, number: "123 ABC", direction: "passage" } });
+  pushMock.mockReset();
+  reloadMock.mockReset();
+  pagedApiMock.mockReset();
+  useApiMock.mockReset();
+  useApiMock.mockReturnValue(apiState([], { reload: reloadMock }));
+  visiblePollingMock.mockReset();
+  pagedApiMock.mockReturnValue(trips());
+});
+
+describe("Grain passage creation", () => {
   it("opens outbound trips directly from their own route", () => {
     render(<PassagePage />);
     expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "passage");
     expect(pagedApiMock).toHaveBeenCalledWith("/grain/passages/?scope=on_site&direction=passage", 50);
+    expect(screen.getByRole("button", { name: "Открыть вывоз" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Ожидаются" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Камера проходной" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
+    expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, true);
+    expect(screen.getByText(/Доступность автоматики показана во вкладке «Камера проходной»/)).toBeInTheDocument();
   });
 
-  it("loads separate intake and export tables with contextual tabs", async () => {
+  it("loads the intake table with contextual tabs and leaves for the export route", async () => {
     const user = userEvent.setup();
     render(<GrainPage />);
 
@@ -169,18 +171,7 @@ describe("Grain passage creation", () => {
     expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, false);
 
     await user.click(screen.getByRole("tab", { name: "Вывоз" }));
-
-    await waitFor(() =>
-      expect(pagedApiMock).toHaveBeenCalledWith("/grain/passages/?scope=on_site&direction=passage", 50),
-    );
-    expect(screen.getByLabelText("Панель операций")).toHaveAttribute("data-direction", "passage");
-    expect(screen.getByRole("button", { name: "Открыть вывоз" })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Ожидаются" })).not.toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Камера проходной" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tab", { name: "Завершённые" })).toBeInTheDocument();
-    expect(visiblePollingMock).toHaveBeenCalledWith(reloadMock, 10_000, true);
-    expect(screen.getByText(/Доступность автоматики показана во вкладке «Камера проходной»/)).toBeInTheDocument();
+    expect(pushMock).toHaveBeenCalledWith("/grain/passages");
   });
 
   it("opens weighing history as an export tab and loads it only while selected", async () => {
@@ -192,11 +183,11 @@ describe("Grain passage creation", () => {
       reload: reloadMock,
     }));
     const user = userEvent.setup();
-    render(<GrainPage />);
+    const { unmount } = render(<GrainPage />);
     expect(screen.queryByRole("tab", { name: "Журнал взвешиваний" })).not.toBeInTheDocument();
-    expect(useApiMock).not.toHaveBeenCalledWith(historyUrl);
+    unmount();
 
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     expect(screen.getByRole("tab", { name: "Журнал взвешиваний" })).toBeInTheDocument();
     expect(useApiMock).not.toHaveBeenCalledWith(historyUrl);
 
@@ -207,11 +198,7 @@ describe("Grain passage creation", () => {
     expect(screen.queryByTestId("wagon-table")).not.toBeInTheDocument();
     expect(screen.queryByRole("searchbox", { name: "Поиск" })).not.toBeInTheDocument();
     expect(screen.queryByText("Неопознанные взвешивания")).not.toBeInTheDocument();
-    expect(visiblePollingMock.mock.calls.filter(([, interval]) => interval === 10_000).at(-1)).toEqual([
-      reloadMock,
-      10_000,
-      false,
-    ]);
+    expect(lastListPoll()).toEqual([reloadMock, 10_000, false]);
 
     useApiMock.mockClear();
     await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
@@ -233,56 +220,40 @@ describe("Grain passage creation", () => {
     expect(screen.getByRole("tabpanel", { name: "Стоянки под аркой" })).toBeInTheDocument();
     expect(screen.queryByTestId("wagon-table")).not.toBeInTheDocument();
     expect(screen.queryByRole("searchbox", { name: "Поиск" })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
-    expect(screen.queryByRole("tab", { name: "Стоянки под аркой" })).not.toBeInTheDocument();
   });
 
   it("offers manual entry only for exports and pauses list polling while it is open", async () => {
     const user = userEvent.setup();
-    render(<GrainPage />);
+    const { unmount } = render(<GrainPage />);
     expect(screen.queryByRole("button", { name: "Заезд вручную" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    unmount();
+
+    render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Заезд вручную" }));
-    expect(
-      visiblePollingMock.mock.calls.filter(([poll, interval]) => poll === reloadMock && interval === 10_000).at(-1),
-    ).toEqual([reloadMock, 10_000, false]);
+    expect(lastListPoll()).toEqual([reloadMock, 10_000, false]);
   });
 
   it("keeps the intake and export camera tabs isolated", async () => {
     const user = userEvent.setup();
-    render(<GrainPage />);
+    const { unmount } = render(<GrainPage />);
 
     await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
     expect(screen.getByRole("region", { name: "Камера вагонов на приход" })).toBeInTheDocument();
+    unmount();
 
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     expect(screen.getByRole("tab", { name: "На территории" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("region", { name: "Камера вагонов на приход" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Камера машин на вывоз" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Камера проходной" }));
     expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
-    expect(visiblePollingMock.mock.calls.filter(([, interval]) => interval === 10_000).at(-1)).toEqual([
-      reloadMock,
-      10_000,
-      false,
-    ]);
-
-    await user.click(screen.getByRole("tab", { name: "Приход" }));
-    expect(screen.getByRole("tab", { name: "Камера проходной" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("region", { name: "Камера вагонов на приход" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
-    expect(screen.getByRole("tab", { name: "Камера проходной" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("region", { name: "Камера машин на вывоз" })).toBeInTheDocument();
+    expect(lastListPoll()).toEqual([reloadMock, 10_000, false]);
   });
 
   it("keeps the manual path when there are no camera candidates", async () => {
     const user = userEvent.setup();
-    render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     expect(screen.getByText(/Используйте ручное оформление, если автоматика/)).toBeInTheDocument();
     expect(useApiMock).toHaveBeenCalledWith("/grain/passages/vehicle-plate-candidates/");
@@ -297,24 +268,13 @@ describe("Grain passage creation", () => {
       cargo_name: "Отруби",
       note: "",
     });
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/grain/wagons/91"));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/grain/passages/91"));
   });
 
   it("uses only the explicitly selected camera candidate in the passage request", async () => {
-    const candidate = {
-      event_id: "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19",
-      vehicle_number: "123ABC02",
-      camera: "cam1",
-      source: "main",
-      detected_at: "2026-08-25T12:30:00.000Z",
-      stationary_seconds: 3.4,
-      ocr_confidence: 0.96,
-    };
-    useApiMock.mockReturnValue({ data: [candidate], loading: false, error: "", reload: reloadMock });
+    useApiMock.mockReturnValue(apiState([candidate], { reload: reloadMock }));
     const user = userEvent.setup();
-    render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
 
     expect(screen.getByText("123ABC02")).toBeInTheDocument();
@@ -333,20 +293,9 @@ describe("Grain passage creation", () => {
   });
 
   it("switches to manual input explicitly before clearing the selected event", async () => {
-    const candidate = {
-      event_id: "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19",
-      vehicle_number: "123ABC02",
-      camera: "cam1",
-      source: "main",
-      detected_at: "2026-08-25T12:30:00.000Z",
-      stationary_seconds: 3.4,
-      ocr_confidence: 0.96,
-    };
-    useApiMock.mockReturnValue({ data: [candidate], loading: false, error: "", reload: reloadMock });
+    useApiMock.mockReturnValue(apiState([candidate], { reload: reloadMock }));
     const user = userEvent.setup();
-    render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     await user.click(screen.getByRole("button", { name: "Использовать" }));
     expect(screen.getByLabelText("Номер машины")).toHaveAttribute("readonly");
@@ -363,24 +312,13 @@ describe("Grain passage creation", () => {
   });
 
   it("keeps a selected candidate pinned when a poll removes it, then still submits its UUID", async () => {
-    const candidate = {
-      event_id: "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19",
-      vehicle_number: "123ABC02",
-      camera: "cam1",
-      source: "main",
-      detected_at: "2026-08-25T12:30:00.000Z",
-      stationary_seconds: 3.4,
-      ocr_confidence: 0.96,
-    };
-    useApiMock.mockReturnValue({ data: [candidate], loading: false, error: "", reload: reloadMock });
+    useApiMock.mockReturnValue(apiState([candidate], { reload: reloadMock }));
     const user = userEvent.setup();
-    const { rerender } = render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    const { rerender } = render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     await user.click(screen.getByRole("button", { name: "Использовать" }));
-    useApiMock.mockReturnValue({ data: [], loading: false, error: "", reload: reloadMock });
-    rerender(<GrainPage />);
+    useApiMock.mockReturnValue(apiState([], { reload: reloadMock }));
+    rerender(<PassagePage />);
 
     expect(screen.getByText(/123ABC02 · выбран/)).toBeInTheDocument();
     expect(screen.getByText(/Камера cam1 · main/)).toBeInTheDocument();
@@ -394,21 +332,10 @@ describe("Grain passage creation", () => {
   });
 
   it("blocks an unavailable candidate until the operator explicitly switches to manual input", async () => {
-    const candidate = {
-      event_id: "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19",
-      vehicle_number: "123ABC02",
-      camera: "cam1",
-      source: "main",
-      detected_at: "2026-08-25T12:30:00.000Z",
-      stationary_seconds: 3.4,
-      ocr_confidence: 0.96,
-    };
-    useApiMock.mockReturnValue({ data: [candidate], loading: false, error: "", reload: reloadMock });
+    useApiMock.mockReturnValue(apiState([candidate], { reload: reloadMock }));
     postMock.mockRejectedValueOnce({ response: { data: { code: "vehicle_plate_event_unavailable" } } });
     const user = userEvent.setup();
-    render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     await user.click(screen.getByRole("button", { name: "Использовать" }));
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));
@@ -423,26 +350,15 @@ describe("Grain passage creation", () => {
   });
 
   it("locks candidate controls during a deferred submission and keeps the error on that submitted candidate", async () => {
-    const first = {
-      event_id: "0fa68fe2-6fd8-4cc5-93f7-4b90ae690f19",
-      vehicle_number: "123ABC02",
-      camera: "cam1",
-      source: "main",
-      detected_at: "2026-08-25T12:30:00.000Z",
-      stationary_seconds: 3.4,
-      ocr_confidence: 0.96,
-    };
-    const second = { ...first, event_id: "5b2a3f76-a786-4f55-9af4-0fb3c38b16d2", vehicle_number: "456DEF02" };
+    const second = { ...candidate, event_id: "5b2a3f76-a786-4f55-9af4-0fb3c38b16d2", vehicle_number: "456DEF02" };
     let rejectPost: (cause: unknown) => void = () => undefined;
     const delayedPost = new Promise<never>((_resolve, reject) => {
       rejectPost = reject;
     });
-    useApiMock.mockReturnValue({ data: [first, second], loading: false, error: "", reload: reloadMock });
+    useApiMock.mockReturnValue(apiState([candidate, second], { reload: reloadMock }));
     postMock.mockReturnValueOnce(delayedPost);
     const user = userEvent.setup();
-    render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     await user.click(screen.getByRole("button", { name: "Открыть вывоз" }));
     await user.click(screen.getAllByRole("button", { name: "Использовать" })[0]);
     await user.click(screen.getByRole("button", { name: /Оформить вывоз/ }));
@@ -459,34 +375,13 @@ describe("Grain passage creation", () => {
 });
 
 describe("Grain list filters", () => {
-  /** Последний адрес списка рейсов: после него хук ещё вызывается для поставок. */
+  /** Последний адрес списка рейсов: тот же хук грузит и ожидаемые приходы. */
   function lastWagonsUrl() {
     const urls = pagedApiMock.mock.calls
       .map(([url]) => url as string | null)
       .filter((url) => url?.startsWith("/grain/wagons/") || url?.startsWith("/grain/passages/"));
     return urls[urls.length - 1];
   }
-
-  const emptyList = {
-    items: [],
-    count: 0,
-    hasMore: false,
-    loading: false,
-    loadingMore: false,
-    error: "",
-    reload: reloadMock,
-    loadMore: vi.fn(),
-  };
-
-  beforeEach(() => {
-    localDayMock.mockReturnValue(TODAY);
-    reloadMock.mockReset();
-    pagedApiMock.mockReset();
-    useApiMock.mockReset();
-    useApiMock.mockReturnValue({ data: [], loading: false, error: "", reload: reloadMock });
-    visiblePollingMock.mockReset();
-    pagedApiMock.mockReturnValue(emptyList);
-  });
 
   it("shows finished trips for today by default and «Все дни» drops the day filter and polling", async () => {
     const user = userEvent.setup();
@@ -508,11 +403,7 @@ describe("Grain list filters", () => {
     expect(screen.getByRole("button", { name: "Все дни" })).toBeDisabled();
     await waitFor(() => expect(lastWagonsUrl()).toBe("/grain/wagons/?scope=finished&direction=intake"));
     // Архив не опрашивается: иначе подгруженные «Показать ещё» страницы схлопывались бы.
-    expect(visiblePollingMock.mock.calls.filter(([, interval]) => interval === 10_000).at(-1)).toEqual([
-      reloadMock,
-      10_000,
-      false,
-    ]);
+    expect(lastListPoll()).toEqual([reloadMock, 10_000, false]);
   });
 
   it("follows the calendar on the finished tab until a different day is picked explicitly", async () => {
@@ -557,28 +448,26 @@ describe("Grain list filters", () => {
   });
 
   it("gates the table on the first load and keeps it during polling", () => {
-    pagedApiMock.mockReturnValue({ ...emptyList, loading: true });
+    pagedApiMock.mockReturnValue(trips([], { loading: true }));
     const { rerender } = render(<GrainPage />);
 
     expect(screen.getByText("Загрузка…")).toBeInTheDocument();
     expect(screen.queryByTestId("wagon-table")).not.toBeInTheDocument();
 
     const wagon = { id: 1, number: "123 ABC", direction: "intake", status: "arrived" };
-    pagedApiMock.mockReturnValue({ ...emptyList, items: [wagon], count: 1, loading: true });
+    pagedApiMock.mockReturnValue(trips([wagon], { loading: true }));
     rerender(<GrainPage />);
     expect(screen.queryByText("Загрузка…")).not.toBeInTheDocument();
     expect(screen.getByTestId("wagon-table")).toBeInTheDocument();
 
-    pagedApiMock.mockReturnValue(emptyList);
+    pagedApiMock.mockReturnValue(trips());
     rerender(<GrainPage />);
     expect(screen.getByTestId("wagon-table")).toHaveTextContent("На территории нет поездов на приём");
   });
 
   it("requests a picked day for finished export trips", async () => {
     const user = userEvent.setup();
-    render(<GrainPage />);
-
-    await user.click(screen.getByRole("tab", { name: "Вывоз" }));
+    render(<PassagePage />);
     await user.click(screen.getByRole("tab", { name: "Завершённые" }));
     const day = screen.getByLabelText("День");
     await user.clear(day);

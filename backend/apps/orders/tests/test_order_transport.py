@@ -7,7 +7,7 @@ from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.notifications.models import Notification
 from apps.orders.models import Order
-from apps.orders.services import set_transport_type, set_truck_number
+from apps.orders.services import set_transport_type
 from apps.orders.transport import set_order_transport
 
 pytestmark = pytest.mark.django_db
@@ -111,6 +111,20 @@ def test_owner_refusal_names_who_entered_the_number(request, order, owner, user,
     assert (exc.value.detail["code"], exc.value.detail["detail"]) == ("forbidden", message)
 
 
+@pytest.mark.parametrize("client_owned", [True, False])
+def test_owner_side_may_replace_the_number(order, portal_user, manager, make_user, client_owned):
+    """Номер клиента меняет сам клиент, номер сотрудника — любой сотрудник."""
+    owner = portal_user if client_owned else manager
+    user = portal_user if client_owned else make_user(username="other-staff")
+    Order.objects.filter(pk=order.pk).update(truck_number="403BJN13", truck_number_set_by=owner)
+
+    _, changed = set_order_transport(order, user, truck="612BEX13")
+
+    assert changed is True
+    order.refresh_from_db()
+    assert order.truck_number == "612BEX13"
+
+
 @pytest.mark.parametrize("status", ["arrived", "loading", "loaded", "shipped"])
 def test_replacing_a_number_is_locked_after_arrival(order, manager, status):
     Order.objects.filter(pk=order.pk).update(
@@ -196,10 +210,10 @@ def test_wagon_takes_eight_digits_and_no_trailer(order, manager):
         set_order_transport(order, manager, truck="403BJN13")
 
 
-def test_legacy_truck_helper_keeps_trailer(order, manager):
+def test_truck_only_change_keeps_trailer(order, manager):
     set_order_transport(order, manager, truck="403BJN13", trailer="07KG837PB")
 
-    set_truck_number(order, "612 bex 13", manager)
+    set_order_transport(order, manager, truck="612 bex 13")
 
     order.refresh_from_db()
     assert (order.truck_number, order.trailer_number) == ("612BEX13", "07KG837PB")

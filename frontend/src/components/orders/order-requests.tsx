@@ -1,26 +1,18 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import { OrderDepartmentBadge } from "@/components/cashier/department-badge";
+import { OrderDepartmentBadge } from "@/components/ui/department-badge";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { LoadMore } from "@/components/ui/load-more";
 import { withBack } from "@/lib/navigation";
-import { formatEstimate, requestEstimate } from "@/lib/orders";
-import type { Order } from "@/lib/types";
+import { formatEstimate, orderItemsSummary, requestEstimate } from "@/lib/orders";
+import type { Department, Order } from "@/lib/types";
 import { cn, formatDateTime } from "@/lib/utils";
 import { OrderReviewDialogs } from "./order-review-dialogs";
 import type { OrderRequests } from "./use-order-requests";
 
 const BACK = "/orders?tab=requests";
-
-function itemsSummary(order: Order): string {
-  const shown = order.items
-    .slice(0, 2)
-    .map((item) => `${item.product_label ?? "Товар"} × ${item.quantity}`)
-    .join(", ");
-  return order.items.length > 2 ? `${shown} и ещё ${order.items.length - 2}` : shown;
-}
 
 function RequestCard({
   order,
@@ -52,7 +44,9 @@ function RequestCard({
         <OrderDepartmentBadge order={order} />
       </div>
       <div className="flex items-end justify-between gap-3">
-        <p className="min-w-0 text-[13px] text-[var(--muted-foreground)]">{itemsSummary(order) || "Без позиций"}</p>
+        <p className="min-w-0 text-[13px] text-[var(--muted-foreground)]">
+          {orderItemsSummary(order) || "Без позиций"}
+        </p>
         <div className="shrink-0 text-right tabular-nums">
           <div
             className={cn(
@@ -80,7 +74,14 @@ function RequestCard({
 }
 
 /** Вкладка «Заявки» в «Заказах»: заявки клиентов ждут проверки цен и подтверждения. */
-export function OrderRequestsSection({ requests }: { requests: OrderRequests }) {
+export function OrderRequestsSection({
+  requests,
+  departments,
+}: {
+  requests: OrderRequests;
+  /** Справочник отделов страницы — окно подтверждения не запрашивает его заново. */
+  departments?: Department[];
+}) {
   const [confirming, setConfirming] = useState<Order | null>(null);
   const [rejecting, setRejecting] = useState<Order | null>(null);
   const { items, loading, error } = requests;
@@ -90,14 +91,18 @@ export function OrderRequestsSection({ requests }: { requests: OrderRequests }) 
   return (
     <section className="flex flex-col gap-4">
       <OrderReviewDialogs
-        requests={requests}
+        departments={departments}
         confirming={confirmingOrder}
         rejecting={rejecting}
+        busy={requests.busy}
+        error={requests.actionError}
+        onConfirm={requests.confirm}
         onConfirmClose={() => {
           setConfirming(null);
           requests.clearActionError();
         }}
         onRejectClose={() => setRejecting(null)}
+        onRejected={() => void requests.reload()}
       />
       {error && <ErrorAlert message={error} onRetry={requests.reload} />}
       {loading && items.length === 0 ? (

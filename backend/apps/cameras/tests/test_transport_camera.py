@@ -9,7 +9,7 @@ from django.db import close_old_connections
 from rest_framework.test import APIClient
 from PIL import Image
 
-from apps.cameras import ai, services, shipping_segment_identity as identity, transport_recognition
+from apps.cameras import ai, services, shipping_segment_identity as identity
 from apps.cameras.api_views.access import CAM_COOKIE
 from apps.cameras.models import (
     AiCountingSession,
@@ -26,13 +26,11 @@ pytestmark = pytest.mark.django_db
 URL = "/api/cameras/cam2/transport-camera/"
 DATA = {"number_camera": "cam7", "recognition_model": "vehicle_number"}
 FRAME = b"\xff\xd8\xff\xe0one shipping camera frame"
+PRIMARY_NUMBER = identity.primary_number
 
 
 @pytest.fixture
-def setup(monkeypatch, django_user_model, settings):
-    root = django_user_model.objects.create_superuser(
-        username="transport-root", password="test"
-    )
+def setup(monkeypatch, admin_user, settings):
     MonoblockCameraSettings.objects.create(
         camera_sources=["cam2", "cam3"],
         always_on_camera_sources=["cam4"],
@@ -43,7 +41,6 @@ def setup(monkeypatch, django_user_model, settings):
     monkeypatch.setattr(identity, "capture_frame", Mock(return_value=FRAME))
     monkeypatch.setattr(identity, "primary_number", Mock(return_value="123ABC02"))
     monkeypatch.setattr(identity, "gpt_number", Mock(return_value=("", "unknown", "test-response")))
-    monkeypatch.setattr(transport_recognition, "recognize_transport_number", Mock(side_effect=AssertionError("Legacy OCR must not run in shipping check")))
     monkeypatch.setattr(
         services,
         "discover_cameras",
@@ -51,7 +48,7 @@ def setup(monkeypatch, django_user_model, settings):
             {"src": f"cam{number}", "online": False} for number in (2, 3, 7, 8, 9)
         ],
     )
-    return root
+    return admin_user
 
 
 @pytest.fixture
@@ -67,9 +64,7 @@ def test_configuration_is_superuser_only(
     setup, auth_client, request, role, method, monkeypatch
 ):
     discovery = Mock()
-    recognize = Mock()
     monkeypatch.setattr(services, "discover_cameras", discovery)
-    monkeypatch.setattr(transport_recognition, "recognize_transport_number", recognize)
     client = auth_client(request.getfixturevalue(role))
     response = (
         client.post(URL + "recognize/")
@@ -79,7 +74,6 @@ def test_configuration_is_superuser_only(
     assert response.status_code == 403
     assert not ShippingTransportCamera.objects.exists()
     discovery.assert_not_called()
-    recognize.assert_not_called()
     identity.capture_frame.assert_not_called()
     identity.primary_number.assert_not_called()
     identity.gpt_number.assert_not_called()
@@ -248,7 +242,6 @@ def test_delete_is_idempotent_and_releases_camera(setup, binding, auth_client):
 @pytest.mark.parametrize("number,model,expected", [
     ("00123455", "wagon_number", "00123455"),
     ("", "wagon_number", None),
-    ("00123456", "wagon_number", None),
     ("123ABC02", "vehicle_number", None),
 ])
 def test_wagon_recognize_uses_only_openai_and_saved_camera_without_accounting(
@@ -271,7 +264,6 @@ def test_wagon_recognize_uses_only_openai_and_saved_camera_without_accounting(
     identity.capture_frame.assert_called_once_with("cam7")
     identity.gpt_number.assert_called_once_with(FRAME, recognition_model="wagon_number")
     identity.primary_number.assert_not_called()
-    transport_recognition.recognize_transport_number.assert_not_called()
     assert not AiCountingSession.objects.exists()
     assert not Order.objects.exists()
     assert not EventLog.objects.exists()
@@ -289,9 +281,10 @@ def test_truck_recognize_uses_primary_without_openai_when_number_is_accepted(set
 
 
 @pytest.mark.parametrize("primary", [None, ai.AiUnavailable("private camera host"), ai.AiError(503, "private model path")])
-def test_truck_recognize_falls_back_on_same_frame_for_missing_or_failed_primary(setup, binding, auth_client, primary):
+def test_truck_recognize_falls_back_on_same_frame_for_missing_or_failed_primary(setup, binding, auth_client, monkeypatch, primary):
     if isinstance(primary, Exception):
-        identity.primary_number.side_effect = primary
+        monkeypatch.setattr(identity, "primary_number", PRIMARY_NUMBER)
+        monkeypatch.setattr(ai, "detect_number", Mock(side_effect=primary))
     else:
         identity.primary_number.return_value = primary
     identity.gpt_number.return_value = ("456DEF02", "vehicle_number", "test-response")
@@ -299,7 +292,18 @@ def test_truck_recognize_falls_back_on_same_frame_for_missing_or_failed_primary(
     assert response.status_code == 200
     assert response.data["number"] == "456DEF02"
     identity.capture_frame.assert_called_once_with("cam7")
-    identity.gpt_number.assert_called_once_with(FRAME, recognition_model="vehicle_number")
+    # The same general prompt as the shipping worker, not a truck-only schema.
+    identity.gpt_number.assert_called_once_with(FRAME)
+
+
+def test_truck_recognize_rejects_wagon_read_like_the_worker(setup, binding, auth_client):
+    identity.primary_number.return_value = ""
+    identity.gpt_number.return_value = ("00123455", "wagon_number", "test-response")
+    response = auth_client(setup).post(URL + "recognize/")
+    assert response.status_code == 200
+    assert response.data["number"] is None
+    assert response.data["identity_error"] == "transport_type_mismatch"
+    identity.gpt_number.assert_called_once_with(FRAME)
 
 
 @pytest.mark.parametrize("model", ["vehicle_number", "wagon_number"])

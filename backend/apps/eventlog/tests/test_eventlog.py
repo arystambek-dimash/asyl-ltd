@@ -10,17 +10,19 @@ def test_log_event_creates_entry(boss):
     assert e.payload["net"] == 1000
 
 
-def test_eventlog_is_append_only_no_update(boss):
-    e = log_event("arrival", "msg", user=boss)
-    e.message = "changed"
-    with pytest.raises(Exception):
-        e.save()
-
-
-def test_eventlog_no_delete(boss):
-    e = log_event("arrival", "msg", user=boss)
-    with pytest.raises(Exception):
-        e.delete()
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        (lambda entry: entry.save(), "неизменяемы"),
+        (lambda entry: entry.delete(), "нельзя удалять"),
+    ],
+    ids=["update", "delete"],
+)
+def test_eventlog_is_append_only(boss, change, error):
+    entry = log_event("arrival", "msg", user=boss)
+    entry.message = "changed"
+    with pytest.raises(ValueError, match=error):
+        change(entry)
 
 
 def test_events_endpoint_lists_newest_first(auth_client, operator):

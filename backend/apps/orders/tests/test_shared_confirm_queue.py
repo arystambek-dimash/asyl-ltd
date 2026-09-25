@@ -14,27 +14,17 @@ from django.utils import timezone
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import ApiPayInvoice, Order, OrderItem, Payment
-from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def departments():
-    mill = Department.objects.create(code="mill", name="Мельница")
-    city = Department.objects.create(code="city", name="Нью-Сити")
-    return mill, city
-
-
-@pytest.fixture
 def mill_cashier(user_with_perms, departments):
-    user = user_with_perms(
+    return user_with_perms(
         "mill-cashier",
         codes=["orders.view", "orders.confirm", "orders.confirm_all", "payments.view", "payments.confirm"],
+        department=departments[0],
     )
-    user.employee.sales_department = departments[0]
-    user.employee.save(update_fields=["sales_department"])
-    return user
 
 
 @pytest.fixture
@@ -78,9 +68,7 @@ def test_foreign_requests_are_listed_only_in_the_queue(auth_client, mill_cashier
 
 def test_queue_flag_needs_confirm_permission(auth_client, user_with_perms, departments, city_client):
     request = _order(city_client, status="pending")
-    viewer = user_with_perms("mill-viewer", codes=["orders.view"])
-    viewer.employee.sales_department = departments[0]
-    viewer.employee.save(update_fields=["sales_department"])
+    viewer = user_with_perms("mill-viewer", codes=["orders.view"], department=departments[0])
     api = auth_client(viewer)
 
     assert _ids(api.get("/api/orders/?status_group=pending&confirm_queue=1")) == set()
@@ -93,9 +81,11 @@ def test_foreign_requests_need_all_departments_permission(auth_client, user_with
         client=Client.objects.create_with_user(first_name="Новый", phone="+7 (705) 565-65-66"),
         status="pending",
     )
-    confirmer = user_with_perms("mill-confirmer", codes=["orders.view", "orders.confirm", "payments.confirm"])
-    confirmer.employee.sales_department = departments[0]
-    confirmer.employee.save(update_fields=["sales_department"])
+    confirmer = user_with_perms(
+        "mill-confirmer",
+        codes=["orders.view", "orders.confirm", "payments.confirm"],
+        department=departments[0],
+    )
     api = auth_client(confirmer)
 
     # Без права — только заявки своего отдела и клиентов без отдела.
@@ -111,7 +101,6 @@ def test_cashier_confirms_foreign_request_into_client_department(auth_client, mi
     item = order.items.get()
     api = auth_client(mill_cashier)
 
-    assert api.post(f"/api/orders/{order.pk}/review/").status_code == 200
     wrong = api.post(
         f"/api/orders/{order.pk}/confirm/",
         {"department": "mill", "prices": {str(item.pk): "120.00"}},
@@ -163,8 +152,6 @@ def test_foreign_payments_are_in_the_queue_and_summary(auth_client, mill_cashier
     assert _ids(api.get("/api/orders/payments-queue/")) == {requested.pk, received.pk}
     assert _ids(api.get("/api/orders/payments-queue/?department=city")) == {requested.pk, received.pk}
     assert _ids(api.get("/api/orders/payments-queue/?department=mill")) == set()
-    # Подтверждённые оплаты другого отдела в очередь не входят.
-    assert _ids(api.get("/api/orders/payments-queue/?stage=confirmed")) == set()
     summary = api.get("/api/orders/payments-queue/?summary=1")
     assert summary.status_code == 200
     assert summary.data == [{"currency": "KZT", "method": "cash", "amount": "30.00", "count": 2}]
@@ -202,28 +189,24 @@ def test_everything_outside_the_queue_stays_in_own_department(auth_client, mill_
     ApiPayInvoice.objects.create(payment=provider, invoice_id=770002, idempotency_key="scope-provider", status="paid")
     api = auth_client(mill_cashier)
 
-    # Кассир подтверждает оплату из очереди — журнал другого отдела ему всё равно не виден.
+    # Кассир подтверждает оплату из очереди — остальное в чужом отделе ему всё равно не видно.
     assert api.post(f"/api/orders/{shipped.pk}/payments/{queued.pk}/confirm/").status_code == 200
 
     assert _ids(api.get("/api/orders/")) == set()
     assert _ids(api.get("/api/orders/?status_group=shipped")) == set()
     assert api.get(f"/api/orders/{shipped.pk}/").status_code == 404
     assert api.get(f"/api/orders/{confirmed.pk}/").status_code == 404
-    assert api.get("/api/orders/cashier-log/").data == []
-    assert _ids(api.get("/api/orders/payments-queue/?stage=rejected")) == set()
     assert api.get("/api/payment-transactions/").data["count"] == 0
     responses = [
         api.post(f"/api/orders/{shipped.pk}/payments/{settled.pk}/reopen/"),
-        api.post(f"/api/orders/{shipped.pk}/payments/{rejected.pk}/restore/"),
         # Онлайн-оплата не стоит в ручной очереди кассы.
         api.post(f"/api/orders/{shipped.pk}/payments/{provider.pk}/confirm/"),
         api.post(f"/api/orders/{shipped.pk}/payments/{settled.pk}/reject/", {"reason": "нет"}, format="json"),
         api.post(f"/api/payment-transactions/{rejected.pk}/restore/"),
         # Подтверждённый заказ уже не заявка — разбирать его в очереди нечего.
-        api.post(f"/api/orders/{confirmed.pk}/review/"),
         api.post(f"/api/orders/{confirmed.pk}/reject/", {"reason": "нет"}, format="json"),
     ]
-    assert [response.status_code for response in responses] == [404] * 7
+    assert [response.status_code for response in responses] == [404] * 5
     for payment in (settled, rejected, provider):
         payment.refresh_from_db()
     assert (settled.status, rejected.status, provider.status) == ("confirmed", "rejected", "received")

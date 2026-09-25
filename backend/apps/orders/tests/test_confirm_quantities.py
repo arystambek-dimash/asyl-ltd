@@ -8,12 +8,11 @@ from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.notifications.models import Notification
 from apps.orders.models import Order, OrderItem
-from apps.orders.services import confirm_order, confirm_stock_context
+from apps.orders.services import confirm_order
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
 from apps.orders.transport import set_order_transport
 from apps.sales.models import Department
 from apps.warehouse.models import StockItem, Warehouse
-from apps.warehouse.services import get_default_warehouse
 
 pytestmark = pytest.mark.django_db
 
@@ -26,12 +25,12 @@ def department():
 
 @pytest.fixture
 def flour():
-    return Product.objects.create(name="Мука 1с", color="White", weight_kg="50", price="100.00")
+    return Product.objects.create(name="Мука 1с", color="White", weight_kg="50")
 
 
 @pytest.fixture
 def bran():
-    return Product.objects.create(name="Отруби", color="Red", weight_kg="25", price="50.00")
+    return Product.objects.create(name="Отруби", color="Red", weight_kg="25")
 
 
 @pytest.fixture
@@ -62,10 +61,7 @@ def _confirm(api, order, **payload):
 
 
 def test_awaiting_shipment_statuses_are_one_shared_set():
-    from apps.shipments import services as shipment_services
-
     assert AWAITING_SHIPMENT_STATUSES == ("confirmed", "arrived", "loading", "loaded")
-    assert not hasattr(shipment_services, "DISPATCHABLE_STATUSES")
 
 
 # --- GET /orders/{id}/confirm-context/ ---------------------------------------
@@ -113,18 +109,6 @@ def test_confirm_context_uses_the_order_warehouse(auth_client, manager, customer
     assert response.data["items"] == {str(item.pk): {"on_hand": 9, "awaiting_shipment": 4}}
 
 
-def test_confirm_context_counts_an_order_without_warehouse_on_the_default_one(customer, flour):
-    default = get_default_warehouse()
-    StockItem.objects.create(product=flour, warehouse=default, bags=6)
-    _order(customer, (flour, 2), status="confirmed", warehouse=default)
-    request = _order(customer, (flour, 10))
-    item = request.items.get()
-    # Склад заказу закрепляет база с первой позицией; до неё он не задан.
-    request.warehouse = None
-
-    assert confirm_stock_context(request) == {str(item.pk): {"on_hand": 6, "awaiting_shipment": 2}}
-
-
 def test_confirm_context_marks_a_client_number_read_only(auth_client, manager, portal_user, customer, flour):
     request = _order(customer, (flour, 10))
     set_order_transport(request, portal_user, truck="403BJN13")
@@ -145,9 +129,7 @@ def test_confirm_context_is_open_for_a_request_of_a_client_without_department(
     auth_client, user_with_perms, department, flour
 ):
     city = Department.objects.create(code="city", name="Город")
-    cashier = user_with_perms("city-cashier", codes=["orders.view", "orders.confirm"])
-    cashier.employee.sales_department = city
-    cashier.employee.save(update_fields=["sales_department"])
+    cashier = user_with_perms("city-cashier", codes=["orders.view", "orders.confirm"], department=city)
     orphan = Client.objects.create_with_user(first_name="Без", last_name="Отдела", phone="confirm-2")
     request = _order(orphan, (flour, 10))
 
@@ -163,9 +145,7 @@ def test_confirm_context_follows_the_shared_request_queue(auth_client, user_with
     request = _order(foreign, (flour, 10))
 
     def cashier(username, codes):
-        user = user_with_perms(username, codes=["orders.view", "orders.confirm", *codes])
-        user.employee.sales_department = mill
-        user.employee.save(update_fields=["sales_department"])
+        user = user_with_perms(username, codes=["orders.view", "orders.confirm", *codes], department=mill)
         return auth_client(user)
 
     url = f"/api/orders/{request.pk}/confirm-context/"

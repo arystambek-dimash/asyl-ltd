@@ -1,6 +1,6 @@
 "use client";
-import { CircleCheck, CircleX, ExternalLink } from "lucide-react";
-import { QrCodeImage } from "@/components/transactions/qr-code-image";
+import { CircleCheck, CircleX } from "lucide-react";
+import { KaspiQr } from "@/components/transactions/qr-code-image";
 import { Button } from "@/components/ui/button";
 import type { Payment } from "@/lib/types";
 import { formatCurrency, formatTime } from "@/lib/utils";
@@ -72,16 +72,7 @@ export function PosResult({
       </div>
       {qr && provider ? (
         <>
-          <QrCodeImage key={provider.qr_image_url ?? "no-image"} provider={provider} />
-          {provider.qr_token_url && (
-            <Button
-              variant="outline"
-              className="h-11 w-full"
-              onClick={() => window.open(provider.qr_token_url!, "_blank", "noopener")}
-            >
-              <ExternalLink className="size-4" /> Открыть Kaspi
-            </Button>
-          )}
+          <KaspiQr provider={provider} buttonVariant="outline" buttonClassName="h-11 w-full" />
           {provider.qr_expires_at && (
             <p className="text-xs text-[var(--muted-foreground)]">
               QR действует до {formatTime(provider.qr_expires_at)}

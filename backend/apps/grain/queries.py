@@ -4,14 +4,14 @@ from django.db.models import BigIntegerField, OuterRef, Prefetch, Subquery, Sum,
 from django.db.models.functions import Coalesce
 
 from .models import GrainMovement, Silo, SiloReservation, Wagon
-from .statuses import EXITED, TERMINAL_STATUSES
+from .statuses import FINISHED_STATUSES
 
 
 def silo_overview():
     balance = GrainMovement.objects.filter(silo_id=OuterRef("pk")).order_by("-id")
     reserved = (SiloReservation.objects.filter(silo_id=OuterRef("pk"), active=True)
                 .order_by().values("silo_id").annotate(total=Sum("amount_kg")))
-    active_wagons = Wagon.objects.exclude(status__in=TERMINAL_STATUSES | {EXITED}).only(
+    active_wagons = Wagon.objects.exclude(status__in=FINISHED_STATUSES).only(
         "id", "number", "status", "assigned_silo_id"
     )
     return (Silo.objects.select_related("silo_type").annotate(

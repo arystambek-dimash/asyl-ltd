@@ -6,37 +6,11 @@ import {
   dashboardReportRange,
 } from "@/lib/dashboard-analytics";
 import type { ReportDay, ReportSummary } from "@/lib/types";
-
-function reportDay(partial: Partial<ReportDay> & Pick<ReportDay, "date">): ReportDay {
-  return {
-    orders: 0,
-    bags: 0,
-    revenue: "0.00",
-    paid_amount: "0.00",
-    debt_amount: "0.00",
-    awaiting_amount: "0.00",
-    cash: "0.00",
-    cashless: "0.00",
-    gross_received: "0.00",
-    refunded: "0.00",
-    received: "0.00",
-    payments: 0,
-    refunds: 0,
-    revenue_by_currency: {},
-    paid_amount_by_currency: {},
-    debt_amount_by_currency: {},
-    awaiting_amount_by_currency: {},
-    cash_by_currency: {},
-    cashless_by_currency: {},
-    gross_received_by_currency: {},
-    refunded_by_currency: {},
-    received_by_currency: {},
-    ...partial,
-  };
-}
+import { makeReportDay } from "@/test-utils/factories";
 
 function reportSummary(days: ReportDay[]): ReportSummary {
   return {
+    departments: [],
     from: "2026-07-28",
     to: "2026-07-30",
     income: {
@@ -53,6 +27,9 @@ function reportSummary(days: ReportDay[]): ReportSummary {
       cashless_by_currency: {},
       gross_by_currency: {},
       refunded_by_currency: {},
+      by_method_by_currency: {},
+      payments_by_method: {},
+      method_labels: {},
     },
     shipped: {
       revenue: "0.00",
@@ -60,12 +37,10 @@ function reportSummary(days: ReportDay[]): ReportSummary {
       bags: 0,
       paid_amount: "0.00",
       debt_amount: "0.00",
-      awaiting_amount: "0.00",
       currency: "KZT",
       revenue_by_currency: {},
       paid_amount_by_currency: {},
       debt_amount_by_currency: {},
-      awaiting_amount_by_currency: {},
     },
     debt_now: {
       total: "0.00",
@@ -76,6 +51,7 @@ function reportSummary(days: ReportDay[]): ReportSummary {
       overdue_currency: "KZT",
       overdue_clients: 0,
     },
+    clients: [],
     days,
   };
 }
@@ -104,9 +80,23 @@ describe("adaptDashboardDebt", () => {
     ).toEqual({
       debtTotal: 1000,
       debtCurrency: "KZT",
+      debtOthers: [["USD", 25]],
       overdueTotal: 5,
       overdueCurrency: "USD",
+      overdueOthers: [],
       overdueClients: 1,
+    });
+  });
+
+  it("shows zero tenge while the report has not loaded", () => {
+    expect(adaptDashboardDebt(undefined)).toEqual({
+      debtTotal: 0,
+      debtCurrency: "KZT",
+      debtOthers: [],
+      overdueTotal: 0,
+      overdueCurrency: "KZT",
+      overdueOthers: [],
+      overdueClients: 0,
     });
   });
 });
@@ -114,7 +104,7 @@ describe("adaptDashboardDebt", () => {
 describe("adaptReportSummary", () => {
   it("maps the canonical report to fixed chart slots and keeps currencies separate", () => {
     const report = reportSummary([
-      reportDay({
+      makeReportDay({
         date: "2026-07-30",
         orders: 2,
         bags: 12,
@@ -124,7 +114,7 @@ describe("adaptReportSummary", () => {
         revenue_by_currency: { KZT: "1200.00", USD: "300.00" },
         received_by_currency: { KZT: "250.00", USD: "10.00" },
       }),
-      reportDay({
+      makeReportDay({
         date: "2026-07-28",
         orders: 1,
         bags: 4,
@@ -134,6 +124,8 @@ describe("adaptReportSummary", () => {
         received_by_currency: { USD: "50.00" },
       }),
     ]);
+    report.shipped.revenue_by_currency = { KZT: "1200.00", USD: "400.00" };
+    report.income.by_currency = { KZT: "250.00", USD: "60.00" };
 
     const metrics = adaptReportSummary(report, "2026-07-30", 3);
 
@@ -159,23 +151,9 @@ describe("adaptReportSummary", () => {
     });
   });
 
-  it("uses legacy flat amounts only when a report has no currency maps", () => {
-    const report = reportSummary([
-      reportDay({
-        date: "2026-07-30",
-        revenue: "400.50",
-        received: "125.25",
-      }),
-    ]);
-
-    expect(adaptReportSummary(report, "2026-07-30", 1).spark).toEqual([
-      { label: "30", revenue: 400.5, received: 125.25 },
-    ]);
-  });
-
   it("uses the report currency instead of silently zeroing a USD-only report", () => {
     const report = reportSummary([
-      reportDay({
+      makeReportDay({
         date: "2026-07-30",
         revenue: "200.00",
         received: "75.00",
@@ -185,6 +163,8 @@ describe("adaptReportSummary", () => {
     ]);
     report.income.currency = "USD";
     report.shipped.currency = "USD";
+    report.shipped.revenue_by_currency = { USD: "200.00" };
+    report.income.by_currency = { USD: "75.00" };
 
     expect(adaptReportSummary(report, "2026-07-30", 1)).toMatchObject({
       moneyCurrency: "USD",

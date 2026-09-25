@@ -24,7 +24,7 @@ start `db` and `db-backup` before the normal deploy:
 
 ```bash
 docker compose -f docker-compose.prod.yml pull \
-  db redis go2rtc nginx certbot db-backup wireguard
+  db redis go2rtc nginx certbot db-backup
 docker compose -f docker-compose.prod.yml up -d --wait db db-backup
 ```
 
@@ -36,9 +36,11 @@ an unrelated mutable infrastructure tag cannot change during a release.
 
 GitHub repository or organization secrets must provide `PROD_HOST`,
 `PROD_SSH_KEY` and `PROD_SSH_KNOWN_HOSTS`. `WAGON_SCALE_API_URL` and
-`TRUCK_SCALE_API_URL` are both optional and fail closed independently. Leave
-the wagon value empty until railway scales are installed; configure the truck
-value for the «Оформить вывоз» scale. Secrets must be
+`TRUCK_SCALE_API_URL` fail closed independently. Set the wagon value to the
+address of the scale under the arch (see `deploy/weighbridge/README.md`) and the
+truck value to the «Оформить вывоз» scale. The deploy always exports both
+secrets, and an empty secret overrides the server `.env` value, so an empty
+wagon secret disables wagon weighing in the CRM. Secrets must be
 available to both the `deploy` and unattended `recovery` jobs; do not place
 them only in an approval-gated environment that recovery does not bind to.
 Populate the host-key secret from a separately verified production fingerprint
@@ -60,13 +62,15 @@ Local compose, go2rtc, or nginx startup failure restores that recorded release
 immediately.
 
 GitHub Actions keeps the transaction pending while it checks the API and login
-flow through the public site. Either gate failing invokes the persisted rollback
-runner, restores the previous Git checkout (including bind-mounted nginx/go2rtc
-configuration), and re-pins both application images. Only after both gates pass
-does the workflow mark the candidate good and prune unused Docker images.
-If the main deploy job itself times out, an independent recovery job consumes
-the same durable transaction: it rolls back a candidate that failed before the
-public gates, or finishes finalization when both gates had already passed.
+flow through the public site. Only after both gates pass does the deploy job
+mark the candidate good and prune unused Docker images. Whenever the deploy job
+does not succeed (a failed gate, a failed step, cancellation or a timeout), the
+independent recovery job consumes the same durable transaction: it invokes the
+persisted rollback runner for a candidate that failed before the public gates,
+restoring the previous Git checkout (including bind-mounted nginx/go2rtc
+configuration) and re-pinning both application images, or re-checks and
+finishes finalization when both gates had already passed. The SSH and
+public-health helpers shared by these jobs live in `deploy/ci/prod-lib.sh`.
 
 This is an **application release rollback**, not a database restore. The backend
 runs Django migrations during container startup, so production migrations must

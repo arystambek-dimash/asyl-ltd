@@ -28,11 +28,6 @@ def _client(name, department):
     )
 
 
-def _assign(user, department):
-    user.employee.sales_department = department
-    user.employee.save(update_fields=["sales_department"])
-
-
 def test_assigned_employee_can_only_list_pick_and_retrieve_owned_clients(
     auth_client,
     user_with_perms,
@@ -53,8 +48,8 @@ def test_assigned_employee_can_only_list_pick_and_retrieve_owned_clients(
             "reports.view",
             "reports.export",
         ],
+        department=first,
     )
-    _assign(employee, first)
     api = auth_client(employee)
 
     listed = api.get("/api/clients/")
@@ -125,8 +120,8 @@ def test_assigned_employee_creates_in_own_department_and_cannot_reassign(
     employee = user_with_perms(
         "scoped-client-writer",
         codes=["clients.create", "clients.edit"],
+        department=first,
     )
-    _assign(employee, first)
     api = auth_client(employee)
 
     created = api.post(
@@ -167,8 +162,8 @@ def test_inactive_assignment_remains_a_scope_but_cannot_create_clients(
     employee = user_with_perms(
         "archived-client-owner",
         codes=["clients.view", "clients.create"],
+        department=archived,
     )
-    _assign(employee, archived)
     api = auth_client(employee)
 
     assert [row["id"] for row in api.get("/api/clients/").data] == [owned.id]
@@ -194,8 +189,8 @@ def test_store_endpoints_and_writes_follow_client_ownership(
     employee = user_with_perms(
         "scoped-store-writer",
         codes=["stores.view", "stores.create", "stores.edit"],
+        department=first,
     )
-    _assign(employee, first)
     api = auth_client(employee)
 
     assert [row["id"] for row in api.get("/api/stores/").data] == [owned_store.id]
@@ -216,14 +211,14 @@ def test_store_endpoints_and_writes_follow_client_ownership(
     assert owned_store.client_id == owned_client.id
 
 
-def test_store_financial_projections_and_mutations_follow_client_ownership(
+def test_store_mutations_follow_client_ownership(
     auth_client,
     user_with_perms,
 ):
-    first = _department("store-financial-first", "Первый")
-    second = _department("store-financial-second", "Второй")
-    owned_client = _client("Свой долг", first)
-    foreign_client = _client("Чужой долг", second)
+    first = _department("store-mutations-first", "Первый")
+    second = _department("store-mutations-second", "Второй")
+    owned_client = _client("Свой клиент", first)
+    foreign_client = _client("Чужой клиент", second)
     owned_store = Store.objects.create(
         client=owned_client,
         name="Свой магазин",
@@ -236,36 +231,13 @@ def test_store_financial_projections_and_mutations_follow_client_ownership(
         payment_schedule_type="monthly",
         payment_days=[1],
     )
-    product = Product.objects.create(
-        name="Долговой товар",
-        color="Blue",
-        weight_kg="25",
-    )
-    for client, store, amount in (
-        (owned_client, owned_store, "100.00"),
-        (foreign_client, foreign_store, "900.00"),
-    ):
-        order = Order.objects.create(
-            client=client,
-            store=store,
-            status="shipped",
-            settlement_intent="debt",
-        )
-        OrderItem.objects.create(
-            order=order,
-            product=product,
-            quantity=1,
-            unit_price=amount,
-        )
     employee = user_with_perms(
-        "scoped-store-financial",
-        codes=["stores.edit", "stores.delete", "reports.view"],
+        "scoped-store-mutations",
+        codes=["stores.edit", "stores.delete"],
+        department=first,
     )
-    _assign(employee, first)
     api = auth_client(employee)
 
-    debts = api.get("/api/stores/debts/")
-    foreign_detail = api.get(f"/api/stores/{foreign_store.pk}/debt-detail/")
     foreign_patch = api.patch(
         f"/api/stores/{foreign_store.pk}/",
         {"name": "Нельзя"},
@@ -275,9 +247,6 @@ def test_store_financial_projections_and_mutations_follow_client_ownership(
     with patch("apps.clients.views.detect_overdue", return_value=1) as detect:
         overdue = api.post("/api/stores/check-overdue/", {}, format="json")
 
-    assert debts.status_code == 200
-    assert [row["store_id"] for row in debts.data] == [owned_store.pk]
-    assert foreign_detail.status_code == 404
     assert foreign_patch.status_code == 404
     assert foreign_delete.status_code == 404
     assert overdue.status_code == 200
@@ -326,13 +295,13 @@ def test_debt_client_department_filter_is_separate_from_order_department(
     scoped_reporter = user_with_perms(
         "scoped-debt-reader",
         codes=["reports.view"],
+        department=first,
     )
-    _assign(scoped_reporter, first)
     scoped_recorder = user_with_perms(
         "scoped-payment-recorder",
         codes=["payments.create"],
+        department=first,
     )
-    _assign(scoped_recorder, first)
 
     by_client_owner = api.get(
         "/api/clients/debts/",
@@ -418,8 +387,8 @@ def test_all_clients_statement_contains_only_owned_clients(
     employee = user_with_perms(
         "scoped-statement-reader",
         codes=["reports.export"],
+        department=first,
     )
-    _assign(employee, first)
 
     response = auth_client(employee).get("/api/clients/statement/")
 

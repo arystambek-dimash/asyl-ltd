@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -8,53 +8,50 @@ import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Modal } from "@/components/ui/modal";
 import { StatusBadge } from "@/components/status-badge";
 import { OrderPaymentBadge, paymentBadgeStatus } from "@/components/payments/order-payment-badge";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
-import { FilterDropdown } from "@/components/ui/filter-dropdown";
-import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { BADGE_TONE_COLOR } from "@/components/ui/badge";
+import { DepartmentBadge, DepartmentDot } from "@/components/ui/department-badge";
+import { FilterDropdown, FilterTrigger } from "@/components/ui/filter-dropdown";
+import { SortableHeader, useSortState } from "@/components/ui/sortable-header";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
+import { ActionMenu } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
-import { OrderPriceCorrectionModal } from "@/components/order-price-correction-modal";
 import { OrderStatusSelect } from "@/components/order-status-select";
-import { ManualOrderStatusModal, type ManualOrderTarget } from "@/components/manual-order-status-modal";
-import { ShipmentRollbackModal } from "@/components/shipment-rollback-modal";
-import { OrderFixationModal, canFixateOrder } from "@/components/order-fixation-modal";
+import { useOrderStatusChange } from "@/components/orders/use-order-status-change";
+import { useOrderActions } from "@/components/orders/order-actions";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import { ArchiveDock } from "@/components/orders/archive-dock";
-import { OrderPurgeDialog } from "@/components/orders/order-purge-dialog";
+import { useOrderArchiveActions } from "@/components/orders/use-order-archive-actions";
 import { DepartmentManager } from "@/components/orders/department-manager";
 import { OrderRequestsSection } from "@/components/orders/order-requests";
 import { TruckEntrySection } from "@/components/orders/truck-entry";
 import { useOrderRequests } from "@/components/orders/use-order-requests";
 import { departmentScope } from "@/components/cashier/scope";
-import { Tabs } from "@/components/ui/tabs";
-import { ORDER_PUBLIC_STATUSES, ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
+import { Tabs, type TabDef } from "@/components/ui/tabs";
+import { ORDER_PUBLIC_STATUSES, ORDER_STATUS_LABELS, orderStatusTone } from "@/lib/constants";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useDebounced } from "@/lib/use-debounced";
 import { LoadMore } from "@/components/ui/load-more";
 import { useAuth } from "@/store/auth";
-import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
-import { cn, currencySymbol, formatDateTime, formatIsoDate, formatMoney, sumMoneyByCurrency } from "@/lib/utils";
+import { clientLabel, orderItemsSummary } from "@/lib/orders";
+import { otherCurrencyAmounts } from "@/lib/currency-map";
+import { cn, formatCurrency, formatDateTime, formatIsoDate } from "@/lib/utils";
 import { orderTransportText } from "@/lib/wagons";
 import { useDismiss } from "@/lib/use-dismiss";
-import { useRovingTabs } from "@/lib/use-roving-tabs";
 import { clearOrderDraft, loadOrderDraft } from "@/lib/order-draft";
 import {
   Archive,
   BarChart3,
   Building2,
-  CalendarClock,
   CalendarDays,
   Check,
-  ChevronDown,
   ChevronLeft,
   CircleDollarSign,
   Clock3,
@@ -62,21 +59,13 @@ import {
   Eraser,
   FileSpreadsheet,
   ListChecks,
-  Pencil,
   Plus,
   RotateCcw,
-  Search,
   Trash2,
 } from "lucide-react";
-import type { Department, DepartmentSummary, Order } from "@/lib/types";
+import type { Department, DepartmentSummary, Order, OrderListSummary } from "@/lib/types";
 
 const OrderForm = dynamic(() => import("@/components/order-form").then((m) => m.OrderForm));
-
-function shortDate(value: string) {
-  if (!value) return "";
-  const [year, month, day] = value.split("-");
-  return `${day}.${month}.${year}`;
-}
 
 function DateRangeFilter({
   dateFrom,
@@ -94,34 +83,26 @@ function DateRangeFilter({
   const active = Boolean(dateFrom || dateTo);
   const value =
     dateFrom && dateTo
-      ? `${shortDate(dateFrom)} — ${shortDate(dateTo)}`
+      ? `${formatIsoDate(dateFrom)} — ${formatIsoDate(dateTo)}`
       : dateFrom
-        ? `с ${shortDate(dateFrom)}`
+        ? `с ${formatIsoDate(dateFrom)}`
         : dateTo
-          ? `по ${shortDate(dateTo)}`
+          ? `по ${formatIsoDate(dateTo)}`
           : "Все";
 
   useDismiss(ref, () => setOpen(false), open);
 
   return (
     <div ref={ref} className="relative shrink-0">
-      <button
-        type="button"
+      <FilterTrigger
+        label="Дата"
+        value={value}
+        icon={CalendarDays}
+        active={active}
+        open={open}
         onClick={() => setOpen((current) => !current)}
         aria-haspopup="dialog"
-        aria-expanded={open}
-        className={cn(
-          "flex h-9 items-center gap-1.5 rounded-md border px-3 text-[13px] transition-colors",
-          active
-            ? "border-[var(--primary)]/40 bg-[var(--primary)]/5 text-[var(--foreground)]"
-            : "border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-        )}
-      >
-        <CalendarDays className="size-3.5" />
-        <span className="text-[var(--muted-foreground)]">Дата:</span>
-        <span className="max-w-52 truncate font-medium">{value}</span>
-        <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
-      </button>
+      />
 
       {open && (
         <div
@@ -178,24 +159,18 @@ function DateRangeFilter({
 }
 
 /* ── Доли статусов в сумме: стековый бар + легенда ──────────────────────── */
-const STATUS_SHARE_COLORS: Record<string, string> = {
-  pending: "var(--warning)",
-  confirmed: "var(--ring)",
-  loaded: "var(--primary)",
-  shipped: "var(--success)",
-};
 
-function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
-  const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
-  const symbol = currencies.size === 1 ? currencySymbol(currencies.values().next().value ?? "KZT") : "";
+function StatusShareBar({
+  byGroup,
+  total,
+  currency,
+}: {
+  byGroup: Record<string, string>;
+  total: number;
+  currency: string;
+}) {
   const shares = ORDER_PUBLIC_STATUSES.filter((g) => g !== "cancelled")
-    .map((g) => ({
-      key: g,
-      label: ORDER_STATUS_LABELS[g],
-      value: orders
-        .filter((o) => orderStatusGroup(o.status) === g)
-        .reduce((s, o) => s + Number(o.total_amount || 0), 0),
-    }))
+    .map((g) => ({ key: g, label: ORDER_STATUS_LABELS[g], value: Number(byGroup[g] ?? 0) }))
     .filter((s) => s.value > 0);
   if (total <= 0 || shares.length === 0) return null;
   return (
@@ -204,15 +179,15 @@ function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
         {shares.map((s) => (
           <div
             key={s.key}
-            title={`${s.label}: ${formatMoney(s.value)}${symbol ? ` ${symbol}` : ""}`}
-            style={{ width: `${(s.value / total) * 100}%`, background: STATUS_SHARE_COLORS[s.key] }}
+            title={`${s.label}: ${formatCurrency(s.value, currency)}`}
+            style={{ width: `${(s.value / total) * 100}%`, background: BADGE_TONE_COLOR[orderStatusTone(s.key)] }}
           />
         ))}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--muted-foreground)]">
         {shares.map((s) => (
           <span key={s.key} className="flex items-center gap-1.5">
-            <span className="size-2 rounded-full" style={{ background: STATUS_SHARE_COLORS[s.key] }} />
+            <span className="size-2 rounded-full" style={{ background: BADGE_TONE_COLOR[orderStatusTone(s.key)] }} />
             {s.label}
             <span className="tabular-nums font-medium text-[var(--foreground)]">
               {Math.round((s.value / total) * 100)}%
@@ -224,12 +199,14 @@ function StatusShareBar({ orders, total }: { orders: Order[]; total: number }) {
   );
 }
 
-function DepartmentBadge({ order }: { order: Order }) {
+/** Отдел в списке заказов — без подстановки отдела клиента, в отличие от OrderDepartmentBadge в заявках. */
+function OrderListDepartmentBadge({ order }: { order: Order }) {
   return (
-    <span className="inline-flex max-w-44 items-center gap-1.5 rounded-full border bg-[var(--card)] px-2.5 py-1 text-[11px] font-semibold">
-      <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: order.department_color ?? "#64748B" }} />
-      <span className="truncate">{order.department ? order.department_name || order.department : "Нет отдела"}</span>
-    </span>
+    <DepartmentBadge
+      name={order.department ? order.department_name : null}
+      color={order.department_color}
+      className="max-w-44 bg-[var(--card)]"
+    />
   );
 }
 
@@ -241,8 +218,8 @@ function DepartmentBadge({ order }: { order: Order }) {
  * «оборот большой, а деньги где». Доли считаются только по основной валюте:
  * складывать ₸ и $ в один процент нельзя.
  */
-function PaymentBreakdown({ row, fallbackCurrency }: { row: DepartmentSummary; fallbackCurrency?: string | null }) {
-  const currency = row.revenue_currency ?? fallbackCurrency ?? "KZT";
+function PaymentBreakdown({ row }: { row: DepartmentSummary }) {
+  const currency = row.revenue_currency;
   const revenue = Number(row.revenue ?? 0);
   const paid = Number(row.paid ?? 0);
   const debt = Number(row.debt ?? 0);
@@ -261,7 +238,7 @@ function PaymentBreakdown({ row, fallbackCurrency }: { row: DepartmentSummary; f
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Получено</span>
         <span className="truncate text-xs font-bold tabular-nums">
-          {formatMoney(row.paid)} {currencySymbol(currency)}
+          {formatCurrency(row.paid, currency)}
           {revenue > 0 && <span className="ml-1 font-medium text-[var(--muted-foreground)]">· {paidShare}%</span>}
         </span>
       </div>
@@ -275,16 +252,16 @@ function PaymentBreakdown({ row, fallbackCurrency }: { row: DepartmentSummary; f
             Долг · {row.debt_orders} зак.
           </span>
           <span className="truncate text-xs font-bold tabular-nums text-[var(--destructive)]">
-            {formatMoney(row.debt)} {currencySymbol(currency)}
+            {formatCurrency(row.debt, currency)}
           </span>
         </div>
       )}
       {/* Долги во второй валюте — отдельной строкой, без сложения с основной. */}
-      {Object.entries(row.debt_by_currency ?? {})
-        .filter(([code]) => code !== currency && Number(row.debt_by_currency?.[code] ?? 0) > 0)
+      {Object.entries(row.debt_by_currency)
+        .filter(([code, amount]) => code !== currency && Number(amount) > 0)
         .map(([code, amount]) => (
           <div key={code} className="mt-0.5 text-right text-[11px] tabular-nums text-[var(--muted-foreground)]">
-            {formatMoney(amount)} {currencySymbol(code)}
+            {formatCurrency(amount, code)}
           </div>
         ))}
 
@@ -303,46 +280,41 @@ function PaymentBreakdown({ row, fallbackCurrency }: { row: DepartmentSummary; f
   );
 }
 
+type AnalyticsView = "departments" | "overview";
+
+const ANALYTICS_VIEW_TABS: TabDef[] = [
+  { key: "departments", label: "По отделам", icon: Building2, panelId: "orders-analytics-departments" },
+  { key: "overview", label: "Общая", icon: BarChart3, panelId: "orders-analytics-overview" },
+];
+
 function OrdersAnalytics({
   rows,
   active,
   onSelect,
-  orders,
-  activeCount,
+  overviewUrl,
   scopeName,
 }: {
   rows: DepartmentSummary[];
   active: string;
   onSelect: (code: string) => void;
-  orders: Order[];
-  activeCount: number;
+  /** Итоги «Общей» вкладки: те же фильтры и поиск, что у списка. */
+  overviewUrl: string;
   /** Отдел сотрудника, закреплённого за отделом: сервер отдаёт карточку только его отдела. */
   scopeName?: string;
 }) {
-  const [view, setView] = useState<"departments" | "overview">("departments");
-  const analyticsTabs = useRovingTabs({
-    tabs: ["departments", "overview"] as const,
-    active: view,
-    onChange: setView,
-    label: "Вид аналитики заказов",
-  });
+  const [view, setView] = useState<AnalyticsView>("departments");
   const totalOrders = rows.reduce((sum, row) => sum + row.orders, 0);
   const activeDepartment = rows.find((row) => row.code === active);
-  const currencies = new Set(orders.map((order) => order.currency ?? "KZT"));
-  const oneCurrency = currencies.size <= 1 ? (currencies.values().next().value ?? "KZT") : null;
-
-  // Сумма по валютам: тенге и доллары не складываются. Крупно — валюта с
-  // наибольшим оборотом, остальные строкой в подписи. Раньше при смешении
-  // валют вместо суммы стояло слово «Разные валюты» — цифр не было вовсе.
-  const sumByCurrency = sumMoneyByCurrency(
-    orders,
-    (order) => order.total_amount,
-    (order) => order.currency,
-  );
-  const mainCurrency = primaryMoneyCurrency(sumByCurrency);
-  const mainTotal = sumByCurrency[mainCurrency] ?? 0;
-  const otherSums = otherCurrencyAmounts(sumByCurrency, mainCurrency);
-  const mainOrders = orders.filter((order) => (order.currency ?? "KZT") === mainCurrency);
+  // Итоги считает сервер по всей выборке: раньше складывалась только
+  // загруженная страница списка (50 заказов), и при большем числе заказов
+  // «Всего» и «Сумма» были занижены.
+  const overview = useApi<OrderListSummary>(view === "overview" ? overviewUrl : null);
+  const summary = overview.data;
+  // Сумма по валютам: тенге и доллары не складываются. Крупно — основная
+  // валюта, остальные строкой в подписи.
+  const mainCurrency = summary?.total_currency ?? "KZT";
+  const mainTotal = Number(summary?.total_by_currency[mainCurrency] ?? 0);
+  const otherSums = summary ? otherCurrencyAmounts(summary.total_by_currency, mainCurrency) : [];
 
   return (
     <section className="flex flex-col">
@@ -352,39 +324,23 @@ function OrdersAnalytics({
             ? "Сравнение отделов: нажмите на отдел, чтобы показать его заказы"
             : "Общие показатели по текущим фильтрам и поиску"}
         </p>
-        <div
-          {...analyticsTabs.tabListProps}
-          className="grid grid-cols-2 rounded-xl border bg-[var(--muted)]/55 p-1 sm:w-fit"
-        >
-          <button
-            type="button"
-            {...analyticsTabs.getTabProps("departments")}
-            className={cn(
-              "flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all",
-              view === "departments"
-                ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm ring-1 ring-[var(--border)]"
-                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-            )}
-          >
-            <Building2 className="size-3.5" /> По отделам
-          </button>
-          <button
-            type="button"
-            {...analyticsTabs.getTabProps("overview")}
-            className={cn(
-              "flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all",
-              view === "overview"
-                ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm ring-1 ring-[var(--border)]"
-                : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-            )}
-          >
-            <BarChart3 className="size-3.5" /> Общая
-          </button>
-        </div>
+        <Tabs
+          variant="segment"
+          label="Вид аналитики заказов"
+          tabs={ANALYTICS_VIEW_TABS}
+          active={view}
+          onChange={(key) => setView(key as AnalyticsView)}
+          className="w-fit"
+        />
       </div>
 
       {view === "departments" ? (
-        <div {...analyticsTabs.getTabPanelProps("departments")} className="pt-4">
+        <div
+          id="orders-analytics-departments"
+          role="tabpanel"
+          aria-labelledby="orders-analytics-departments-tab"
+          className="pt-4"
+        >
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
             <p className="text-xs text-[var(--muted-foreground)]">
               {activeDepartment ? (
@@ -428,7 +384,7 @@ function OrdersAnalytics({
                     <div className="min-w-0">
                       <div className="truncate text-sm font-bold">{row.name}</div>
                       <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]">
-                        <span className="size-1.5 rounded-full" style={{ backgroundColor: row.color }} />
+                        <DepartmentDot color={row.color} className="size-1.5" />
                         {row.active} сейчас в работе
                       </div>
                     </div>
@@ -446,18 +402,18 @@ function OrdersAnalytics({
                         Стоимость заказов
                       </div>
                       <div className="mt-1 truncate text-sm font-bold tabular-nums">
-                        {formatMoney(row.revenue)} {currencySymbol(row.revenue_currency ?? oneCurrency ?? "KZT")}
+                        {formatCurrency(row.revenue, row.revenue_currency)}
                       </div>
                       {/* Вторая валюта отдельной строкой: раньше на её месте
                           было слово «По валютам» и суммы не было видно вовсе. */}
-                      {Object.entries(row.revenue_by_currency ?? {})
-                        .filter(([currency]) => currency !== (row.revenue_currency ?? "KZT"))
+                      {Object.entries(row.revenue_by_currency)
+                        .filter(([currency]) => currency !== row.revenue_currency)
                         .map(([currency, amount]) => (
                           <div
                             key={currency}
                             className="truncate text-[11px] tabular-nums text-[var(--muted-foreground)]"
                           >
-                            {formatMoney(amount)} {currencySymbol(currency)}
+                            {formatCurrency(amount, currency)}
                           </div>
                         ))}
                     </div>
@@ -465,7 +421,7 @@ function OrdersAnalytics({
 
                   {/* Из чего состоит выручка: сколько уже получено и сколько
                       висит долгом. Одной цифры оборота для этого мало. */}
-                  <PaymentBreakdown row={row} fallbackCurrency={oneCurrency} />
+                  <PaymentBreakdown row={row} />
                 </button>
               ))}
             </div>
@@ -476,25 +432,32 @@ function OrdersAnalytics({
           )}
         </div>
       ) : (
-        <div {...analyticsTabs.getTabPanelProps("overview")} className="grid grid-cols-2 gap-3 pt-4 sm:grid-cols-3">
-          <p className="col-span-full text-xs text-[var(--muted-foreground)]">
-            Показатели по загруженным заказам. Следующие заказы доступны под списком.
-          </p>
-          <StatCard label="Всего заказов" value={String(orders.length)} icon={ListChecks} />
-          <StatCard label="В процессе" value={String(activeCount)} icon={Clock3} />
+        <div
+          id="orders-analytics-overview"
+          role="tabpanel"
+          aria-labelledby="orders-analytics-overview-tab"
+          className="grid grid-cols-2 gap-3 pt-4 sm:grid-cols-3"
+        >
+          {overview.error && (
+            <div className="col-span-full">
+              <ErrorAlert message={overview.error} onRetry={overview.reload} />
+            </div>
+          )}
+          <StatCard label="Всего заказов" value={summary ? String(summary.orders) : "—"} icon={ListChecks} />
+          <StatCard label="В процессе" value={summary ? String(summary.active) : "—"} icon={Clock3} />
           <StatCard
             label="Сумма"
-            value={`${formatMoney(mainTotal)} ${currencySymbol(mainCurrency)}`}
+            value={summary ? formatCurrency(mainTotal, mainCurrency) : "—"}
             icon={CircleDollarSign}
             accent
             caption={
               otherSums.length > 0
-                ? `ещё ${otherSums.map(([c, v]) => `${formatMoney(v)} ${currencySymbol(c)}`).join(", ")} · без отменённых`
+                ? `ещё ${otherSums.map(([c, v]) => formatCurrency(v, c)).join(", ")} · без отменённых`
                 : "Без отменённых и отклонённых"
             }
             className="col-span-2 sm:col-span-1"
           >
-            <StatusShareBar orders={mainOrders} total={mainTotal} />
+            {summary && <StatusShareBar byGroup={summary.by_status_group} total={mainTotal} currency={mainCurrency} />}
           </StatCard>
         </div>
       )}
@@ -516,10 +479,6 @@ function OrderTemplatePicker({
   onClear: () => void;
 }) {
   const sorted = [...orders].sort((a, b) => b.id - a.id);
-  const itemsSummary = selected?.items
-    .slice(0, 2)
-    .map((item) => `${item.product_label ?? "Товар"} × ${item.quantity}`)
-    .join(", ");
 
   return (
     <section className="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-slate-50/70 px-3.5 py-3 sm:flex-row sm:items-center">
@@ -531,9 +490,7 @@ function OrderTemplatePicker({
           <div className="text-sm font-bold text-slate-900">Повторить старый заказ</div>
           <div className="truncate text-xs text-slate-500">
             {selected
-              ? `${selected.client_name} · ${itemsSummary || "Без позиций"}${
-                  selected.items.length > 2 ? ` и ещё ${selected.items.length - 2}` : ""
-                } · ${formatMoney(selected.total_amount)} ${currencySymbol(selected.currency)}`
+              ? `${selected.client_name} · ${orderItemsSummary(selected) || "Без позиций"} · ${formatCurrency(selected.total_amount, selected.currency)}`
               : "Данные заполнятся из шаблона, заказ сохранится после вашей проверки."}
           </div>
           {draftSaved && (
@@ -556,7 +513,7 @@ function OrderTemplatePicker({
           <option value="">Новый заказ с нуля</option>
           {sorted.map((order) => (
             <option key={order.id} value={order.id}>
-              #{order.id} · {order.client_name ?? `Клиент ${order.client}`} · {formatDateTime(order.created_at)}
+              #{order.id} · {clientLabel(order)} · {formatDateTime(order.created_at)}
             </option>
           ))}
         </select>
@@ -590,22 +547,20 @@ function OrdersPageInner() {
   const [dept, setDept] = useState("all");
   const [q, setQ] = useState("");
   const search = useDebounced(q.trim());
-  const [sortKey, setSortKey] = useState("id");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const { sortKey, sortDir, toggleSort } = useSortState("id", "desc");
   const [view, setView] = useState<"orders" | "archive">("orders");
   const [tab, setTab] = useState<OrdersTab>(() => tabFromQuery(searchParams.get("tab")));
   // Фильтры уходят на бэк: список, карточки и сумма считаются по выборке сервера.
-  const ordersUrl = useMemo(() => {
+  const listFilters = useMemo(() => {
     const params = new URLSearchParams();
     if (dateFrom) params.set("date_from", dateFrom);
     if (dateTo) params.set("date_to", dateTo);
     if (dept !== "all") params.set("department", dept);
     if (status !== "all") params.set("status_group", status);
     if (search) params.set("search", search);
-    params.set("ordering", `${sortDir === "desc" ? "-" : ""}${sortKey}`);
-    const query = params.toString();
-    return `/orders/${query ? `?${query}` : ""}`;
-  }, [dateFrom, dateTo, dept, status, search, sortKey, sortDir]);
+    return params.toString();
+  }, [dateFrom, dateTo, dept, status, search]);
+  const ordersUrl = `/orders/?${listFilters ? `${listFilters}&` : ""}ordering=${sortDir === "desc" ? "-" : ""}${sortKey}`;
   const paged = usePagedApi<Order>(view === "orders" ? ordersUrl : null, 50);
   const orders = paged.items;
   const { loading, error, reload } = paged;
@@ -619,14 +574,13 @@ function OrdersPageInner() {
   }, [dateFrom, dateTo, status]);
   // Аналитика по отделам скрыта в окне: сводка грузится, только пока окно открыто.
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
-  const { data: departmentSummary, reload: reloadSummary } = useApi<DepartmentSummary[]>(
+  const { data: departmentSummary } = useApi<DepartmentSummary[]>(
     view === "orders" && analyticsOpen ? summaryUrl : null,
   );
   const { data: departments, reload: reloadDepartments } = useApi<Department[]>("/departments/");
   const { me } = useAuth();
   const canCreate = can(me, "orders.create");
   const canEdit = can(me, "orders.edit");
-  const canCorrectPrice = can(me, "orders.correct_price");
   const canExport = can(me, "reports.export");
   const canRollback = can(me, "orders.rollback");
   const canManageDepartments = can(me, "sys_permissions.manage");
@@ -636,8 +590,7 @@ function OrdersPageInner() {
   // Быстрый ввод номеров «Фуры» — та же правка заказа, что и в форме (orders.edit).
   const activeTab: OrdersTab =
     canReviewOrders && tab === "requests" ? "requests" : canEdit && tab === "trucks" ? "trucks" : "orders";
-  const reloadAfterReview = useCallback(() => Promise.all([reload(), reloadSummary()]), [reload, reloadSummary]);
-  const requests = useOrderRequests(canReviewOrders && view === "orders", reloadAfterReview);
+  const requests = useOrderRequests(canReviewOrders && view === "orders", reload);
   function chooseTab(key: string) {
     const next = tabFromQuery(key);
     // «Фуры» правят номера без перечитывания списка: вернулись к заказам — «Машина» свежая.
@@ -652,18 +605,6 @@ function OrdersPageInner() {
   // Смена ключа пересоздаёт форму заказа с нуля (кнопка «Очистить всё»).
   const [orderFormResetKey, setOrderFormResetKey] = useState(0);
   const [statementOpen, setStatementOpen] = useState(false);
-  const [editing, setEditing] = useState<Order | null>(null);
-  const [correctingPrice, setCorrectingPrice] = useState<Order | null>(null);
-  const [delItem, setDelItem] = useState<Order | null>(null);
-  const [delBusy, setDelBusy] = useState(false);
-  const [delError, setDelError] = useState("");
-  const [statusBusyId, setStatusBusyId] = useState<number | null>(null);
-  const [statusActionError, setStatusActionError] = useState("");
-  const [manualStatusOrder, setManualStatusOrder] = useState<Order | null>(null);
-  const [manualStatusTarget, setManualStatusTarget] = useState<ManualOrderTarget | null>(null);
-  const [rollbackOrder, setRollbackOrder] = useState<Order | null>(null);
-  const [fixatingOrder, setFixatingOrder] = useState<Order | null>(null);
-  const [rollbackTarget, setRollbackTarget] = useState<"pending" | "confirmed" | "cancelled">("confirmed");
   const { data: trashPreview, reload: reloadTrashPreview } = useApi<{ count: number; results: Order[] }>(
     canEdit && view === "orders" ? "/orders/trash-preview/" : null,
   );
@@ -681,9 +622,8 @@ function OrdersPageInner() {
     reload: reloadRequestedTemplate,
   } = useApi<Order>(open && canCreate && requestedTemplateId > 0 ? `/orders/${requestedTemplateId}/` : null);
   const templateOrders = useMemo(() => {
-    const candidates = orders ?? [];
-    if (!requestedTemplate || candidates.some((order) => order.id === requestedTemplate.id)) return candidates;
-    return [requestedTemplate, ...candidates];
+    if (!requestedTemplate || orders.some((order) => order.id === requestedTemplate.id)) return orders;
+    return [requestedTemplate, ...orders];
   }, [orders, requestedTemplate]);
 
   useEffect(() => {
@@ -713,113 +653,31 @@ function OrdersPageInner() {
     if (requestedTemplateId) router.replace("/orders");
   }
 
-  async function confirmDelete() {
-    if (!delItem) return;
-    setDelBusy(true);
-    setDelError("");
-    try {
-      await api.delete(`/orders/${delItem.id}/`);
-      setDelItem(null);
-      reload();
-      reloadTrashPreview();
-    } catch (e) {
-      setDelError(apiError(e));
-    } finally {
-      setDelBusy(false);
-    }
-  }
+  const statusChange = useOrderStatusChange({
+    canEdit,
+    canRollback,
+    // Заявку подтверждает окно карточки: ?confirm=1 открывает его сразу.
+    onConfirm: (order) => router.push(`/orders/${order.id}?confirm=1`),
+    onChanged: () => Promise.all([reload(), reloadTrashPreview()]),
+  });
 
-  async function applySimpleStatus(order: Order, target: string) {
-    setStatusBusyId(order.id);
-    setStatusActionError("");
-    try {
-      await api.post(`/orders/${order.id}/set-status/`, { status: target });
-      await Promise.all([reload(), reloadSummary()]);
-    } catch (cause) {
-      setStatusActionError(apiError(cause));
-    } finally {
-      setStatusBusyId(null);
-    }
-  }
+  // Правка, фиксация, стоимость и архив живут в одном меню «⋮» строки заказа.
+  const orderActions = useOrderActions({
+    onChanged: reload,
+    onArchived: () => Promise.all([reload(), reloadTrashPreview()]),
+  });
+  const hasActions = orderActions.available;
 
-  function chooseStatus(order: Order, target: string) {
-    if (["draft", "pending"].includes(order.status) && target === "confirmed") {
-      router.push(`/orders/${order.id}#order-confirmation`);
-      return;
-    }
-    if (order.status === "shipped" && target !== "shipped") {
-      setRollbackOrder(order);
-      setRollbackTarget(target as "pending" | "confirmed" | "cancelled");
-      return;
-    }
-    if (target === "shipped" || target === "cancelled") {
-      setManualStatusOrder(order);
-      setManualStatusTarget(target);
-      return;
-    }
-    void applySimpleStatus(order, target);
-  }
-
-  // Карандаш и архив живут в одном меню «⋮» строки заказа.
-  const rowActions = (o: Order): ActionMenuItem[] => [
-    ...(canEdit
-      ? [
-          {
-            key: "edit",
-            label: "Изменить",
-            icon: Pencil,
-            onSelect: () => setEditing(o),
-          },
-        ]
-      : []),
-    ...(canCorrectPrice
-      ? [
-          {
-            key: "correct-price",
-            label: "Корректировать стоимость",
-            icon: CircleDollarSign,
-            onSelect: () => setCorrectingPrice(o),
-          },
-        ]
-      : []),
-    ...(canEdit && canFixateOrder(o)
-      ? [
-          {
-            key: "fixate",
-            label: "Зафиксировать статус и оплату",
-            icon: CalendarClock,
-            onSelect: () => setFixatingOrder(o),
-          },
-        ]
-      : []),
-    ...(canEdit
-      ? [
-          {
-            key: "archive",
-            label: "В архив",
-            icon: Archive,
-            tone: "destructive" as const,
-            disabled: ["arrived", "loading", "loaded"].includes(o.status),
-            hint: ["arrived", "loading", "loaded"].includes(o.status)
-              ? "Сначала завершите или верните текущую погрузку"
-              : undefined,
-            onSelect: () => {
-              setDelError("");
-              setDelItem(o);
-            },
-          },
-        ]
-      : []),
-  ];
-
-  const list = orders ?? [];
-  const filtered = list;
-
-  // Карточки считаются по видимой выборке (фильтры + поиск): выбрал
-  // «На рассмотрении» — видишь их сумму. Отменённые и отклонённые
-  // не искажают цифры, «в процессе» = ещё не оформлен выезд.
-  const countable = filtered.filter((o) => orderStatusGroup(o.status) !== "cancelled");
-  const activeCount = countable.filter((o) => orderStatusGroup(o.status) !== "shipped").length;
+  const statusCell = (o: Order) =>
+    canEdit && statusChange.canChoose(o) ? (
+      <OrderStatusSelect
+        status={o.status}
+        disabled={statusChange.busyId === o.id}
+        onChange={(target) => statusChange.choose(o, target)}
+      />
+    ) : (
+      <StatusBadge status={o.status} dot />
+    );
 
   // Счётчики в опциях не показываем: при серверной фильтрации в наличии
   // только выбранная группа, честных цифр по остальным нет.
@@ -827,17 +685,6 @@ function OrdersPageInner() {
     { key: "all", label: "Все" },
     ...ORDER_PUBLIC_STATUSES.map((st) => ({ key: st, label: ORDER_STATUS_LABELS[st] })),
   ];
-
-  const toggleSort = (k: string) => {
-    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      setSortDir("asc");
-    }
-  };
-
-  // The API sorts the complete selection before slicing a page.
-  const sorted = filtered;
 
   return (
     <AppShell
@@ -851,7 +698,6 @@ function OrdersPageInner() {
               <DepartmentManager
                 onChanged={() => {
                   void reloadDepartments();
-                  void reloadSummary();
                   void reload();
                 }}
               />
@@ -883,14 +729,7 @@ function OrdersPageInner() {
           loading={trashLoading}
           error={trashError}
           reload={reloadTrash}
-          onBack={() => {
-            reload();
-            setView("orders");
-          }}
-          onRestored={() => {
-            reload();
-            reloadTrash();
-          }}
+          onBack={() => setView("orders")}
         />
       ) : (
         <>
@@ -910,7 +749,7 @@ function OrdersPageInner() {
             />
           )}
           {activeTab === "requests" ? (
-            <OrderRequestsSection requests={requests} />
+            <OrderRequestsSection requests={requests} departments={departments ?? undefined} />
           ) : activeTab === "trucks" ? (
             <TruckEntrySection />
           ) : (
@@ -930,22 +769,18 @@ function OrdersPageInner() {
                     // Выбрал отдел — сразу к его заказам; сброс выбора оставляет окно открытым.
                     if (code !== "all") setAnalyticsOpen(false);
                   }}
-                  orders={countable}
-                  activeCount={activeCount}
+                  overviewUrl={`/orders/list-summary/${listFilters ? `?${listFilters}` : ""}`}
                   scopeName={assigned?.name}
                 />
               </Modal>
 
               <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div className="relative max-w-md flex-1">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-                  <Input
-                    className="pl-9"
-                    placeholder="Поиск по клиенту, номеру или #ID"
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                  />
-                </div>
+                <SearchInput
+                  wrapperClassName="max-w-md flex-1"
+                  placeholder="Поиск по клиенту, номеру или #ID"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                />
                 <div className="flex flex-wrap items-center gap-2">
                   <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onDateFrom={setDateFrom} onDateTo={setDateTo} />
                   {(departments?.length ?? 0) > 0 && !assigned && (
@@ -975,9 +810,9 @@ function OrdersPageInner() {
                   <ErrorAlert message={error} onRetry={reload} />
                 </div>
               )}
-              {statusActionError && (
+              {statusChange.error && (
                 <div className="mb-4">
-                  <ErrorAlert message={statusActionError} />
+                  <ErrorAlert message={statusChange.error} />
                 </div>
               )}
 
@@ -985,14 +820,13 @@ function OrdersPageInner() {
               <div className="flex flex-col gap-3 md:hidden">
                 {loading ? (
                   <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-                ) : sorted.length === 0 ? (
+                ) : orders.length === 0 ? (
                   <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">Заказов пока нет.</p>
                 ) : (
-                  sorted.map((o) => (
+                  orders.map((o) => (
                     <ActionCard
                       key={o.id}
                       primaryAction={{
-                        kind: "link",
                         href: `/orders/${o.id}`,
                         label: `Открыть заказ #${o.id}`,
                       }}
@@ -1001,36 +835,22 @@ function OrdersPageInner() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold">#{o.id}</span>
-                          {showDept && <DepartmentBadge order={o} />}
+                          {showDept && <OrderListDepartmentBadge order={o} />}
                         </div>
-                        {canEdit && (o.status !== "shipped" || canRollback) ? (
-                          <div className="relative z-10">
-                            <OrderStatusSelect
-                              status={o.status}
-                              disabled={statusBusyId === o.id}
-                              onChange={(target) => chooseStatus(o, target)}
-                            />
-                          </div>
-                        ) : (
-                          <StatusBadge status={o.status} dot />
-                        )}
+                        <div className="relative z-10">{statusCell(o)}</div>
                       </div>
-                      <div className="text-sm font-medium">{o.client_name || `Клиент #${o.client}`}</div>
+                      <div className="text-sm font-medium">{clientLabel(o)}</div>
                       <div className="text-xs text-[var(--muted-foreground)]">
                         Создан {formatDateTime(o.created_at)}
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-sm">
                         <div>
                           <div className="text-[11px] text-[var(--muted-foreground)]">Сумма</div>
-                          <div className="font-semibold tabular-nums">
-                            {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
-                          </div>
+                          <div className="font-semibold tabular-nums">{formatCurrency(o.total_amount, o.currency)}</div>
                         </div>
                         <div>
                           <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
-                          <div className="tabular-nums">
-                            {formatMoney(o.paid_total)} {currencySymbol(o.currency)}
-                          </div>
+                          <div className="tabular-nums">{formatCurrency(o.paid_total, o.currency)}</div>
                         </div>
                         {orderTransportText(o) && (
                           <div>
@@ -1049,9 +869,9 @@ function OrdersPageInner() {
                       </div>
                       <div className="flex items-center justify-between border-t pt-2">
                         {paymentBadgeStatus(o) ? <OrderPaymentBadge order={o} /> : <span />}
-                        {(canEdit || canCorrectPrice) && (
+                        {hasActions && (
                           <div className="relative z-10">
-                            <ActionMenu items={rowActions(o)} />
+                            <ActionMenu items={orderActions.items(o)} />
                           </div>
                         )}
                       </div>
@@ -1105,11 +925,11 @@ function OrdersPageInner() {
                             dir={sortDir}
                             onClick={toggleSort}
                           />
-                          {(canEdit || canCorrectPrice) && <TH></TH>}
+                          {hasActions && <TH></TH>}
                         </TR>
                       </THead>
                       <TBody>
-                        {sorted.map((o) => (
+                        {orders.map((o) => (
                           <TR key={o.id} className="cursor-pointer" onClick={() => router.push(`/orders/${o.id}`)}>
                             <TD className="font-medium">
                               <Link
@@ -1125,45 +945,28 @@ function OrdersPageInner() {
                             </TD>
                             {showDept && (
                               <TD>
-                                <DepartmentBadge order={o} />
+                                <OrderListDepartmentBadge order={o} />
                               </TD>
                             )}
-                            <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                            <TD className="text-right tabular-nums">
-                              {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
-                            </TD>
+                            <TD>{clientLabel(o)}</TD>
+                            <TD className="text-right tabular-nums">{formatCurrency(o.total_amount, o.currency)}</TD>
                             <TD>
                               <div className="flex flex-wrap items-center gap-1.5">
-                                {canEdit && (o.status !== "shipped" || canRollback) ? (
-                                  <OrderStatusSelect
-                                    status={o.status}
-                                    disabled={statusBusyId === o.id}
-                                    onChange={(target) => chooseStatus(o, target)}
-                                  />
-                                ) : (
-                                  <StatusBadge status={o.status} dot />
-                                )}
+                                {statusCell(o)}
                                 <OrderPaymentBadge order={o} />
                               </div>
                             </TD>
-                            {(canEdit || canCorrectPrice) && (
+                            {hasActions && (
                               <TD onClick={(e) => e.stopPropagation()}>
                                 <div className="flex justify-end">
-                                  <ActionMenu items={rowActions(o)} />
+                                  <ActionMenu items={orderActions.items(o)} />
                                 </div>
                               </TD>
                             )}
                           </TR>
                         ))}
-                        {sorted.length === 0 && (
-                          <TR>
-                            <TD
-                              colSpan={(showDept ? 6 : 5) + (canEdit ? 1 : 0)}
-                              className="py-4 text-center text-[var(--muted-foreground)]"
-                            >
-                              Заказов пока нет.
-                            </TD>
-                          </TR>
+                        {orders.length === 0 && (
+                          <EmptyRow colSpan={(showDept ? 6 : 5) + (hasActions ? 1 : 0)}>Заказов пока нет.</EmptyRow>
                         )}
                       </TBody>
                     </Table>
@@ -1171,7 +974,7 @@ function OrdersPageInner() {
                 </CardContent>
               </Card>
               <LoadMore
-                shown={list.length}
+                shown={orders.length}
                 total={paged.count}
                 hasMore={paged.hasMore}
                 loading={paged.loading || paged.loadingMore}
@@ -1194,47 +997,8 @@ function OrdersPageInner() {
         />
       )}
 
-      <ConfirmDialog
-        open={!!delItem}
-        onClose={() => setDelItem(null)}
-        title="Переместить заказ в архив?"
-        description={
-          delItem
-            ? `Заказ #${delItem.id} (${delItem.client_name ?? "клиент"}) исчезнет из рабочих списков и отчётов. Его можно будет восстановить из архива.`
-            : ""
-        }
-        confirmLabel="В архив"
-        busy={delBusy}
-        error={delError}
-        onConfirm={confirmDelete}
-      />
-
-      <ManualOrderStatusModal
-        order={manualStatusOrder}
-        target={manualStatusTarget}
-        onClose={() => {
-          setManualStatusOrder(null);
-          setManualStatusTarget(null);
-        }}
-        onChanged={async () => {
-          await Promise.all([reload(), reloadSummary(), reloadTrashPreview()]);
-        }}
-      />
-      <ShipmentRollbackModal
-        order={rollbackOrder}
-        initialTarget={rollbackTarget}
-        onClose={() => setRollbackOrder(null)}
-        onChanged={async () => {
-          await Promise.all([reload(), reloadSummary(), reloadTrashPreview()]);
-        }}
-      />
-      <OrderFixationModal
-        order={fixatingOrder}
-        onClose={() => setFixatingOrder(null)}
-        onChanged={async () => {
-          await Promise.all([reload(), reloadSummary()]);
-        }}
-      />
+      {statusChange.dialogs}
+      {orderActions.dialogs}
 
       <Modal
         open={open}
@@ -1266,50 +1030,19 @@ function OrdersPageInner() {
               onDone={() => {
                 closeNewOrder();
                 reload();
-                reloadSummary();
               }}
             />
           </div>
         )}
       </Modal>
 
-      <Modal
-        open={!!editing}
-        onClose={() => setEditing(null)}
-        eyebrow={editing ? `Работа · Заказ #${editing.id}` : "Работа · Заказ"}
-        title="Изменить заказ"
-        description="Позиции, цены, машина и дата прибытия. Изменения фиксируются в журнале."
-        className="max-w-5xl"
-        mobileFullscreen
-      >
-        {editing && (
-          <OrderForm
-            editing={editing}
-            onCancel={() => setEditing(null)}
-            onDone={() => {
-              setEditing(null);
-              reload();
-              reloadSummary();
-            }}
-          />
-        )}
-      </Modal>
-      <OrderPriceCorrectionModal
-        order={correctingPrice}
-        onClose={() => setCorrectingPrice(null)}
-        onDone={() => {
-          setCorrectingPrice(null);
-          reload();
-          reloadSummary();
-        }}
-      />
       <StatementExportModal
         open={statementOpen}
         onClose={() => setStatementOpen(false)}
         endpoint="/clients/statement/"
-        filename="orders-clients-full-statement.xlsx"
+        filenameStem="orders-clients-full-statement"
         title="Общая выписка по заказам"
-        description="Подробный Excel по всем клиентам, заказам, позициям, продажам, платежам и задолженности."
+        description="Подробная выписка в Excel или PDF по всем клиентам, заказам, позициям, продажам, платежам и задолженности."
         scopeLabel="Все клиенты и все заказы"
         sections={ALL_CLIENTS_STATEMENT_SECTIONS}
         initialFrom={dateFrom}
@@ -1327,7 +1060,6 @@ function ArchiveView({
   error,
   reload,
   onBack,
-  onRestored,
 }: {
   showDept: boolean;
   trashed: Order[] | null | undefined;
@@ -1335,26 +1067,8 @@ function ArchiveView({
   error: string;
   reload: () => Promise<unknown>;
   onBack: () => void;
-  onRestored: () => void;
 }) {
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [actErr, setActErr] = useState("");
-  const [purgeItem, setPurgeItem] = useState<Order | null>(null);
-
-  async function act(o: Order, fn: () => Promise<unknown>) {
-    setBusyId(o.id);
-    setActErr("");
-    try {
-      await fn();
-      reload();
-      onRestored();
-    } catch (e) {
-      setActErr(apiError(e));
-    } finally {
-      setBusyId(null);
-    }
-  }
-  const restore = (o: Order) => act(o, () => api.post(`/orders/${o.id}/restore/`));
+  const { busyId, error: actErr, restore, purge, purgeDialog } = useOrderArchiveActions(reload);
   const list = trashed ?? [];
   return (
     <>
@@ -1399,37 +1113,27 @@ function ArchiveView({
             </THead>
             <TBody>
               {loading ? (
-                <TR>
-                  <TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">
-                    Загрузка…
-                  </TD>
-                </TR>
+                <EmptyRow colSpan={showDept ? 6 : 5}>Загрузка…</EmptyRow>
               ) : list.length === 0 ? (
-                <TR>
-                  <TD colSpan={showDept ? 6 : 5} className="py-8 text-center text-[var(--muted-foreground)]">
-                    В архиве пока нет заказов.
-                  </TD>
-                </TR>
+                <EmptyRow colSpan={showDept ? 6 : 5}>В архиве пока нет заказов.</EmptyRow>
               ) : (
                 list.map((o) => (
                   <TR key={o.id}>
                     <TD className="font-medium">#{o.id}</TD>
                     {showDept && (
                       <TD>
-                        <DepartmentBadge order={o} />
+                        <OrderListDepartmentBadge order={o} />
                       </TD>
                     )}
-                    <TD>{o.client_name || `Клиент #${o.client}`}</TD>
-                    <TD className="text-right tabular-nums">
-                      {formatMoney(o.total_amount)} {currencySymbol(o.currency)}
-                    </TD>
+                    <TD>{clientLabel(o)}</TD>
+                    <TD className="text-right tabular-nums">{formatCurrency(o.total_amount, o.currency)}</TD>
                     <TD className="whitespace-nowrap text-[var(--muted-foreground)]">
                       <div className="text-sm">{o.deleted_at ? formatDateTime(o.deleted_at) : "—"}</div>
                       {o.deleted_by_name && <div className="text-xs">{o.deleted_by_name}</div>}
                     </TD>
                     <TD>
                       <div className="flex items-center justify-end gap-1.5">
-                        <Button size="sm" variant="outline" disabled={busyId === o.id} onClick={() => restore(o)}>
+                        <Button size="sm" variant="outline" disabled={busyId === o.id} onClick={() => void restore(o)}>
                           <RotateCcw className="size-3.5" /> Восстановить
                         </Button>
                         <Button
@@ -1438,7 +1142,7 @@ function ArchiveView({
                           disabled={busyId === o.id}
                           className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
                           title="Удалить из архива"
-                          onClick={() => setPurgeItem(o)}
+                          onClick={() => purge(o)}
                         >
                           <Trash2 className="size-4" />
                         </Button>
@@ -1452,7 +1156,7 @@ function ArchiveView({
         </CardContent>
       </Card>
 
-      <OrderPurgeDialog order={purgeItem} onClose={() => setPurgeItem(null)} onPurged={onRestored} />
+      {purgeDialog}
     </>
   );
 }

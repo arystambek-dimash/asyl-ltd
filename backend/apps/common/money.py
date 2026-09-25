@@ -7,6 +7,9 @@ from decimal import Decimal
 MONEY_PLACES = Decimal("0.01")
 ZERO = Decimal("0")
 DEFAULT_CURRENCY = "KZT"
+# Валюты заказов, цен и клиентов. Суммы в разных валютах не складываются.
+CURRENCY_CHOICES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
+CURRENCY_CODES = tuple(code for code, _label in CURRENCY_CHOICES)
 
 
 def money_string(value) -> str:

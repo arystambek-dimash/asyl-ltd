@@ -1,4 +1,3 @@
-from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -6,6 +5,7 @@ import pytest
 from apps.grain import statuses as st
 from apps.grain.models import GrainMovement, GrainSupply, Silo, SiloType
 from apps.grain import scale
+from apps.grain.tests.factories import scale_reading
 
 pytestmark = pytest.mark.django_db
 
@@ -50,15 +50,7 @@ def _create_intake(auth_client, user, grain_type, silo, expected=68_300):
     return response.data
 
 
-def _scale_reading(weight):
-    return scale.ScaleReading(
-        weight_kg=Decimal(weight),
-        age_seconds=Decimal("0.2"),
-        updated_at="2026-08-12T10:00:00Z",
-    )
-
-
-def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_operator):
+def test_simple_intake_runs_from_arrival_to_net_and_closes(auth_client, grain_operator):
     grain_type, silo = _setup_route()
     supply_data = _create_intake(auth_client, grain_operator, grain_type, silo)
 
@@ -75,17 +67,12 @@ def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_ope
     assert [row["id"] for row in awaiting.data["results"]] == [supply.pk]
 
     arrival = auth_client(grain_operator).post(
-        "/api/grain/wagons/camera-arrive/",
-        {
-            "supply": supply.pk,
-            "number": "94120077",
-            "camera_source": "cam7",
-        },
+        "/api/grain/wagons/arrive/",
+        {"supply": supply.pk, "number": "94120077"},
         format="json",
     )
     assert arrival.status_code == 201
-    assert arrival.data["number_source"] == "camera"
-    assert arrival.data["number_camera_source"] == "cam7"
+    assert arrival.data["id"] == wagon.pk
     wagon.refresh_from_db()
     assert wagon.status == st.ARRIVED
     awaiting = auth_client(grain_operator).get(
@@ -94,7 +81,7 @@ def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_ope
     assert awaiting.data["results"] == []
 
     with patch.object(
-        scale, "read_truck_scale", return_value=_scale_reading(91_500)
+        scale, "read_truck_scale", return_value=scale_reading(91_500)
     ):
         entry = auth_client(grain_operator).post(
             f"/api/grain/wagons/{wagon.pk}/entry-weight/", {}, format="json"
@@ -104,7 +91,7 @@ def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_ope
     assert entry.data["assigned_silo_name"] == "Силос-7"
 
     with patch.object(
-        scale, "read_truck_scale", return_value=_scale_reading(23_200)
+        scale, "read_truck_scale", return_value=scale_reading(23_200)
     ):
         exit_weight = auth_client(grain_operator).post(
             f"/api/grain/wagons/{wagon.pk}/exit-weight/", {}, format="json"
@@ -118,6 +105,31 @@ def test_simple_intake_runs_from_camera_to_net_and_closes(auth_client, grain_ope
     assert supply.status == "closed"
 
 
+def test_second_arrival_on_used_simple_intake_is_rejected(auth_client, grain_operator):
+    """Устаревшая форма прибытия не заводит второй вагон по старому маршруту."""
+    grain_type, silo = _setup_route()
+    supply_data = _create_intake(auth_client, grain_operator, grain_type, silo)
+    supply = GrainSupply.objects.get(pk=supply_data["id"])
+    first = auth_client(grain_operator).post(
+        "/api/grain/wagons/arrive/",
+        {"supply": supply.pk, "number": "94120077"},
+        format="json",
+    )
+    assert first.status_code == 201, first.data
+
+    second = auth_client(grain_operator).post(
+        "/api/grain/wagons/arrive/",
+        {"supply": supply.pk, "number": "94120099"},
+        format="json",
+    )
+
+    assert second.status_code == 400
+    assert second.data["code"] == "supply_already_arrived"
+    assert list(supply.wagons.values_list("number", "workflow")) == [
+        ("94120077", "simple")
+    ]
+
+
 def test_simple_intake_stops_on_weight_difference_until_confirmed(
     auth_client, grain_operator
 ):
@@ -128,19 +140,19 @@ def test_simple_intake_stops_on_weight_difference_until_confirmed(
     supply = GrainSupply.objects.get(pk=supply_data["id"])
     wagon = supply.wagons.get()
     auth_client(grain_operator).post(
-        "/api/grain/wagons/camera-arrive/",
-        {"supply": supply.pk, "number": "94120088", "camera_source": "cam7"},
+        "/api/grain/wagons/arrive/",
+        {"supply": supply.pk, "number": "94120088"},
         format="json",
     )
     with patch.object(
-        scale, "read_truck_scale", return_value=_scale_reading(91_500)
+        scale, "read_truck_scale", return_value=scale_reading(91_500)
     ):
         auth_client(grain_operator).post(
             f"/api/grain/wagons/{wagon.pk}/entry-weight/", {}, format="json"
         )
 
     with patch.object(
-        scale, "read_truck_scale", return_value=_scale_reading(23_200)
+        scale, "read_truck_scale", return_value=scale_reading(23_200)
     ):
         response = auth_client(grain_operator).post(
             f"/api/grain/wagons/{wagon.pk}/exit-weight/", {}, format="json"
@@ -162,7 +174,7 @@ def test_simple_intake_stops_on_weight_difference_until_confirmed(
 
 def test_supply_operator_can_create_grain_type(auth_client, grain_operator):
     response = auth_client(grain_operator).post(
-        "/api/grain/types/",
+        "/api/grain/silo-types/",
         {
             "name": "Ячмень фуражный",
             "color": "#B78132",
@@ -187,3 +199,25 @@ def test_simple_intake_requires_type_weight_and_silo(auth_client, grain_operator
         "assigned_silo",
         "expected_total_kg",
     }
+
+
+def test_supply_is_always_created_as_short_intake(auth_client, grain_operator):
+    grain_type, silo = _setup_route()
+    response = auth_client(grain_operator).post(
+        "/api/grain/supplies/",
+        {
+            "supplier": "ТОО Колос",
+            "grain_type": grain_type.pk,
+            "assigned_silo": silo.pk,
+            "expected_total_kg": 10_000,
+            "simple_flow": False,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    assert response.data["simple_flow"] is True
+    assert response.data["status"] == "expected"
+    assert GrainSupply.objects.get(pk=response.data["id"]).wagons.get().workflow == "simple"
+    detail = auth_client(grain_operator).get(f"/api/grain/supplies/{response.data['id']}/")
+    assert detail.status_code == 404

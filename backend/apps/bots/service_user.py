@@ -15,7 +15,7 @@ from apps.sys_permissions.perms import PERMISSIONS
 
 BOT_USERNAME = "whatsapp-bot"
 BOT_FIRST_NAME = "WhatsApp-бот"
-BOT_PERMISSION_CODES = ("orders.create", "orders.confirm", "loader.view", "loader.confirm", "loader.wagons")
+BOT_PERMISSION_CODES = ("orders.create", "orders.confirm", "loader.confirm", "loader.wagons")
 _LABELS = {permission["code"]: permission for permission in PERMISSIONS}
 
 

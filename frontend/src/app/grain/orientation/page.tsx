@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useId, useMemo, useRef, useState } from "react";
-import { Ban, Camera, Cpu, Images, LoaderCircle, Radio, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import { useId, useMemo, useRef, useState } from "react";
+import { Ban, Camera, Cpu, Images, LoaderCircle, Radio, RefreshCw, RefreshCwOff, Trash2, Undo2 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { NoAccessCard } from "@/components/require-perm";
+import { RequirePerm } from "@/components/require-perm";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { ErrorAlert, FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadMore } from "@/components/ui/load-more";
@@ -15,7 +15,8 @@ import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
 import { api, apiError } from "@/lib/api";
-import { apiFileUrl, formatKg } from "@/lib/grain";
+import { apiFileUrl } from "@/lib/api-file-url";
+import { formatKg } from "@/lib/grain";
 import type {
   GrainOrientationCameraPc,
   GrainOrientationLabel,
@@ -23,14 +24,13 @@ import type {
   GrainOrientationSample,
   GrainOrientationSummary,
   GrainOrientationTrainingReport,
-  Me,
   VehicleOrientation,
 } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
+import type { BadgeTone } from "@/lib/constants";
 import { cn, formatDateTime } from "@/lib/utils";
-import { useAuth } from "@/store/auth";
 
 const PAGE_TITLE = "Датасет ориентации";
 const LIST_URL = "/grain/orientation-samples/";
@@ -44,12 +44,10 @@ const MAX_PURGE_DAYS = 3650;
 const MAX_PURGE_BATCHES = 100;
 /** Кратно ряду сетки (2–4 карточки), чтобы страница заканчивалась полным рядом. */
 const PAGE_SIZE = 48;
-/** Датасет пополняется ночным экспортом и редкими правками: частый опрос не нужен. */
 /** Подписанная ссылка на фото живёт час; обновляем её заранее. */
 const PHOTO_LINK_REFRESH_MS = 45 * 60_000;
+/** Датасет пополняется ночным экспортом и редкими правками: частый опрос не нужен. */
 const POLL_INTERVAL_MS = 30_000;
-
-type Tone = "muted" | "primary" | "success" | "warning" | "destructive" | "outline";
 
 const SCOPES = ["all", "conflict", "weight", "trip", "manual", "excluded", "unsent"] as const;
 type Scope = (typeof SCOPES)[number];
@@ -81,7 +79,7 @@ const SCOPE_LABELS: Record<Scope, string> = {
   unsent: "Не отправлены",
 };
 
-const LABEL_META: Record<GrainOrientationLabel, { badge: string; button: string; word: string; tone: Tone }> = {
+const LABEL_META: Record<GrainOrientationLabel, { badge: string; button: string; word: string; tone: BadgeTone }> = {
   front: { badge: "Передом → заезд", button: "Передом", word: "передом", tone: "success" },
   rear: { badge: "Задом → выезд", button: "Задом", word: "задом", tone: "primary" },
 };
@@ -92,28 +90,17 @@ const SOURCE_LABELS: Record<GrainOrientationSample["label_source"], string> = {
   manual: "вручную",
 };
 
-/** Статусы ночного обучения задаёт Camera-PC; незнакомый показываем как есть. */
-const TRAINING_STATUS: Record<string, { label: string; tone: Tone }> = {
+/** Статусы ночного обучения задаёт Camera-PC (orientation_training.py); незнакомый показываем как есть. */
+const TRAINING_STATUS: Record<string, { label: string; tone: BadgeTone }> = {
   promoted: { label: "промотирована", tone: "success" },
   kept_current: { label: "оставлена текущая", tone: "muted" },
-  kept: { label: "оставлена текущая", tone: "muted" },
-  rejected: { label: "оставлена текущая", tone: "muted" },
-  not_promoted: { label: "оставлена текущая", tone: "muted" },
   skipped: { label: "пропущено", tone: "muted" },
-  error: { label: "ошибка", tone: "destructive" },
   failed: { label: "ошибка", tone: "destructive" },
 };
 
-function isScope(value: string): value is Scope {
-  return (SCOPES as readonly string[]).includes(value);
-}
-
-function isLabelFilter(value: string): value is LabelFilter {
-  return (LABEL_FILTERS as readonly string[]).includes(value);
-}
-
-function isPurgeMode(value: string): value is PurgeMode {
-  return (PURGE_MODES as readonly string[]).includes(value);
+/** Значение вкладки или селекта — одно из известных. */
+function isOneOf<T extends string>(list: readonly T[], value: string): value is T {
+  return (list as readonly string[]).includes(value);
 }
 
 /** Срок в днях из поля ввода; null — пусто или не целое число от 1 до MAX_PURGE_DAYS. */
@@ -142,47 +129,23 @@ function modelBadge(orientation: VehicleOrientation): string {
   return orientation ? `модель: ${LABEL_META[orientation].word}` : "модель не согласна";
 }
 
-function trainingStatusMeta(training: GrainOrientationTrainingReport): { label: string; tone: Tone } {
-  if (training.promoted) return TRAINING_STATUS.promoted;
-  return TRAINING_STATUS[training.status?.toLowerCase()] ?? { label: training.status || "нет данных", tone: "outline" };
+function trainingStatusMeta(training: GrainOrientationTrainingReport): { label: string; tone: BadgeTone } {
+  return TRAINING_STATUS[training.status] ?? { label: training.status || "нет данных", tone: "outline" };
 }
 
+/** ПК отдаёт точность долей (correct / total). */
 function formatAccuracy(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—";
-  const percent = value <= 1 ? value * 100 : value;
-  return `${percent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
-}
-
-/** ПК может отдать число кадров или разбивку по классам. */
-function formatSamples(value: GrainOrientationTrainingReport["samples"]): string {
-  if (typeof value === "number") return value.toLocaleString("ru-RU");
-  if (!value || typeof value !== "object") return "—";
-  const total = typeof value.total === "number" ? value.total : Object.values(value).reduce((sum, n) => sum + n, 0);
-  return total.toLocaleString("ru-RU");
+  return `${(value * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
 /**
- * Дообученная модель на ПК лежит в `vehicle-orientation.trained.pt` и после промоции
- * становится текущей; ПК описывает модель произвольным объектом, поэтому смотрим и на
- * флаги, и на имя файла.
+ * Верим только флагу `self_trained` от ПК: он истинен, когда дообученный файл реально
+ * загружен. `training.current_model` указывает на него сразу после промоции, а модель
+ * перезагружается лениво — по имени файла ПК ещё работает на базовой.
  */
 function selfTrainedActive(pc: GrainOrientationCameraPc): boolean {
-  const model = pc.model ?? {};
-  if (model.trained === true || model.self_trained === true) return true;
-  const names = [pc.training?.current_model, model.name, model.path, model.file, model.source];
-  return names.some((name) => typeof name === "string" && /trained/i.test(name));
-}
-
-/**
- * Ответ POST — свежее любого GET, начатого до него. Опрос, завершившийся после
- * правки, вернул бы старую метку; сравниваем по reviewed_at, который ставит правка.
- */
-function freshest(row: GrainOrientationSample, override: GrainOrientationSample | undefined): GrainOrientationSample {
-  if (!override) return row;
-  const rowAt = Date.parse(row.reviewed_at ?? "") || 0;
-  const overrideAt = Date.parse(override.reviewed_at ?? "") || 0;
-  // Сервер, догнавший правку, важнее: он несёт sent_at и last_error ночного экспорта.
-  return overrideAt > rowAt ? override : row;
+  return pc.model?.self_trained === true;
 }
 
 function Stat({ label, value, warn = false }: { label: string; value: number; warn?: boolean }) {
@@ -250,10 +213,12 @@ function CameraPcBlock({ pc }: { pc: GrainOrientationCameraPc | null }) {
             <dd className="tabular-nums">
               {formatAccuracy(training.baseline?.accuracy)} → {formatAccuracy(training.candidate?.accuracy)}
             </dd>
-            {training.samples != null && (
+            {training.samples && (
               <>
                 <dt className="text-[var(--muted-foreground)]">Кадров в обучении</dt>
-                <dd className="tabular-nums">{formatSamples(training.samples)}</dd>
+                <dd className="tabular-nums">
+                  {(training.samples.front + training.samples.rear).toLocaleString("ru-RU")}
+                </dd>
               </>
             )}
             {training.reason && (
@@ -306,11 +271,9 @@ function SummaryCard({
 
 function SampleCard({
   sample,
-  canEdit,
   onChanged,
 }: {
   sample: GrainOrientationSample;
-  canEdit: boolean;
   onChanged: (row: GrainOrientationSample) => void;
 }) {
   const [busy, setBusy] = useState<"" | GrainOrientationLabel | "exclude">("");
@@ -405,52 +368,50 @@ function SampleCard({
             {sample.reviewed_at && ` · ${formatDateTime(sample.reviewed_at)}`}
           </p>
         )}
-        {canEdit && (
-          <div
-            role="group"
-            aria-label={`Метка кадра ${sample.sample_id}`}
-            className="mt-auto flex flex-wrap items-center gap-1.5 pt-1"
-          >
-            {sample.excluded ? (
+        <div
+          role="group"
+          aria-label={`Метка кадра ${sample.sample_id}`}
+          className="mt-auto flex flex-wrap items-center gap-1.5 pt-1"
+        >
+          {sample.excluded ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== ""}
+              onClick={() => void post("label", { label: sample.label }, sample.label)}
+            >
+              {busy ? <LoaderCircle className="animate-spin" /> : <Undo2 />} Вернуть
+            </Button>
+          ) : (
+            <>
+              {(["front", "rear"] as const).map((label) => {
+                const current = sample.label === label;
+                return (
+                  <Button
+                    key={label}
+                    size="sm"
+                    variant={current ? "default" : "outline"}
+                    aria-pressed={current}
+                    disabled={busy !== "" || current}
+                    onClick={() => void post("label", { label }, label)}
+                  >
+                    {busy === label && <LoaderCircle className="animate-spin" />}
+                    {LABEL_META[label].button}
+                  </Button>
+                );
+              })}
               <Button
                 size="sm"
-                variant="outline"
+                variant="ghost"
+                className="ml-auto"
                 disabled={busy !== ""}
-                onClick={() => void post("label", { label: sample.label }, sample.label)}
+                onClick={() => void post("exclude", {}, "exclude")}
               >
-                {busy ? <LoaderCircle className="animate-spin" /> : <Undo2 />} Вернуть
+                {busy === "exclude" ? <LoaderCircle className="animate-spin" /> : <Ban />} Исключить
               </Button>
-            ) : (
-              <>
-                {(["front", "rear"] as const).map((label) => {
-                  const current = sample.label === label;
-                  return (
-                    <Button
-                      key={label}
-                      size="sm"
-                      variant={current ? "default" : "outline"}
-                      aria-pressed={current}
-                      disabled={busy !== "" || current}
-                      onClick={() => void post("label", { label }, label)}
-                    >
-                      {busy === label && <LoaderCircle className="animate-spin" />}
-                      {LABEL_META[label].button}
-                    </Button>
-                  );
-                })}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="ml-auto"
-                  disabled={busy !== ""}
-                  onClick={() => void post("exclude", {}, "exclude")}
-                >
-                  {busy === "exclude" ? <LoaderCircle className="animate-spin" /> : <Ban />} Исключить
-                </Button>
-              </>
-            )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
         {error && (
           <p role="alert" className="text-xs text-[var(--destructive)]">
             {error}
@@ -467,7 +428,7 @@ function SampleCard({
  * `remaining`; ход, итог и ошибки показываем в самой модалке — со страницы их
  * не видно. Монтируется только открытой: состояние свежее при каждом открытии.
  */
-function PurgeDialog({ open, onClose, onPurged }: { open: boolean; onClose: () => void; onPurged: () => void }) {
+function PurgeDialog({ onClose, onPurged }: { onClose: () => void; onPurged: () => void }) {
   const modeId = useId();
   const daysId = useId();
   const [mode, setMode] = useState<PurgeMode>("older");
@@ -516,7 +477,7 @@ function PurgeDialog({ open, onClose, onPurged }: { open: boolean; onClose: () =
 
   return (
     <Modal
-      open={open}
+      open
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -568,7 +529,7 @@ function PurgeDialog({ open, onClose, onPurged }: { open: boolean; onClose: () =
               <Select
                 id={modeId}
                 value={mode}
-                onChange={(event) => isPurgeMode(event.target.value) && setMode(event.target.value)}
+                onChange={(event) => isOneOf(PURGE_MODES, event.target.value) && setMode(event.target.value)}
                 disabled={busy}
                 data-autofocus
               >
@@ -602,26 +563,16 @@ function PurgeDialog({ open, onClose, onPurged }: { open: boolean; onClose: () =
             )}
           </>
         )}
-        {error && (
-          <p
-            role="alert"
-            className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
-          >
-            {error}
-          </p>
-        )}
+        <FormError message={error} />
       </div>
     </Modal>
   );
 }
 
-function OrientationDatasetPageInner({ me }: { me: Me }) {
-  const canEdit = me.is_superuser;
+function OrientationDatasetPageInner() {
   const [scope, setScope] = useState<Scope>("all");
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [labelFilter, setLabelFilter] = useState<LabelFilter>("all");
-  /** Ответы своих правок поверх списка, пока опрос не принесёт их же с сервера. */
-  const [overrides, setOverrides] = useState<Record<number, GrainOrientationSample>>({});
 
   const url = useMemo(() => {
     const query = new URLSearchParams(SCOPE_QUERY[scope]);
@@ -633,32 +584,15 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
   const list = usePagedApi<GrainOrientationSample>(url, PAGE_SIZE);
   const summary = useApi<GrainOrientationSummary>(SUMMARY_URL);
 
-  function refresh() {
-    return Promise.all([list.reload(), summary.reload()]);
-  }
-
-  // reload() возвращает первую страницу: пока оператор листает дальше, опрос
-  // не должен схлопывать сетку — обновляем только счётчики.
-  const singlePage = list.items.length <= PAGE_SIZE;
-  const poll = useCallback(
-    () => Promise.all([singlePage ? list.reload() : Promise.resolve(), summary.reload()]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload-функции стабильны внутри хуков
-    [singlePage],
-  );
-  useVisiblePolling(poll, POLL_INTERVAL_MS);
+  // Опрос тихо перечитывает все показанные страницы и не мешает «Ещё».
+  const refreshQuietly = () => Promise.all([list.refresh(), summary.reload()]);
+  useVisiblePolling(refreshQuietly, POLL_INTERVAL_MS);
 
   function applyChange(row: GrainOrientationSample) {
-    setOverrides((current) => ({ ...current, [row.id]: row }));
+    list.applyItems((rows) => rows.map((current) => (current.id === row.id ? row : current)));
     void summary.reload();
   }
 
-  // Удалённых кадров в ответах уже нет — сбрасываем и локальные правки поверх них.
-  function handlePurged() {
-    setOverrides({});
-    void refresh();
-  }
-
-  const samples = list.items.map((row) => freshest(row, overrides[row.id]));
   const hasFilters = scope !== "all" || labelFilter !== "all";
   const initialLoading = list.loading && list.items.length === 0;
 
@@ -681,19 +615,23 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
       description="Кадры с весовой с меткой «передом = заезд, задом = выезд». Проверьте и поправьте метку, если модель или вес ошиблись"
       actions={
         <div className="flex shrink-0 items-center gap-2">
-          <Button variant="outline" size="sm" className="h-9" disabled={list.loading} onClick={() => void refresh()}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9"
+            disabled={list.loading}
+            onClick={() => void Promise.all([list.reload(), summary.reload()])}
+          >
             <RefreshCw className={cn(list.loading && "animate-spin")} /> Обновить
           </Button>
-          {canEdit && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-9 text-[var(--destructive)]"
-              onClick={() => setPurgeOpen(true)}
-            >
-              <Trash2 /> Очистить датасет…
-            </Button>
-          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-9 text-[var(--destructive)]"
+            onClick={() => setPurgeOpen(true)}
+          >
+            <Trash2 /> Очистить датасет…
+          </Button>
         </div>
       }
     >
@@ -706,7 +644,7 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
               <Tabs
                 tabs={scopeTabs}
                 active={scope}
-                onChange={(key) => isScope(key) && setScope(key)}
+                onChange={(key) => isOneOf(SCOPES, key) && setScope(key)}
                 variant="segment"
                 label="Фильтр кадров"
               />
@@ -715,24 +653,31 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
               <Tabs
                 tabs={labelTabs}
                 active={labelFilter}
-                onChange={(key) => isLabelFilter(key) && setLabelFilter(key)}
+                onChange={(key) => isOneOf(LABEL_FILTERS, key) && setLabelFilter(key)}
                 variant="segment"
                 label="Метка"
               />
               <div className="flex items-center gap-3 text-xs text-[var(--muted-foreground)]">
                 <span aria-live="polite">{initialLoading ? "Загрузка…" : `Найдено: ${list.count}`}</span>
-                <span className="inline-flex items-center gap-1.5">
-                  <Radio className="size-3.5 text-[var(--success)]" /> Обновляется автоматически
-                </span>
+                {list.refreshError ? (
+                  // Опрос не удался: сетка остаётся последней полученной.
+                  <span role="status" className="inline-flex items-center gap-1.5">
+                    <RefreshCwOff className="size-3.5" /> Не удалось обновить — показаны последние данные
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Radio className="size-3.5 text-[var(--success)]" /> Обновляется автоматически
+                  </span>
+                )}
               </div>
             </div>
           </div>
 
           {initialLoading ? (
             <div className="py-12 text-center text-sm text-[var(--muted-foreground)]">Загрузка…</div>
-          ) : list.error && samples.length === 0 ? (
+          ) : list.error && list.items.length === 0 ? (
             <ErrorAlert message={list.error} onRetry={() => void list.reload()} />
-          ) : samples.length === 0 ? (
+          ) : list.items.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-14 text-center">
               <span className="flex size-11 items-center justify-center rounded-full bg-[var(--muted)]">
                 <Images className="size-5 text-[var(--muted-foreground)]" />
@@ -745,8 +690,8 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
           ) : (
             <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                {samples.map((sample) => (
-                  <SampleCard key={sample.id} sample={sample} canEdit={canEdit} onChanged={applyChange} />
+                {list.items.map((sample) => (
+                  <SampleCard key={sample.id} sample={sample} onChanged={applyChange} />
                 ))}
               </div>
               {list.error && (
@@ -755,7 +700,7 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
                 </div>
               )}
               <LoadMore
-                shown={samples.length}
+                shown={list.items.length}
                 total={list.count}
                 hasMore={list.hasMore}
                 loading={list.loadingMore}
@@ -766,32 +711,25 @@ function OrientationDatasetPageInner({ me }: { me: Me }) {
         </CardContent>
       </Card>
 
-      {canEdit && purgeOpen && <PurgeDialog open onClose={() => setPurgeOpen(false)} onPurged={handlePurged} />}
+      {purgeOpen && (
+        <PurgeDialog
+          onClose={() => setPurgeOpen(false)}
+          // Удалённых кадров в ответах уже нет — тихо перечитываем показанное.
+          onPurged={() => void refreshQuietly()}
+        />
+      )}
     </AppShell>
   );
 }
 
 /**
  * Страница только для владельца: операторам она не показывается и не линкуется,
- * а бэкенд отвечает 403 всем, кроме суперпользователя. Пока сессия читается —
- * та же заглушка, что у RequirePerm.
+ * а бэкенд отвечает 403 всем, кроме суперпользователя.
  */
 export default function OrientationDatasetPage() {
-  const { me, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <AppShell title={PAGE_TITLE}>
-        <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-      </AppShell>
-    );
-  }
-  if (!me?.is_superuser) {
-    return (
-      <AppShell title={PAGE_TITLE}>
-        <NoAccessCard />
-      </AppShell>
-    );
-  }
-  return <OrientationDatasetPageInner me={me} />;
+  return (
+    <RequirePerm superuser title={PAGE_TITLE}>
+      <OrientationDatasetPageInner />
+    </RequirePerm>
+  );
 }

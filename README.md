@@ -1,16 +1,17 @@
 # АСЫЛ-LTD — CRM мукомольного цеха
 
 Внутренняя система учёта цеха «Асыл-LTD»: заказы и оплаты (в т.ч. долги),
-склад, пост погрузки с камерами и AI-подсчётом мешков, клиентский портал,
-разграничение доступа по персональным системным правам и отделам.
+склад, отгрузка (Моноблок с камерами и AI-подсчётом мешков, страница грузчика),
+приход зерна вагонами и автовесы вывоза, клиентский портал, разграничение
+доступа по персональным системным правам и отделам.
 
 - **Бэкенд** (`backend/`): Django + DRF + PostgreSQL + Redis, JWT (simplejwt).
 - **Фронтенд** (`frontend/`): Next.js 15 (App Router) + React 19 + Tailwind 4,
   Zustand, Recharts, Radix UI.
 - **Видео**: go2rtc (RTSP → WebRTC), доступ через
   nginx `auth_request` + подписанная cookie.
-- **Инфраструктура**: Docker Compose, nginx (rate-limit, TLS), WireGuard-туннель
-  до цехового ПК с камерами и ai_service.
+- **Инфраструктура**: Docker Compose, nginx (rate-limit, TLS), Tailscale до
+  цехового ПК с камерами и ai_service (`CAMERA_HOST`).
 
 ---
 
@@ -49,7 +50,10 @@ docker compose up --build
 
 При старте бэкенда `entrypoint.sh` ждёт PostgreSQL, применяет миграции и
 идемпотентно создаёт суперпользователя (`create_superuser_env`).
-Камерные фичи локально выключены (пустые `CAMERA_*` переменные).
+Камеры локально не выключены: при пустом `CAMERA_HOST` settings подставляют
+Tailscale-IP боевого ПК цеха (`backend/config/_settings/base.py`). Чтобы не
+ходить на прод-камеры, задайте в `.env` свой хост, например
+`CAMERA_HOST=host.docker.internal` (мок на маке).
 Автоматика автомобильных весов также не стартует в обычном dev-стеке:
 профиль `hardware` включают только явно после настройки тестовых URL:
 
@@ -87,16 +91,19 @@ backend/
     accounts/        # User (is_client, perm_codes), /auth/login|refresh|me
     sys_permissions/ # Permission и единый каталог кодов системных прав
     employees/       # Employee: профиль User + персональные права
-    clients/         # Client, Store; долги, аналитика
+    clients/         # Client, Store; долги, история, выписки
     sales/           # Department: динамические отделы продаж
     catalog/         # Product (+архив), ClientPrice
     orders/          # Order, OrderItem, Payment, StatusChangeRequest
-    shipments/       # Shipment: приезд → погрузка → выезд, вагон
+    shipments/       # Shipment: отгрузка, страница грузчика, накладная, вагон
     warehouse/       # StockItem, StockReceipt, StockMovement
     portal/          # клиентский портал: каталог, заказы, регистрация
     notifications/   # уведомления клиентам
     eventlog/        # неизменяемый журнал событий (log_event)
     cameras/         # go2rtc, AI-подсчёт, health-мониторинг, алерты
+    grain/           # приход зерна вагонами, силосы, автовесы вывоза
+    bots/            # WhatsApp-бот отчётов о вагонах (Green-API)
+    tasks/           # задачи сотрудников
 frontend/
   src/app/           # страницы (App Router), см. раздел «Фронтенд»
   src/components/    # ui-кит, layout (sidebar/topbar), доменные компоненты
@@ -121,9 +128,10 @@ nginx :443  ── rate-limit (30 r/s API, 10 r/m login), TLS, security-headers
  │                                   проверка подписанной cookie cam_token)
  └── /static, /media
 backend ──► PostgreSQL (данные)  ──► Redis (кэш discover_cameras и пр.)
-backend ──► ai_service :8890 на цеховом ПК (через WireGuard) — AI-подсчёт мешков
+backend ──► ai_service :8890 на цеховом ПК (через Tailscale) — AI-подсчёт мешков
 camera-monitor (отдельный контейнер) — непрерывный probe камер, инциденты, алерты
-passage-scale-monitor (отдельный контейнер) — default-off polling весов вывоза
+passage-scale-monitor (отдельный контейнер) — импорт очереди сборщика весов вывоза
+остальные фоновые процессы — см. «Прод-состав»
 ```
 
 Ключевые сквозные принципы:
@@ -153,7 +161,7 @@ passage-scale-monitor (отдельный контейнер) — default-off po
 - `has_perm_code(code)` — точечная проверка.
 
 Эндпоинты: `POST /api/auth/login/` (throttle 10/мин), `POST /api/auth/refresh/`,
-`GET /api/auth/me/` → id, username, permissions, position, client_id,
+`GET /api/auth/me/` → id, username, permissions, position,
 sales_department.
 
 ### common/permissions.py — общие DRF-права
@@ -169,18 +177,25 @@ sales_department.
 ### sys_permissions — коды прав
 
 Модель: `Permission(code, section, action, label)`. Права назначаются сотрудникам напрямую.
+Единственный источник кодов — `backend/apps/sys_permissions/perms.py`: разделы
+совпадают со страницами меню, подписи прав — там же. Таблица ниже — выжимка.
 
 | Раздел | Коды |
 |---|---|
-| Товары | `catalog.view / create / edit / delete` |
+| Отчёты | `reports.view / export` |
+| Заказы | `orders.view / create / edit / confirm / confirm_all / correct_price / rollback` |
+| Касса | `payments.view / create / confirm` |
+| Моноблок | `monoblock.view` |
+| Грузчик | `loader.view / confirm / trucks / wagons` |
+| Склады / Силосы | `warehouse.view / adjust`, `silos.view` |
+| Приход и вывоз | `grain.view / supply / arrive / weigh / correct_weighing / inventory / delete / admin` |
 | Клиенты | `clients.view / create / edit / delete / set_price / manage_access` |
-| Склад | `warehouse.view / adjust` |
-| Заказы | `orders.view / create / edit / confirm / correct_price` |
-| Оплаты | `payments.view / create / confirm` |
-| Пост отгрузки | `shipping.view / arrive / load / ship / debt_override` |
-| Вагон | `train.view / load` |
-| Журнал / Отчёты | `events.view`, `reports.view` |
-| Сотрудники / Системные права | `employees.view / manage`, `sys_permissions.view / manage` |
+| Магазины | `stores.view / create / edit / delete` |
+| Товары | `catalog.view / create / edit` |
+| Задачи | `tasks.view / create` |
+| Журнал | `events.view` |
+| WhatsApp-бот | `bots.view / manage` |
+| Сотрудники / Администрирование | `employees.view / manage`, `sys_permissions.manage` |
 
 Ролей и наследования прав нет: итоговый доступ сотрудника равен его прямому
 набору `Employee.permissions`. Отдел хранит организационную принадлежность и
@@ -205,36 +220,38 @@ draft → pending → confirmed → arrived → loading → loaded → shipped
           └→ rejected            (любой нефинальный → cancelled)
 ```
 
-Переходы жёстко заданы в `ALLOWED_TRANSITIONS`; `transition()` бросает
-`ValidationError` на недопустимый переход.
+Заявку переводят только `confirm_order` (из `draft`/`pending`) и `reject_order`
+(из `pending`): каждый сам проверяет исходный статус под блокировкой заказа.
+Дальше заказ ведут сервисы отгрузки (`shipments`) и административная смена статуса.
 
 | Статус | Смысл |
 |---|---|
 | `draft` | черновик, свободно редактируется |
 | `pending` | заявка ждёт подтверждения (цены — у бухгалтера/кассы) |
 | `confirmed` | подтверждён, цены зафиксированы, ждёт машину/вагон |
-| `arrived` | машина отмечена прибывшей отдельным постом |
-| `loading` | идёт погрузка (счёт мешков) |
+| `arrived` | машина отмечена прибывшей (старые заказы бывшего поста) |
+| `loading` | идёт AI-погрузка (счёт мешков) |
 | `loaded` | погрузка завершена |
 | `shipped` | выехал; товар списан со склада |
 | `rejected` / `cancelled` | отклонён / отменён |
 
 Ключевые поля `Order`: `payment_status` (`unpaid/partial/settled`),
 `settlement_intent` (`debt` — основной путь ~90% заказов / `instant`),
-`debt_requested` (клиент попросил долг), `debt_override(+_by)` (долг одобрен
-правом `shipping.debt_override`), `department` (денормализован из клиента),
+`debt_requested` (клиент попросил долг), `department` (денормализован из клиента),
 `transport_type` (`truck/train`), `truck_number(+_set_by)`, `store`,
 `loading_camera` (какая камера занята под погрузку), `deleted_at/_by`
 (корзина). Менеджеры: `objects` — только живые, `all_objects` — с удалёнными.
 
 Вычисляемое: `total_amount`, `paid_total` (только подтверждённые оплаты),
 `remaining_amount`, `is_fully_paid`,
-**`is_debt` = shipped + intent=debt + остаток > 0** — определение долга во всех
-отчётах.
+**`is_debt` = shipped + остаток > 0** — любой неоплаченный остаток отгруженного
+заказа, способ расчёта не важен. Суммы долга и выручки в отчётах считаются
+только через `orders/debt.py` и `statuses.is_financial`.
 
 #### Оплаты (`Payment`)
 
-Методы: `cash / card / kaspi / debt`. Цепочка статусов:
+Способы приёма в кассе (`Payment.CASHIER_METHODS`): `cash / kaspi / remote /
+invoice`; служебный метод `debt` деньгами не считается. Цепочка статусов:
 
 ```
 requested (счёт выставлен) → received (деньги на руках) → confirmed (касса подтвердила)
@@ -249,28 +266,32 @@ requested (счёт выставлен) → received (деньги на рука
 
 | Функция | Что делает |
 |---|---|
-| `_validate_payment_open(order)` | для любого отдела оплата доступна после `shipped`; при наличии магазина дополнительно проверяется его платёжный день |
+| `_validate_payment_open(order, method)` | статус заказа допускает оплату этим способом (`statuses.is_payment_open`: после `shipped` — любым способом, до отгрузки касса принимает предоплату только `cash / kaspi / remote`); у отгруженного заказа магазина дополнительно проверяется его платёжный день |
 | `add_payment(order, amount, user, method, stage)` | старт цепочки (`requested` или сразу `received`) |
 | `receive_payment` / `accountant_confirm_payment` / `reject_payment` | шаги цепочки; подтверждение пересчитывает `payment_status` заказа |
 | `create_client_payment(order, method, user)` | оплата из портала (card/kaspi) на весь остаток, `update_or_create` от двойных кликов |
-| `pay_via_bank(order, user)` | банковская оплата-заглушка на весь остаток |
 | `sync_payment_status(order)` | идемпотентный пересчёт `unpaid/partial/settled` |
-| `approve_debt(order, user)` | одобрить долг: `debt_override=True`, intent=`debt` |
+| `request_client_debt` / `move_order_to_debt` | клиент просит долг из портала / касса согласует долг: intent=`debt`, остаток остаётся долгом клиента |
 | `confirm_order(order, user, prices)` | draft/pending → confirmed + фиксация цен позиций |
-| `_apply_prices` / `apply_item_prices` | проставить `unit_price` позиций и запомнить прайс клиента в `ClientPrice`; без цены > 0 — ошибка |
+| `apply_item_prices` | проставить `unit_price` позиций и запомнить прайс клиента в `ClientPrice`; без цены > 0 — ошибка |
 | `replace_items(order, items, prices, user)` | замена позиций (только в `draft/pending/confirmed/arrived`), с блокировкой от гонки со стартом погрузки и проверкой склада |
-| `set_truck_number(order, value, user)` | номер КАМАЗа; клиент не может переписать номер, заданный сотрудником; уведомляет клиента |
+| `can_set_truck_number(order, user)` | номер транспорта (тягач + прицеп) меняет тот, кто его ввёл: номер клиента — только этот клиент, номер сотрудника — любой сотрудник; сама смена — `transport.set_order_transport` (уведомляет клиента) |
 | `request_status_change` / `approve_ / reject_status_change` | ручная смена статуса: с правом `orders.edit` — сразу, без — создаётся `StatusChangeRequest` на одобрение |
 | `soft_delete_order` / `restore_order` | корзина: `deleted_at` ставится/чистится |
 
 #### Эндпоинты (`/api/orders/…`)
 
-CRUD + действия: `confirm`, `reject`, `payments` (+ `receive/confirm/reject`
-по оплате), `payments-queue` (очередь кассы), `pay-bank`, `debts` (все долги),
-`set-status` (+ `status-requests/approve|reject`), `approve-debt`,
-`trash` / `restore` (корзина), `train/queue` + `train` (start/count/finish),
-`loading-camera` (занять/освободить камеру). Права — см. `required_perms`
-во `views.py`; списки скоупятся по отделу.
+CRUD + действия: `confirm` (+ `confirm-context`), `reject`, `correct-price`,
+`fixate` (заказ задним числом), `transport` (тягач + прицеп),
+`payments` (+ `receive/confirm/reject/reopen` по оплате; восстановление
+отклонённой — `/api/payment-transactions/{id}/restore/`), очереди кассы
+`payments-queue`, `awaiting-payment`, `to-refund`, `to-debt`
+(касса согласует долг), `set-status` (+ `status-requests/approve|reject`),
+`rollback-shipment`, `trash` / `trash-preview` / `restore` / `purge` (корзина);
+сводки `dashboard-operational`,
+`department-summary`, `transport-queue`, `awaiting-shipment`,
+`shipping-calendar`, `form-options`. Права — см. `required_perms` во
+`views.py`; списки скоупятся по отделу.
 
 ### shipments — отгрузка
 
@@ -278,26 +299,31 @@ CRUD + действия: `confirm`, `reject`, `payments` (+ `receive/confirm/rej
 `weigh_in_kg`, `bags_loaded`, `arrived_at`,
 `loading_started_at`, `shipped_at`.
 
-Поток **грузовик**: `record_arrival` (confirmed→arrived, без обращения к весам) →
-`start_loading` (→loading) → `record_count(bags)` (счёт мешков; из arrived
-автоматически переводит в loading) → `finish_loading` (→loaded) →
-`record_shipment` (→shipped).
+Основной путь — страница грузчика: `loader_dispatch` / `dispatch_order`
+(кнопка «Отгружено») отгружает подтверждённый, ещё не выехавший заказ на
+заказанное количество без въезда и счёта мешков; номер накладной — номер заказа.
+Вагонный заказ отгружается и по отчёту о вагонах (`ship_rail_report`: мешки
+отчёта сверяются с заказом, вагоны записываются в `ShipmentWagon`).
 
-Поток **вагон**: `start_train_loading` (confirmed→loading) →
-`record_count` → `finish_train_loading` (→loaded) → `record_shipment` (→shipped).
+AI-погрузка начинается через `begin_camera_loading` (камера закрепляется за
+заказом, →loading) и завершается `finish_ai_counting` (→loaded); выезд —
+та же кнопка «Отгружено». `rewind_loading` (административная смена статуса)
+возвращает незавершённую погрузку в ожидание и освобождает камеру.
 
 Monoblock/AI работает только с заказом, камерой, числом мешков и
 переходом `loading→loaded`; номер машины и физические весы для его запуска не
 нужны. Интеграция автовесов принадлежит отдельному приложению `grain`.
 
 Общий финал `_do_ship`: списывает каждую позицию со склада
-(`deduct_stock(allow_negative=True)` — по факту можно уйти в минус),
-ставит `shipped_at`, `status=shipped`, `payment_status=unpaid`, логирует
-`debt` + `shipment`. **Оплата происходит после въезда машины** — заказ едет
-в долг, деньги закрываются через кассу.
+(`deduct_stock` — по факту можно уйти в минус),
+ставит `shipped_at`, `status=shipped`, пересчитывает `payment_status` по
+факту денег (предоплата сохраняется), логирует `shipment` и `debt` при
+остатке > 0. Неоплаченный остаток отгруженного заказа — долг клиента, деньги
+закрываются через кассу.
 
-Эндпоинты: `POST /api/orders/{id}/arrive | load | finish-loading | ship`
-(права `shipping.arrive/load/ship`).
+Эндпоинты — страница грузчика `/api/loader/…` (`queue`, `history`,
+`orders/{id}/dispatch|rollback|waybill`, `waybill-settings`, `rail-report/…`,
+`wagon-report/…`); смотреть — `loader.view`, отгружать — `loader.confirm`.
 
 ### warehouse — склад
 
@@ -312,20 +338,22 @@ Monoblock/AI работает только с заказом, камерой, ч
   `stock.bags > 0` (проверка при создании/редактировании заказа);
 - `adjust_stock(product, delta, user, note)` — корректировка, минус запрещён;
 - `receive_stock(product, bags, user)` — приёмка;
-- `deduct_stock(product, bags, user, allow_negative)` — списание; с
-  `allow_negative=True` логирует предупреждение `stock_negative`.
+- `deduct_stock(product, bags, user)` — списание при отгрузке; уход в минус
+  логирует предупреждение `stock_negative`.
 
-Эндпоинты: `GET /api/warehouse/stock/`, `POST …/adjust`, `POST …/receive`,
-`GET …/movements` (права `warehouse.view` / `warehouse.adjust`).
+Эндпоинты: `GET /api/stock/`, `POST …/adjust`, `POST …/transfer`,
+справочник `/api/warehouses/` — список, создание и правка, без удаления
+(права `warehouse.view` / `warehouse.adjust`).
 
 ### catalog — товары
 
-`Product(name, color: Red/Green/Blue, weight_kg: 25/50, price,
-is_active, ask_truck_weight)`, уникальность `(name, color, weight_kg)`.
+`Product(name, color: Red/Green/Blue, weight_kg: 2/5/10/25/50, is_active,
+photo)`, уникальность `(name, color, weight_kg)`. Своей цены у товара нет:
+цена берётся из прайса клиента (`ClientPrice`) или вводится в заказе.
 `cv_class` → `"Red_50"` — класс для AI-классификации мешков на видео.
 
 `ClientPrice(client, product, price)` — запомненный прайс клиента,
-обновляется при подтверждении заказа; `GET /api/catalog/client-prices/?client=`
+обновляется при подтверждении заказа; `GET /api/client-prices/?client=`
 предзаполняет цены в форме заказа.
 
 **Архив вместо удаления**: `DELETE /products/{id}` вызывает
@@ -351,32 +379,20 @@ default-менеджере, чтобы старые заказы и отчёты
 - `detect_overdue(store, date)` — если окно открыто и есть отгруженные
   неоплаченные заказы — шлёт уведомление клиенту (кнопка «Проверить
   просрочки» в кассе);
-- `client_analytics(client)` — KPI (выручка/оплачено/долг/средний чек),
-  разбивка по статусам, помесячная динамика (8 мес), топ-5 товаров,
-  последние заказы. Нефинансовые статусы (`draft/pending/rejected/cancelled`)
-  в деньгах не участвуют.
+- `client_history(client)` — продажи, погашения и долги клиента плоскими
+  строками для карточки клиента.
 
-Эндпоинты: CRUD клиентов/магазинов, `POST /clients/{id}/password/` для выдачи
-временного пароля, `GET /clients/{id}/analytics`,
-`GET /clients/debts`, `GET /clients/{id}/debt-detail`,
-`GET /clients/stores/debts`, `POST /clients/stores/check-overdue`.
+Эндпоинты: CRUD клиентов (`/api/clients/`) и магазинов (`/api/stores/`),
+`POST /clients/{id}/password/` для выдачи временного пароля,
+`GET /clients/{id}/history/`, `GET /clients/{id}/statement/` и
+`GET /clients/statement/` (выписки Excel), `GET|PUT /clients/{id}/prices/`,
+`GET /clients/picker/`, `POST /clients/{id}/assign-department/`,
+`POST /clients/{id}/purge/`, `GET /clients/debts/`,
+`GET /clients/{id}/debt-detail/`,
+`POST /stores/check-overdue/`.
 Новый клиент получает уникальный логин, отключённую учётку и unusable password.
 Сотрудник с `clients.manage_access` включает доступ действием «Выдать доступ в портал»:
 пароль не логируется, а при первом входе клиент обязан заменить его.
-
-После первой миграции существующих клиентов можно один раз выдать общий
-временный пароль интерактивной командой. Пароль вводится скрыто дважды и не
-попадает в аргументы процесса или shell history:
-
-```bash
-docker compose -f docker-compose.prod.yml exec backend \
-  python manage.py provision_client_accounts --dry-run
-docker compose -f docker-compose.prod.yml exec backend \
-  python manage.py provision_client_accounts
-```
-
-Команда обрабатывает только отключённые клиентские учётки с unusable password,
-блокирует строки транзакционно и безопасна при повторном запуске.
 
 ### portal — клиентский портал
 
@@ -403,7 +419,9 @@ Windows runtime, модели, тесты и установщик AI-серви�
 репозиторию
 [`bag-counter-cv-service`](https://github.com/arystambek-dimash/bag-counter-cv-service).
 Этот репозиторий хранит только CRM-клиент его HTTP-контракта и серверную
-оркестрацию; исходники edge-сервиса сюда не копируются.
+оркестрацию; исходники edge-сервиса сюда не копируются. Агент ПК камер
+(надзор за MediaMTX, NVR-sync, запись `cam…ai`) тоже ставится только оттуда —
+по runbook `deploy/camera-pc/README.md` того репозитория.
 
 Камера, назначенная активному устройству «Моноблок», автоматически входит в
 обязательную политику AI 24/7 с логическим источником `sub`. Физический RTSP URL
@@ -439,7 +457,7 @@ API возвращает `pending` и интерфейс не должен по�
   через его API; резервный путь — параллельные RTSP-пробы cam1..camN.
   Кэш в Redis: 240 с рабочий, 7 дней last-good (fallback при сбое сети).
 
-#### AI-подсчёт мешков (пост погрузки)
+#### AI-подсчёт мешков (Моноблок)
 
 Обязательные камеры Моноблока считаются непрерывно, даже когда заказа нет.
 Запуск отгрузки не создаёт второй decoder/model runtime и не обнуляет общую
@@ -462,21 +480,17 @@ final_total, last_status JSON)` +
 владение остаётся за заказом до явной сверки, чтобы новый заказ не получил
 старый или обнулённый счёт.
 
-Эндпоинты (`/api/cameras/{cam}/ai/`):
+HTTP-эндпоинтов старта, стопа и сброса подсчёта нет: открытую сессию закрывает
+отгрузка грузчика (`counting.close_session_for_dispatch` — активный подсчёт
+идущей погрузки завершается с мешками камеры, остальной отменяется). Открытые
+сессии для Моноблока — `GET /api/cameras/ai/sessions/` (право `monoblock.view`).
 
-- `GET` — статус: чужой заказ получает дешёвый DB-ответ «камера занята»
-  (`busy`), не трогая GPU; владелец — живой статус от ai_service.
-- `POST` — включить модель для заказа в `confirmed` или `arrived`; статус
-  `loading` допускается только при восстановлении той же сессии на той же камере.
-  Таймаут ai_service — ситуация неоднозначная: владение сохраняется, чтобы
-  второй заказ не стартовал на том же GPU; детерминированные ошибки (<500)
-  сразу освобождают слот.
-- `DELETE` — выключить и зафиксировать итог; `POST …/reset/` — обнулить
-  счётчик под новую погрузку.
-- Коды ошибок: `ai_disabled` (503, фича не настроена), `ai_unavailable`
-  (502, ПК не отвечает), `ai_busy` (409, камера занята другим заказом),
-  `ai_error`, `ai_processor_stopped`.
-- Права: смотреть — `IsStaff`, управлять — `HasPerm("shipping.load")`.
+Поздние события мешков: после перезапуска camera-PC догрузка пропуска может
+принести мешки смены, которая уже проведена на склад. `cameras/event_sync.py`
+не отклоняет такую страницу (иначе журнал камеры замерзает и health-гейт
+деплоя падает): мешок попадает в ещё открытую дневную аналитику,
+импортированная строка остаётся с `applied_to_production=False`, в лог уходит
+предупреждение с камерой и количеством. Проведённая партия не меняется.
 
 #### Health-мониторинг и алерты
 
@@ -487,7 +501,6 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 статусы HEALTHY/DEGRADED/OUTAGE с дебаунсом (3 плохих подряд — инцидент,
 2 хороших — восстановление). Алерты — webhook и/или Telegram
 (`CAMERA_ALERT_*` env), с ретраями и аудитом доставки.
-`GET /api/cameras/health/` отдаёт состояние (503 при подтверждённом отказе);
 `manage.py check_camera_health` — гейт для деплоя.
 
 ### notifications, eventlog
@@ -515,18 +528,23 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `/dashboard` | вкладки «Аналитика» (KPI: склад, отгрузки за 14 дней, выручка/поступления, долги; графики; live-очередь отгрузки; топ должников) и «Камеры» (стена камер) |
 | `/orders` | вкладки «Заказы» / «Корзина» (восстановление удалённых); поиск, фильтры по статусу/отделу; создание и редактирование через `OrderForm` |
 | `/orders/[id]` | деталь заказа: позиции, цепочка оплат (`PaymentChain`), номер машины, действия по статусу |
-| `/accounting` | «Касса»: вкладка **Оплаты** (подтверждение pending-заказов и очередь оплат) и **Долги** (клиенты с долгом, «Проверить просрочки») |
-| `/accounting/debts/clients/[id]`, `…/stores/[id]` | детализация долга клиента/магазина |
-| `/clients`, `/clients/[id]` | база клиентов + аналитика по клиенту (графики за 8 мес, статусы, средний чек) |
+| `/accounting` | «Касса», экран выбирается `?view=`: на десктопе `overview` («Общее»/«Долги»: аналитика кассы, должники, «Проверить просрочки»), `confirm` («Оплаты»), `transactions`; на телефоне ещё `home`, `debts`, `report`, `pos` (Kaspi QR) и `remote` (удалённый счёт) |
+| `/accounting/debts/clients/[id]` | детализация долга клиента |
+| `/clients`, `/clients/[id]`, `…/prices` | база клиентов; карточка клиента — вкладки «Аналитика клиента», «Продажи», «Погашения», «Долги» (`/clients/{id}/history/`) и выписка Excel; цены клиента |
 | `/stores` | магазины клиентов, графики оплат (нет/еженедельно/ежемесячно) |
 | `/catalog/products` | вкладки «Товары» / «Архив»; архивирование вместо удаления; флаг «спрашивать вес грузовика» |
 | `/warehouse` | остатки; корректировка/приёмка с быстрыми кнопками и превью «сейчас → станет» |
-| `/shipping` | пост погрузки: очередь машин; рабочая зона выбранной машины — госномер, прогресс этапов, live-видео выбранной камеры (камера закрепляется за заказом), счётчик мешков (+1/+5/−1, дебаунс-сохранение), AI-подсчёт с аннотированным потоком, действия «Принять машину» (вес на въезде) / «Погрузка завершена» / «Отгрузить — выезд». Несколько машин грузятся параллельно на разных камерах |
-| `/train` | устаревшая ссылка; сервер перенаправляет на единый пост `/shipping` |
+| `/warehouse/silos` | силосы (право `silos.view`) |
+| `/monoblock` | Моноблок (только просмотр, `monoblock.view`): очередь машин и вагонов, камеры и AI-подсчёт; печать сегментов отгрузки |
+| `/loader` | Грузчик: вкладки «Фуры» / «Вагоны» по правам `loader.trucks` / `loader.wagons`, очередь «К отгрузке» и «История», кнопка «Отгружено», накладная PDF, отчёты о вагонах |
+| `/grain`, `/grain/passages`, `/grain/wagons/[id]`, `/grain/orientation` | приход зерна вагонами, автовесы вывоза (рейсы, накладная рейса), разметка ориентации |
+| `/tasks` | задачи: свои — каждому сотруднику, всех — с `tasks.view` |
+| `/shipping` | устаревшая ссылка; сервер перенаправляет на `/monoblock` |
 | `/reports` | выручка и поступления по валютам, период и фильтр по отделу |
 | `/management/employees` | сотрудники, отделы и персональные системные права |
+| `/management/whatsapp-bot` | журнал WhatsApp-бота отчётов о вагонах: проведённые и ждущие человека |
 | `/events` | журнал событий с фильтрами, группировка по дням |
-| `/portal/catalog`, `/portal/orders`, `…/new`, `…/[id]` | портал клиента: каталог с остатками, свои заказы, оплата card/kaspi, номер машины, запрос долга |
+| `/portal/catalog`, `/portal/cart`, `/portal/orders`, `…/[id]` | портал клиента: каталог с остатками, корзина (старый адрес `/portal/orders/new` перенаправляется сюда), свои заказы, оплата, номер машины, запрос долга |
 
 ### Механика
 
@@ -535,15 +553,13 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
   (Zustand): `me`, `login`, `loadMe`, `refreshMe` (тихое обновление прав).
 - **Права**: `can(me, code)`; `<RequirePerm code=…>` закрывает страницу
   заглушкой «Нет доступа»; сайдбар строится из прав; `homeFor(me)` разводит
-  по домашним страницам (клиент → портал, моноблок → `/monoblock`,
-  сотрудник → `/dashboard`).
+  по домашним страницам (клиент → `/portal/catalog`, сотрудник → `/dashboard`).
 - **UI-кит** (`components/ui`): Button/Input/Select/Modal/ConfirmDialog,
   Table + SortableHeader, Badge/StatusBadge/PaymentStageBadge, KPI-карточки,
   PlateInput (госномер одним полем: флаг страны, маски тягача и прицепа),
   DataState (loading/error/empty), Tabs.
   Тема light/dark/system. Паттерны дизайна — Stripe/Linear/UniFi.
-- **Камеры**: `CameraWall`, `CameraStream` (WebRTC от go2rtc),
-  `useAiCounter` — поллинг статуса AI и управление сессией.
+- **Камеры**: `CameraWall`, `CameraStream` (WebRTC от go2rtc).
 
 ---
 
@@ -558,13 +574,15 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `frontend` | Next.js standalone |
 | `go2rtc` | 32 статических слота cam1..cam32 + динамические потоки от бэкенда; ffmpeg-транскод только если кодек не H.264 |
 | `camera-monitor` | тот же образ backend, `manage.py monitor_cameras` |
-| `passage-scale-monitor` | тот же образ backend, `manage.py monitor_passage_scale`; секундный polling весов с default-off kill switch и фиксируемым до подтверждения `manual_required` |
+| `ai-stock-monitor` | тот же образ backend, `manage.py post_always_on_stock`; приходует на склад завершённые смены AI 24/7 |
+| `shipping-transport-monitor` | тот же образ backend, `manage.py monitor_shipping_sessions`; группирует счёт отгрузки в сессии и простои |
+| `whatsapp-bot` | тот же образ backend, `manage.py run_whatsapp_bot`; отчёты о вагонах из Green-API, без `WHATSAPP_BOT_ENABLED=1` простаивает |
+| `passage-scale-monitor` | тот же образ backend, `manage.py monitor_passage_scale`; импортирует очередь независимого сборщика весов (`deploy/weighbridge/`, при маркере `/var/lib/weighbridge/enabled`), досылает фото, проверяет номера и ведёт вагонную арку |
 | `celery-payments` | Celery worker только очереди `payments`, concurrency/prefetch = 1; сверка ApiPay |
 | `celery-orientation` | отдельная очередь `orientation`, concurrency/prefetch = 1; экспорт разметки и фото на Camera-PC |
 | `celery-beat` | периодически ставит сверку ApiPay в Redis с expiry; schedule/pid живут в отдельном tmpfs |
 | `db` / `redis` | PostgreSQL 16 / Redis 7 — в изолированной internal-сети `data` |
 | `db-backup` | ежедневный `pg_dump` + бэкап перед каждым деплоем |
-| `wireguard` | туннель до цехового ПК (NVR + ai_service :8890) |
 
 Сети изолированы: `edge` (nginx↔front/back), `data` (db/redis), `default` —
 фронт не имеет доступа к БД и наружу.
@@ -586,8 +604,9 @@ CI проверяет frontend/backend и инфраструктурные ин�
    свежий container-private heartbeat цикла. `degraded` из-за внешних
    весов/камеры считается живым процессом и не вызывает rollback.
 3. **Camera health** проверяется workflow после запуска контейнеров:
-   `wait-for-camera-health.sh` требует свежий heartbeat и готовый журнал
-   событий (`CAMERA_HEALTH_REQUIRE_EVENTS=1`). Провал проверки приводит
+   `wait-for-camera-health.sh` требует свежий (не старше
+   `CAMERA_HEALTH_STALE_SECONDS`) heartbeat нового релиза и готовый журнал
+   событий (`--require-events`). Провал проверки приводит
    к rollback; эти проверки не отключаются ради зелёного статуса выпуска.
 4. `nginx -t && nginx -s reload` (graceful).
 
@@ -626,15 +645,11 @@ go2rtc rate-limit'ить нельзя (живое видео).
   `SENTRY_ENABLE_LOGS=1` (и отдельные frontend-флаги) разрешается только после
   проверки privacy и бюджета ingestion: объём рабочих monitor-логов значительно
   выше объёма исключений.
-- **Frontend Sentry** по умолчанию только браузерный: публичный
+- **Frontend Sentry** только браузерный: публичный
   `NEXT_PUBLIC_SENTRY_DSN` встраивается при сборке, необработанные browser/React
   ошибки и оба App Router error boundary отправляются напрямую из браузера.
   Axios-ошибки глобально не перехватываются, чтобы частые poller-сбои не создавали
   шторм событий. Replay и profiling выключены, tracing по умолчанию равен 0.
-- `SENTRY_FRONTEND_SERVER_DSN` оставлен пустым. Frontend-контейнер намеренно
-  находится только во внутренней сети `edge` и не имеет выхода к hosted Sentry;
-  server/edge reporting допустим только после добавления контролируемого relay
-  или узкого egress без снятия сетевой изоляции целиком.
 - Source maps загружаются только когда build одновременно получил
   `SENTRY_ORG`, `SENTRY_PROJECT` и `SENTRY_AUTH_TOKEN`. Токен передаётся в
   `frontend/Dockerfile` как BuildKit secret `sentry_auth_token`, не как build arg
@@ -670,9 +685,8 @@ DEGRADED/OUTAGE/RECOVERY по-прежнему доставляются неза
 и переходы рейса коммитятся одной транзакцией;
 повтор того же UUID не читает весы снова и идёт через retry-only camera endpoint.
 Если исходный POST не дошёл, durable tombstone запрещает запоздалый захват
-следующей машины. Старый camera-first webhook оставлен только для исторического
-журнала/rollback и одновременно не включается. Точный контракт, конфигурация,
-проверка и откат описаны в
+следующей машины. Webhook номеров только сохраняет события и не читает весы.
+Точный контракт, конфигурация, проверка и откат описаны в
 [deploy/vehicle-plate-events.md](deploy/vehicle-plate-events.md). Фото и видео
 в Asyl не передаются и не сохраняются.
 

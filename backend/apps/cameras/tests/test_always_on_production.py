@@ -1,15 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Event
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
-from django.db import close_old_connections, connection, connections
+from django.db import close_old_connections, connections
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.cameras import analytics, production
+from apps.cameras import production, production_queries, production_runs
 from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -37,15 +36,6 @@ ALMATY = ZoneInfo("Asia/Almaty")
 
 def _at(day: int, hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 8, day, hour, minute, tzinfo=ALMATY)
-
-
-def _product(color="Red"):
-    return Product.objects.create(
-        name=f"Продукт {color}",
-        color=color,
-        weight_kg="50",
-        price="100",
-    )
 
 
 def _closed_run(*, camera="cam3", color="red", bags=10, day=16):
@@ -128,15 +118,20 @@ def _payload_run(
 
 
 def test_business_day_switches_exactly_at_nineteen():
-    assert production.business_day_for(_at(16, 18, 59)).isoformat() == "2026-08-16"
-    assert production.business_day_for(_at(16, 19, 0)).isoformat() == "2026-08-17"
-    assert timezone.localtime(production.scheduled_for(_at(16, 10).date())).hour == 19
+    assert production_runs.business_day_for(_at(16, 18, 59)).isoformat() == "2026-08-16"
+    assert production_runs.business_day_for(_at(16, 19, 0)).isoformat() == "2026-08-17"
+    assert timezone.localtime(production_runs.scheduled_for(_at(16, 10).date())).hour == 19
 
 
-def test_color_deltas_form_periods_and_close_after_a_gap():
-    production.record_color_deltas("cam3", {"red": 2}, _at(16, 10), 2)
-    production.record_color_deltas("cam3", {"red": 3}, _at(16, 10, 4), 3)
-    production.record_color_deltas("cam3", {"red": 1}, _at(16, 10, 10), 1)
+def _count(color, observed_at, bags=1):
+    for _ in range(bags):
+        production_runs.record_color_event("cam3", color, observed_at)
+
+
+def test_color_events_form_periods_and_close_after_a_gap():
+    _count("red", _at(16, 10), 2)
+    _count("red", _at(16, 10, 4), 3)
+    _count("red", _at(16, 10, 10))
 
     runs = list(AlwaysOnProductionRun.objects.order_by("started_at"))
     assert len(runs) == 2
@@ -146,39 +141,13 @@ def test_color_deltas_form_periods_and_close_after_a_gap():
     assert runs[1].ended_at is None
 
 
-def test_ordered_color_events_split_every_color_change_even_inside_gap():
+def test_color_events_split_every_color_change_even_inside_gap():
     start = _at(16, 10)
-    production.record_color_deltas(
-        "cam3", {"red": 2}, start, 2, ordered_color_event=True
-    )
-    production.record_color_deltas(
-        "cam3",
-        {"red": 3},
-        start + timedelta(minutes=1),
-        3,
-        ordered_color_event=True,
-    )
-    production.record_color_deltas(
-        "cam3",
-        {"green": 1},
-        start + timedelta(minutes=2),
-        1,
-        ordered_color_event=True,
-    )
-    production.record_color_deltas(
-        "cam3",
-        {"blue": 1},
-        start + timedelta(minutes=3),
-        1,
-        ordered_color_event=True,
-    )
-    production.record_color_deltas(
-        "cam3",
-        {"red": 1},
-        start + timedelta(minutes=4),
-        1,
-        ordered_color_event=True,
-    )
+    _count("red", start, 2)
+    _count("red", start + timedelta(minutes=1), 3)
+    _count("green", start + timedelta(minutes=2))
+    _count("blue", start + timedelta(minutes=3))
+    _count("red", start + timedelta(minutes=4))
 
     runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
     assert [row.color for row in runs] == ["red", "green", "blue", "red"]
@@ -192,19 +161,7 @@ def test_ordered_color_events_split_every_color_change_even_inside_gap():
     assert AlwaysOnProductionRun.objects.filter(ended_at__isnull=True).count() == 1
 
 
-def test_legacy_multi_color_snapshot_keeps_unordered_open_runs():
-    production.record_color_deltas(
-        "cam3",
-        {"red": 2, "blue": 1},
-        _at(16, 10),
-        3,
-    )
-
-    runs = AlwaysOnProductionRun.objects.filter(ended_at__isnull=True)
-    assert dict(runs.values_list("color", "model_bags")) == {"red": 2, "blue": 1}
-
-
-def test_first_ordered_event_does_not_revive_an_older_legacy_open_color():
+def test_color_event_does_not_revive_an_older_open_color():
     start = _at(16, 10)
     old_red = AlwaysOnProductionRun.objects.create(
         camera="cam3",
@@ -214,7 +171,7 @@ def test_first_ordered_event_does_not_revive_an_older_legacy_open_color():
         last_counted_at=start,
         model_bags=2,
     )
-    legacy_current = AlwaysOnProductionRun.objects.create(
+    current = AlwaysOnProductionRun.objects.create(
         camera="cam3",
         business_day=start.date(),
         color="green",
@@ -223,41 +180,25 @@ def test_first_ordered_event_does_not_revive_an_older_legacy_open_color():
         model_bags=1,
     )
 
-    production.record_color_deltas(
-        "cam3",
-        {"red": 1},
-        start + timedelta(minutes=2),
-        1,
-        ordered_color_event=True,
-    )
+    _count("red", start + timedelta(minutes=2))
 
     runs = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
     assert [row.color for row in runs] == ["red", "green", "red"]
     assert [row.model_bags for row in runs] == [2, 1, 1]
     assert runs[0].pk == old_red.pk
     assert runs[0].ended_at == start
-    assert runs[1].pk == legacy_current.pk
+    assert runs[1].pk == current.pk
     assert runs[1].ended_at == start + timedelta(minutes=1)
     assert runs[2].ended_at is None
     assert AlwaysOnProductionRun.objects.filter(ended_at__isnull=True).count() == 1
 
 
-def test_unclassified_delta_is_kept_instead_of_disappearing():
-    production.record_color_deltas("cam3", {"red": 3}, _at(16, 10), 5)
+@pytest.mark.parametrize("color", ["", None, "x" * 33])
+def test_bag_without_a_usable_colour_is_counted_as_unclassified(color):
+    _count(color, _at(16, 10))
 
-    totals = dict(AlwaysOnProductionRun.objects.values_list("color", "model_bags"))
-    assert totals == {"red": 3, "unclassified": 2}
-
-
-def test_colour_breakdown_can_never_overstate_total_delta():
-    production.record_color_deltas(
-        "cam3",
-        {"red": 4, "blue": 4},
-        _at(16, 10),
-        5,
-    )
-
-    assert sum(AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)) == 5
+    run = AlwaysOnProductionRun.objects.get()
+    assert (run.color, run.model_bags, run.is_approximate) == ("unclassified", 1, True)
 
 
 def test_smooth_day_runs_matches_supplied_operator_sample_without_mutating_raw():
@@ -286,9 +227,9 @@ def test_smooth_day_runs_matches_supplied_operator_sample_without_mutating_raw()
     ]
     original = [dict(run) for run in raw]
 
-    result = production.smooth_day_runs(raw)
+    result = production_queries.smooth_day_runs(raw)
 
-    assert production._run_color_totals(raw) == {
+    assert production_queries._run_color_totals(raw) == {
         "blue": 840,
         "green": 141,
         "red": 3306,
@@ -305,21 +246,21 @@ def test_smooth_day_runs_matches_supplied_operator_sample_without_mutating_raw()
 
 
 def test_smooth_day_runs_uses_strict_threshold_and_keeps_edges_and_boundaries():
-    exact_threshold = production.smooth_day_runs(
+    exact_threshold = production_queries.smooth_day_runs(
         [
             _payload_run(1, "red", 100),
             _payload_run(2, "blue", 10),
             _payload_run(3, "red", 100),
         ]
     )
-    edge = production.smooth_day_runs(
+    edge = production_queries.smooth_day_runs(
         [
             _payload_run(1, "blue", 9),
             _payload_run(2, "red", 100),
             _payload_run(3, "green", 9),
         ]
     )
-    unlike_neighbors = production.smooth_day_runs(
+    unlike_neighbors = production_queries.smooth_day_runs(
         [
             _payload_run(1, "red", 100),
             _payload_run(2, "blue", 9),
@@ -345,7 +286,7 @@ def test_smooth_day_runs_uses_strict_threshold_and_keeps_edges_and_boundaries():
 
 
 def test_smooth_day_runs_repeats_after_smallest_sandwich_collapses():
-    result = production.smooth_day_runs(
+    result = production_queries.smooth_day_runs(
         [
             _payload_run(1, "red", 100),
             _payload_run(2, "blue", 4),
@@ -368,7 +309,7 @@ def test_smooth_day_runs_never_uses_unreliable_rows_as_sandwich_neighbors(barrie
         approximate=barrier == "approximate",
     )
 
-    result = production.smooth_day_runs(
+    result = production_queries.smooth_day_runs(
         [
             _payload_run(1, "red", 100),
             middle,
@@ -389,14 +330,14 @@ def test_smooth_day_runs_never_merges_with_or_across_unreliable_neighbor(barrier
         "partial": barrier == "partial",
         "approximate": barrier == "approximate",
     }
-    as_neighbor = production.smooth_day_runs(
+    as_neighbor = production_queries.smooth_day_runs(
         [
             _payload_run(1, "red", 100, **barrier_flags),
             _payload_run(2, "blue", 1),
             _payload_run(3, "red", 100),
         ]
     )
-    same_color_boundary = production.smooth_day_runs(
+    same_color_boundary = production_queries.smooth_day_runs(
         [
             _payload_run(1, "red", 100),
             _payload_run(2, "red", 1, **barrier_flags),
@@ -412,9 +353,9 @@ def test_smooth_day_runs_never_merges_with_or_across_unreliable_neighbor(barrier
     assert [run["model_bags"] for run in same_color_boundary] == [100, 1, 100]
 
 
-def test_daily_stock_post_is_exactly_once():
+def test_daily_stock_post_is_exactly_once(make_product):
     _reserve_ai247()
-    product = _product()
+    product = make_product()
     _closed_run(bags=12)
     AlwaysOnColorProductMapping.objects.create(
         camera="cam3",
@@ -436,17 +377,17 @@ def test_daily_stock_post_is_exactly_once():
     assert "AI 24/7" in movement.note
 
 
-def test_daily_stock_post_uses_the_camera_warehouse_route():
+def test_daily_stock_post_uses_the_camera_warehouse_route(make_product):
     _reserve_ai247()
     secondary = Warehouse.objects.create(
         code="finished-goods-2",
         name="Склад готовой продукции №2",
     )
-    product = _product()
+    product = make_product()
     production.save_mappings(
         "cam3",
         [{"color": "red", "product": product.pk}],
-        warehouse=secondary.pk,
+        warehouse_id=secondary.pk,
     )
     AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
         event_sync_supported=False,
@@ -469,14 +410,14 @@ def test_daily_stock_post_uses_the_camera_warehouse_route():
     assert posted["warehouse_name"] == secondary.name
 
 
-def test_mapping_materializes_zero_stock_ownership_before_posting():
+def test_mapping_materializes_zero_stock_ownership_before_posting(make_product):
     secondary = Warehouse.objects.create(code="mapped-stock", name="Склад маршрута")
-    product = _product()
+    product = make_product()
 
     production.save_mappings(
         "cam3",
         [{"color": "red", "product": product.pk}],
-        warehouse=secondary.pk,
+        warehouse_id=secondary.pk,
     )
 
     stock = StockItem.objects.get(product=product)
@@ -485,10 +426,10 @@ def test_mapping_materializes_zero_stock_ownership_before_posting():
     assert AlwaysOnCounterCursor.objects.filter(camera="cam3").exists()
 
 
-def test_unrouted_legacy_camera_stays_on_main_after_default_changes():
+def test_unrouted_legacy_camera_stays_on_main_after_default_changes(make_product):
     main = Warehouse.objects.get(code="main")
     secondary = Warehouse.objects.create(code="new-default", name="Новый основной")
-    product = _product()
+    product = make_product()
     receive_stock(product, 3, user=None, warehouse=main)
     AlwaysOnColorProductMapping.objects.create(
         camera="cam3",
@@ -498,7 +439,7 @@ def test_unrouted_legacy_camera_stays_on_main_after_default_changes():
     Warehouse.objects.filter(pk=main.pk).update(is_default=False)
     Warehouse.objects.filter(pk=secondary.pk).update(is_default=True)
 
-    result = production.production_payload("cam3")
+    result = production_queries.production_payload("cam3")
 
     assert result["warehouse"] == main.pk
     red_mapping = next(
@@ -507,17 +448,17 @@ def test_unrouted_legacy_camera_stays_on_main_after_default_changes():
     assert red_mapping["product"] == product.pk
 
 
-def test_daily_stock_post_finishes_for_a_route_disabled_after_production():
+def test_daily_stock_post_finishes_for_a_route_disabled_after_production(make_product):
     _reserve_ai247()
     secondary = Warehouse.objects.create(
         code="finished-goods-disabled",
         name="Отключённый после смены склад",
     )
-    product = _product()
+    product = make_product()
     production.save_mappings(
         "cam3",
         [{"color": "red", "product": product.pk}],
-        warehouse=secondary.pk,
+        warehouse_id=secondary.pk,
     )
     AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
         event_sync_supported=False,
@@ -533,14 +474,14 @@ def test_daily_stock_post_finishes_for_a_route_disabled_after_production():
     assert StockReceipt.objects.get(product=product).warehouse_id == secondary.pk
 
 
-def test_mapping_can_be_fixed_on_the_same_inactive_route_with_unposted_work():
+def test_mapping_can_be_fixed_on_the_same_inactive_route_with_unposted_work(make_product):
     secondary = Warehouse.objects.create(code="inactive-route", name="Склад смены")
-    red = _product("Red")
-    blue = _product("Blue")
+    red = make_product(color="Red")
+    blue = make_product(color="Blue")
     production.save_mappings(
         "cam3",
         [{"color": "red", "product": red.pk}],
-        warehouse=secondary.pk,
+        warehouse_id=secondary.pk,
     )
     _closed_run(color="blue", bags=4)
     Warehouse.objects.filter(pk=secondary.pk).update(is_active=False)
@@ -551,7 +492,7 @@ def test_mapping_can_be_fixed_on_the_same_inactive_route_with_unposted_work():
             {"color": "red", "product": red.pk},
             {"color": "blue", "product": blue.pk},
         ],
-        warehouse=secondary.pk,
+        warehouse_id=secondary.pk,
     )
 
     assert result["warehouse"] == secondary.pk
@@ -562,16 +503,16 @@ def test_mapping_can_be_fixed_on_the_same_inactive_route_with_unposted_work():
     ).product == blue
 
 
-def test_mapping_creates_a_stock_card_for_same_product_in_another_warehouse():
+def test_mapping_creates_a_stock_card_for_same_product_in_another_warehouse(make_product):
     main = Warehouse.objects.get(is_default=True)
     secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
-    product = _product()
+    product = make_product()
     receive_stock(product, 3, user=None, warehouse=main)
 
     result = production.save_mappings(
         "cam3",
         [{"color": "red", "product": product.pk}],
-        warehouse=secondary.pk,
+        warehouse_id=secondary.pk,
     )
 
     assert result["warehouse"] == secondary.pk
@@ -591,10 +532,10 @@ def test_mapping_creates_a_stock_card_for_same_product_in_another_warehouse():
     ).product == product
 
 
-def test_payload_marks_mapping_unconfigured_without_stock_card_in_camera_warehouse():
+def test_payload_marks_mapping_unconfigured_without_stock_card_in_camera_warehouse(make_product):
     main = Warehouse.objects.get(is_default=True)
     secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
-    product = _product()
+    product = make_product()
     receive_stock(product, 3, user=None, warehouse=main)
     AlwaysOnWarehouseRoute.objects.create(camera="cam3", warehouse=secondary)
     AlwaysOnColorProductMapping.objects.create(
@@ -603,30 +544,44 @@ def test_payload_marks_mapping_unconfigured_without_stock_card_in_camera_warehou
         product=product,
     )
 
-    result = production.production_payload("cam3")
+    result = production_queries.production_payload("cam3")
 
     product_option = next(row for row in result["products"] if row["id"] == product.pk)
     assert result["fully_configured"] is False
-    assert product_option["warehouse"] is None
+    assert product_option["warehouse_ids"] == [main.pk]
+
+
+def test_production_payload_exposes_every_stock_card_for_product(make_product):
+    main = Warehouse.objects.get(is_default=True)
+    secondary = Warehouse.objects.create(
+        code="second",
+        name="Мельница 2",
+        is_active=False,
+    )
+    product = make_product(name="Товар двух складов")
+    StockItem.objects.create(product=product, warehouse=main, bags=12)
+    StockItem.objects.create(product=product, warehouse=secondary, bags=0)
+
+    payload = production_queries.production_payload("cam3")
+
+    product_row = next(row for row in payload["products"] if row["id"] == product.pk)
+    assert product_row["warehouse_ids"] == [main.pk, secondary.pk]
 
 
 @pytest.mark.django_db(transaction=True)
-def test_mapping_route_change_locks_main_before_secondary_warehouse(monkeypatch):
-    if connection.vendor != "postgresql":
-        pytest.skip("row-lock ordering contract requires PostgreSQL")
-
+def test_mapping_route_change_locks_main_before_secondary_warehouse(monkeypatch, make_product):
     main = Warehouse.objects.get(is_default=True)
     secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
-    product = _product()
+    product = make_product()
     receive_stock(product, 10, user=None, warehouse=main)
     AlwaysOnWarehouseRoute.objects.create(camera="cam3", warehouse=secondary)
 
     main_locked = Event()
     concurrent_transfer_started = Event()
-    original_compatibility_warehouse = production._compatibility_warehouse
+    original_main_warehouse = production.get_main_warehouse
 
     def pause_after_main_lock(*, lock=False):
-        warehouse = original_compatibility_warehouse(lock=lock)
+        warehouse = original_main_warehouse(lock=lock)
         if lock:
             main_locked.set()
             if not concurrent_transfer_started.wait(timeout=5):
@@ -635,7 +590,7 @@ def test_mapping_route_change_locks_main_before_secondary_warehouse(monkeypatch)
 
     monkeypatch.setattr(
         production,
-        "_compatibility_warehouse",
+        "get_main_warehouse",
         pause_after_main_lock,
     )
 
@@ -645,7 +600,7 @@ def test_mapping_route_change_locks_main_before_secondary_warehouse(monkeypatch)
             return production.save_mappings(
                 "cam3",
                 [{"color": "red", "product": product.pk}],
-                warehouse=main.pk,
+                warehouse_id=main.pk,
             )
         finally:
             connections.close_all()
@@ -677,14 +632,14 @@ def test_mapping_route_change_locks_main_before_secondary_warehouse(monkeypatch)
     assert StockItem.objects.get(product=product, warehouse=secondary).bags == 1
 
 
-def test_camera_warehouse_cannot_change_with_unposted_production():
+def test_camera_warehouse_cannot_change_with_unposted_production(make_product):
     main = Warehouse.objects.get(is_default=True)
     secondary = Warehouse.objects.create(code="secondary", name="Второй склад")
-    product = _product()
+    product = make_product()
     production.save_mappings(
         "cam3",
         [{"color": "red", "product": product.pk}],
-        warehouse=main.pk,
+        warehouse_id=main.pk,
     )
     _closed_run(bags=1)
 
@@ -692,21 +647,21 @@ def test_camera_warehouse_cannot_change_with_unposted_production():
         production.save_mappings(
             "cam3",
             [{"color": "red", "product": product.pk}],
-            warehouse=secondary.pk,
+            warehouse_id=secondary.pk,
         )
 
     assert exc.value.detail["code"] == "warehouse_has_unposted_production"
     assert AlwaysOnWarehouseRoute.objects.get(camera="cam3").warehouse == main
 
 
-def test_camera_warehouse_cannot_change_with_a_nonterminal_batch_before_runs():
+def test_camera_warehouse_cannot_change_with_a_nonterminal_batch_before_runs(make_product):
     main = Warehouse.objects.get(is_default=True)
     secondary = Warehouse.objects.create(code="batch-route", name="Второй склад")
-    product = _product()
+    product = make_product()
     production.save_mappings(
         "cam3",
         [{"color": "red", "product": product.pk}],
-        warehouse=main.pk,
+        warehouse_id=main.pk,
     )
     AlwaysOnStockBatch.objects.create(
         camera="cam3",
@@ -721,16 +676,16 @@ def test_camera_warehouse_cannot_change_with_a_nonterminal_batch_before_runs():
         production.save_mappings(
             "cam3",
             [],
-            warehouse=secondary.pk,
+            warehouse_id=secondary.pk,
         )
 
     assert exc.value.detail["code"] == "warehouse_has_unposted_production"
     assert AlwaysOnWarehouseRoute.objects.get(camera="cam3").warehouse == main
 
 
-def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff():
+def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff(make_product):
     _reserve_ai247()
-    product = _product()
+    product = make_product()
     _closed_run(bags=12)
     AlwaysOnColorProductMapping.objects.create(
         camera="cam3",
@@ -740,7 +695,6 @@ def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff():
     cursor = AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=10,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
         event_caught_up_at=_at(16, 18, 59),
@@ -761,9 +715,9 @@ def test_event_camera_stock_waits_for_a_fresh_caught_up_page_after_cutoff():
     assert StockItem.objects.get(product=product).bags == 12
 
 
-def test_stock_cannot_close_before_the_initial_event_capability_probe():
+def test_stock_cannot_close_before_the_initial_event_capability_probe(make_product):
     _reserve_ai247()
-    product = _product()
+    product = make_product()
     _closed_run(bags=4)
     AlwaysOnColorProductMapping.objects.create(
         camera="cam3",
@@ -779,9 +733,9 @@ def test_stock_cannot_close_before_the_initial_event_capability_probe():
     assert not StockReceipt.objects.exists()
 
 
-def test_missing_mapping_blocks_whole_batch_then_retries_safely():
+def test_missing_mapping_blocks_whole_batch_then_retries_safely(make_product):
     _reserve_ai247()
-    red = _product("Red")
+    red = make_product(color="Red")
     _closed_run(color="red", bags=7)
     _closed_run(color="blue", bags=4)
     AlwaysOnColorProductMapping.objects.create(
@@ -796,7 +750,7 @@ def test_missing_mapping_blocks_whole_batch_then_retries_safely():
     assert StockReceipt.objects.count() == 0
     assert not StockItem.objects.exists()
 
-    blue = _product("Blue")
+    blue = make_product(color="Blue")
     AlwaysOnColorProductMapping.objects.create(
         camera="cam3",
         color="blue",
@@ -810,9 +764,9 @@ def test_missing_mapping_blocks_whole_batch_then_retries_safely():
     assert StockReceipt.objects.count() == 2
 
 
-def test_color_correction_reduces_the_warehouse_receipt(boss):
+def test_color_correction_reduces_the_warehouse_receipt(boss, make_product):
     _reserve_ai247()
-    product = _product()
+    product = make_product()
     _closed_run(bags=10)
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
@@ -823,14 +777,14 @@ def test_color_correction_reduces_the_warehouse_receipt(boss):
         color="red",
         product=product,
     )
-    with patch.object(production.timezone, "now", return_value=_at(16, 12)):
-        production.record_correction(
-            "cam3",
-            "red",
-            2,
-            "ложное срабатывание",
-            boss,
-        )
+    AlwaysOnProductionCorrection.objects.create(
+        camera="cam3",
+        business_day=_at(16, 12).date(),
+        color="red",
+        delta=-2,
+        reason="ложное срабатывание",
+        created_by=boss,
+    )
 
     posted = production.post_due_stock(_at(16, 19))[0]
 
@@ -853,14 +807,14 @@ def test_shipping_reserved_legacy_batches_are_never_posted_or_retried():
     blocked = AlwaysOnStockBatch.objects.create(
         camera="cam2",
         business_day=blocked_day,
-        scheduled_for=production.scheduled_for(blocked_day),
+        scheduled_for=production_runs.scheduled_for(blocked_day),
         status=AlwaysOnStockBatch.BLOCKED,
         last_error="legacy blocked",
     )
     failed = AlwaysOnStockBatch.objects.create(
         camera="cam4",
         business_day=failed_day,
-        scheduled_for=production.scheduled_for(failed_day),
+        scheduled_for=production_runs.scheduled_for(failed_day),
         status=AlwaysOnStockBatch.FAILED,
         last_error="legacy failed",
     )
@@ -876,48 +830,6 @@ def test_shipping_reserved_legacy_batches_are_never_posted_or_retried():
     assert failed.status == AlwaysOnStockBatch.FAILED
     assert failed.last_error == "legacy failed"
     assert not StockMovement.objects.exists()
-
-
-def test_display_archive_does_not_duplicate_the_production_ledger(boss):
-    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
-    _reserve_ai247()
-    first = _at(16, 12)
-    analytics.record_snapshot(
-        {
-            "processors": [
-                {
-                    "cam": "cam3",
-                    "total": 100,
-                    "mode": "always_on",
-                    "running": True,
-                    "per_color": {"Red_50": 100},
-                }
-            ]
-        },
-        observed_at=first,
-    )
-
-    with patch.object(analytics.timezone, "now", return_value=first):
-        analytics.archive_camera("cam3", "закрытие экрана", boss)
-    analytics.record_snapshot(
-        {
-            "processors": [
-                {
-                    "cam": "cam3",
-                    "total": 140,
-                    "mode": "always_on",
-                    "running": True,
-                    "per_color": {"Red_50": 140},
-                }
-            ]
-        },
-        observed_at=first + timedelta(minutes=1),
-    )
-
-    assert (
-        sum(AlwaysOnProductionRun.objects.values_list("model_bags", flat=True)) == 140
-    )
-    assert analytics.today_payload()["all_time_total"] == 40
 
 
 def test_production_payload_returns_every_run_for_selected_day():
@@ -940,7 +852,7 @@ def test_production_payload_returns_every_run_for_selected_day():
     _closed_run(camera="cam3", color="green", bags=3, day=15)
     _closed_run(camera="cam4", color="red", bags=4, day=14)
 
-    result = production.production_payload("cam3", day="2026-08-14")
+    result = production_queries.production_payload("cam3", day="2026-08-14")
 
     assert result["selected_day"] == "2026-08-14"
     assert len(result["day_runs"]) == 101
@@ -949,8 +861,6 @@ def test_production_payload_returns_every_run_for_selected_day():
     assert [row["started_at"] for row in result["day_runs"]] == sorted(
         row["started_at"] for row in result["day_runs"]
     )
-    # Preserve the existing bounded journal contract for the settings screen.
-    assert len(result["runs"]) == 100
 
 
 def test_viewing_ai_production_does_not_close_a_shipping_legacy_run():
@@ -968,7 +878,7 @@ def test_viewing_ai_production_does_not_close_a_shipping_legacy_run():
         model_bags=3,
     )
 
-    production.production_payload("cam3", day="2026-08-14")
+    production_queries.production_payload("cam3", day="2026-08-14")
 
     shipping_run.refresh_from_db()
     assert shipping_run.ended_at is None
@@ -1006,7 +916,7 @@ def test_selected_day_dominant_brand_is_joined_to_normalized_event_color():
         model_per_color={"blue": 4, "green": 2},
     )
 
-    result = production.production_payload("cam3", day=selected_day)
+    result = production_queries.production_payload("cam3", day=selected_day)
 
     # Both real brands have two events; the lexical tie-break is deterministic.
     assert result["dominant_brand_by_color"] == {
@@ -1076,7 +986,7 @@ def test_dominant_brand_uses_local_day_and_only_applied_always_on_camera_events(
         model_per_color={"red": 2},
     )
 
-    result = production.production_payload("cam3", day="2026-08-14")
+    result = production_queries.production_payload("cam3", day="2026-08-14")
 
     assert result["dominant_brand_by_color"] == {"red": "korol"}
 
@@ -1098,7 +1008,7 @@ def test_dominant_brand_uses_only_the_active_tail_after_same_day_archive():
         model_per_color={"red": 2, "green": 1},
     )
 
-    result = production.production_payload("cam3", day="2026-08-14")
+    result = production_queries.production_payload("cam3", day="2026-08-14")
 
     assert result["dominant_brand_by_color"] == {
         "green": None,
@@ -1118,7 +1028,7 @@ def test_dominant_brand_is_unknown_when_event_journal_does_not_cover_active_coun
         model_per_color={"red": 2293},
     )
 
-    result = production.production_payload("cam3", day="2026-08-14")
+    result = production_queries.production_payload("cam3", day="2026-08-14")
 
     assert result["dominant_brand_by_color"] == {"red": None}
 
@@ -1126,8 +1036,8 @@ def test_dominant_brand_is_unknown_when_event_journal_does_not_cover_active_coun
 def test_dominant_brand_does_not_guess_for_legacy_or_missing_event_data():
     _closed_run(camera="cam3", color="red", bags=7, day=14)
 
-    selected = production.production_payload("cam3", day="2026-08-14")
-    without_day = production.production_payload("cam3")
+    selected = production_queries.production_payload("cam3", day="2026-08-14")
+    without_day = production_queries.production_payload("cam3")
 
     assert selected["dominant_brand_by_color"] == {}
     assert without_day["dominant_brand_by_color"] == {}
@@ -1150,7 +1060,7 @@ def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
     ]
     AlwaysOnProductionRun.objects.bulk_create(rows)
 
-    result = production.production_payload("cam3", day="2026-08-14")
+    result = production_queries.production_payload("cam3", day="2026-08-14")
 
     assert [(run["color"], run["model_bags"]) for run in result["day_runs"]] == [
         ("red", 100),
@@ -1162,13 +1072,8 @@ def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
     ] == [("red", 202)]
     assert result["run_smoothing"] == {
         "n_min": 10,
-        "changed": True,
-        "raw_run_count": 3,
-        "algorithm_run_count": 1,
         "raw_model_total": 202,
         "algorithm_model_total": 202,
-        "raw_model_per_color": {"blue": 2, "red": 200},
-        "algorithm_model_per_color": {"red": 202},
         "raw_colors": [
             {"color": "red", "total": 200, "percent": 99.0},
             {"color": "blue", "total": 2, "percent": 1.0},
@@ -1181,13 +1086,12 @@ def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
             "color", "model_bags"
         )
     ) == [("red", 100), ("blue", 2), ("red", 100)]
-    assert production._day_totals("cam3", selected_day) == {
+    assert production_runs._day_totals("cam3", selected_day) == {
         "blue": {
             "detected_bags": 2,
             "resolved_bags": 0,
             "correction_bags": 0,
             "net_bags": 2,
-            "provisional_bags": 0,
             "inferred": {},
         },
         "red": {
@@ -1195,7 +1099,6 @@ def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
             "resolved_bags": 0,
             "correction_bags": 0,
             "net_bags": 200,
-            "provisional_bags": 0,
             "inferred": {},
         },
     }
@@ -1204,15 +1107,8 @@ def test_production_payload_keeps_raw_runs_and_adds_algorithm_analytics():
 def test_production_api_filters_day_and_rejects_bad_iso_date(
     auth_client,
     admin_user,
+    ai247_camera,
 ):
-    MonoblockCameraSettings.objects.update_or_create(
-        singleton=True,
-        defaults={"always_on_camera_sources": ["cam3"]},
-    )
-    ContinuousCameraRole.objects.create(
-        camera="cam3",
-        analytics_scope=ANALYTICS_SCOPE_AI247,
-    )
     selected = _closed_run(camera="cam3", color="red", bags=7, day=14)
     _closed_run(camera="cam3", color="blue", bags=8, day=15)
 
@@ -1285,16 +1181,16 @@ def test_selected_analytics_day_uses_local_calendar_not_stock_business_day():
         model_bags=5,
     )
 
-    calendar_day = production.production_payload("cam3", day="2026-08-16")
-    following_day = production.production_payload("cam3", day="2026-08-17")
+    calendar_day = production_queries.production_payload("cam3", day="2026-08-16")
+    following_day = production_queries.production_payload("cam3", day="2026-08-17")
 
     assert [row["id"] for row in calendar_day["day_runs"]] == [run.pk]
     assert following_day["day_runs"] == []
 
 
 def test_continuous_run_is_split_at_local_midnight_for_daily_analytics():
-    production.record_color_deltas("cam3", {"red": 2}, _at(16, 23, 59), 2)
-    production.record_color_deltas("cam3", {"red": 3}, _at(17, 0, 1), 3)
+    _count("red", _at(16, 23, 59), 2)
+    _count("red", _at(17, 0, 1), 3)
 
     rows = list(AlwaysOnProductionRun.objects.order_by("started_at", "id"))
     assert len(rows) == 2
@@ -1307,8 +1203,8 @@ def test_continuous_run_is_split_at_local_midnight_for_daily_analytics():
     assert rows[1].model_bags == 3
     assert rows[1].started_at == _at(17, 0, 1)
 
-    first_day = production.production_payload("cam3", day="2026-08-16")
-    second_day = production.production_payload("cam3", day="2026-08-17")
+    first_day = production_queries.production_payload("cam3", day="2026-08-16")
+    second_day = production_queries.production_payload("cam3", day="2026-08-17")
     assert [row["id"] for row in first_day["day_runs"]] == [rows[0].pk]
     assert [row["id"] for row in second_day["day_runs"]] == [rows[1].pk]
     assert first_day["day_runs"][0]["is_partial_for_day"] is False
@@ -1327,8 +1223,8 @@ def test_legacy_cross_midnight_run_overlaps_both_calendar_days_with_flags():
         model_bags=9,
     )
 
-    first = production.production_payload("cam3", day="2026-08-16")["day_runs"]
-    second = production.production_payload("cam3", day="2026-08-17")["day_runs"]
+    first = production_queries.production_payload("cam3", day="2026-08-16")["day_runs"]
+    second = production_queries.production_payload("cam3", day="2026-08-17")["day_runs"]
 
     assert [row["id"] for row in first] == [legacy.pk]
     assert first[0]["starts_before_day"] is False
@@ -1352,8 +1248,8 @@ def test_run_counted_exactly_at_midnight_belongs_to_new_calendar_day():
         model_bags=1,
     )
 
-    previous = production.production_payload("cam3", day="2026-08-16")
-    current = production.production_payload("cam3", day="2026-08-17")
+    previous = production_queries.production_payload("cam3", day="2026-08-16")
+    current = production_queries.production_payload("cam3", day="2026-08-17")
 
     assert previous["day_runs"] == []
     assert [row["id"] for row in current["day_runs"]] == [run.pk]

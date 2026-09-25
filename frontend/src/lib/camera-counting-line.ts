@@ -7,7 +7,7 @@ export interface NormalizedLine {
   y2: number;
 }
 
-export interface CountingLineConfig {
+interface CountingLineConfig {
   line: NormalizedLine;
   direction: LineDirection;
 }
@@ -25,11 +25,11 @@ export function defaultCountingLine(): NormalizedLine {
   return { ...DEFAULT_LINE };
 }
 
-export function validCountingLine(line: NormalizedLine): boolean {
+function validCountingLine(line: NormalizedLine): boolean {
   return !tooShort(line);
 }
 
-export function normalizeLineDirection(value: unknown): LineDirection {
+function normalizeLineDirection(value: unknown): LineDirection {
   return DIRECTIONS.has(value as LineDirection) ? (value as LineDirection) : "any";
 }
 
@@ -98,7 +98,7 @@ export interface VerificationLine {
   line: NormalizedLine;
 }
 
-export interface VerificationLinesConfig {
+interface VerificationLinesConfig {
   verification_lines?: unknown;
   verification_lines_supported?: boolean;
 }

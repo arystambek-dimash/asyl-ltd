@@ -3,39 +3,34 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, apiErrorCode } from "@/lib/api";
+import { DEFAULT_PASSAGE_CARGO } from "@/lib/grain";
+import { formatOcrConfidence } from "@/lib/plates";
 import type { GrainWagon, VehiclePlateCandidate } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { formatDateTime } from "@/lib/utils";
 import { ArrowRight } from "lucide-react";
-import { useRef, useState } from "react";
-
-function ocrConfidenceLabel(value: VehiclePlateCandidate["ocr_confidence"]) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? `${Math.round(numeric * 100)}%` : "—";
-}
+import { useState } from "react";
 
 function candidateDetails(candidate: VehiclePlateCandidate) {
   return (
     <>
       Камера {candidate.camera} · {candidate.source} · {formatDateTime(candidate.detected_at)} · OCR{" "}
-      {ocrConfidenceLabel(candidate.ocr_confidence)}
+      {formatOcrConfidence(candidate.ocr_confidence)}
     </>
   );
 }
 
-function hasApiErrorCode(cause: unknown, expectedCode: string) {
-  const code = (cause as { response?: { data?: { code?: unknown } } }).response?.data?.code;
-  return code === expectedCode;
-}
-
+/**
+ * Регистрация вывоза. Ожидаемый вес не спрашиваем: сколько заберут — решают
+ * на погрузке, факт станет известен только на выездных весах.
+ */
 export function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) => void; onCancel: () => void }) {
   const [number, setNumber] = useState("");
-  const [cargo, setCargo] = useState("Отруби");
+  const [cargo, setCargo] = useState(DEFAULT_PASSAGE_CARGO);
   const [note, setNote] = useState("");
   const [selectedCandidate, setSelectedCandidate] = useState<VehiclePlateCandidate | null>(null);
-  const selectedCandidateRef = useRef<VehiclePlateCandidate | null>(null);
   const [selectedCandidateExpired, setSelectedCandidateExpired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -53,7 +48,6 @@ export function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) 
   function selectCandidate(candidate: VehiclePlateCandidate) {
     if (busy) return;
     setNumber(candidate.vehicle_number);
-    selectedCandidateRef.current = candidate;
     setSelectedCandidate(candidate);
     setSelectedCandidateExpired(false);
     setError("");
@@ -62,7 +56,6 @@ export function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) 
   function switchToManualNumber() {
     if (busy) return;
     setNumber("");
-    selectedCandidateRef.current = null;
     setSelectedCandidate(null);
     setSelectedCandidateExpired(false);
     setError("");
@@ -70,7 +63,8 @@ export function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) 
 
   async function submit() {
     if (busy || selectedCandidateExpired) return;
-    const submittedCandidate = selectedCandidateRef.current;
+    // Во время отправки выбор заблокирован (busy), так что кандидат не сменится.
+    const submittedCandidate = selectedCandidate;
     setBusy(true);
     setError("");
     try {
@@ -82,11 +76,7 @@ export function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) 
       });
       onDone(data);
     } catch (cause) {
-      if (
-        hasApiErrorCode(cause, "vehicle_plate_event_unavailable") &&
-        submittedCandidate !== null &&
-        selectedCandidateRef.current?.event_id === submittedCandidate.event_id
-      ) {
+      if (apiErrorCode(cause) === "vehicle_plate_event_unavailable" && submittedCandidate !== null) {
         setSelectedCandidateExpired(true);
         setError("Выбранный номер больше недоступен. Выберите другой номер или перейдите на ручной ввод.");
       } else {
@@ -112,7 +102,7 @@ export function PassageForm({ onDone, onCancel }: { onDone: (wagon: GrainWagon) 
           id="passage-cargo"
           value={cargo}
           onChange={(event) => setCargo(event.target.value)}
-          placeholder="Отруби"
+          placeholder={DEFAULT_PASSAGE_CARGO}
         />
       </div>
       <div>

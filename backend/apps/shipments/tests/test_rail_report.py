@@ -7,7 +7,6 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem
@@ -22,13 +21,9 @@ BAGS_PER_WAGON = 1360  # 68 т мешками по 50 кг
 
 
 @pytest.fixture
-def wagons_loader(user_with_perms):
-    return user_with_perms("wagons-loader", codes=["loader.view", "loader.confirm", "loader.wagons"])
-
-
-@pytest.fixture
-def product(boss):
-    item = Product.objects.create(name="Д1с", color="Red", weight_kg="50")
+def product(boss, make_product):
+    """Запас на несколько вагонов: 10 000 мешков вместо общих 100."""
+    item = make_product(name="Д1с")
     receive_stock(item, 10000, boss)
     return item
 
@@ -130,8 +125,8 @@ def test_report_bags_must_match_a_prepared_order(product, wagons_loader):
     assert not ShipmentWagon.objects.exists()
 
 
-def test_report_product_missing_from_order_is_a_mismatch(product, boss, wagons_loader):
-    other = Product.objects.create(name="Д2", color="Blue", weight_kg="50")
+def test_report_product_missing_from_order_is_a_mismatch(product, boss, wagons_loader, make_product):
+    other = make_product(name="Д2", color="Blue")
     receive_stock(other, 5000, boss)
     order = _order(product, bags=BAGS_PER_WAGON)
 
@@ -159,8 +154,7 @@ def test_prepared_order_keeps_its_station_when_the_report_has_none(product, wago
     assert order.rail_station == "Раустан"
 
 
-def test_trucks_loader_cannot_ship_wagons(product, user_with_perms):
-    trucks_loader = user_with_perms("trucks-loader", codes=["loader.view", "loader.confirm", "loader.trucks"])
+def test_trucks_loader_cannot_ship_wagons(product, trucks_loader):
     order = _order(product)
 
     with pytest.raises(PermissionDenied):

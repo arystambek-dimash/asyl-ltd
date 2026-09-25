@@ -17,13 +17,13 @@ pytestmark = pytest.mark.django_db
 
 
 def _mixed_order():
-    heavy = Product.objects.create(name="Тяжёлый", color="Red", weight_kg="50", price="1")
-    light = Product.objects.create(name="Лёгкий", color="Blue", weight_kg="25", price="1")
+    heavy = Product.objects.create(name="Тяжёлый", color="Red", weight_kg="50")
+    light = Product.objects.create(name="Лёгкий", color="Blue", weight_kg="25")
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     order = Order.objects.create(client=client, status="shipped", truck_number="01A")
     OrderItem.objects.create(order=order, product=heavy, quantity=30, unit_price="1")
     OrderItem.objects.create(order=order, product=light, quantity=20, unit_price="1")
-    Shipment.objects.create(order=order, truck_number="01A", bags_loaded=50)
+    Shipment.objects.create(order=order, bags_loaded=50)
     return order
 
 
@@ -46,3 +46,18 @@ def test_bag_estimate_scales_to_counted_bags():
     data = OrderSerializer(order).data
 
     assert Decimal(data["bag_estimate_kg"]) == Decimal("1000")
+
+
+def test_bag_estimate_is_rounded_to_hundredths():
+    """Один мешок из трёх по 125 кг — 41.67, а не строка из 28 знаков."""
+    heavy = Product.objects.create(name="Тяжёлый", color="Red", weight_kg="50")
+    light = Product.objects.create(name="Лёгкий", color="Blue", weight_kg="25")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
+    order = Order.objects.create(client=client, status="shipped", truck_number="01A")
+    OrderItem.objects.create(order=order, product=heavy, quantity=2, unit_price="1")
+    OrderItem.objects.create(order=order, product=light, quantity=1, unit_price="1")
+    Shipment.objects.create(order=order, bags_loaded=1)
+
+    data = OrderSerializer(order).data
+
+    assert data["bag_estimate_kg"] == "41.67"

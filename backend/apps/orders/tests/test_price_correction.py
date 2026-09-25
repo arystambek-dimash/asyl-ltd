@@ -1,7 +1,6 @@
 from decimal import Decimal
 
 import pytest
-from rest_framework.test import APIClient
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
@@ -10,12 +9,6 @@ from apps.orders.models import Order, OrderItem, Payment
 
 
 pytestmark = pytest.mark.django_db
-
-
-def _api(user):
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
 
 
 def _order(*, quantities=(50,), prices=("100.00",), payment_status="unpaid"):
@@ -28,7 +21,7 @@ def _order(*, quantities=(50,), prices=("100.00",), payment_status="unpaid"):
     )
     for index, (quantity, price) in enumerate(zip(quantities, prices, strict=True)):
         product = Product.objects.create(
-            name=f"Мука {index}", color="Белый", weight_kg="50", price="1.00"
+            name=f"Мука {index}", color="Белый", weight_kg="50"
         )
         OrderItem.objects.create(
             order=order,
@@ -39,11 +32,11 @@ def _order(*, quantities=(50,), prices=("100.00",), payment_status="unpaid"):
     return order
 
 
-def test_shipped_order_total_is_divided_by_bag_count(user_with_perms):
+def test_shipped_order_total_is_divided_by_bag_count(user_with_perms, api_as):
     user = user_with_perms("corrector", codes=["orders.correct_price"])
     order = _order()
 
-    response = _api(user).post(
+    response = api_as(user).post(
         f"/api/orders/{order.id}/correct-price/",
         {"total_amount": "4000000000.00"},
         format="json",
@@ -61,12 +54,12 @@ def test_shipped_order_total_is_divided_by_bag_count(user_with_perms):
     assert event.payload["mode"] == "total"
 
 
-def test_prices_can_be_corrected_per_item(user_with_perms):
+def test_prices_can_be_corrected_per_item(user_with_perms, api_as):
     user = user_with_perms("corrector", codes=["orders.correct_price"])
     order = _order(quantities=(20, 30), prices=("10.00", "20.00"))
     items = list(order.items.order_by("id"))
 
-    response = _api(user).post(
+    response = api_as(user).post(
         f"/api/orders/{order.id}/correct-price/",
         {"prices": {str(items[0].id): "30.00", str(items[1].id): "40.00"}},
         format="json",
@@ -81,12 +74,12 @@ def test_prices_can_be_corrected_per_item(user_with_perms):
     assert order.total_amount == Decimal("1800.00")
 
 
-def test_correction_recomputes_cashier_payment_status(user_with_perms):
+def test_correction_recomputes_cashier_payment_status(user_with_perms, api_as):
     user = user_with_perms("corrector", codes=["orders.correct_price"])
     order = _order(quantities=(1,), prices=("100.00",), payment_status="settled")
     Payment.objects.create(order=order, amount="100.00", status="confirmed")
 
-    response = _api(user).post(
+    response = api_as(user).post(
         f"/api/orders/{order.id}/correct-price/",
         {"total_amount": "200.00"},
         format="json",
@@ -100,12 +93,12 @@ def test_correction_recomputes_cashier_payment_status(user_with_perms):
     assert response.data["remaining_amount"] == "100.00"
 
 
-def test_lower_total_keeps_confirmed_cash_and_marks_order_settled(user_with_perms):
+def test_lower_total_keeps_confirmed_cash_and_marks_order_settled(user_with_perms, api_as):
     user = user_with_perms("corrector", codes=["orders.correct_price"])
     order = _order(quantities=(1,), prices=("200.00",), payment_status="partial")
     payment = Payment.objects.create(order=order, amount="150.00", status="confirmed")
 
-    response = _api(user).post(
+    response = api_as(user).post(
         f"/api/orders/{order.id}/correct-price/",
         {"total_amount": "100.00"},
         format="json",
@@ -120,12 +113,12 @@ def test_lower_total_keeps_confirmed_cash_and_marks_order_settled(user_with_perm
     assert order.remaining_amount == Decimal("-50.00")
 
 
-def test_active_payment_that_would_exceed_new_total_blocks_correction(user_with_perms):
+def test_active_payment_that_would_exceed_new_total_blocks_correction(user_with_perms, api_as):
     user = user_with_perms("corrector", codes=["orders.correct_price"])
     order = _order(quantities=(1,), prices=("200.00",))
     Payment.objects.create(order=order, amount="150.00", status="received")
 
-    response = _api(user).post(
+    response = api_as(user).post(
         f"/api/orders/{order.id}/correct-price/",
         {"total_amount": "100.00"},
         format="json",
@@ -136,11 +129,11 @@ def test_active_payment_that_would_exceed_new_total_blocks_correction(user_with_
     assert order.items.get().unit_price == Decimal("200.00")
 
 
-def test_total_must_produce_an_exact_cent_price(user_with_perms):
+def test_total_must_produce_an_exact_cent_price(user_with_perms, api_as):
     user = user_with_perms("corrector", codes=["orders.correct_price"])
     order = _order(quantities=(3,), prices=("10.00",))
 
-    response = _api(user).post(
+    response = api_as(user).post(
         f"/api/orders/{order.id}/correct-price/",
         {"total_amount": "100.00"},
         format="json",
@@ -151,10 +144,10 @@ def test_total_must_produce_an_exact_cent_price(user_with_perms):
     assert order.items.get().unit_price == Decimal("10.00")
 
 
-def test_correction_requires_dedicated_permission(manager):
+def test_correction_requires_dedicated_permission(manager, api_as):
     order = _order()
 
-    response = _api(manager).post(
+    response = api_as(manager).post(
         f"/api/orders/{order.id}/correct-price/",
         {"total_amount": "1000.00"},
         format="json",

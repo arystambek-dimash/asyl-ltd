@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 
 const mocks = vi.hoisted(() => ({
   apiGet: vi.fn(),
@@ -11,8 +12,9 @@ const mocks = vi.hoisted(() => ({
   setTokens: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async () => ({
   api: { get: mocks.apiGet, post: mocks.apiPost },
+  staleAuthSession: (await vi.importActual<typeof import("@/lib/api")>("@/lib/api")).staleAuthSession,
   clearTokens: mocks.clearTokens,
   hasAuthTokens: mocks.hasAuthTokens,
   invalidateAuthSessionRequests: mocks.invalidateAuthSessionRequests,
@@ -24,28 +26,6 @@ vi.mock("@/lib/camera-stream-auth", () => ({
 }));
 
 import { useAuth } from "@/store/auth";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
-function me(id: number, username: string): Me {
-  return {
-    id,
-    username,
-    is_client: false,
-    is_superuser: false,
-
-    permissions: [],
-    position: null,
-    client_id: null,
-    sales_department: null,
-  };
-}
 
 function responseError(status: number) {
   return { response: { status } };
@@ -90,9 +70,9 @@ describe("auth store generations", () => {
   });
 
   it("ignores an old loadMe response after logout and a new login", async () => {
-    const oldMe = me(1, "old-user");
-    const newMe = me(2, "new-user");
-    const oldRequest = deferred<{ data: Me }>();
+    const oldMe = makeMe({ id: 1, username: "old-user" });
+    const newMe = makeMe({ id: 2, username: "new-user" });
+    const oldRequest = Promise.withResolvers<{ data: Me }>();
     mocks.apiGet.mockReturnValueOnce(oldRequest.promise).mockResolvedValueOnce({ data: newMe });
     mocks.apiPost.mockResolvedValueOnce({
       data: { access: "new-access", refresh: "new-refresh" },
@@ -111,7 +91,7 @@ describe("auth store generations", () => {
   });
 
   it("does not commit a login response that resolves after logout", async () => {
-    const loginRequest = deferred<{ data: { access: string; refresh: string } }>();
+    const loginRequest = Promise.withResolvers<{ data: { access: string; refresh: string } }>();
     mocks.apiPost.mockReturnValueOnce(loginRequest.promise);
 
     const login = useAuth.getState().login("late-user", "password");
@@ -124,7 +104,7 @@ describe("auth store generations", () => {
   });
 
   it("changes an initial password and adopts the returned session", async () => {
-    const client = { ...me(2, "client-user"), is_client: true };
+    const client = makeMe({ id: 2, username: "client-user", is_client: true });
     mocks.apiPost.mockResolvedValueOnce({
       data: { access: "client-access", refresh: "client-refresh" },
     });
@@ -146,8 +126,8 @@ describe("auth store generations", () => {
   });
 
   it("adopts registration tokens as a new session even when a user is loaded", async () => {
-    const previous = me(1, "staff-user");
-    const registered = { ...me(2, "client-user"), is_client: true };
+    const previous = makeMe({ id: 1, username: "staff-user" });
+    const registered = makeMe({ id: 2, username: "client-user", is_client: true });
     useAuth.setState({ me: previous, loading: false });
     mocks.apiGet.mockResolvedValueOnce({ data: registered });
 
@@ -164,8 +144,8 @@ describe("auth store generations", () => {
   });
 
   it("synchronizes a replacement from another tab without clearing shared tokens", async () => {
-    const external = me(2, "external-user");
-    useAuth.setState({ me: me(1, "current-user"), loading: false });
+    const external = makeMe({ id: 2, username: "external-user" });
+    useAuth.setState({ me: makeMe({ id: 1, username: "current-user" }), loading: false });
     mocks.apiGet.mockResolvedValueOnce({ data: external });
 
     await useAuth.getState().syncExternalSession();
@@ -177,7 +157,7 @@ describe("auth store generations", () => {
   });
 
   it("keeps the known user when external-session refresh fails transiently", async () => {
-    const current = me(1, "current-user");
+    const current = makeMe({ id: 1, username: "current-user" });
     useAuth.setState({ me: current, loading: false });
     mocks.apiGet.mockRejectedValueOnce(responseError(503));
 
@@ -189,7 +169,7 @@ describe("auth store generations", () => {
   });
 
   it("clears an externally replaced session rejected by the server", async () => {
-    useAuth.setState({ me: me(1, "current-user"), loading: false });
+    useAuth.setState({ me: makeMe({ id: 1, username: "current-user" }), loading: false });
     mocks.apiGet.mockRejectedValueOnce(responseError(401));
 
     await useAuth.getState().syncExternalSession();
@@ -200,7 +180,7 @@ describe("auth store generations", () => {
   });
 
   it("keeps the known user after a transient refresh failure", async () => {
-    const current = me(1, "current-user");
+    const current = makeMe({ id: 1, username: "current-user" });
     useAuth.setState({ me: current, loading: false });
     mocks.apiGet.mockRejectedValueOnce(new Error("offline"));
 
@@ -211,7 +191,7 @@ describe("auth store generations", () => {
   });
 
   it.each([401, 403])("expires a server-rejected session (%s)", async (status) => {
-    const current = me(1, "current-user");
+    const current = makeMe({ id: 1, username: "current-user" });
     useAuth.setState({ me: current, loading: false });
     mocks.apiGet.mockRejectedValueOnce(responseError(status));
 
@@ -223,8 +203,8 @@ describe("auth store generations", () => {
   });
 
   it("throttles refreshMe only after a successful /me response", async () => {
-    const current = me(1, "current");
-    const updated = me(1, "updated");
+    const current = makeMe({ id: 1, username: "current" });
+    const updated = makeMe({ id: 1, username: "updated" });
     useAuth.setState({ me: current, loading: false });
     mocks.apiGet.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce({ data: updated });
 

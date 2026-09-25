@@ -9,15 +9,23 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.bots.models import BotClientProfile, WhatsAppBotSettings
-from apps.bots.tests.samples import CONDUCT_CODES, OWNER_BAGS, OWNER_DAY, OWNER_REPORT, OWNER_WAGONS, report
+from apps.bots.tests.samples import (
+    CONDUCT_CODES,
+    OWNER_BAGS,
+    OWNER_DAY,
+    OWNER_REPORT,
+    OWNER_WAGONS,
+    manual_train_order,
+    move_to_retail,
+    report,
+    stock_bags,
+    train_order,
+)
 from apps.catalog.models import ClientPrice, Product, ProductAlias
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.orders.backdate import backdate_moment
-from apps.orders.models import Order, OrderItem
-from apps.sales.models import Department
-from apps.shipments.models import Shipment, ShipmentWagon
-from apps.warehouse.models import StockItem
+from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
@@ -28,42 +36,14 @@ CLIENT_NAMES = "/api/loader/rail-report/client-names/"
 OPTIONS = "/api/loader/rail-report/options/"
 
 
-@pytest.fixture
-def wagon_loader(user_with_perms):
-    return user_with_perms("wagon-loader", codes=["loader.view", "loader.confirm", "loader.wagons"])
-
-
 def _post(api, url, **body):
     return api.post(url, {"text": OWNER_REPORT, **body}, format="json")
 
 
-def _retail(user):
-    """Сотрудник отдела «Розница»: клиент отчёта (отдел «Экспорт») ему чужой."""
-    department = Department.objects.create(code="retail", name="Розница")
-    user.employee.sales_department = department
-    user.employee.save()
-    return department
-
-
-def _manual_order(client, product, *, bags=OWNER_BAGS, **fields):
-    order = Order.objects.create(
-        client=client, currency="USD", department="export", transport_type="train", status="confirmed", **fields)
-    OrderItem.objects.create(order=order, product=product, quantity=bags, unit_price="7.40")
-    return order
-
-
 def _report_order(client, product, numbers, *, day=None):
     """Отгруженный по отчёту вагонный заказ — без проведения, для списков."""
-    day = day or timezone.localdate()
-    order = Order.objects.create(
-        client=client, currency="USD", department="export", transport_type="train", status="shipped",
-        rail_station="Раустан")
-    OrderItem.objects.create(order=order, product=product, quantity=1360 * len(numbers), unit_price="7.50")
-    shipment = Shipment.objects.create(order=order, bags_loaded=1360 * len(numbers), shipped_at=backdate_moment(day))
-    for position, number in enumerate(numbers, start=1):
-        ShipmentWagon.objects.create(
-            shipment=shipment, number=number, product=product, bags=1360, weight_kg="68000", position=position)
-    return order
+    shipped_at = backdate_moment(day or timezone.localdate())
+    return train_order(client, product, shipped_at=shipped_at, wagons=numbers, rail_station="Раустан")
 
 
 # --- предпросмотр ---------------------------------------------------------------------------------
@@ -95,7 +75,7 @@ def test_preview_shows_what_will_be_conducted_and_writes_nothing(auth_client, cl
     assert (data["issues"], data["unresolved"]) == ([], {"client": "", "products": []})
     assert not Order.objects.exists()
     assert ProductAlias.objects.count() == aliases
-    assert StockItem.objects.get(product=product).bags == 20000
+    assert stock_bags(product) == 20000
 
 
 def test_preview_marks_a_wagon_number_with_a_wrong_check_digit(auth_client, client, product, price, conductor):
@@ -217,8 +197,7 @@ def test_unknown_client_is_remembered_with_its_currency(auth_client, client, pro
 
 
 def test_client_of_another_department_cannot_be_picked(auth_client, client, product, price, conductor):
-    conductor.employee.sales_department = Department.objects.create(code="retail", name="Розница")
-    conductor.employee.save()
+    move_to_retail(conductor)
     api = auth_client(conductor)
 
     response = _post(api, CLIENT_NAMES, client_name="OSIYO", client=client.pk, currency="USD")
@@ -230,7 +209,7 @@ def test_client_of_another_department_cannot_be_picked(auth_client, client, prod
 
 
 def test_name_of_another_departments_client_cannot_be_repointed(auth_client, client, product, price, conductor, boss):
-    own = Client.objects.create_with_user(first_name="Свой", phone="+7 700 000 00 01", department=_retail(conductor))
+    own = Client.objects.create_with_user(first_name="Свой", phone="+7 700 000 00 01", department=move_to_retail(conductor))
     profile = BotClientProfile.objects.create(name="OSIYO", client=client, currency="USD", created_by=boss)
     text = OWNER_REPORT.replace("ООО OSIYO NAV NIHOL", "OSIYO")
     api = auth_client(conductor)
@@ -252,8 +231,8 @@ def test_name_of_another_departments_client_cannot_be_repointed(auth_client, cli
 def test_preview_of_another_departments_client_hides_prices_and_orders(
     auth_client, client, product, price, conductor,
 ):
-    _manual_order(client, product, arrival_date=OWNER_DAY)
-    _retail(conductor)
+    manual_train_order(client, product, arrival_date=OWNER_DAY)
+    move_to_retail(conductor)
 
     data = _post(auth_client(conductor), PREVIEW).data
 
@@ -264,8 +243,8 @@ def test_preview_of_another_departments_client_hides_prices_and_orders(
 
 
 def test_only_a_waiting_manual_duplicate_is_offered_for_shipping(auth_client, client, product, price, conductor):
-    waiting = _manual_order(client, product, arrival_date=OWNER_DAY)
-    shipped = _manual_order(client, product, arrival_date=OWNER_DAY)
+    waiting = manual_train_order(client, product, arrival_date=OWNER_DAY)
+    shipped = manual_train_order(client, product, arrival_date=OWNER_DAY)
     Order.objects.filter(pk=shipped.pk).update(status="shipped")
 
     data = _post(auth_client(conductor), PREVIEW).data
@@ -289,6 +268,23 @@ def test_loader_uses_the_bot_duplicate_window(auth_client, client, product, pric
     duplicates = [issue["order_id"] for issue in data["issues"] if issue["code"] == "wagon_already_shipped"]
     assert duplicates == ([earlier.pk] if duplicate else [])
     assert apply.status_code == (400 if duplicate else 200), apply.data
+
+
+@pytest.mark.parametrize(("tolerance", "mismatch"), [(None, False), ("5", True), ("30", False)])
+def test_loader_uses_the_bot_price_tolerance(auth_client, client, product, price, conductor, tolerance, mismatch):
+    """Допуск цены — из настроек бота, как у бота и в журнале (без строки — 15%)."""
+    if tolerance is not None:
+        WhatsAppBotSettings.objects.create(price_tolerance_pct=tolerance)
+    earlier = _report_order(client, product, [OWNER_WAGONS[0]], day=OWNER_DAY - timedelta(days=30))
+    # 7,50 против 7,00 в прошлом вагонном заказе — разница 7%.
+    earlier.items.update(unit_price="7.00")
+
+    data = _post(auth_client(conductor), PREVIEW).data
+    apply = _post(auth_client(conductor), APPLY)
+
+    mismatches = [issue["order_id"] for issue in data["issues"] if issue["code"] == "price_mismatch"]
+    assert mismatches == ([earlier.pk] if mismatch else [])
+    assert apply.status_code == (400 if mismatch else 200), apply.data
 
 
 def test_wagon_loader_sees_the_report_but_cannot_teach_the_dictionary(
@@ -323,7 +319,7 @@ def test_apply_conducts_the_report_and_answers_with_the_history_row(auth_client,
         "number": OWNER_WAGONS[0], "product_label": str(product), "bags": 1360, "weight_kg": "68000.00"}
     assert row["bags"] == OWNER_BAGS
     assert (row["report_sent_at"], row["report_status"]) == (None, "")
-    assert StockItem.objects.get(product=product).bags == 20000 - OWNER_BAGS
+    assert stock_bags(product) == 20000 - OWNER_BAGS
 
 
 def test_apply_of_a_report_needing_review_writes_nothing(auth_client, client, price, conductor):
@@ -336,7 +332,8 @@ def test_apply_of_a_report_needing_review_writes_nothing(auth_client, client, pr
     assert not Order.objects.exists()
 
 
-@pytest.mark.parametrize("missing", ["orders.create", "orders.confirm", "loader.confirm"])
+# Весь набор прав проведения — test_rail; здесь — отказ сервиса и право кнопки «Провести».
+@pytest.mark.parametrize("missing", ["orders.create", "loader.confirm"])
 def test_apply_needs_order_and_shipping_rights(auth_client, client, product, price, user_with_perms, missing):
     user = user_with_perms("limited", codes=[code for code in CONDUCT_CODES if code != missing])
 
@@ -348,7 +345,7 @@ def test_apply_needs_order_and_shipping_rights(auth_client, client, product, pri
 
 
 def test_waiting_wagon_order_ships_by_report_without_order_rights(auth_client, client, product, wagon_loader):
-    order = _manual_order(client, product)
+    order = manual_train_order(client, product)
     api = auth_client(wagon_loader)
 
     preview = _post(api, PREVIEW, order=order.pk).data
@@ -364,7 +361,7 @@ def test_waiting_wagon_order_ships_by_report_without_order_rights(auth_client, c
 
 
 def test_order_report_with_other_bags_is_shown_and_refused(auth_client, client, product, wagon_loader):
-    order = _manual_order(client, product, bags=4080)
+    order = manual_train_order(client, product, bags=4080)
     api = auth_client(wagon_loader)
 
     preview = _post(api, PREVIEW, order=order.pk).data
@@ -375,9 +372,8 @@ def test_order_report_with_other_bags_is_shown_and_refused(auth_client, client, 
 
 
 def test_order_of_another_department_is_not_found(auth_client, client, product, wagon_loader):
-    wagon_loader.employee.sales_department = Department.objects.create(code="retail", name="Розница")
-    wagon_loader.employee.save()
-    order = _manual_order(client, product)
+    move_to_retail(wagon_loader)
+    order = manual_train_order(client, product)
 
     assert _post(auth_client(wagon_loader), PREVIEW, order=order.pk).status_code == 404
 
@@ -427,7 +423,6 @@ def test_orders_api_shows_wagons_and_finds_by_wagon_once(
         "Раустан", list(OWNER_WAGONS[:3]))
     # Exists, а не JOIN: заказ с тремя вагонами не повторяется в списке.
     rows = api.get("/api/orders/", {"search": OWNER_WAGONS[1][:5]}).data
-    rows = rows["results"] if isinstance(rows, dict) else rows
     assert [row["id"] for row in rows] == [order.pk]
 
     with CaptureQueriesContext(connection) as small:

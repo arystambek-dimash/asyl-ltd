@@ -1,6 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import EventsPage from "./page";
@@ -14,12 +13,8 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("@/lib/use-debounced", () => ({ useDebounced: (value: string) => value }));
 vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => "2026-07-30" }));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: ReactNode }) => children,
-}));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main>,
-}));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
 const event = (id: number) => ({
   id,

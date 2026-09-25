@@ -7,10 +7,10 @@ const DAY_LABEL_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
 });
 
 /** Ключ и подпись группы без даты: такие строки всегда идут последними. */
-export const UNDATED_DAY_KEY = "undated";
-export const UNDATED_DAY_LABEL = "Без даты";
+const UNDATED_DAY_KEY = "undated";
+const UNDATED_DAY_LABEL = "Без даты";
 
-export interface DayGroup<T> {
+interface DayGroup<T> {
   /** Локальный календарный день «ГГГГ-ММ-ДД» либо UNDATED_DAY_KEY. */
   key: string;
   label: string;
@@ -18,7 +18,7 @@ export interface DayGroup<T> {
 }
 
 /** «Сегодня», «Вчера» или «6 сентября 2026» относительно текущего локального дня. */
-export function formatDayLabel(date: Date, currentDay: string): string {
+function formatDayLabel(date: Date, currentDay: string): string {
   const today = new Date(`${currentDay}T12:00:00`);
   const startOf = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
   const diffDays = Math.round((startOf(today) - startOf(date)) / 86_400_000);

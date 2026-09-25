@@ -12,16 +12,8 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.reports import summary_report
-from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import RefreshToken
 
 pytestmark = pytest.mark.django_db
-
-
-def _api(user):
-    api = APIClient()
-    api.credentials(HTTP_AUTHORIZATION=f"Bearer {RefreshToken.for_user(user).access_token}")
-    return api
 
 
 @pytest.fixture
@@ -33,10 +25,10 @@ def shipped_order():
     return order
 
 
-def test_remote_payment_settles_at_once_without_an_invoice(payment_recorder, shipped_order):
-    response = _api(payment_recorder).post(
+def test_remote_payment_settles_at_once_without_an_invoice(payment_recorder, shipped_order, auth_client):
+    response = auth_client(payment_recorder).post(
         f"/api/orders/{shipped_order.id}/payments/",
-        {"amount": "400.00", "method": "remote", "stage": "received"},
+        {"amount": "400.00", "method": "remote"},
         format="json",
     )
 
@@ -50,10 +42,10 @@ def test_remote_payment_settles_at_once_without_an_invoice(payment_recorder, shi
     assert shipped_order.paid_total == Decimal("400.00")
 
 
-def test_remote_payment_counts_as_cashless_income(payment_recorder, shipped_order):
-    _api(payment_recorder).post(
+def test_remote_payment_counts_as_cashless_income(payment_recorder, shipped_order, auth_client):
+    auth_client(payment_recorder).post(
         f"/api/orders/{shipped_order.id}/payments/",
-        {"amount": "1000.00", "method": "remote", "stage": "received"},
+        {"amount": "1000.00", "method": "remote"},
         format="json",
     )
 

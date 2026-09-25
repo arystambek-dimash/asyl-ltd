@@ -5,9 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Numpad } from "@/components/ui/numpad";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { eraseAmount, fullAmount, paymentAmountError, pressAmountDigit } from "@/lib/portal-payment-amount";
+import { moneyCents } from "@/lib/debt-orders";
+import { eraseAmount, fullAmount, paymentAmountError, pressAmountDigit } from "@/lib/payment-amount";
+import { isKaspiInvoicePhone } from "@/lib/phone";
 import type { PortalOrder } from "@/lib/types";
-import { cn, currencySymbol, formatMoney } from "@/lib/utils";
+import { cn, formatCurrency, formatMoney } from "@/lib/utils";
 import { PortalPaymentParts, type PortalPaymentPart } from "./portal-payment-parts";
 
 export type PortalPayMethod = "kaspi" | "invoice";
@@ -35,26 +37,25 @@ export function PortalPaymentCard({
   onPay: (method: PortalPayMethod, amount: string, phone?: string) => Promise<void>;
   onRelease: (part: PortalPaymentPart) => void;
 }) {
-  const symbol = currencySymbol(order.currency);
   const total = Number(order.total_amount ?? 0);
   const paid = Number(order.paid_total ?? 0);
   const remaining = Math.max(0, Number(order.remaining_amount ?? 0));
-  const available = Math.max(0, Number(order.available_amount ?? remaining));
+  // Сервер скрывает available_amount и remaining_amount по одному условию — подменять одно другим нечем.
+  const available = Math.max(0, Number(order.available_amount ?? 0));
   const pct = total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
-  const availableValue = order.available_amount ?? order.remaining_amount;
+  const full = fullAmount(order.available_amount);
 
-  const [amount, setAmount] = useState(() => fullAmount(availableValue));
+  const [amount, setAmount] = useState(full);
   const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [phone, setPhone] = useState(order.client_phone ?? "");
   // Доступная сумма меняется после оплаты или отмены — терминал снова предлагает весь остаток.
   useEffect(() => {
-    setAmount(fullAmount(availableValue));
+    setAmount(full);
     setInvoiceOpen(false);
-  }, [availableValue, order.id]);
+  }, [full, order.id]);
   useEffect(() => setPhone(order.client_phone ?? ""), [order.client_phone, order.id]);
 
-  const amountError = paymentAmountError(amount, available);
-  const full = fullAmount(availableValue);
+  const amountError = paymentAmountError(amount, moneyCents(available));
   const canPay = order.currency === "KZT" && !busy && !amountError;
 
   return (
@@ -64,12 +65,12 @@ export function PortalPaymentCard({
           Остаток к оплате
         </div>
         <div className="mt-1 text-[40px] font-bold leading-tight tracking-tight tabular-nums">
-          {formatMoney(remaining)} {symbol}
+          {formatCurrency(remaining, order.currency)}
         </div>
         <div className="mx-auto mt-3 max-w-xs">
           <ProgressBar pct={pct} />
           <div className="mt-1.5 text-xs tabular-nums text-[var(--muted-foreground)]">
-            Оплачено {formatMoney(paid)} из {formatMoney(total)} {symbol}
+            Оплачено {formatMoney(paid)} из {formatCurrency(total, order.currency)}
           </div>
         </div>
       </div>
@@ -108,11 +109,11 @@ export function PortalPaymentCard({
                   aria-label="Сумма оплаты"
                   className="mt-1 text-[34px] font-bold leading-tight tracking-tight tabular-nums"
                 >
-                  {formatMoney(Number(amount || 0))} {symbol}
+                  {formatCurrency(amount || 0, order.currency)}
                 </div>
                 {amount !== full && (
                   <Button variant="outline" size="sm" className="mt-2" disabled={busy} onClick={() => setAmount(full)}>
-                    Весь остаток · {formatMoney(available)} {symbol}
+                    Весь остаток · {formatCurrency(available, order.currency)}
                   </Button>
                 )}
                 {amount && amountError && (
@@ -147,10 +148,10 @@ export function PortalPaymentCard({
                   </label>
                   <Button
                     className="h-12 w-full text-base"
-                    disabled={!canPay || !phone.trim()}
+                    disabled={!canPay || !isKaspiInvoicePhone(phone)}
                     onClick={() => void onPay("invoice", amount, phone.trim())}
                   >
-                    {busy ? "Отправляем…" : `Отправить счёт · ${formatMoney(Number(amount || 0))} ${symbol}`}
+                    {busy ? "Отправляем…" : `Отправить счёт · ${formatCurrency(amount || 0, order.currency)}`}
                   </Button>
                   <Button variant="ghost" className="w-full" disabled={busy} onClick={() => setInvoiceOpen(false)}>
                     <ArrowLeft className="size-4" /> Назад

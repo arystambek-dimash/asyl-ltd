@@ -88,18 +88,6 @@ def test_page_queries_do_not_grow_per_customer(perf_user, url):
     assert large == small, f"{url}: {small} -> {large} queries"
 
 
-def test_page_benchmark(perf_user):
-    seed_orders(300)
-    for url in (
-        "/api/orders/?page=1&page_size=50",
-        "/api/orders/department-summary/",
-        "/api/clients/debts/",
-        "/api/orders/payments-queue/",
-        "/api/orders/payments-queue/?summary=1",
-    ):
-        measure(perf_user, url)
-
-
 def test_sql_amounts_match_model_after_refunds_and_unpriced_items():
     seed_orders(1)
     order = Order.objects.get()

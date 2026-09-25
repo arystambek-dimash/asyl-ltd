@@ -7,7 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { availableCents, moneyCents } from "@/lib/debt-orders";
+import { availableCents } from "@/lib/debt-orders";
+import { paymentAmountError } from "@/lib/payment-amount";
+import { isKaspiInvoicePhone } from "@/lib/phone";
 import type { Me, Order } from "@/lib/types";
 import { cn, formatCurrency } from "@/lib/utils";
 
@@ -15,36 +17,35 @@ type Flow = "receive" | "remote";
 export type ReceiveMethod = "cash" | "kaspi" | "remote";
 
 /** Способы «Принять оплату» — деньги уже у кассы, поэтому ими берут и предоплату.
+ * `kaspi` — оплата по своему терминалу кассы (запрос без `channel`), подпись та же,
+ * что у способа в labels.py; Kaspi QR через ApiPay выставляет только POS кассы.
  * «Удалённая оплата» — отметка о деньгах, полученных раньше и не через кассу:
- * счёт она не выставляет и новую оплату не начинает, только закрывает остаток.
- * До отгрузки `kaspi` зовётся «Kaspi-терминал»: это свой терминал кассы, а
- * Kaspi QR через ApiPay откроется только после отгрузки. */
-const RECEIVE_METHOD_OPTIONS: {
+ * счёт она не выставляет и новую оплату не начинает, только закрывает остаток. */
+export const RECEIVE_METHOD_OPTIONS: {
   key: ReceiveMethod;
   label: string;
-  prepaymentLabel?: string;
   hint?: string;
   icon: typeof Banknote;
 }[] = [
   { key: "cash", label: "Наличные", icon: Banknote },
-  { key: "kaspi", label: "Kaspi QR", prepaymentLabel: "Kaspi-терминал", icon: QrCode },
+  { key: "kaspi", label: "QR", icon: QrCode },
   { key: "remote", label: "Удалённая оплата", hint: "клиент оплатил раньше", icon: Smartphone },
 ];
 
 /**
- * Способы приёма в валюте заказа из открытых сервером (`payment_open_methods`):
- * Kaspi и удалённая оплата — только в тенге. Без `open` — все способы приёма
- * (новый заказ в форме ещё не сохранён, его подтверждение открывает их все).
+ * Способы приёма из открытых сервером (`payment_open_methods`: статус и валюта
+ * заказа). Без `open` новый заказ в форме ещё не сохранён — тогда способы по
+ * валюте: Kaspi и удалённая оплата только в тенге, как проверяет сервер.
  */
 export function receiveMethods(currency: string, open?: readonly string[]): ReceiveMethod[] {
-  return RECEIVE_METHOD_OPTIONS.map(({ key }) => key).filter(
-    (key) => (currency === "KZT" || key === "cash") && (!open || open.includes(key)),
+  return RECEIVE_METHOD_OPTIONS.map(({ key }) => key).filter((key) =>
+    open ? open.includes(key) : currency === "KZT" || key === "cash",
   );
 }
 
 /** «Принять оплату»: деньги уже у кассы, оплата закрывается сразу (и как предоплата до отгрузки). */
 export function receivePayment(orderId: number, { amount, method }: { amount: string; method: ReceiveMethod }) {
-  return api.post(`/orders/${orderId}/payments/`, { amount, method, stage: "received" });
+  return api.post(`/orders/${orderId}/payments/`, { amount, method });
 }
 
 /** Выбор способа приёма денег: одна кнопка на способ, как в окне «Принять оплату». */
@@ -52,18 +53,12 @@ export function ReceiveMethodPicker({
   methods,
   value,
   onChange,
-  prepayment = false,
 }: {
   methods: readonly ReceiveMethod[];
   value: ReceiveMethod;
   onChange: (method: ReceiveMethod) => void;
-  /** Заказ ещё не отгружен — деньги принимаются как предоплата. */
-  prepayment?: boolean;
 }) {
-  const options = RECEIVE_METHOD_OPTIONS.filter(({ key }) => methods.includes(key)).map((option) => ({
-    ...option,
-    label: (prepayment && option.prepaymentLabel) || option.label,
-  }));
+  const options = RECEIVE_METHOD_OPTIONS.filter(({ key }) => methods.includes(key));
   return (
     <div className="grid grid-cols-2 gap-2">
       {options.map(({ key, label, hint, icon: Icon }) => (
@@ -97,15 +92,6 @@ export interface PaymentAutoOpen {
   amount: string;
   /** Почему окно открылось само: показывается в нём как ошибка. */
   notice: string;
-}
-
-/** Сумма к оплате: положительная, с точностью до тиына и не больше доступного остатка. */
-export function paymentAmountProblem(amount: string, maxCents: number): string {
-  const value = Number(amount);
-  if (!amount.trim() || !Number.isFinite(value) || value <= 0) return "Укажите сумму больше нуля.";
-  if (Math.abs(value * 100 - Math.round(value * 100)) > 1e-7) return "Сумма указывается с точностью до тиына.";
-  if (moneyCents(value) > maxCents) return "Сумма больше остатка к оплате.";
-  return "";
 }
 
 /**
@@ -165,12 +151,12 @@ export function OrderPaymentActions({
   }, [autoOpen, visible, maxCents, methods, onAutoOpened]);
   if (!visible) return null;
 
-  const remoteInvoice = order.currency === "KZT" && Boolean(order.payment_request_open);
+  const remoteInvoice = Boolean(order.payment_request_open);
   // До отгрузки долга ещё нет: принятые деньги — предоплата, о долге в текстах не говорим.
   const prepayment = order.status !== "shipped";
   const available = formatCurrency(String(maxCents / 100), order.currency);
-  const amountProblem = paymentAmountProblem(amount, maxCents);
-  const phoneOk = [10, 11].includes(phone.replace(/\D/g, "").length);
+  const amountProblem = paymentAmountError(amount, maxCents);
+  const phoneOk = isKaspiInvoicePhone(phone);
   const canSubmit = !busy && !amountProblem && (flow !== "remote" || phoneOk);
 
   function open(next: Flow) {
@@ -199,8 +185,6 @@ export function OrderPaymentActions({
         await api.post(`/orders/${order.id}/payments/`, {
           amount,
           method: "invoice",
-          stage: "requested",
-          channel: "remote",
           phone_number: phone,
         });
         onChanged(`Счёт на ${sum} по заказу #${order.id} отправлен в Kaspi — долг уменьшится после оплаты.`);
@@ -281,7 +265,7 @@ export function OrderPaymentActions({
           {flow === "receive" && methods.length > 1 && (
             <div className="grid gap-2">
               <Label>Способ</Label>
-              <ReceiveMethodPicker methods={methods} value={method} onChange={setMethod} prepayment={prepayment} />
+              <ReceiveMethodPicker methods={methods} value={method} onChange={setMethod} />
             </div>
           )}
 

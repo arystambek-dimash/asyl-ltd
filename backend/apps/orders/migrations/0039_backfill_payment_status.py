@@ -3,7 +3,7 @@
 Список должников теперь не считает заказы с payment_status="settled", поэтому
 статус обязан совпадать с фактом для всей истории, а не только для заказов,
 которые прошли через сервис оплат после появления синхронизации. Формулы —
-те же, что у services._payment_status_for и querysets.with_order_amounts
+те же, что у debt.payment_status и querysets.with_order_amounts
 (в миграции они повторены намеренно: код приложения меняется, миграция — нет).
 """
 from decimal import Decimal

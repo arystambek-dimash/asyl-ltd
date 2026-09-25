@@ -10,9 +10,11 @@ const confirmed: Payment = {
   amount: "100",
   currency: "KZT",
   method: "cash",
+  method_label: "Наличные",
   status: "confirmed",
+  status_label: "Оплачено",
+  effective_status_label: "Оплачено",
   paid_at: "2026-09-12T10:00:00",
-  recorded_by: null,
   available_for_refund: "100",
 };
 
@@ -21,10 +23,8 @@ function handlers(): TransactionActionHandlers {
     busy: false,
     receipt: vi.fn(),
     issue: vi.fn(),
-    openRefund: vi.fn(),
-    openReject: vi.fn(),
-    openRestore: vi.fn(),
-    openReopen: vi.fn(),
+    open: vi.fn(),
+    openQrRefund: vi.fn(),
   };
 }
 
@@ -34,7 +34,7 @@ it("offers receipt and refund for a confirmed payment when the cashier may confi
   expect(actions.map((action) => action.key)).toEqual(["receipt", "refund"]);
   render(<TransactionActions actions={actions} layout="list" />);
   await userEvent.click(screen.getByRole("button", { name: /Вернуть оплату/ }));
-  expect(h.openRefund).toHaveBeenCalledWith(confirmed);
+  expect(h.open).toHaveBeenCalledWith("refund", confirmed);
   expect(screen.getByRole("button", { name: /Скачать выписку/ })).toBeInTheDocument();
 });
 
@@ -54,7 +54,7 @@ it("lets the cashier reject a manual payment that is still open", () => {
 });
 
 it("shows the buyer-link refund state for a Kaspi QR payment with a pending link refund", async () => {
-  const h = { ...handlers(), openQrRefund: vi.fn() };
+  const h = handlers();
   const qrPayment: Payment = {
     ...confirmed,
     method: "kaspi",
@@ -89,7 +89,7 @@ it("offers to return a mistakenly confirmed cash payment to review", async () =>
   expect(actions.map((action) => action.key)).toEqual(["reopen", "receipt", "refund"]);
   render(<TransactionActions actions={actions} layout="list" />);
   await userEvent.click(screen.getByRole("button", { name: /Вернуть на проверку/ }));
-  expect(h.openReopen).toHaveBeenCalledWith(reopenable);
+  expect(h.open).toHaveBeenCalledWith("reopen", reopenable);
   expect(transactionActions(reopenable, h, { canConfirm: false, canCreate: true }).map((a) => a.key)).toEqual([
     "receipt",
   ]);

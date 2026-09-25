@@ -7,12 +7,13 @@
 .pytest_cache
 .ruff_cache
 .venv
-__pycache__
+**/__pycache__
 **/tests
-*.py[cod]
+**/*.py[cod]
 *.sqlite3
-conftest.py
+**/conftest.py
 media
+mypy.ini
 pytest.ini
 requirements.txt
 staticfiles

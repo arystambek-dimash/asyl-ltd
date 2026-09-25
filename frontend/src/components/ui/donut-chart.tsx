@@ -1,5 +1,3 @@
-import { cn } from "@/lib/utils";
-
 export interface DonutSegment {
   key: string;
   label: string;
@@ -26,7 +24,6 @@ export function DonutChart({
   emptyLabel = "Нет данных",
   size = 208,
   thickness = 22,
-  className,
 }: {
   segments: DonutSegment[];
   centerValue: string;
@@ -34,7 +31,6 @@ export function DonutChart({
   emptyLabel?: string;
   size?: number;
   thickness?: number;
-  className?: string;
 }) {
   const positive = segments.filter((segment) => segment.value > 0);
   const total = positive.reduce((sum, segment) => sum + segment.value, 0);
@@ -50,7 +46,7 @@ export function DonutChart({
   const description = total > 0 ? arcs.map((arc) => `${arc.label}: ${Math.round(arc.share)}%`).join(", ") : emptyLabel;
 
   return (
-    <div className={cn("relative mx-auto", className)} style={{ width: size, height: size }}>
+    <div className="relative mx-auto" style={{ width: size, height: size }}>
       <svg
         role="img"
         aria-label={`${centerValue}${centerLabel ? `, ${centerLabel}` : ""}. ${description}`}

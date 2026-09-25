@@ -10,11 +10,12 @@ from django.utils import timezone
 from PIL import Image
 
 from apps.cameras import ai, shipping_segment_identity as identity, shipping_segments
+from apps.common import openai_responses
 from apps.cameras.models import (
     AlwaysOnCounterCursor, AlwaysOnImportedEvent, ShippingLoadingEvent,
     ShippingLoadingSegment, ShippingLoadingSession, ShippingSessionSettings, ShippingTransportCamera,
 )
-from apps.cameras.tests.test_transport_recognition import _payload, _vehicle, _wagon
+from apps.cameras.tests.shipping_fakes import add_events, recognition_payload, vehicle_plate, wagon_plate
 
 pytestmark = pytest.mark.django_db(transaction=True)
 JPEG = b"\xff\xd8\xff\xe0one original loading frame"
@@ -25,14 +26,13 @@ def configuration(settings, tmp_path):
     settings.MEDIA_ROOT = tmp_path
     settings.OPENAI_API_KEY = "unit-test-only"
     settings.WEIGHING_AI_MODEL = "gpt-5-mini"
-    settings.GO2RTC_API_URL = "http://relay.example.test:1984"
-    with patch.object(identity.http.client, "HTTPSConnection", side_effect=AssertionError("Unexpected external API request")), patch.object(identity.urllib.request, "urlopen", side_effect=AssertionError("Unexpected live camera request")):
+    with patch.object(ai, "GO2RTC_API", "http://relay.example.test:1984"), patch.object(openai_responses.http.client, "HTTPSConnection", side_effect=AssertionError("Unexpected external API request")), patch.object(ai.urllib.request, "urlopen", side_effect=AssertionError("Unexpected live camera request")):
         yield
 
 
 def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3", loading_zone=None):
     at = timezone.now() - timedelta(seconds=age)
-    AlwaysOnCounterCursor.objects.create(camera=camera, last_event_id=1, last_total=1, event_compat_total=1)
+    AlwaysOnCounterCursor.objects.create(camera=camera, last_event_id=1, last_total=1)
     event = AlwaysOnImportedEvent.objects.create(
         camera=camera, upstream_event_id=1, occurred_at=at, source="sub", mode="always_on",
         analytics_scope="shipping", applied_to_analytics=True,
@@ -45,7 +45,7 @@ def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3
         loading_zone=loading_zone,
         configured_recognition_model=model, recognition_model=model,
         started_at=at, last_counted_at=at, total_bags=1,
-        first_event=event, last_event=event, first_upstream_event_id=1, last_upstream_event_id=1,
+        first_event=event, first_upstream_event_id=1,
     )
     ShippingLoadingEvent.objects.create(event=event, segment=result)
     return result
@@ -60,34 +60,63 @@ def photographed(**kwargs):
     return row
 
 
-@pytest.mark.parametrize("model,detection,path,number", [
-    ("vehicle_number", _vehicle(), "/vehicle-number/detect", "123ABC02"),
-])
-def test_one_primary_uses_saved_photo_and_never_repeats_during_segment(model, detection, path, number):
-    row = photographed(model=model)
+def openai_client(payload, *, status=200):
+    response = Mock(status=status)
+    response.read.return_value = json.dumps(payload).encode()
+    client = Mock()
+    client.getresponse.return_value = response
+    return client
+
+
+def completed_verdict(number="00123455", *, clear=True, model="wagon_number"):
+    return {"status": "completed", "id": "resp_reason_test", "output": [{
+        "type": "message", "role": "assistant", "content": [{
+            "type": "output_text", "text": json.dumps({
+                "number": number, "number_clear": clear, "recognition_model": model,
+            }),
+        }],
+    }]}
+
+
+@pytest.mark.parametrize("size,expected", [(len(JPEG), JPEG), (identity.MAX_JPEG_BYTES + 1, None)])
+def test_capture_frame_reads_main_stream_within_four_seconds_and_four_mb(size, expected):
+    response = Mock(status=200)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.read.return_value = JPEG.ljust(size, b"0")
+    with patch.object(ai.urllib.request, "urlopen", return_value=response) as urlopen:
+        assert identity.capture_frame("cam7") == expected
+    request = urlopen.call_args.args[0]
+    assert request.full_url == "http://relay.example.test:1984/api/frame.jpeg?src=cam7main"
+    assert urlopen.call_args.kwargs["timeout"] == 4
+    response.read.assert_called_once_with(identity.MAX_JPEG_BYTES + 1)
+
+
+def test_one_primary_uses_saved_photo_and_never_repeats_during_segment():
+    row = photographed()
 
     def primary(*args, **kwargs):
         assert not connection.in_atomic_block
         assert ShippingLoadingSegment.objects.get(pk=row.pk).primary_attempted
         assert kwargs["raw_body"] == JPEG
-        return 200, _payload(model, [detection])
+        return 200, recognition_payload("vehicle_number", [vehicle_plate()])
 
     with patch.object(ai, "_request", side_effect=primary) as request, patch.object(identity, "gpt_number") as gpt, patch.object(identity, "capture_frame") as frame:
         assert identity.process_once(row.pk)
         assert not identity.process_once(row.pk)
         assert not identity.capture_once(row.pk)
-    request.assert_called_once_with("POST", path, raw_body=JPEG, content_type="image/jpeg", timeout_seconds=ai.WAGON_PLATE_TIMEOUT)
+    request.assert_called_once_with("POST", "/vehicle-number/detect", raw_body=JPEG, content_type="image/jpeg", timeout_seconds=ai.WAGON_PLATE_TIMEOUT)
     gpt.assert_not_called()
     frame.assert_not_called()
     row.refresh_from_db()
-    assert (row.number, row.number_source, row.identity_status) == (number, "model", "identified")
+    assert (row.number, row.number_source, row.identity_status) == ("123ABC02", "model", "identified")
     assert row.total_bags == row.session.total_bags == 1
     assert ShippingLoadingEvent.objects.count() == 1
 
 
 def test_wagon_uses_only_openai_once_even_when_native_model_could_read_it():
     row = photographed(model="wagon_number")
-    with patch.object(ai, "_request", return_value=(200, _payload("wagon_number", [_wagon()]))) as primary, patch.object(
+    with patch.object(ai, "_request", return_value=(200, recognition_payload("wagon_number", [wagon_plate()]))) as primary, patch.object(
         identity, "gpt_number", return_value=("00123455", "wagon_number", "wagon-response"),
     ) as gpt, patch.object(identity, "capture_frame") as frame:
         assert identity.process_once(row.pk)
@@ -155,7 +184,7 @@ def test_primary_and_gpt_share_saved_zone_crop_while_original_photo_is_preserved
         conveyor_camera="cam3", number_camera="cam7", recognition_model="vehicle_number",
         loading_zone=[0, 0, 0.5, 1],
     )
-    with patch.object(ai, "_request", return_value=(200, _payload("vehicle_number", []))) as primary, patch.object(identity, "gpt_number", return_value=("123ABC02", "vehicle_number", "response-test")) as gpt:
+    with patch.object(ai, "_request", return_value=(200, recognition_payload("vehicle_number", []))) as primary, patch.object(identity, "gpt_number", return_value=("123ABC02", "vehicle_number", "response-test")) as gpt:
         assert identity.process_once(row.pk)
     crop = primary.call_args.kwargs["raw_body"]
     gpt.assert_called_once_with(crop)
@@ -186,14 +215,14 @@ def test_invalid_zone_does_not_silently_recognize_another_transport_from_full_fr
     assert row.total_bags == 1
 
 
-@pytest.mark.parametrize("model,detections", [
-    ("vehicle_number", []),
-    ("vehicle_number", [_vehicle(accepted=False)]),
-    ("vehicle_number", [_vehicle("123ABC02"), _vehicle("456DEF02")]),
+@pytest.mark.parametrize("detections", [
+    [],
+    [vehicle_plate(accepted=False)],
+    [vehicle_plate("123ABC02"), vehicle_plate("456DEF02")],
 ])
-def test_rejected_or_multiple_native_numbers_go_to_gpt_without_using_first_candidate(model, detections):
-    row = photographed(model=model)
-    with patch.object(ai, "_request", return_value=(200, _payload(model, detections))) as primary, patch.object(identity, "gpt_number", return_value=("", "unknown", "response-test")) as gpt:
+def test_rejected_or_multiple_native_numbers_go_to_gpt_without_using_first_candidate(detections):
+    row = photographed()
+    with patch.object(ai, "_request", return_value=(200, recognition_payload("vehicle_number", detections))) as primary, patch.object(identity, "gpt_number", return_value=("", "unknown", "response-test")) as gpt:
         assert identity.process_once(row.pk)
     primary.assert_called_once()
     gpt.assert_called_once_with(JPEG)
@@ -348,17 +377,6 @@ def test_gpt_retries_are_bounded_and_never_repeat_primary_or_snapshot():
     assert row.total_bags == 1
 
 
-def test_unreadable_number_is_terminal_and_does_not_change_bag_ledger():
-    row = photographed()
-    with patch.object(ai, "_request", return_value=(200, _payload("vehicle_number", [_vehicle(accepted=False)]))), patch.object(identity, "gpt_number", return_value=("", "unknown", "response-test")):
-        assert identity.process_once(row.pk)
-    row.refresh_from_db()
-    assert row.identity_error == "number_unreadable"
-    assert row.identity_status == "unidentified"
-    assert row.number == ""
-    assert row.session.total_bags == 1
-
-
 def test_operator_correction_during_primary_is_not_overwritten_by_late_ai():
     row = photographed()
 
@@ -367,7 +385,7 @@ def test_operator_correction_during_primary_is_not_overwritten_by_late_ai():
         # exhausted automatic recovery and exposed the manual exception action.
         ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_status="unidentified", identity_lease_until=None)
         shipping_segments.apply_identity(row.pk, "456DEF02", "manual")
-        return 200, _payload("vehicle_number", [_vehicle()])
+        return 200, recognition_payload("vehicle_number", [vehicle_plate()])
 
     with patch.object(ai, "_request", side_effect=primary):
         assert identity.process_once(row.pk)
@@ -378,15 +396,9 @@ def test_operator_correction_during_primary_is_not_overwritten_by_late_ai():
 
 @pytest.mark.parametrize("configured_model", [None, "wagon_number"])
 def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_image(configured_model):
-    result = {"number": "00123455", "number_clear": True, "recognition_model": "wagon_number"}
-    response = Mock(status=200)
-    response.read.return_value = json.dumps({"status": "completed", "id": "response-test", "output": [{
-        "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": json.dumps(result)}],
-    }]}).encode()
-    client = Mock()
-    client.getresponse.return_value = response
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
-        assert identity.gpt_number(JPEG, recognition_model=configured_model) == ("00123455", "wagon_number", "response-test")
+    client = openai_client(completed_verdict())
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client):
+        assert identity.gpt_number(JPEG, recognition_model=configured_model) == ("00123455", "wagon_number", "resp_reason_test")
     body = json.loads(client.request.call_args.kwargs["body"])
     assert body["model"] == "gpt-5-mini"
     assert body["store"] is False
@@ -400,30 +412,12 @@ def test_gpt_request_has_no_candidate_priming_and_strict_schema_for_original_ima
     assert identity.GPT_SCHEMA["properties"]["recognition_model"]["enum"] == ["vehicle_number", "wagon_number", "unknown"]
 
 
-def openai_client(payload, *, status=200):
-    response = Mock(status=status)
-    response.read.return_value = json.dumps(payload).encode()
-    client = Mock()
-    client.getresponse.return_value = response
-    return client
-
-
-def completed_verdict(number="00123455", *, clear=True, model="wagon_number"):
-    return {"status": "completed", "id": "resp_reason_test", "output": [{
-        "type": "message", "role": "assistant", "content": [{
-            "type": "output_text", "text": json.dumps({
-                "number": number, "number_clear": clear, "recognition_model": model,
-            }),
-        }],
-    }]}
-
-
 @pytest.mark.parametrize("detail", ["high", "original"])
 def test_shipping_model_and_detail_override_preserve_original_and_single_request(settings, detail):
     settings.SHIPPING_WAGON_AI_MODEL = "gpt-6-astra"
     settings.SHIPPING_WAGON_AI_DETAIL = detail
     client = openai_client(completed_verdict())
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client):
         assert identity.gpt_number(JPEG, recognition_model="wagon_number")[0] == "00123455"
     assert client.request.call_count == 1
     body = json.loads(client.request.call_args.kwargs["body"])
@@ -443,7 +437,7 @@ def test_wagon_model_upgrade_does_not_upgrade_truck_fallback(settings, configure
     settings.SHIPPING_WAGON_AI_MODEL = "gpt-6-astra"
     settings.SHIPPING_WAGON_AI_DETAIL = "original"
     client = openai_client(completed_verdict("123ABC02", model="vehicle_number"))
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client):
         assert identity.gpt_number(JPEG, recognition_model=configured_model)[0] == "123ABC02"
     body = json.loads(client.request.call_args.kwargs["body"])
     assert body["model"] == "gpt-5-mini"
@@ -462,7 +456,7 @@ def test_wagon_model_upgrade_does_not_upgrade_truck_fallback(settings, configure
 def test_completed_refusal_reason_is_preserved_without_retries_or_bag_changes(payload, code, caplog):
     row = photographed(model="wagon_number")
     client = openai_client(payload)
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=client), patch.object(ai, "_request") as primary, patch.object(identity, "capture_frame") as frame:
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client), patch.object(ai, "_request") as primary, patch.object(identity, "capture_frame") as frame:
         assert identity.process_once(row.pk)
         assert not identity.process_once(row.pk)
     row.refresh_from_db()
@@ -493,7 +487,7 @@ def test_completed_refusal_reason_is_preserved_without_retries_or_bag_changes(pa
 def test_http_error_retains_safe_reason_and_only_transient_failures_retry(status, code, retryable, caplog):
     row = photographed(model="wagon_number")
     client = openai_client({"private_provider_error": "do-not-log-upstream-body"}, status=status)
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=client):
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client):
         assert identity.process_once(row.pk)
     row.refresh_from_db()
     assert row.identity_error == code
@@ -512,7 +506,7 @@ def test_http_error_retains_safe_reason_and_only_transient_failures_retry(status
     ({"status": "completed", "id": "resp_reason_test", "output": [{"type": "message", "role": "assistant", "content": [{"type": "refusal", "refusal": "private-response"}]}]}, "openai_refused", False),
 ])
 def test_incomplete_or_malformed_openai_result_preserves_typed_reason(payload, code, retryable):
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=openai_client(payload)):
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=openai_client(payload)):
         with pytest.raises(identity.RecognitionFailure) as caught:
             identity.gpt_number(JPEG, recognition_model="wagon_number")
     assert caught.value.code == code
@@ -524,7 +518,7 @@ def test_incomplete_or_malformed_openai_result_preserves_typed_reason(payload, c
 def test_typed_rate_limit_retry_stops_at_existing_limit_on_same_saved_frame():
     row = photographed(model="wagon_number")
     client = openai_client({}, status=429)
-    with patch.object(identity.http.client, "HTTPSConnection", return_value=client), patch.object(identity, "capture_frame") as frame, patch.object(ai, "_request") as primary:
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client), patch.object(identity, "capture_frame") as frame, patch.object(ai, "_request") as primary:
         for _ in range(3):
             ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_next_attempt_at=timezone.now())
             assert identity.process_once(row.pk)
@@ -569,8 +563,7 @@ def test_late_wagon_gpt_response_cannot_overwrite_manual_number():
     ("123ABC0O", "vehicle_number", ""),
 ])
 def test_local_number_validation_preserves_characters_and_rejects_bad_wagon_checksum(value, model, expected):
-    assert identity.valid_number(value, model) == expected
-    assert shipping_segments.normalized_number(value, model) == expected
+    assert ai.valid_transport_number(value, model) == expected
 
 
 def test_slow_primary_renews_lease_before_gpt_on_saved_photo():
@@ -595,8 +588,6 @@ def test_slow_primary_renews_lease_before_gpt_on_saved_photo():
 
 
 def test_journal_photo_gpt_idle_resume_merges_same_transport_and_splits_different_transport():
-    from apps.cameras.tests.test_shipping_segments import add_events
-
     start = timezone.now()
     clock = {"now": start}
     ShippingSessionSettings.objects.update_or_create(singleton=True, defaults={
@@ -612,7 +603,7 @@ def test_journal_photo_gpt_idle_resume_merges_same_transport_and_splits_differen
         assert not connection.in_atomic_block
         return next(numbers), "vehicle_number", "response-test"
 
-    with patch.object(identity.timezone, "now", side_effect=lambda: clock["now"]), patch.object(identity, "capture_frame", side_effect=photos) as frame, patch.object(ai, "_request", return_value=(200, _payload("vehicle_number", [_vehicle(accepted=False)]))) as primary, patch.object(identity, "gpt_number", side_effect=gpt) as fallback:
+    with patch.object(identity.timezone, "now", side_effect=lambda: clock["now"]), patch.object(identity, "capture_frame", side_effect=photos) as frame, patch.object(ai, "_request", return_value=(200, recognition_payload("vehicle_number", [vehicle_plate(accepted=False)]))) as primary, patch.object(identity, "gpt_number", side_effect=gpt) as fallback:
         for index, first_second in enumerate((0, 33, 66)):
             clock["now"] = start+timedelta(seconds=first_second+1)
             add_events(start, [first_second, first_second+1], camera="cam3")

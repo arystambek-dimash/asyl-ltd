@@ -11,22 +11,11 @@ def shipped_order(db):
     # Оплата доступна после отгрузки; логистический статус оплатой не меняется.
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(
-        name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100")
+        name="F", color="Red", weight_kg=Decimal("50")
     )
     o = Order.objects.create(client=c, status="shipped")
     OrderItem.objects.create(order=o, product=p, quantity=1, unit_price=Decimal("100"))
     return o
-
-
-def test_reject_endpoint(db, manager, auth_client):
-    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
-    o = Order.objects.create(client=c, status="pending")
-    r = auth_client(manager).post(
-        f"/api/orders/{o.id}/reject/", {"reason": "Нет товара"}
-    )
-    assert r.status_code == 200
-    o.refresh_from_db()
-    assert o.status == "rejected"
 
 
 def test_confirm_payment_endpoint(shipped_order, accountant, auth_client, make_user):

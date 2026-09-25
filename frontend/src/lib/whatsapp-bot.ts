@@ -1,4 +1,5 @@
 /** Журнал WhatsApp-бота отчётов о вагонах (GET/POST /bots/whatsapp/…). */
+import type { BadgeTone } from "@/lib/constants";
 import type { RailIssue } from "@/lib/rail-report";
 import { formatMoney } from "@/lib/utils";
 import { wagonsWord } from "@/lib/wagons";
@@ -6,27 +7,23 @@ import { wagonsWord } from "@/lib/wagons";
 export const WHATSAPP_BOT_API = "/bots/whatsapp";
 
 export type BotMessageStatus =
-  "received" | "parsed" | "applied" | "needs_review" | "awaiting_confirmation" | "rejected" | "ignored" | "failed";
+  "received" | "applied" | "needs_review" | "awaiting_confirmation" | "rejected" | "ignored" | "failed";
 
 export type BotMessageKind = "message" | "edited" | "deleted";
 
 /** Итог разбора, записанный ботом: без денег (их показывает предпросмотр по правам). */
 export interface BotMessageParsed {
-  day?: string | null;
-  country?: string;
   client_name?: string;
-  client?: { id: number; name: string } | null;
+  client?: { name: string } | null;
   station?: string;
   wagons?: number;
   tons?: string;
-  bags?: number | null;
 }
 
 export interface BotMessage {
   id: number;
   kind: BotMessageKind;
   status: BotMessageStatus;
-  chat_id: string;
   chat_name: string;
   sender_id: string;
   sender_name: string;
@@ -42,7 +39,6 @@ export interface BotMessage {
   reply: string;
   reply_sent_at: string | null;
   reply_attempts: number;
-  attempts: number;
   error: string;
   resolved_by_name: string;
   resolved_at: string | null;
@@ -76,15 +72,10 @@ export interface WhatsAppBotStatus {
   instance_state_at: string | null;
   counts: Record<BotTab, number>;
   settings: WhatsAppBotSettings;
-  can_manage: boolean;
-  can_configure: boolean;
 }
 
-type Tone = "muted" | "primary" | "success" | "warning" | "destructive";
-
-export const MESSAGE_STATUS: Record<BotMessageStatus, { label: string; tone: Tone }> = {
+export const MESSAGE_STATUS: Record<BotMessageStatus, { label: string; tone: BadgeTone }> = {
   received: { label: "Получено", tone: "muted" },
-  parsed: { label: "Разбирается", tone: "muted" },
   applied: { label: "Проведено", tone: "success" },
   needs_review: { label: "На проверке", tone: "warning" },
   awaiting_confirmation: { label: "Черновик ИИ", tone: "primary" },
@@ -109,10 +100,10 @@ export const INSTANCE_STATES: Record<string, string> = {
 };
 
 /** Бот пишет состояние раз в полминуты; дольше трёх минут тишины — процесс не отвечает. */
-export const BOT_STALE_MS = 3 * 60 * 1000;
+const BOT_STALE_MS = 3 * 60 * 1000;
 
-export interface BotHealth {
-  tone: Tone;
+interface BotHealth {
+  tone: BadgeTone;
   label: string;
   detail: string;
 }

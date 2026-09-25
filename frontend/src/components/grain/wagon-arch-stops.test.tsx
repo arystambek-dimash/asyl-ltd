@@ -1,6 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { grainTripHref } from "@/lib/grain";
 import type { WagonArchStop } from "@/lib/types";
@@ -34,13 +33,7 @@ vi.mock("@/store/auth", () => ({
   useAuth: (selector: (state: { me: { is_superuser: boolean; permissions: string[] } }) => unknown) =>
     selector({ me: { is_superuser: true, permissions: ["grain.weigh"] } }),
 }));
-vi.mock("next/link", () => ({
-  default: ({ children, href, ...rest }: { children: ReactNode; href: string } & Record<string, unknown>) => (
-    <a href={href} {...rest}>
-      {children}
-    </a>
-  ),
-}));
+vi.mock("next/link", () => import("@/test-utils/next-link"));
 
 function stop(overrides: Partial<WagonArchStop> = {}): WagonArchStop {
   return {
@@ -68,6 +61,13 @@ function stop(overrides: Partial<WagonArchStop> = {}): WagonArchStop {
     photo_url: "/api/grain/photos/evidence/9/?token=abc",
     ...overrides,
   };
+}
+
+/** Журнал из одной стоянки; возвращает её строку. */
+function renderRow(overrides: Partial<WagonArchStop>) {
+  mocks.page = { results: [stop(overrides)], next_cursor: null };
+  render(<WagonArchStops />);
+  return screen.getAllByRole("listitem")[0];
 }
 
 beforeEach(() => {
@@ -140,14 +140,14 @@ describe("WagonArchStops", () => {
     expect(mocks.polling).toHaveBeenLastCalledWith(mocks.reload, 5000, false);
   });
 
-  it("explains an empty journal without rendering the bordered list (m4)", () => {
+  it("explains an empty journal without rendering the bordered list", () => {
     mocks.page = { results: [], next_cursor: null };
     render(<WagonArchStops />);
     expect(screen.getByText("Стоянок под аркой пока нет")).toBeInTheDocument();
     expect(screen.queryByRole("list")).toBeNull();
   });
 
-  it("shows a loading state on the first page before any data has arrived (m4)", () => {
+  it("shows a loading state on the first page before any data has arrived", () => {
     mocks.page = null;
     mocks.loading = true;
     render(<WagonArchStops />);
@@ -156,117 +156,72 @@ describe("WagonArchStops", () => {
     expect(screen.queryByText("Стоянок под аркой пока нет")).toBeNull();
   });
 
-  it("marks a re-positioned stop as «продолжение стоянки» instead of showing нетто (m6)", () => {
-    mocks.page = {
-      results: [stop({ id: 8, continues: 7, net_kg: 12000, exit_weight_kg: 50340 })],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
+  it("marks a re-positioned stop as «продолжение стоянки» instead of showing нетто", () => {
+    const row = renderRow({ id: 8, continues: 7, net_kg: 12000, exit_weight_kg: 50340 });
     expect(row).toHaveTextContent("продолжение стоянки");
     expect(row).not.toHaveTextContent("нетто");
     // Weights themselves stay visible.
     expect(row).toHaveTextContent("62 340 кг → 50 340 кг");
   });
 
-  it("labels the trip link «без номера» when the wagon number is blank (m8)", () => {
-    mocks.page = {
-      results: [stop({ id: 13, number: "", wagon_id: 55 })],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
+  it("labels the trip link «без номера» when the wagon number is blank", () => {
+    const row = renderRow({ id: 13, number: "", wagon_id: 55 });
     expect(within(row).getByRole("link", { name: "Открыть рейс вагона без номера" })).toBeInTheDocument();
   });
 
-  it("shows a muted badge with the raw value for an unknown status (m5)", () => {
-    mocks.page = {
-      // Casting to bypass the TS union — this is exactly the defensive case m5 covers.
-      results: [stop({ id: 12, status: "future_status" as WagonArchStop["status"] })],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
+  it("shows a muted badge with the raw value for an unknown status", () => {
+    // Casting to bypass the TS union — this is exactly the defensive case m5 covers.
+    const row = renderRow({ id: 12, status: "future_status" as WagonArchStop["status"] });
     const badge = within(row).getByText("future_status");
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain("bg-[var(--muted)]");
     expect(badge.className).not.toContain("bg-[var(--success)]");
   });
 
-  it("labels a superseded stop «Переставлен» (m6)", () => {
-    mocks.page = {
-      results: [stop({ id: 4, stop_id: "stop-superseded", status: "superseded" })],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
+  it("labels a superseded stop «Переставлен»", () => {
+    const row = renderRow({ id: 4, stop_id: "stop-superseded", status: "superseded" });
     expect(within(row).getByText("Переставлен")).toBeInTheDocument();
+    // full − exit у переставленного стопа — вес, выгруженный до перестановки, а не нетто рейса.
+    expect(row).toHaveTextContent("62 340 кг → 24 120 кг");
+    expect(row).not.toHaveTextContent("нетто");
   });
 
-  it("shows a muted operator note for closed stops dismissed or recorded manually, without warning styling", () => {
-    mocks.page = {
-      results: [
-        stop({ id: 9, status: "closed", blocked_reason: "", blocked_detail: "закрыто оператором" }),
-        stop({ id: 10, status: "closed", blocked_reason: "", blocked_detail: "записано вручную" }),
-      ],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [first, second] = screen.getAllByRole("listitem");
-    expect(within(first).getByText("Завершена")).toBeInTheDocument();
-    expect(first).toHaveTextContent("закрыто оператором");
-    expect(within(second).getByText("Завершена")).toBeInTheDocument();
-    expect(second).toHaveTextContent("записано вручную");
-  });
+  // Any closed stop with an empty reason and a non-empty detail is an operator note,
+  // derived from shape rather than a hard-coded string list.
+  it.each(["закрыто оператором", "записано вручную", "новая заметка оператора"])(
+    "shows the operator note «%s» muted, without warning styling",
+    (note) => {
+      const row = renderRow({ id: 9, status: "closed", blocked_reason: "", blocked_detail: note });
+      expect(within(row).getByText("Завершена")).toBeInTheDocument();
+      expect(row).toHaveTextContent(note);
+      expect(row.querySelector(".text-\\[var\\(--warning\\)\\]")).toBeNull();
+    },
+  );
 
-  it("derives the operator note from shape, not a hard-coded string list (m3)", () => {
-    mocks.page = {
-      results: [
-        // Any closed stop with an empty reason and a non-empty detail is an operator note —
-        // not just the two literal strings the old OPERATOR_NOTE_DETAILS set knew about.
-        stop({ id: 14, status: "closed", blocked_reason: "", blocked_detail: "новая заметка оператора" }),
-      ],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
-    expect(row).toHaveTextContent("новая заметка оператора");
-    // Muted note, not the warning-styled reason text.
-    expect(row.querySelector(".text-\\[var\\(--warning\\)\\]")).toBeNull();
-  });
-
-  it("does not show a muted note for a closed stop that still carries a blocked_reason (m3)", () => {
-    mocks.page = {
-      results: [
-        stop({
-          id: 15,
-          status: "closed",
-          blocked_reason: "exit_not_lower",
-          blocked_detail: "Вес на выезде не меньше веса на въезде",
-        }),
-      ],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
+  it("does not show a muted note for a closed stop that still carries a blocked_reason", () => {
+    const row = renderRow({
+      id: 15,
+      status: "closed",
+      blocked_reason: "exit_not_lower",
+      blocked_detail: "Вес на выезде не меньше веса на въезде",
+    });
     // A non-empty blocked_reason is a real warning, not a plain operator note.
     expect(row.querySelector(".text-\\[var\\(--warning\\)\\]")).not.toBeNull();
   });
 
   it("never presents weight_discrepancy as an import problem", () => {
-    mocks.page = {
-      results: [
-        stop({ id: 11, status: "closed", wagon_status: "weight_discrepancy", blocked_reason: "", blocked_detail: "" }),
-      ],
-      next_cursor: null,
-    };
-    render(<WagonArchStops />);
-    const [row] = screen.getAllByRole("listitem");
+    const row = renderRow({
+      id: 11,
+      status: "closed",
+      wagon_status: "weight_discrepancy",
+      blocked_reason: "",
+      blocked_detail: "",
+    });
     expect(within(row).getByText("Завершена")).toBeInTheDocument();
     expect(within(row).getByRole("link", { name: "Открыть рейс вагона 28055531" })).toBeInTheDocument();
   });
 
-  it("does not overwrite a poll that lands while a dismiss is in flight (m2)", async () => {
+  it("does not overwrite a poll that lands while a dismiss is in flight", async () => {
     // The dismiss POST is held open; a poll "lands" (mocks.page changes + rerender)
     // before it resolves. replaceRow must build its replacement from the LATEST
     // data, not the stale snapshot captured when the dismiss button was clicked.

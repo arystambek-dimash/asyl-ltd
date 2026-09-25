@@ -10,16 +10,16 @@ from rest_framework.exceptions import ValidationError
 pytestmark = pytest.mark.django_db
 
 
-def _order(boss, qty=2):
+def _order(qty=2):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     o = Order.objects.create(client=c, status="pending")
     it = OrderItem.objects.create(order=o, product=p, quantity=qty)
     return o, it, c, p
 
 
 def test_confirm_writes_unit_price_and_upserts_client_price(boss):
-    o, it, c, p = _order(boss)
+    o, it, c, p = _order()
     confirm_order(o, boss, prices={it.id: "10000.00"})
     o.refresh_from_db()
     it.refresh_from_db()
@@ -31,23 +31,19 @@ def test_confirm_writes_unit_price_and_upserts_client_price(boss):
     assert cp.price == Decimal("10000.00")
 
 
-def test_confirm_rejected_when_price_missing(boss):
-    o, it, c, p = _order(boss)
+@pytest.mark.parametrize("price", [None, "0"])
+def test_confirm_rejected_without_positive_price(boss, price):
+    o, it, c, p = _order()
+    prices = {} if price is None else {it.id: price}
     with pytest.raises(ValidationError) as e:
-        confirm_order(o, boss, prices={})
+        confirm_order(o, boss, prices=prices)
     assert e.value.detail["code"] == "price_required"
     o.refresh_from_db()
     assert o.status == "pending"  # не подтвердился
 
 
-def test_confirm_rejected_when_price_zero(boss):
-    o, it, c, p = _order(boss)
-    with pytest.raises(ValidationError):
-        confirm_order(o, boss, prices={it.id: "0"})
-
-
 def test_confirm_updates_existing_client_price(boss):
-    o, it, c, p = _order(boss)
+    o, it, c, p = _order()
     ClientPrice.objects.create(client=c, product=p, price="5000.00")
     confirm_order(o, boss, prices={it.id: "12000.00"})
     cp = ClientPrice.objects.get(client=c, product=p)
@@ -56,7 +52,7 @@ def test_confirm_updates_existing_client_price(boss):
 
 def test_confirm_does_not_change_personal_price_without_permission(user_with_perms):
     user = user_with_perms("confirm-only", codes=["orders.confirm"])
-    order, item, client, product = _order(user)
+    order, item, client, product = _order()
     ClientPrice.objects.create(client=client, product=product, price="5000.00")
 
     confirm_order(order, user, prices={item.id: "12000.00"})
@@ -69,7 +65,7 @@ def test_confirm_does_not_change_personal_price_without_permission(user_with_per
 
 
 def test_confirm_api_response_contains_fresh_prices(auth_client, manager):
-    o, item, _client, _product = _order(manager)
+    o, item, _client, _product = _order()
 
     Department.objects.get_or_create(code="main", defaults={"name": "Основной"})
     response = auth_client(manager).post(
@@ -79,5 +75,5 @@ def test_confirm_api_response_contains_fresh_prices(auth_client, manager):
     )
 
     assert response.status_code == 200
-    assert response.data["items"][0]["price"] == "10000.00"
+    assert response.data["items"][0]["unit_price"] == "10000.00"
     assert response.data["total_amount"] == "20000.00"

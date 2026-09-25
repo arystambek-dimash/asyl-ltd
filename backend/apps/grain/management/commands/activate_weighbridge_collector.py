@@ -5,6 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from apps.grain.models import AutomaticPassageCapture, PassageScaleAutomationState
 from apps.grain.outbox_importer import directory
+from apps.grain.scale import TRUCK_SCALE_KEY
 from weighbridge.outbox import Outbox
 
 
@@ -14,8 +15,8 @@ class Command(BaseCommand):
             self.stdout.write("Independent collector already active; no interruption.")
             return
         with transaction.atomic():
-            lane = PassageScaleAutomationState.objects.select_for_update().get(scale_number="truck")
-            if AutomaticPassageCapture.objects.filter(status="processing").exists():
+            lane = PassageScaleAutomationState.objects.select_for_update().get(scale_number=TRUCK_SCALE_KEY)
+            if AutomaticPassageCapture.objects.filter(status=AutomaticPassageCapture.PROCESSING).exists():
                 raise CommandError("Pending capture: cutover deferred")
             box = Outbox(directory())
             heartbeat = box.state("heartbeat") or {}

@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WagonTable } from "./wagon-table";
 import type { GrainWagon, Me } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
+import { makeGrainWagon } from "@/test-utils/grain";
 
 const deleteMock = vi.hoisted(() => vi.fn());
 
@@ -12,19 +14,8 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("@/lib/use-local-day", () => ({ useLocalDay: () => "2026-09-06" }));
 
-const me = {
-  id: 1,
-  username: "gate",
-  permissions: ["grain.weigh"],
-  is_superuser: false,
-} as unknown as Me;
-
-const admin = {
-  id: 2,
-  username: "boss",
-  permissions: ["grain.weigh", "grain.delete"],
-  is_superuser: false,
-} as unknown as Me;
+const me = makeMe({ username: "gate", permissions: ["grain.weigh"] });
+const admin = makeMe({ id: 2, username: "boss", permissions: ["grain.weigh", "grain.delete"] });
 
 const finishedIntake = {
   id: 9,
@@ -35,70 +26,28 @@ const finishedIntake = {
   net_weight_kg: 50_000,
 } as const;
 
-function wagon(overrides: Partial<GrainWagon>): GrainWagon {
-  return {
-    id: 1,
-    supply: null,
-    number: "",
-    number_source: "manual",
-    workflow: "simple",
-    direction: "intake",
-    cargo_name: "",
-    status: "arrived",
-    status_label: "Прибыл",
-    unplanned: false,
-    supplier: "",
-    culture: "",
-    grain_class: "",
-    grain_type: null,
-    grain_type_name: "",
-    document_weight_kg: null,
-    expected_weight_kg: null,
-    arrived_at: null,
-    gross_weight_kg: null,
-    tare_weight_kg: null,
-    net_weight_kg: null,
-    entry_weight_kg: null,
-    exit_weight_kg: null,
-    weight_difference_kg: null,
-    weight_difference_percent: null,
-    weight_matches: null,
-    assigned_silo: null,
-    assigned_silo_name: null,
-    ...overrides,
-  } as GrainWagon;
-}
-
-function renderTable(wagons: GrainWagon[]) {
-  render(<WagonTable wagons={wagons} me={me} emptyText="Пусто" />);
+function renderTable(wagons: GrainWagon[], direction: GrainWagon["direction"] = "intake") {
+  return render(<WagonTable wagons={wagons} me={me} emptyText="Пусто" direction={direction} />);
 }
 
 describe("WagonTable", () => {
-  it("splits rows into «Приход» and «Вывоз» groups", () => {
-    renderTable([
-      wagon({ id: 1, number: "Поезд-1", supplier: "ТОО Колос" }),
-      wagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" }),
-    ]);
+  it("heads the table with its direction and explains the weight columns", () => {
+    const { unmount } = renderTable([makeGrainWagon({ id: 1, number: "Поезд-1", supplier: "ТОО Колос" })]);
 
     expect(screen.getByText("Приход")).toBeInTheDocument();
-    expect(screen.getByText("Вывоз")).toBeInTheDocument();
     // Подпись группы объясняет, что означают одни и те же колонки весов.
     expect(screen.getByText(/заехал гружёным, уехал пустым/)).toBeInTheDocument();
+    unmount();
+
+    renderTable([makeGrainWagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" })], "passage");
+    expect(screen.getByText("Вывоз")).toBeInTheDocument();
     expect(screen.getByText(/заехал пустым, уехал гружёным/)).toBeInTheDocument();
-  });
-
-  it("hides a group that has no rows", () => {
-    renderTable([wagon({ id: 1, number: "Поезд-1", supplier: "ТОО Колос" })]);
-
-    expect(screen.getByText("Приход")).toBeInTheDocument();
-    expect(screen.queryByText("Вывоз")).not.toBeInTheDocument();
-    expect(screen.queryByText(/заехал пустым, уехал гружёным/)).not.toBeInTheDocument();
   });
 
   it("shows only the selected direction and uses its empty-state route", () => {
     const wagons = [
-      wagon({ id: 1, number: "Поезд-1" }),
-      wagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" }),
+      makeGrainWagon({ id: 1, number: "Поезд-1" }),
+      makeGrainWagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" }),
     ];
     const { rerender } = render(<WagonTable wagons={wagons} me={me} emptyText="Нет вывоза" direction="passage" />);
 
@@ -113,19 +62,22 @@ describe("WagonTable", () => {
   });
 
   it("shows both weights and the net result for a finished passage", () => {
-    renderTable([
-      wagon({
-        id: 2,
-        number: "123 ABC",
-        direction: "passage",
-        cargo_name: "Отруби",
-        status: "completed",
-        status_label: "Завершён",
-        entry_weight_kg: 12_000,
-        exit_weight_kg: 30_000,
-        net_weight_kg: 18_000,
-      }),
-    ]);
+    renderTable(
+      [
+        makeGrainWagon({
+          id: 2,
+          number: "123 ABC",
+          direction: "passage",
+          cargo_name: "Отруби",
+          status: "completed",
+          status_label: "Завершён",
+          entry_weight_kg: 12_000,
+          exit_weight_kg: 30_000,
+          net_weight_kg: 18_000,
+        }),
+      ],
+      "passage",
+    );
 
     const row = screen.getByRole("row", { name: /123 ABC/ });
     expect(within(row).getByText(/12\s*000/)).toBeInTheDocument();
@@ -134,7 +86,7 @@ describe("WagonTable", () => {
   });
 
   it("labels a missing weight instead of leaving the cell blank", () => {
-    renderTable([wagon({ id: 1, number: "Поезд-1" })]);
+    renderTable([makeGrainWagon({ id: 1, number: "Поезд-1" })]);
 
     const row = screen.getByRole("row", { name: /Поезд-1/ });
     expect(within(row).getAllByText("весы не подключены")).toHaveLength(2);
@@ -142,26 +94,28 @@ describe("WagonTable", () => {
   });
 
   it("offers the next weighing action per direction", () => {
-    renderTable([
-      wagon({ id: 1, number: "Поезд-1" }),
-      wagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" }),
-    ]);
-
+    const { unmount } = renderTable([makeGrainWagon({ id: 1, number: "Поезд-1" })]);
     expect(screen.getByRole("link", { name: /Весы вагонов не подключены/ })).toBeInTheDocument();
+    unmount();
+
+    renderTable([makeGrainWagon({ id: 2, number: "123 ABC", direction: "passage", cargo_name: "Отруби" })], "passage");
     expect(screen.getByRole("link", { name: /Взвесить пустую/ })).toBeInTheDocument();
   });
 
   it("shows the camera that supplied a recognized vehicle number", () => {
-    renderTable([
-      wagon({
-        id: 2,
-        number: "123ABC02",
-        direction: "passage",
-        cargo_name: "Отруби",
-        number_source: "camera",
-        number_camera_source: "cam1",
-      }),
-    ]);
+    renderTable(
+      [
+        makeGrainWagon({
+          id: 2,
+          number: "123ABC02",
+          direction: "passage",
+          cargo_name: "Отруби",
+          number_source: "camera",
+          number_camera_source: "cam1",
+        }),
+      ],
+      "passage",
+    );
 
     const row = screen.getByRole("row", { name: /123ABC02/ });
     expect(within(row).getByText("Камера cam1")).toBeInTheDocument();
@@ -176,7 +130,7 @@ describe("WagonTable", () => {
 });
 
 describe("WagonTable — разбивка по дням", () => {
-  /** Текст строк таблицы сверху вниз: заголовки направлений, дней и рейсы. */
+  /** Текст строк таблицы сверху вниз: заголовок направления, дни и рейсы. */
   function rowTexts() {
     return screen.getAllByRole("row").map((row) => row.textContent ?? "");
   }
@@ -190,10 +144,10 @@ describe("WagonTable — разбивка по дням", () => {
   it("groups on-site rows by arrival day with «Сегодня»/«Вчера» headers and counts", () => {
     // Строки приходят вперемешку: день не должен повториться, а свежие — сверху.
     renderTable([
-      wagon({ id: 1, number: "Поезд-1", arrived_at: "2026-09-05T18:00:00" }),
-      wagon({ id: 2, number: "Поезд-2", arrived_at: "2026-09-06T09:00:00" }),
-      wagon({ id: 3, number: "Поезд-3", arrived_at: "2026-09-01T08:00:00" }),
-      wagon({ id: 4, number: "Поезд-4", arrived_at: "2026-09-06T11:30:00" }),
+      makeGrainWagon({ id: 1, number: "Поезд-1", arrived_at: "2026-09-05T18:00:00" }),
+      makeGrainWagon({ id: 2, number: "Поезд-2", arrived_at: "2026-09-06T09:00:00" }),
+      makeGrainWagon({ id: 3, number: "Поезд-3", arrived_at: "2026-09-01T08:00:00" }),
+      makeGrainWagon({ id: 4, number: "Поезд-4", arrived_at: "2026-09-06T11:30:00" }),
     ]);
 
     const today = screen.getByText("Сегодня").closest("tr") as HTMLTableRowElement;
@@ -213,24 +167,27 @@ describe("WagonTable — разбивка по дням", () => {
   });
 
   it("uses the exit day for finished rows and the arrival day otherwise", () => {
-    renderTable([
-      wagon({
-        id: 5,
-        number: "555 AAA",
-        direction: "passage",
-        status: "completed",
-        status_label: "Завершён",
-        arrived_at: "2026-09-05T08:00:00",
-        exited_at: "2026-09-06T10:00:00",
-      }),
-      wagon({
-        id: 6,
-        number: "666 BBB",
-        direction: "passage",
-        arrived_at: "2026-09-05T09:00:00",
-        exited_at: null,
-      }),
-    ]);
+    renderTable(
+      [
+        makeGrainWagon({
+          id: 5,
+          number: "555 AAA",
+          direction: "passage",
+          status: "completed",
+          status_label: "Завершён",
+          arrived_at: "2026-09-05T08:00:00",
+          exited_at: "2026-09-06T10:00:00",
+        }),
+        makeGrainWagon({
+          id: 6,
+          number: "666 BBB",
+          direction: "passage",
+          arrived_at: "2026-09-05T09:00:00",
+          exited_at: null,
+        }),
+      ],
+      "passage",
+    );
 
     expect(indexOf("Сегодня")).toBeLessThan(indexOf("555 AAA"));
     expect(indexOf("555 AAA")).toBeLessThan(indexOf("Вчера"));
@@ -239,9 +196,9 @@ describe("WagonTable — разбивка по дням", () => {
 
   it("keeps rows without any date in a last «Без даты» group", () => {
     renderTable([
-      wagon({ id: 7, number: "Поезд-7" }),
-      wagon({ id: 8, number: "Поезд-8", arrived_at: "2026-09-06T09:00:00" }),
-      wagon({ id: 9, number: "Поезд-9", created_at: "2026-09-04T09:00:00" }),
+      makeGrainWagon({ id: 7, number: "Поезд-7", created_at: "" }),
+      makeGrainWagon({ id: 8, number: "Поезд-8", arrived_at: "2026-09-06T09:00:00" }),
+      makeGrainWagon({ id: 9, number: "Поезд-9", created_at: "2026-09-04T09:00:00" }),
     ]);
 
     expect(indexOf("Сегодня")).toBeLessThan(indexOf("Поезд-8"));
@@ -252,24 +209,6 @@ describe("WagonTable — разбивка по дням", () => {
     const undated = screen.getByText("Без даты").closest("tr") as HTMLTableRowElement;
     expect(within(undated).getByText("1")).toBeInTheDocument();
   });
-
-  it("splits days separately inside each direction group", () => {
-    renderTable([
-      wagon({ id: 1, number: "Поезд-1", arrived_at: "2026-09-06T09:00:00" }),
-      wagon({
-        id: 2,
-        number: "123 ABC",
-        direction: "passage",
-        cargo_name: "Отруби",
-        arrived_at: "2026-09-06T10:00:00",
-      }),
-    ]);
-
-    expect(screen.getAllByText("Сегодня")).toHaveLength(2);
-    expect(indexOf("Приход")).toBeLessThan(indexOf("Поезд-1"));
-    expect(indexOf("Поезд-1")).toBeLessThan(indexOf("Вывоз"));
-    expect(indexOf("Вывоз")).toBeLessThan(indexOf("123 ABC"));
-  });
 });
 
 describe("WagonTable — удаление завершённого рейса", () => {
@@ -278,14 +217,14 @@ describe("WagonTable — удаление завершённого рейса", 
     deleteMock.mockResolvedValue({ data: { reverted_kg: 50_000 } });
   });
 
-  function renderDeletable(wagons: GrainWagon[], user: Me = admin) {
+  function renderDeletable(wagons: GrainWagon[], user: Me = admin, direction: GrainWagon["direction"] = "intake") {
     const onDeleted = vi.fn();
-    render(<WagonTable wagons={wagons} me={user} emptyText="Пусто" onDeleted={onDeleted} />);
+    render(<WagonTable wagons={wagons} me={user} emptyText="Пусто" direction={direction} onDeleted={onDeleted} />);
     return onDeleted;
   }
 
   it("hides delete without the grain.delete permission", () => {
-    renderDeletable([wagon(finishedIntake)], me);
+    renderDeletable([makeGrainWagon(finishedIntake)], me);
 
     expect(screen.queryByRole("button", { name: /Удалить рейс/ })).not.toBeInTheDocument();
   });
@@ -293,7 +232,7 @@ describe("WagonTable — удаление завершённого рейса", 
   it("allows an authorised employee to delete an on-site trip with an explicit warning and reason", async () => {
     const user = userEvent.setup();
     const onDeleted = renderDeletable([
-      wagon({ id: 1, number: "Поезд-1", status: "at_silo", status_label: "У силоса" }),
+      makeGrainWagon({ id: 1, number: "Поезд-1", status: "at_silo", status_label: "У силоса" }),
     ]);
 
     await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-1" }));
@@ -314,7 +253,7 @@ describe("WagonTable — удаление завершённого рейса", 
 
   it("warns that intake grain returns to the silo, then deletes", async () => {
     const user = userEvent.setup();
-    const onDeleted = renderDeletable([wagon(finishedIntake)]);
+    const onDeleted = renderDeletable([makeGrainWagon(finishedIntake)]);
 
     await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-9" }));
     // Оператор должен видеть последствие для остатка до подтверждения.
@@ -334,7 +273,7 @@ describe("WagonTable — удаление завершённого рейса", 
   it("requires the unrecorded-grain confirmation for an intake after unloading", async () => {
     const user = userEvent.setup();
     const onDeleted = renderDeletable([
-      wagon({
+      makeGrainWagon({
         id: 14,
         number: "Приход-14",
         direction: "intake",
@@ -367,17 +306,21 @@ describe("WagonTable — удаление завершённого рейса", 
 
   it("tells the operator that a passage leaves stock untouched", async () => {
     const user = userEvent.setup();
-    renderDeletable([
-      wagon({
-        id: 5,
-        number: "777 AAA",
-        direction: "passage",
-        cargo_name: "Отруби",
-        status: "completed",
-        status_label: "Завершён",
-        net_weight_kg: 18_000,
-      }),
-    ]);
+    renderDeletable(
+      [
+        makeGrainWagon({
+          id: 5,
+          number: "777 AAA",
+          direction: "passage",
+          cargo_name: "Отруби",
+          status: "completed",
+          status_label: "Завершён",
+          net_weight_kg: 18_000,
+        }),
+      ],
+      admin,
+      "passage",
+    );
 
     await user.click(screen.getByRole("button", { name: "Удалить рейс 777 AAA" }));
 
@@ -387,7 +330,7 @@ describe("WagonTable — удаление завершённого рейса", 
   it("keeps the row and shows the error when deletion fails", async () => {
     deleteMock.mockRejectedValue(new Error("boom"));
     const user = userEvent.setup();
-    const onDeleted = renderDeletable([wagon(finishedIntake)]);
+    const onDeleted = renderDeletable([makeGrainWagon(finishedIntake)]);
 
     await user.click(screen.getByRole("button", { name: "Удалить рейс Поезд-9" }));
     await user.type(screen.getByLabelText("Причина удаления *"), "Дубликат");

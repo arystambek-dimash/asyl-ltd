@@ -17,10 +17,7 @@ export const payOrder = (
   id: number,
   method: PortalPaymentMethod,
   options?: { phone_number?: string; amount?: string },
-) =>
-  api
-    .post<PortalOrder & { payment_redirect_url?: string }>(`/portal/orders/${id}/pay/`, { method, ...options })
-    .then((r) => r.data);
+) => api.post<PortalOrder>(`/portal/orders/${id}/pay/`, { method, ...options }).then((r) => r.data);
 
 export const releasePortalPayment = (orderId: number, paymentId: number) =>
   api.post<PortalOrder>(`/portal/orders/${orderId}/payments/${paymentId}/release/`).then((r) => r.data);

@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   apiUrls: [] as (string | null)[],
   options: {
-    products: [{ id: 5, label: "Мука высший сорт · Красный 50 кг", weight_kg: "50.00" }],
+    products: [{ id: 5, label: "Мука высший сорт · Красный 50 кг" }],
     clients: [{ id: 9, name: "ООО OSIYO NAV NIHOL", currency: "USD", department_name: "Экспорт" }],
   },
 }));
@@ -30,10 +30,8 @@ function preview(fields: Partial<RailPreview> = {}): RailPreview {
   return {
     order_id: null,
     day: "2026-09-19",
-    country: "Узбекистан",
     client_name: "ООО OSIYO NAV NIHOL",
     station: "Раустан",
-    declared_wagons: 1,
     client: { id: 9, name: "ООО OSIYO NAV NIHOL", profile: false },
     currency: "USD",
     wagons: [
@@ -51,7 +49,6 @@ function preview(fields: Partial<RailPreview> = {}): RailPreview {
         amount: "10200.00",
       },
     ],
-    items: [],
     totals: { wagons: 1, tons: "68", bags: 1360, amount: "10200.00", currency: "USD" },
     issues: [],
     warnings: [],
@@ -72,9 +69,7 @@ const unknownProduct = () =>
     wagons: [
       { ...preview().wagons[0], product_id: null, product_label: "", bags: null, unit_price: null, amount: null },
     ],
-    issues: [
-      { code: "product_unknown", message: "Неизвестный код товара «Д1с»", line: 3, subject: "Д1с", order_id: null },
-    ],
+    issues: [{ code: "product_unknown", message: "Неизвестный код товара «Д1с»", line: 3, order_id: null }],
     unresolved: { client: "", products: ["Д1с"] },
   });
 
@@ -87,7 +82,6 @@ const manualDuplicates = (ids: number[], shippable: number[]) =>
       code: "manual_order_duplicate",
       message: `Похоже, этот отчёт уже внесён вручную: заказ №${id}`,
       line: null,
-      subject: "",
       order_id: id,
     })),
     shippable_orders: shippable,
@@ -213,7 +207,7 @@ describe("RailReportSheet", () => {
           client: null,
           currency: "",
           client_name: "OSIYO Ташкент",
-          issues: [{ code: "client_unknown", message: "Клиент не найден", line: null, subject: "", order_id: null }],
+          issues: [{ code: "client_unknown", message: "Клиент не найден", line: null, order_id: null }],
           unresolved: { client: "OSIYO Ташкент", products: [] },
         }),
       })
@@ -241,9 +235,7 @@ describe("RailReportSheet", () => {
     const duplicate = preview({
       ok: false,
       can_apply: false,
-      issues: [
-        { code: "wagon_already_shipped", message: "Вагон 28087658 уже отгружен", line: 3, subject: "", order_id: 5 },
-      ],
+      issues: [{ code: "wagon_already_shipped", message: "Вагон 28087658 уже отгружен", line: 3, order_id: 5 }],
     });
     mocks.post
       .mockResolvedValueOnce({ data: preview() })

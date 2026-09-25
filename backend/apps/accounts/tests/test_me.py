@@ -3,30 +3,22 @@ import pytest
 pytestmark = pytest.mark.django_db
 
 
-def test_me_returns_permissions(auth_client, make_user):
-    from apps.employees.models import Employee
-    from apps.sys_permissions.models import Permission
-    u = make_user(username="m")
-    p, _ = Permission.objects.get_or_create(
-        code="orders.view", defaults={"section": "orders", "action": "view", "label": "x"})
-    emp = Employee.objects.create(user=u, phone="x", position="Оператор")
-    emp.permissions.add(p)
+def test_me_returns_permissions(auth_client, user_with_perms):
+    u = user_with_perms("m", codes=["orders.view"])
+    u.employee.position = "Оператор"
+    u.employee.save(update_fields=["position"])
     resp = auth_client(u).get("/api/auth/me/")
     assert resp.status_code == 200
     assert "orders.view" in resp.data["permissions"]
     assert resp.data["position"] == "Оператор"
 
 
-def test_me_for_client_includes_client_id(auth_client, client_user):
+def test_me_marks_client(auth_client, client_user):
     from apps.clients.models import Client
-    client_user.first_name = "Мой"
-    client_user.last_name = "К"
-    client_user.save(update_fields=["first_name", "last_name"])
-    c = Client.objects.create_with_user(phone="x", user=client_user)
+    Client.objects.create_with_user(phone="x", user=client_user)
     resp = auth_client(client_user).get("/api/auth/me/")
     assert resp.status_code == 200
     assert resp.data["is_client"] is True
-    assert resp.data["client_id"] == c.id
 
 
 def test_me_exposes_name_from_user(auth_client, make_user):
@@ -65,4 +57,18 @@ def test_me_exposes_employee_sales_department(auth_client, make_user):
         "name": "Запад",
         "color": "#D68B2C",
     }
-    assert "orders.create" not in response.data["permissions"]
+    assert response.data["permissions"] == []
+
+
+def test_me_hides_department_from_superuser(auth_client, admin_user):
+    """Суперюзер не ограничен отделом (sales.access), даже если он указан в карточке."""
+    from apps.sales.models import Department
+    from apps.employees.models import Employee
+
+    department = Department.objects.create(code="sales-west", name="Запад", is_default=True)
+    Employee.objects.create(user=admin_user, sales_department=department)
+
+    response = auth_client(admin_user).get("/api/auth/me/")
+
+    assert response.status_code == 200
+    assert response.data["sales_department"] is None

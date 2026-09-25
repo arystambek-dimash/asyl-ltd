@@ -8,8 +8,9 @@ env_file_value() {
   fi
 }
 
-domain="${DOMAIN:-$(env_file_value DOMAIN)}"
-domain="${domain:-asyl-ltd.kz}"
+# Домен зашит и в deploy/nginx/conf.d/asyl-ltd.conf (server_name, пути
+# сертификата), поэтому здесь он тоже константа.
+domain="asyl-ltd.kz"
 domains="-d ${domain} -d www.${domain}"
 email="${CERTBOT_EMAIL:-$(env_file_value CERTBOT_EMAIL)}"
 email="${email:-admin@asyl-ltd.kz}"

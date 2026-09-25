@@ -4,17 +4,17 @@ export function finiteMoney(value: unknown): number {
   return Number.isFinite(number) ? number : 0;
 }
 
-/**
- * Read one currency from a server breakdown. The legacy flat value is valid
- * only when an older response has no breakdown at all.
- */
-export function amountForCurrency(
-  byCurrency: Readonly<Record<string, string | number>>,
-  legacy: string | number,
-  currency: string,
-): number {
-  if (Object.prototype.hasOwnProperty.call(byCurrency, currency)) return finiteMoney(byCurrency[currency]);
-  return Object.keys(byCurrency).length === 0 ? finiteMoney(legacy) : 0;
+/** Read one currency from a server breakdown; a missing currency is zero, never another currency's amount. */
+export function amountForCurrency(byCurrency: Readonly<Record<string, string | number>>, currency: string): number {
+  return Object.prototype.hasOwnProperty.call(byCurrency, currency) ? finiteMoney(byCurrency[currency]) : 0;
+}
+
+/** Одно поле раскладки по валютам: {KZT: {paid, …}, USD: {…}} → {KZT: paid, USD: paid}. */
+export function fieldByCurrency<T, K extends keyof T>(
+  byCurrency: Readonly<Record<string, T>>,
+  field: K,
+): Record<string, T[K]> {
+  return Object.fromEntries(Object.entries(byCurrency).map(([currency, row]) => [currency, row[field]]));
 }
 
 export function otherCurrencyAmounts(

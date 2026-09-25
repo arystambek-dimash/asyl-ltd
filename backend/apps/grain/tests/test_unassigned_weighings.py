@@ -1,21 +1,19 @@
 """API around plate-less automatic weighings: photos, numbers, assignment."""
 
 from datetime import timedelta
-from decimal import Decimal
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from apps.grain import statuses as st
-from apps.grain import scale, services
+from apps.grain import services
 from apps.grain.models import UnassignedWeighing, Wagon, WeighingRecord
 from apps.grain.photos import photo_token
+from apps.grain.tests.factories import JPEG, passage_trip, scale_reading, unassigned_weighing
 from django.core.files.base import ContentFile
 from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
-
-JPEG = b"\xff\xd8\xff\xe0" + b"1" * 32
 
 
 @pytest.fixture(autouse=True)
@@ -25,41 +23,12 @@ def media_root(settings, tmp_path):
     return tmp_path
 
 
-def _passage(number="", status=st.ARRIVED, entry=None):
-    return Wagon.objects.create(
-        number=number,
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=status,
-        arrived_at=timezone.now() - timedelta(minutes=5),
-        gross_weight_kg=entry,
-        number_source="camera",
-    )
-
-
-def _unassigned(weight=30_000, with_photo=True):
-    item = UnassignedWeighing.objects.create(
-        weight_kg=weight,
-        stable_weight_at=timezone.now() - timedelta(seconds=30),
-        scale_number="truck",
-        scale_age_seconds=Decimal("0.200"),
-        scale_updated_at="2026-09-04T10:00:00Z",
-        camera="cam1",
-        photo_request_id=uuid4(),
-        reason="open_passages_exist",
-    )
-    if with_photo:
-        item.photo.save(f"{item.photo_request_id}.jpg", ContentFile(JPEG), save=True)
-    return item
-
-
 def test_a_page_of_photos_from_one_address_is_never_throttled(api_client, production_throttling):
     # Every screen behind the plant's single public address shares one
     # anonymous bucket, and signed <img> links cannot send the API token.
     address = {"REMOTE_ADDR": "203.0.113.60"}
     urls = [f"/api/grain/photos/unassigned/{item.pk}/?token={photo_token('unassigned', item.pk)}"
-            for item in (_unassigned(), _unassigned(), _unassigned())]
+            for item in (unassigned_weighing(), unassigned_weighing(), unassigned_weighing())]
     codes = []
     with production_throttling():
         for url in urls * 2:
@@ -75,10 +44,10 @@ def test_a_page_of_photos_from_one_address_is_never_throttled(api_client, produc
 
 def test_operator_fills_in_the_number_of_a_blank_passage(auth_client, user_with_perms):
     operator = user_with_perms("passage-number", codes=["grain.arrive", "grain.view"])
-    wagon = _passage(status=st.AT_SILO, entry=12_000)
+    wagon = passage_trip(status=st.AT_SILO, entry=12_000)
 
     response = auth_client(operator).patch(
-        f"/api/grain/wagons/{wagon.pk}/number/",
+        f"/api/grain/passages/{wagon.pk}/number/",
         {"number": " 465 bds 13 "},
         format="json",
     )
@@ -92,11 +61,11 @@ def test_operator_fills_in_the_number_of_a_blank_passage(auth_client, user_with_
 
 def test_number_change_rejects_a_plate_already_on_site(auth_client, user_with_perms):
     operator = user_with_perms("passage-number-dup", codes=["grain.arrive"])
-    _passage(number="465BDS13", status=st.AT_SILO, entry=12_000)
-    wagon = _passage(status=st.AT_SILO, entry=13_000)
+    passage_trip(number="465BDS13", status=st.AT_SILO, entry=12_000)
+    wagon = passage_trip(status=st.AT_SILO, entry=13_000)
 
     response = auth_client(operator).patch(
-        f"/api/grain/wagons/{wagon.pk}/number/",
+        f"/api/grain/passages/{wagon.pk}/number/",
         {"number": "465BDS13"},
         format="json",
     )
@@ -107,10 +76,10 @@ def test_number_change_rejects_a_plate_already_on_site(auth_client, user_with_pe
 
 def test_number_change_requires_arrive_permission(auth_client, user_with_perms):
     viewer = user_with_perms("passage-number-viewer", codes=["grain.view"])
-    wagon = _passage(status=st.AT_SILO, entry=12_000)
+    wagon = passage_trip(status=st.AT_SILO, entry=12_000)
 
     response = auth_client(viewer).patch(
-        f"/api/grain/wagons/{wagon.pk}/number/",
+        f"/api/grain/passages/{wagon.pk}/number/",
         {"number": "465BDS13"},
         format="json",
     )
@@ -122,9 +91,8 @@ def test_open_unassigned_weighings_are_listed_with_signed_photo_links(
     auth_client, user_with_perms
 ):
     viewer = user_with_perms("unassigned-viewer", codes=["grain.view"])
-    item = _unassigned()
-    _unassigned(with_photo=False)
-    UnassignedWeighing.objects.filter(pk=item.pk).update(status=UnassignedWeighing.OPEN)
+    item = unassigned_weighing()
+    unassigned_weighing(photo=False)
 
     response = auth_client(viewer).get("/api/grain/unassigned-weighings/")
 
@@ -142,8 +110,8 @@ def test_open_unassigned_weighings_are_listed_with_signed_photo_links(
 
 
 def test_photo_link_rejects_wrong_token_and_wrong_kind(api_client):
-    item = _unassigned()
-    wagon = _passage(status=st.AT_SILO, entry=12_000)
+    item = unassigned_weighing()
+    wagon = passage_trip(status=st.AT_SILO, entry=12_000)
     weighing = WeighingRecord.objects.create(
         wagon=wagon, kind="gross", weight_kg=12_000, source="scale"
     )
@@ -163,8 +131,8 @@ def test_assigning_to_a_loaded_passage_records_its_exit_and_moves_the_photo(
     auth_client, user_with_perms
 ):
     operator = user_with_perms("unassigned-assign", codes=["grain.weigh"])
-    wagon = _passage(number="465BDS13", status=st.AT_SILO, entry=12_000)
-    item = _unassigned(weight=30_000)
+    wagon = passage_trip(number="465BDS13", status=st.AT_SILO, entry=12_000)
+    item = unassigned_weighing(weight=30_000)
 
     response = auth_client(operator).post(
         f"/api/grain/unassigned-weighings/{item.pk}/assign/",
@@ -199,7 +167,7 @@ def test_unreadable_exit_with_four_open_trips_completes_only_the_selected_trip(
     settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
     operator = user_with_perms("unreadable-exit", codes=["grain.weigh"])
     trips = [
-        _passage(number=number, status=st.AT_SILO, entry=weight)
+        passage_trip(number=number, status=st.AT_SILO, entry=weight)
         for number, weight in [
             ("996BKC13", 3980),
             ("934PPB13", 3940),
@@ -208,11 +176,7 @@ def test_unreadable_exit_with_four_open_trips_completes_only_the_selected_trip(
         ]
     ]
     result = services.apply_unidentified_passage_scale_sample(
-        reading=scale.ScaleReading(
-            weight_kg=Decimal("8900"),
-            age_seconds=Decimal("0.2"),
-            updated_at="2026-09-08T05:00:00Z",
-        ),
+        reading=scale_reading("8900"),
         camera="cam1",
         request_id=uuid4(),
         stable_weight_at=timezone.now() - timedelta(seconds=2),
@@ -252,8 +216,8 @@ def test_unreadable_exit_with_four_open_trips_completes_only_the_selected_trip(
 
 def test_assigning_to_an_arrived_passage_records_its_entry(auth_client, user_with_perms):
     operator = user_with_perms("unassigned-entry", codes=["grain.weigh"])
-    wagon = _passage(number="465BDS13", status=st.ARRIVED)
-    item = _unassigned(weight=12_000, with_photo=False)
+    wagon = passage_trip(number="465BDS13", status=st.ARRIVED)
+    item = unassigned_weighing(weight=12_000, photo=False)
 
     response = auth_client(operator).post(
         f"/api/grain/unassigned-weighings/{item.pk}/assign/",
@@ -270,8 +234,8 @@ def test_assigning_to_an_arrived_passage_records_its_entry(auth_client, user_wit
 
 def test_assigning_to_a_passage_that_is_not_waiting_is_rejected(auth_client, user_with_perms):
     operator = user_with_perms("unassigned-reject", codes=["grain.weigh"])
-    wagon = _passage(number="465BDS13", status=st.COMPLETED, entry=12_000)
-    item = _unassigned(with_photo=False)
+    wagon = passage_trip(number="465BDS13", status=st.COMPLETED, entry=12_000)
+    item = unassigned_weighing(photo=False)
 
     response = auth_client(operator).post(
         f"/api/grain/unassigned-weighings/{item.pk}/assign/",
@@ -289,7 +253,7 @@ def test_creating_a_passage_from_an_unassigned_weight_uses_it_as_the_entry(
     auth_client, user_with_perms
 ):
     operator = user_with_perms("unassigned-create", codes=["grain.weigh"])
-    item = _unassigned(weight=1_800)
+    item = unassigned_weighing(weight=1_800)
 
     response = auth_client(operator).post(
         f"/api/grain/unassigned-weighings/{item.pk}/create-passage/",
@@ -309,7 +273,7 @@ def test_creating_a_passage_from_an_unassigned_weight_uses_it_as_the_entry(
 
 def test_discarding_an_unassigned_weight_is_audited_and_final(auth_client, user_with_perms):
     operator = user_with_perms("unassigned-discard", codes=["grain.weigh"])
-    item = _unassigned(with_photo=False)
+    item = unassigned_weighing(photo=False)
 
     response = auth_client(operator).post(
         f"/api/grain/unassigned-weighings/{item.pk}/discard/",
@@ -332,7 +296,7 @@ def test_discarding_an_unassigned_weight_is_audited_and_final(auth_client, user_
 
 def test_unassigned_mutations_require_weigh_permission(auth_client, user_with_perms):
     viewer = user_with_perms("unassigned-noweigh", codes=["grain.view"])
-    item = _unassigned(with_photo=False)
+    item = unassigned_weighing(photo=False)
 
     response = auth_client(viewer).post(
         f"/api/grain/unassigned-weighings/{item.pk}/discard/",

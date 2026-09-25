@@ -1,7 +1,6 @@
 from apps.sales.models import Department
 import pytest
 from decimal import Decimal
-from rest_framework.test import APIClient
 from apps.catalog.models import Product, ClientPrice
 from apps.warehouse.models import StockItem
 from apps.clients.models import Client
@@ -11,18 +10,12 @@ from apps.eventlog.models import EventLog
 pytestmark = pytest.mark.django_db
 
 
-def _api(user):
-    c = APIClient()
-    c.force_authenticate(user)
-    return c
-
-
-def test_staff_create_with_prices_confirms_immediately(manager):
+def test_staff_create_with_prices_confirms_immediately(manager, api_as):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
     Department.objects.get_or_create(code="main", defaults={"name": "Основной"})
-    r = _api(manager).post(
+    r = api_as(manager).post(
         "/api/orders/",
         {
             "client": c.id,
@@ -39,11 +32,11 @@ def test_staff_create_with_prices_confirms_immediately(manager):
     assert ClientPrice.objects.get(client=c, product=p).price == Decimal("15000.00")
 
 
-def test_staff_create_without_prices_stays_draft(manager):
+def test_staff_create_without_prices_stays_draft(manager, api_as):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post(
+    r = api_as(manager).post(
         "/api/orders/",
         {
             "client": c.id,
@@ -52,16 +45,19 @@ def test_staff_create_without_prices_stays_draft(manager):
         format="json",
     )
     assert r.status_code == 201
-    assert Order.objects.get().status == "draft"
+    order = Order.objects.get()
+    assert order.status == "draft"
+    # До закрепления личной цены черновик не получает стоимость товара.
+    assert order.total_amount == 0
 
 
-def test_staff_reviews_template_then_creates_linked_order(manager):
+def test_staff_reviews_template_then_creates_linked_order(manager, api_as):
     client = Client.objects.create_with_user(first_name="Нью", last_name="Сити", phone="x")
     product = Product.objects.create(name="Template P", color="Blue", weight_kg="50")
     StockItem.objects.create(product=product, bags=500)
     source = Order.objects.create(client=client, status="shipped", created_by=manager)
 
-    response = _api(manager).post(
+    response = api_as(manager).post(
         "/api/orders/",
         {
             "client": client.id,
@@ -86,11 +82,11 @@ def test_staff_reviews_template_then_creates_linked_order(manager):
     }
 
 
-def test_staff_can_create_usd_order_and_remember_usd_price(manager):
+def test_staff_can_create_usd_order_and_remember_usd_price(manager, api_as):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     p = Product.objects.create(name="USD P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post(
+    r = api_as(manager).post(
         "/api/orders/",
         {
             "client": c.id,
@@ -110,13 +106,13 @@ def test_staff_can_create_usd_order_and_remember_usd_price(manager):
     ).price == Decimal("25.50")
 
 
-def test_failed_price_confirmation_leaves_no_orphan_order(manager):
+def test_failed_price_confirmation_leaves_no_orphan_order(manager, api_as):
     # Регресс: create() атомарен — упавшее подтверждение цен не должно
     # оставлять в базе заказ без цен.
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post(
+    r = api_as(manager).post(
         "/api/orders/",
         {
             "client": c.id,
@@ -129,11 +125,11 @@ def test_failed_price_confirmation_leaves_no_orphan_order(manager):
     assert Order.objects.count() == 0
 
 
-def test_zero_quantity_rejected(manager):
+def test_zero_quantity_rejected(manager, api_as):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
-    r = _api(manager).post(
+    r = api_as(manager).post(
         "/api/orders/",
         {
             "client": c.id,

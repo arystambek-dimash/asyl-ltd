@@ -7,19 +7,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Field } from "@/components/ui/field";
 import { Badge } from "@/components/ui/badge";
 import { Modal } from "@/components/ui/modal";
-import { ActionMenu } from "@/components/ui/action-menu";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
-import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
-import { DataGate } from "@/components/ui/data-state";
+import { SortableHeader, useSortState } from "@/components/ui/sortable-header";
+import { DataGate, FormError } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
-import { formatMoney } from "@/lib/utils";
+import { formatMoney, formatTons } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -46,26 +46,29 @@ import {
   type ProductDraft,
 } from "@/components/catalog/product-fields";
 
-// Статус остатка: нет / мало (<20 мешков) / в наличии.
+const SHELL_PROPS = {
+  title: "Склады",
+  section: "Работа",
+  description: "Остатки готовой продукции по местам хранения.",
+};
+
+// Меньше этого — «Мало»: строка попадает в «Требует внимания».
+const LOW_STOCK_BAGS = 20;
+
+// Статус остатка: нет / мало / в наличии.
 function stockTone(bags: number): { tone: "destructive" | "warning" | "success"; label: string } {
   if (bags <= 0) return { tone: "destructive", label: "Нет" };
-  if (bags < 20) return { tone: "warning", label: "Мало" };
+  if (bags < LOW_STOCK_BAGS) return { tone: "warning", label: "Мало" };
   return { tone: "success", label: "В наличии" };
 }
+
+/** Расчётный вес остатка по фасовке. */
+const stockKg = (s: StockItem) => s.bags * Number(s.weight_kg);
 
 const QUICK_AMOUNTS = [10, 50, 100, 500];
 // Пункт списка товаров «+ Новый товар…»: завести сорт/фасовку прямо со склада.
 const NEW_PRODUCT = "__new";
 type StockOperation = "add" | "remove" | "transfer";
-
-const LEGACY_WAREHOUSE: Warehouse = {
-  id: 0,
-  code: "main",
-  name: "Основной склад",
-  address: "Режим совместимости",
-  is_active: true,
-  is_default: true,
-};
 
 function WarehousePageInner() {
   const router = useRouter();
@@ -77,33 +80,20 @@ function WarehousePageInner() {
   const canCreateProduct = can(me, "catalog.create");
   const canViewColor = canViewProductColor(me);
   const {
-    data: warehouseData,
+    data: warehouses,
     loading: warehousesLoading,
     error: warehousesError,
-    errorStatus: warehousesErrorStatus,
     reload: reloadWarehouses,
   } = useApi<Warehouse[]>("/warehouses/");
-  const legacyWarehouseMode = warehouseData === null && warehousesErrorStatus === 404;
-  const warehouses = useMemo(
-    () => (legacyWarehouseMode ? [LEGACY_WAREHOUSE] : warehouseData),
-    [legacyWarehouseMode, warehouseData],
-  );
   const activeWarehouses = useMemo(() => (warehouses ?? []).filter((item) => item.is_active), [warehouses]);
   const selectedWarehouse = useMemo(() => {
     const requested = activeWarehouses.find((item) => String(item.id) === warehouseParam);
     return requested ?? activeWarehouses.find((item) => item.is_default) ?? activeWarehouses[0] ?? null;
   }, [activeWarehouses, warehouseParam]);
   const selectedWarehouseId = selectedWarehouse?.id ?? null;
-  const stockUrl = selectedWarehouse
-    ? legacyWarehouseMode
-      ? "/stock/"
-      : `/stock/?warehouse=${selectedWarehouse.id}`
-    : null;
+  const stockUrl = selectedWarehouse ? `/stock/?warehouse=${selectedWarehouse.id}` : null;
   const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>(stockUrl);
   const { data: products, reload: reloadProducts } = useApi<Product[]>(canAdjust ? "/products/" : null);
-  // Aggregate stock powers ownership counts and the destination preview. The
-  // selected warehouse still has its own scoped list and filters.
-  const { data: allStock, reload: reloadAllStock } = useApi<StockItem[]>(legacyWarehouseMode ? null : "/stock/");
 
   // фильтры
   const [search, setSearch] = useState("");
@@ -123,21 +113,17 @@ function WarehousePageInner() {
   const [warehouseManagerOpen, setWarehouseManagerOpen] = useState(false);
 
   useEffect(() => {
-    if (!selectedWarehouse || legacyWarehouseMode || warehouseParam === String(selectedWarehouse.id)) return;
+    if (!selectedWarehouse || warehouseParam === String(selectedWarehouse.id)) return;
     const nextParams = new URLSearchParams(searchParamsKey);
     nextParams.set("warehouse", String(selectedWarehouse.id));
     router.replace(`/warehouse?${nextParams.toString()}`, { scroll: false });
-  }, [legacyWarehouseMode, router, searchParamsKey, selectedWarehouse, warehouseParam]);
+  }, [router, searchParamsKey, selectedWarehouse, warehouseParam]);
 
   useEffect(() => {
     setSearch("");
     setGrade("");
     setPackaging("");
     setOpen(false);
-    setProduct("");
-    setDestinationWarehouse("");
-    setAmount("");
-    setError("");
   }, [selectedWarehouseId]);
 
   function selectWarehouse(warehouseId: number) {
@@ -168,15 +154,7 @@ function WarehousePageInner() {
       (!packaging || s.packaging === packaging),
   );
 
-  const [sortKey, setSortKey] = useState("product_label");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
-  const toggleSort = (k: string) => {
-    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      setSortDir("asc");
-    }
-  };
+  const { sortKey, sortDir, toggleSort } = useSortState("product_label", "asc");
   const sorted = [...filtered].sort((a, b) => {
     let cmp: number;
     if (sortKey === "bags") cmp = a.bags - b.bags;
@@ -185,25 +163,17 @@ function WarehousePageInner() {
   });
 
   const totalBags = filtered.reduce((sum, s) => sum + s.bags, 0);
-  const totalTons = filtered.reduce((sum, s) => sum + (s.bags * Number(s.weight_kg)) / 1000, 0);
-  const attentionCount = filtered.filter((s) => s.bags < 20).length;
+  const totalKg = filtered.reduce((sum, s) => sum + stockKg(s), 0);
+  const attentionCount = filtered.filter((s) => stockTone(s.bags).tone !== "success").length;
 
-  function openAdd() {
-    setDialogIntent("add");
-    setProduct("");
+  // Каждое открытие окна начинает с чистой формы: закрытие состояние не сбрасывает.
+  function openDialog(intent: "add" | "adjust", productId?: number) {
+    setDialogIntent(intent);
+    setProduct(productId === undefined ? "" : String(productId));
     // Весь каталог уже на складе — сразу форма нового товара, а не пустой список.
-    setNewProduct(products && availableProducts.length === 0 && canCreateProduct ? EMPTY_PRODUCT_DRAFT : null);
-    setMode("add");
-    setDestinationWarehouse("");
-    setAmount("");
-    setError("");
-    setOpen(true);
-  }
-
-  function openAdjust(productId: number) {
-    setDialogIntent("adjust");
-    setProduct(String(productId));
-    setNewProduct(null);
+    setNewProduct(
+      intent === "add" && products && availableProducts.length === 0 && canCreateProduct ? EMPTY_PRODUCT_DRAFT : null,
+    );
     setMode("add");
     setDestinationWarehouse("");
     setAmount("");
@@ -217,10 +187,12 @@ function WarehousePageInner() {
   const nextBags = currentBags === null ? null : mode === "add" ? currentBags + delta : currentBags - delta;
   const insufficient = mode !== "add" && nextBags !== null && nextBags < 0;
   const destination = destinationWarehouses.find((item) => String(item.id) === destinationWarehouse) ?? null;
+  // Остатки склада назначения нужны только превью перемещения — грузим их, пока окно открыто.
+  const { data: destinationStock } = useApi<StockItem[]>(
+    open && mode === "transfer" && destination ? `/stock/?warehouse=${destination.id}` : null,
+  );
   const destinationCurrentBags =
-    mode === "transfer" && product && destination && allStock
-      ? (allStock.find((item) => item.product === Number(product) && item.warehouse === destination.id)?.bags ?? 0)
-      : null;
+    product && destinationStock ? (destinationStock.find((item) => item.product === Number(product))?.bags ?? 0) : null;
 
   const canSubmit =
     Boolean(selectedWarehouse) &&
@@ -257,13 +229,13 @@ function WarehousePageInner() {
         });
       } else {
         await api.post("/stock/adjust/", {
-          ...(legacyWarehouseMode ? {} : { warehouse: selectedWarehouseId }),
+          warehouse: selectedWarehouseId,
           product: Number(productId),
           delta: mode === "add" ? delta : -delta,
         });
       }
       setOpen(false);
-      await Promise.all([reload(), reloadAllStock()]);
+      await reload();
     } catch (e) {
       setError(apiError(e));
     } finally {
@@ -281,17 +253,20 @@ function WarehousePageInner() {
 
   const addButton =
     canAdjust && selectedWarehouse ? (
-      <Button size="sm" aria-label={`Добавить товар на склад ${selectedWarehouse.name}`} onClick={openAdd}>
+      <Button
+        size="sm"
+        aria-label={`Добавить товар на склад ${selectedWarehouse.name}`}
+        onClick={() => openDialog("add")}
+      >
         <Plus className="size-4" /> <span className="hidden sm:inline">Добавить товар</span>
       </Button>
     ) : undefined;
 
-  const manageButton =
-    canAdjust && !legacyWarehouseMode ? (
-      <Button size="sm" variant="outline" onClick={() => setWarehouseManagerOpen(true)} disabled={!warehouses}>
-        <Settings2 className="size-4" /> <span className="hidden sm:inline">Управление</span>
-      </Button>
-    ) : undefined;
+  const manageButton = canAdjust ? (
+    <Button size="sm" variant="outline" onClick={() => setWarehouseManagerOpen(true)} disabled={!warehouses}>
+      <Settings2 className="size-4" /> <span className="hidden sm:inline">Управление</span>
+    </Button>
+  ) : undefined;
   const pageActions =
     manageButton || addButton ? (
       <div className="flex items-center gap-2">
@@ -300,7 +275,7 @@ function WarehousePageInner() {
       </div>
     ) : undefined;
 
-  const warehouseManager = legacyWarehouseMode ? null : (
+  const warehouseManager = (
     <WarehouseManagerModal
       open={warehouseManagerOpen}
       warehouses={warehouses ?? []}
@@ -314,7 +289,7 @@ function WarehousePageInner() {
 
   if (!warehouses) {
     return (
-      <AppShell title="Склады" section="Работа" description="Остатки готовой продукции по местам хранения.">
+      <AppShell {...SHELL_PROPS}>
         <DataGate loading={warehousesLoading} error={warehousesError} onRetry={reloadWarehouses} />
       </AppShell>
     );
@@ -322,12 +297,7 @@ function WarehousePageInner() {
 
   if (!selectedWarehouse) {
     return (
-      <AppShell
-        title="Склады"
-        section="Работа"
-        description="Остатки готовой продукции по местам хранения."
-        actions={pageActions}
-      >
+      <AppShell {...SHELL_PROPS} actions={pageActions}>
         <Card>
           <CardContent className="flex flex-col items-center justify-center px-5 py-14 text-center">
             <Building2 className="size-10 text-[var(--muted-foreground)]/45" />
@@ -382,12 +352,7 @@ function WarehousePageInner() {
 
   if (!stock) {
     return (
-      <AppShell
-        title="Склады"
-        section="Работа"
-        description="Остатки готовой продукции по местам хранения."
-        actions={pageActions}
-      >
+      <AppShell {...SHELL_PROPS} actions={pageActions}>
         {warehouseSelector}
         <DataGate loading={stockLoading} error={loadError} onRetry={reload} />
         {warehouseManager}
@@ -396,12 +361,7 @@ function WarehousePageInner() {
   }
 
   return (
-    <AppShell
-      title="Склады"
-      section="Работа"
-      description="Остатки готовой продукции по местам хранения."
-      actions={pageActions}
-    >
+    <AppShell {...SHELL_PROPS} actions={pageActions}>
       {warehouseSelector}
       {/* Сводка всегда следует текущему набору фильтров. */}
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -419,7 +379,7 @@ function WarehousePageInner() {
         />
         <StatCard
           label="Расчётный вес"
-          value={`${totalTons.toFixed(2)} т`}
+          value={`${formatTons(totalKg)} т`}
           caption="по количеству мешков"
           icon={Scale}
           accent
@@ -427,7 +387,7 @@ function WarehousePageInner() {
         <StatCard
           label="Требует внимания"
           value={String(attentionCount)}
-          caption="нет или меньше 20 мешков"
+          caption={`нет или меньше ${LOW_STOCK_BAGS} мешков`}
           icon={AlertTriangle}
           className={attentionCount > 0 ? "border-[var(--warning)]/35 bg-[var(--warning)]/8" : undefined}
         />
@@ -456,25 +416,12 @@ function WarehousePageInner() {
             <div className="grid gap-3 lg:grid-cols-[minmax(260px,1.5fr)_minmax(170px,0.75fr)_minmax(170px,0.75fr)]">
               <label className="grid gap-1.5">
                 <span className="text-xs font-medium text-[var(--muted-foreground)]">Поиск</span>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-                  <Input
-                    className="pl-9 pr-9"
-                    placeholder="Название, цвет или фасовка"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                  {search && (
-                    <button
-                      type="button"
-                      onClick={() => setSearch("")}
-                      className="absolute right-2 top-1/2 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-[var(--muted-foreground)] outline-none hover:bg-[var(--accent)] hover:text-[var(--foreground)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50"
-                      aria-label="Очистить поиск"
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  )}
-                </div>
+                <SearchInput
+                  placeholder="Название, цвет или фасовка"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onClear={() => setSearch("")}
+                />
               </label>
               <label className="grid gap-1.5">
                 <span className="text-xs font-medium text-[var(--muted-foreground)]">Сорт</span>
@@ -505,7 +452,7 @@ function WarehousePageInner() {
           <div className="flex flex-col divide-y md:hidden">
             {sorted.map((s) => {
               const st = stockTone(s.bags);
-              const tons = (s.bags * Number(s.weight_kg)) / 1000;
+              const kg = stockKg(s);
               return (
                 <div key={s.id} className="flex flex-col gap-4 p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -515,14 +462,14 @@ function WarehousePageInner() {
                         {s.color_label} · {s.packaging}
                       </div>
                       <div className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-[var(--primary)]">
-                        <Building2 className="size-3" /> {s.warehouse_name || selectedWarehouse.name}
+                        <Building2 className="size-3" /> {s.warehouse_name}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
                       <Badge tone={st.tone} dot>
                         {st.label}
                       </Badge>
-                      {canAdjust && <StockActionMenu onEdit={() => openAdjust(s.product)} />}
+                      {canAdjust && <EditStockButton onClick={() => openDialog("adjust", s.product)} />}
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 rounded-lg bg-[var(--muted)]/45 p-3 text-sm">
@@ -532,14 +479,19 @@ function WarehousePageInner() {
                     </div>
                     <div>
                       <div className="text-xs text-[var(--muted-foreground)]">Расчётный вес</div>
-                      <div className="mt-0.5 font-medium tabular-nums">{tons.toFixed(2)} т</div>
+                      <div className="mt-0.5 font-medium tabular-nums">{formatTons(kg)} т</div>
                     </div>
                   </div>
                 </div>
               );
             })}
             {filtered.length === 0 && (
-              <EmptyStockState hasFilters={hasFilters} canAdjust={canAdjust} onReset={resetFilters} onAdd={openAdd} />
+              <EmptyStockState
+                hasFilters={hasFilters}
+                canAdjust={canAdjust}
+                onReset={resetFilters}
+                onAdd={() => openDialog("add")}
+              />
             )}
           </div>
 
@@ -571,21 +523,21 @@ function WarehousePageInner() {
             <TBody>
               {sorted.map((s) => {
                 const st = stockTone(s.bags);
-                const tons = (s.bags * Number(s.weight_kg)) / 1000;
+                const kg = stockKg(s);
                 return (
                   <TR key={s.id}>
                     <TD>
                       <div className="font-medium">{s.grade}</div>
                       <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{s.color_label}</div>
                       <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[var(--primary)]">
-                        <Building2 className="size-3" /> {s.warehouse_name || selectedWarehouse.name}
+                        <Building2 className="size-3" /> {s.warehouse_name}
                       </div>
                     </TD>
                     <TD>{s.packaging}</TD>
                     <TD className="text-right tabular-nums font-semibold">
                       {formatMoney(s.bags)} <span className="font-normal text-[var(--muted-foreground)]">меш.</span>
                     </TD>
-                    <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{tons.toFixed(2)} т</TD>
+                    <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{formatTons(kg)} т</TD>
                     <TD>
                       <Badge tone={st.tone} dot>
                         {st.label}
@@ -593,7 +545,7 @@ function WarehousePageInner() {
                     </TD>
                     {canAdjust && (
                       <TD className="text-right">
-                        <StockActionMenu onEdit={() => openAdjust(s.product)} />
+                        <EditStockButton onClick={() => openDialog("adjust", s.product)} />
                       </TD>
                     )}
                   </TR>
@@ -606,7 +558,7 @@ function WarehousePageInner() {
                       hasFilters={hasFilters}
                       canAdjust={canAdjust}
                       onReset={resetFilters}
-                      onAdd={openAdd}
+                      onAdd={() => openDialog("add")}
                     />
                   </TD>
                 </TR>
@@ -696,7 +648,7 @@ function WarehousePageInner() {
                     ["transfer", "Перемещение", "Передать на другой склад", ArrowRightLeft],
                   ] as const
                 )
-                  .filter(([m]) => m !== "transfer" || (!legacyWarehouseMode && destinationWarehouses.length > 0))
+                  .filter(([m]) => m !== "transfer" || destinationWarehouses.length > 0)
                   .map(([m, label, hint, Icon]) => (
                     <button
                       key={m}
@@ -846,11 +798,7 @@ function WarehousePageInner() {
               Нельзя {mode === "transfer" ? "переместить" : "списать"} больше, чем есть на складе.
             </p>
           )}
-          {error && (
-            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-              {error}
-            </p>
-          )}
+          <FormError message={error} />
 
           <div className="flex justify-end gap-2 border-t pt-4">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
@@ -1017,12 +965,18 @@ function WarehouseManagerModal({
   );
 }
 
-function StockActionMenu({ onEdit }: { onEdit: () => void }) {
+function EditStockButton({ onClick }: { onClick: () => void }) {
   return (
-    <ActionMenu
-      label="Действия с товаром"
-      items={[{ key: "edit", label: "Изменить", icon: Pencil, onSelect: onEdit }]}
-    />
+    <Button
+      variant="ghost"
+      size="icon"
+      title="Изменить"
+      aria-label="Изменить"
+      className="size-8 text-[var(--muted-foreground)]"
+      onClick={onClick}
+    >
+      <Pencil className="size-4" />
+    </Button>
   );
 }
 

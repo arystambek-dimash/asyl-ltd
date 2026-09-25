@@ -2,17 +2,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { focusableElements, focusedElement, restoreFocus, trapTab } from "@/lib/focus";
 import { cn } from "@/lib/utils";
-
-const FOCUSABLE_SELECTOR = [
-  "button:not(:disabled)",
-  "a[href]",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  "textarea:not(:disabled)",
-  '[tabindex]:not([tabindex="-1"])',
-  '[contenteditable="true"]',
-].join(",");
 
 type OpenModal = {
   dialog: HTMLElement | null;
@@ -40,9 +31,7 @@ function unregisterModal(id: string) {
   if (!wasTopmost) return;
   const restoreTarget = openModals.length === 0 ? rootRestoreTarget : entry.restoreFocusTo;
   if (openModals.length === 0) rootRestoreTarget = null;
-  const canRestore =
-    restoreTarget?.isConnected && !restoreTarget.matches(":disabled") && !restoreTarget.closest("[inert]");
-  if (canRestore) restoreTarget.focus();
+  restoreFocus(restoreTarget);
 
   // The opener can disappear or become disabled while a nested action runs.
   // Keep keyboard focus inside the remaining topmost dialog in that case.
@@ -69,12 +58,6 @@ function unlockBodyScroll() {
   if (scrollLockCount !== 0) return;
   document.body.style.overflow = bodyOverflowBeforeLock;
   bodyOverflowBeforeLock = "";
-}
-
-function focusableElements(container: HTMLElement) {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => element.tabIndex >= 0 && !element.hidden && !element.closest("[inert]"),
-  );
 }
 
 export function Modal({
@@ -123,8 +106,7 @@ export function Modal({
 
   useEffect(() => {
     if (!open || !mounted) return;
-    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    registerModal({ dialog: dialogRef.current, id: modalId, restoreFocusTo });
+    registerModal({ dialog: dialogRef.current, id: modalId, restoreFocusTo: focusedElement() });
     lockBodyScroll();
 
     const onKey = (e: KeyboardEvent) => {
@@ -149,24 +131,7 @@ export function Modal({
   }, [modalId, mounted, open]);
 
   function trapFocus(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key !== "Tab" || !isTopmostModal(modalId) || !dialogRef.current) return;
-    const focusable = focusableElements(dialogRef.current);
-    if (focusable.length === 0) {
-      e.preventDefault();
-      dialogRef.current.focus();
-      return;
-    }
-
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && (active === last || !dialogRef.current.contains(active))) {
-      e.preventDefault();
-      first.focus();
-    }
+    if (isTopmostModal(modalId) && dialogRef.current) trapTab(e, dialogRef.current);
   }
 
   if (!open || !mounted) return null;

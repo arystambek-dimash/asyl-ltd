@@ -1,39 +1,45 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { formatTransportNumber, PlateBadge, TransportNumberBadge } from "./transport-number";
+import { OrderTransportBadge, PlateBadge } from "./transport-number";
+
+const wagon = { number: "28087658", product_label: "Мука", bags: 1360, weight_kg: "68000" };
 
 describe("transport numbers", () => {
-  it("does not truncate an identifier when an older DTO omits the transport type", () => {
-    expect(formatTransportNumber("00123456", undefined)).toBe("00123456");
-    render(<TransportNumberBadge value="00123456" transportType={undefined} />);
+  it("preserves all wagon digits and leading zeros", () => {
+    render(<OrderTransportBadge order={{ transport_type: "train", truck_number: "00123456" }} />);
     expect(screen.getByText("00123456")).toBeInTheDocument();
     expect(screen.queryByText("KZ")).not.toBeInTheDocument();
   });
 
-  it("preserves all wagon digits and leading zeros in text and badge", () => {
-    expect(formatTransportNumber("00123456", "train")).toBe("00123456");
-    render(<TransportNumberBadge value="00123456" transportType="train" />);
-    expect(screen.getByText("Вагон 00123456")).toBeInTheDocument();
-    expect(screen.queryByText("KZ")).not.toBeInTheDocument();
+  it("shows a shipment by the wagon report as a headline", () => {
+    render(
+      <OrderTransportBadge
+        order={{ transport_type: "train", truck_number: "", rail_station: "Раустан", wagons: [wagon, wagon] }}
+      />,
+    );
+    expect(screen.getByText("2 вагона · ст. Раустан")).toBeInTheDocument();
   });
 
   it("keeps vehicle plate formatting", () => {
-    expect(formatTransportNumber("123ABC02", "truck")).toBe("123 ABC 02");
-    render(<TransportNumberBadge value="123ABC02" transportType="truck" />);
+    render(<OrderTransportBadge order={{ transport_type: "truck", truck_number: "123ABC02" }} />);
     expect(screen.getByText("KZ")).toBeInTheDocument();
     expect(screen.getByText("123 ABC 02")).toBeInTheDocument();
   });
 
   it("shows the trailer next to the truck", () => {
-    expect(formatTransportNumber("07KG695ADT", "truck", "07KG837PB")).toBe("07 KG 695 ADT / 07 KG 837 PB");
-    render(<TransportNumberBadge value="07KG695ADT" transportType="truck" trailer="07KG837PB" />);
+    render(
+      <OrderTransportBadge
+        order={{ transport_type: "truck", truck_number: "07KG695ADT", trailer_number: "07KG837PB" }}
+      />,
+    );
     expect(screen.getByText("07 KG 695 ADT")).toBeInTheDocument();
     expect(screen.getByText("07 KG 837 PB")).toBeInTheDocument();
     expect(screen.getAllByText("KG")).toHaveLength(2);
   });
 
-  it("a wagon has no trailer", () => {
-    expect(formatTransportNumber("00123456", "train", "07KG837PB")).toBe("00123456");
+  it("marks an order without a number", () => {
+    render(<OrderTransportBadge order={{ transport_type: "truck", truck_number: "" }} />);
+    expect(screen.getByText("Без номера")).toBeInTheDocument();
   });
 
   it("an ambiguous plate is shown without a country", () => {

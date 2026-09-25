@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,15 +35,22 @@ describe("fixation payment", () => {
   });
 
   it("explains a payment without a status and accepts a prepayment of a confirmed order", () => {
-    expect(fixationDraftError(draft({ paid: true }))).toMatch(/подтверждённого или отгруженного/);
-    expect(fixationDraftError(draft({ paid: true, status: "confirmed" }))).toBe("");
-    expect(fixationDraftError(draft({ paid: true }), { orderStatus: "confirmed" })).toBe("");
+    expect(fixationDraftError(draft({ paid: true }), { currency: "KZT" })).toMatch(/подтверждённого или отгруженного/);
+    expect(fixationDraftError(draft({ paid: true, status: "confirmed" }), { currency: "KZT" })).toBe("");
+    expect(fixationDraftError(draft({ paid: true }), { orderStatus: "confirmed", currency: "KZT" })).toBe("");
+  });
+
+  it("takes a dollar order only in cash, as the server does", () => {
+    const kaspi = draft({ paid: true, status: "shipped", paymentMethod: "kaspi" });
+    expect(fixationDraftError(kaspi, { currency: "USD" })).toMatch(/только в тенге/);
+    expect(fixationDraftError(kaspi, { currency: "KZT" })).toBe("");
+    expect(fixationDraftError({ ...kaspi, paymentMethod: "cash" }, { currency: "USD" })).toBe("");
   });
 });
 
-function Harness({ orderStatus }: { orderStatus?: string }) {
+function Harness({ orderStatus, currency = "KZT" }: { orderStatus?: string; currency?: string }) {
   const [value, setValue] = useState<FixationDraft>(draft());
-  return <FixationFields draft={value} onChange={setValue} canPay orderStatus={orderStatus} />;
+  return <FixationFields draft={value} onChange={setValue} canPay currency={currency} orderStatus={orderStatus} />;
 }
 
 describe("FixationFields", () => {
@@ -70,6 +77,18 @@ describe("FixationFields", () => {
     ]);
     expect(screen.getByRole("checkbox", { name: /Оплачен полностью/ })).toBeEnabled();
   });
+
+  it("offers a dollar order only cash", async () => {
+    const user = userEvent.setup();
+    render(<Harness orderStatus="shipped" currency="USD" />);
+    await user.click(screen.getByRole("checkbox", { name: /Оплачен полностью/ }));
+    const methods = screen.getByRole("radiogroup", { name: "Способ оплаты" });
+    expect(
+      within(methods)
+        .getAllByRole("radio")
+        .map((radio) => radio.textContent),
+    ).toEqual(["Наличные"]);
+  });
 });
 
 describe("OrderFixationModal", () => {
@@ -80,7 +99,7 @@ describe("OrderFixationModal", () => {
 
   it("fixes only the payment of a confirmed order, keeping its status", async () => {
     const user = userEvent.setup();
-    const order = { id: 5, status: "confirmed", is_fully_paid: false } as Order;
+    const order = { id: 5, status: "confirmed", currency: "KZT", is_fully_paid: false } as Order;
     render(<OrderFixationModal order={order} onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await user.click(screen.getByRole("radio", { name: /Не менять/ }));

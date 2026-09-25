@@ -1,21 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { Me } from "@/lib/types";
-import { cashierPerms, defaultView, hasHomeScreen, mobileMenu, resolveView } from "./view";
+import { makeMe } from "@/test-utils/factories";
+import { cashierPerms, hasHomeScreen, mobileMenu, resolveView } from "./view";
 
-function me(permissions: string[], is_superuser = false): Me {
-  return {
-    id: 1,
-    username: "u",
-    is_client: false,
-    is_superuser,
-    permissions,
-    position: null,
-    client_id: null,
-    sales_department: null,
-  };
-}
-const all = cashierPerms(me([], true));
-const viewer = cashierPerms(me(["payments.view"]));
+const all = cashierPerms(makeMe({ is_superuser: true }));
+const viewer = cashierPerms(makeMe({ permissions: ["payments.view"] }));
 
 describe("resolveView", () => {
   it("opens the mobile home and the desktop overview by default", () => {
@@ -34,7 +22,7 @@ describe("resolveView", () => {
   });
   it("skips the home screen when only one section is available", () => {
     expect(mobileMenu(viewer)).toEqual(["transactions"]);
-    expect(defaultView(viewer, true)).toBe("transactions");
+    expect(resolveView(null, viewer, true)).toBe("transactions");
     expect(resolveView("home", viewer, true)).toBe("transactions");
   });
   it("opens POS only on phones and only with payments.create", () => {
@@ -50,16 +38,16 @@ describe("resolveView", () => {
 describe("hasHomeScreen", () => {
   it("counts POS as a section so a role that can only take payments keeps a home screen", () => {
     expect(hasHomeScreen(viewer)).toBe(false);
-    const cashier = cashierPerms(me(["payments.create"]));
+    const cashier = cashierPerms(makeMe({ permissions: ["payments.create"] }));
     expect(mobileMenu(cashier)).toEqual(["debts"]);
     expect(hasHomeScreen(cashier)).toBe(true);
-    expect(defaultView(cashier, true)).toBe("home");
+    expect(resolveView(null, cashier, true)).toBe("home");
   });
 });
 
 describe("cashierPerms", () => {
   it("derives combined permissions", () => {
-    const perms = cashierPerms(me(["payments.create", "orders.view"]));
+    const perms = cashierPerms(makeMe({ permissions: ["payments.create", "orders.view"] }));
     expect(perms.canDebtEntry).toBe(true);
     expect(mobileMenu(perms)).toEqual(["debts"]);
     expect(mobileMenu(all)).toEqual(["confirm", "debts", "transactions", "report"]);

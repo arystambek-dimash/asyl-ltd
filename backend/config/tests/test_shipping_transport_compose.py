@@ -1,18 +1,6 @@
-from pathlib import Path
-
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _service_block(compose: str, service: str) -> str:
-    lines = compose[compose.index(f"  {service}:\n") :].splitlines(keepends=True)
-    end = len(lines)
-    for index, line in enumerate(lines[1:], start=1):
-        if line.startswith("  ") and not line.startswith("    "):
-            end = index
-            break
-    return "".join(lines[:end])
+from config.tests.compose_files import read_compose, service_block
 
 
 @pytest.mark.parametrize(
@@ -22,8 +10,8 @@ def _service_block(compose: str, service: str) -> str:
 def test_shipping_transport_worker_is_independent_and_health_checked(
     compose_file, local_profile
 ):
-    compose = (REPO_ROOT / compose_file).read_text()
-    monitor = _service_block(compose, "shipping-transport-monitor")
+    compose = read_compose(compose_file)
+    monitor = service_block(compose, "shipping-transport-monitor")
 
     assert compose.count("\n  shipping-transport-monitor:\n") == 1
     assert "<<: *backend-environment" in monitor
@@ -37,7 +25,7 @@ def test_shipping_transport_worker_is_independent_and_health_checked(
     assert "restart: unless-stopped" in monitor
     # The worker writes recognition evidence; backend serves the same files.
     assert "volumes:\n      - mediadata:/app/media" in monitor
-    assert "- mediadata:/app/media" in _service_block(compose, "backend")
+    assert "- mediadata:/app/media" in service_block(compose, "backend")
     assert "ports:" not in monitor
     assert ('profiles: ["hardware"]' in monitor) is local_profile
     assert "${SHIPPING_TRANSPORT_POLL_SECONDS:-2}" in compose
@@ -45,5 +33,5 @@ def test_shipping_transport_worker_is_independent_and_health_checked(
     if not local_profile:
         assert "backend:\n        condition: service_healthy" in monitor
         assert "go2rtc:\n        condition: service_healthy" in monitor
-        assert "image: ${BACKEND_IMAGE_REF:-" in monitor
+        assert "image: *backend-image" in monitor
         assert "logging: *default-logging" in monitor

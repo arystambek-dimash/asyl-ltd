@@ -1,27 +1,15 @@
 import json
 import os
-from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
+from config.tests.settings_process import import_base_settings
+
 
 def _read_settings(overrides):
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "PYTEST_RUNNING": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        **overrides,
-    }
-    return subprocess.run(
-        [
-            sys.executable, "-c",
-            "import json; from config._settings import base; "
-            "print(json.dumps([base.WEIGHING_AI_MODEL, base.SHIPPING_WAGON_AI_MODEL, base.SHIPPING_WAGON_AI_DETAIL]))",
-        ],
-        cwd=Path(__file__).resolve().parents[2],
-        env=environment, capture_output=True, text=True, check=False,
+    environment = {"PATH": os.environ.get("PATH", ""), "PYTEST_RUNNING": "1", **overrides}
+    return import_base_settings(
+        environment, "WEIGHING_AI_MODEL", "SHIPPING_WAGON_AI_MODEL", "SHIPPING_WAGON_AI_DETAIL"
     )
 
 

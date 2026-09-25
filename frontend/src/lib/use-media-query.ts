@@ -2,7 +2,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 /** Ширина, с которой касса переключается на мобильную раскладку (граница `md`). */
-export const MOBILE_MEDIA_QUERY = "(max-width: 767px)";
+const MOBILE_MEDIA_QUERY = "(max-width: 767px)";
 
 function mediaList(query: string): MediaQueryList | null {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return null;
@@ -10,7 +10,7 @@ function mediaList(query: string): MediaQueryList | null {
 }
 
 /** Реактивный `matchMedia`. На сервере и в jsdom без matchMedia — всегда false. */
-export function useMediaQuery(query: string): boolean {
+function useMediaQuery(query: string): boolean {
   const subscribe = useCallback(
     (onChange: () => void) => {
       const media = mediaList(query);

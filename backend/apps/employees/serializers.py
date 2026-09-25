@@ -1,11 +1,11 @@
 from collections.abc import Mapping
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
+from apps.accounts.credentials import username_taken
+from apps.accounts.passwords import validate_new_password
 from apps.sales.models import Department
 from apps.sys_permissions.models import Permission
 
@@ -23,6 +23,23 @@ def _permission_codes_field():
         slug_field="code",
         queryset=Permission.objects.all(),
     )
+
+
+def _sales_department_field():
+    return serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        allow_null=True,
+        required=False,
+    )
+
+
+def _validate_active_department(value, instance=None):
+    """Новый отдел — только действующий; уже закреплённый можно оставить."""
+    if value is None or value.is_active:
+        return value
+    if instance is not None and instance.sales_department_id == value.pk:
+        return value
+    raise serializers.ValidationError("Выберите действующий отдел продаж")
 
 
 def _validate_permission_assignment(serializer, attrs):
@@ -54,22 +71,6 @@ def _validate_permission_assignment(serializer, attrs):
                 "code": "perm_escalation",
             }
         )
-
-
-def _validate_user_password(value, *, user, initial_data):
-    candidate = user
-    candidate.username = str(initial_data.get("username", candidate.username or ""))
-    candidate.first_name = str(
-        initial_data.get("first_name", candidate.first_name or "")
-    )
-    candidate.last_name = str(
-        initial_data.get("last_name", candidate.last_name or "")
-    )
-    try:
-        validate_password(value, user=candidate)
-    except DjangoValidationError as exc:
-        raise serializers.ValidationError(exc.messages)
-    return value
 
 
 class EmployeeReadSerializer(serializers.ModelSerializer):
@@ -112,11 +113,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(max_length=100)
     last_name = serializers.CharField(max_length=100)
     permission_codes = _permission_codes_field()
-    sales_department = serializers.PrimaryKeyRelatedField(
-        queryset=Department.objects.all(),
-        allow_null=True,
-        required=False,
-    )
+    sales_department = _sales_department_field()
 
     class Meta:
         model = Employee
@@ -154,22 +151,19 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
         return super().to_internal_value(data)
 
     def validate_sales_department(self, value):
-        if value is None or value.is_active:
-            return value
-        if self.instance is not None and self.instance.sales_department_id == value.pk:
-            return value
-        raise serializers.ValidationError("Выберите действующий отдел продаж")
+        return _validate_active_department(value)
 
     def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
+        if username_taken(value):
             raise serializers.ValidationError("Пользователь с таким логином уже существует")
         return value
 
     def validate_password(self, value):
-        return _validate_user_password(
+        return validate_new_password(
             value,
-            user=User(),
-            initial_data=self.initial_data,
+            username=self.initial_data.get("username"),
+            first_name=self.initial_data.get("first_name"),
+            last_name=self.initial_data.get("last_name"),
         )
 
     def validate(self, attrs):
@@ -222,11 +216,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
 class EmployeeSecuritySerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", required=False)
     permission_codes = _permission_codes_field()
-    sales_department = serializers.PrimaryKeyRelatedField(
-        queryset=Department.objects.all(),
-        allow_null=True,
-        required=False,
-    )
+    sales_department = _sales_department_field()
 
     class Meta:
         model = Employee
@@ -238,22 +228,13 @@ class EmployeeSecuritySerializer(serializers.ModelSerializer):
         ]
 
     def validate_sales_department(self, value):
-        if value is None or value.is_active:
-            return value
-        if self.instance.sales_department_id == value.pk:
-            return value
-        raise serializers.ValidationError("Выберите действующий отдел продаж")
+        return _validate_active_department(value, self.instance)
 
     def validate(self, attrs):
         user_data = attrs.get("user")
         if user_data:
             username = user_data.get("username")
-            if (
-                username
-                and User.objects.filter(username=username)
-                .exclude(pk=self.instance.user_id)
-                .exists()
-            ):
+            if username and username_taken(username, exclude_user_id=self.instance.user_id):
                 raise serializers.ValidationError(
                     {"username": "Пользователь с таким логином уже существует"}
                 )
@@ -280,9 +261,6 @@ class EmployeeSecuritySerializer(serializers.ModelSerializer):
         if "is_active" in validated_data:
             instance.is_active = validated_data["is_active"]
             employee_update_fields.append("is_active")
-            if instance.user.is_active != instance.is_active:
-                instance.user.is_active = instance.is_active
-                instance.user.save(update_fields=["is_active"])
 
         if employee_update_fields:
             instance.save(update_fields=employee_update_fields)
@@ -296,11 +274,12 @@ class EmployeePasswordSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate_password(self, value):
-        employee = self.context["employee"]
-        return _validate_user_password(
+        user = self.context["employee"].user
+        return validate_new_password(
             value,
-            user=employee.user,
-            initial_data=self.initial_data,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
         )
 
     def save(self, **kwargs):

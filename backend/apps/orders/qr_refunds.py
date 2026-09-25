@@ -15,8 +15,9 @@ Kaspi не возвращает оплату по QR одним запросом
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from django.db import transaction
@@ -28,7 +29,15 @@ from apps.common.crypto import SecretDecryptError, decrypt_secret, encrypt_secre
 from apps.eventlog.services import log_event
 
 from . import apipay as apipay_client
-from .models import ApiPayInvoice, ApiPayQrRefund, Order, Payment, PaymentRefund
+from .apipay import parse_provider_datetime, positive_provider_id, provider_money
+from .models import ApiPayInvoice, ApiPayQrRefund, Payment, PaymentRefund
+from .refunds import (
+    assert_payment_refundable,
+    required_refund_reason,
+    settle_reserved_refund,
+    sync_refund_totals,
+    validated_refund_amount,
+)
 from .services import lock_live_order
 
 log = logging.getLogger(__name__)
@@ -81,14 +90,6 @@ ERROR_MESSAGES = {
 }
 
 
-def _money(value: object) -> Decimal | None:
-    try:
-        amount = Decimal(str(value)).quantize(Decimal("0.01"))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-    return amount if amount.is_finite() else None
-
-
 def _message(code: str, fallback: str = "") -> str:
     return ERROR_MESSAGES.get(code) or fallback or "Возврат не выполнен. Выпустите новую ссылку."
 
@@ -100,20 +101,6 @@ def customer_url(session: ApiPayQrRefund) -> str:
         return ""
 
 
-def _settle_locked(session: ApiPayQrRefund, *, refund_status: str, amount: Decimal | None = None) -> None:
-    """Перенести исход сессии на резерв возврата и пересчитать суммы оплаты."""
-    refund = PaymentRefund.objects.select_for_update().get(pk=session.refund_id)
-    payment = Payment.objects.select_for_update().get(pk=refund.payment_id)
-    order = Order.all_objects.select_for_update().get(pk=payment.order_id)
-    refund.status = refund_status
-    if amount is not None and amount > 0:
-        refund.amount = min(amount, payment.amount)
-    refund.completed_at = timezone.now() if refund_status == "completed" else None
-    refund.save(update_fields=["status", "amount", "completed_at", "updated_at"])
-    payment.order = order
-    apipay_client._sync_refund_totals(payment, order)
-
-
 def _finish_locked(session: ApiPayQrRefund, status: str, error_code: str = "", error_message: str = "") -> None:
     session.status = status
     session.error_code = error_code[:100]
@@ -121,11 +108,11 @@ def _finish_locked(session: ApiPayQrRefund, status: str, error_code: str = "", e
     session.operations = []
     session.save()
     if status == "completed":
-        _settle_locked(session, refund_status="completed", amount=session.refunded_amount)
+        settle_reserved_refund(session.refund_id, status="completed", amount=session.refunded_amount)
         session.completed_at = session.completed_at or timezone.now()
         session.save(update_fields=["completed_at", "updated_at"])
     elif status in ("failed", "expired"):
-        _settle_locked(session, refund_status="failed")
+        settle_reserved_refund(session.refund_id, status="failed")
     # execution_uncertain: резерв остаётся «в обработке» — деньги могли уйти.
 
 
@@ -133,16 +120,13 @@ def start_qr_refund(invoice: ApiPayInvoice, user, *, amount: object = None, reas
     """Зарезервировать сумму и выпустить ссылку покупателю. Возвращает сессию и ссылку."""
     if invoice.channel != "qr" or invoice.invoice_id is None:
         raise ValidationError({"detail": "Возврат по ссылке доступен только для оплаты по Kaspi QR.", "code": "qr_refund_unavailable"})
-    reason = (reason or "").strip()
-    if not reason:
-        raise ValidationError({"detail": "Укажите причину возврата.", "code": "refund_reason_required"})
+    reason = required_refund_reason(reason)
 
     with transaction.atomic():
         order = lock_live_order(invoice.payment.order_id, user)
         payment = Payment.objects.select_for_update().get(pk=invoice.payment_id)
         payment.order = order
-        if payment.status != "confirmed":
-            raise ValidationError({"detail": "Вернуть можно только подтверждённую оплату.", "code": "payment_not_confirmed"})
+        assert_payment_refundable(payment)
         if ApiPayQrRefund.objects.filter(
             invoice__payment=payment, status__in=ApiPayQrRefund.ACTIVE_STATUSES
         ).exists():
@@ -150,17 +134,17 @@ def start_qr_refund(invoice: ApiPayInvoice, user, *, amount: object = None, reas
                 "detail": "Ссылка на возврат уже выпущена. Дождитесь покупателя или отзовите её.",
                 "code": "qr_refund_in_progress",
             })
-        value = apipay_client._validated_refund_amount(payment, amount)
+        value = validated_refund_amount(payment, amount)
         credentials = apipay_client.credentials_for_order(order)
         refund = PaymentRefund.objects.create(
             payment=payment, amount=value, method="apipay_qr", status="pending",
             reason=reason[:500], requested_by=user,
         )
         session = ApiPayQrRefund.objects.create(refund=refund, invoice=invoice)
-        apipay_client._sync_refund_totals(payment, order)
+        sync_refund_totals(payment, order)
 
     try:
-        with apipay_client._provider_scope_fence(order.pk, user, require_live=True):
+        with apipay_client.provider_scope_fence(order.pk, user, require_live=True):
             response = apipay_client.api_request("POST", "/qr-refunds/links", {}, credentials=credentials)
     except (
         apipay_client.ApiPayAPIError, apipay_client.ApiPayConfigurationError, PermissionDenied, ValidationError,
@@ -174,8 +158,8 @@ def start_qr_refund(invoice: ApiPayInvoice, user, *, amount: object = None, reas
 
     link = str(response.get("customer_url") or "")
     try:
-        session_id = int(response["id"])
-    except (KeyError, TypeError, ValueError):
+        session_id = positive_provider_id(response.get("id"))
+    except ValueError:
         session_id = 0
     with transaction.atomic():
         session = ApiPayQrRefund.objects.select_for_update().get(pk=session.pk)
@@ -184,7 +168,7 @@ def start_qr_refund(invoice: ApiPayInvoice, user, *, amount: object = None, reas
             raise ValidationError({"detail": session.error_message, "code": "invalid_apipay_response"})
         session.session_id = session_id
         session.status = str(response.get("status") or "awaiting_customer")[:32]
-        session.link_expires_at = apipay_client._parsed_datetime(response.get("link_expires_at"))
+        session.link_expires_at = parse_provider_datetime(response.get("link_expires_at"))
         session.customer_url_encrypted = encrypt_secret(link)
         session.checked_at = timezone.now()
         session.save()
@@ -220,14 +204,14 @@ def apply_qr_refund_snapshot(session_pk: int, snapshot: dict[str, Any], *, sourc
         session.snapshot = {key: value for key, value in snapshot.items() if key not in ("qr_token_url", "qr_image_url")}
         if snapshot.get("client_name"):
             session.client_name = str(snapshot["client_name"])[:120]
-        expires = apipay_client._parsed_datetime(snapshot.get("link_expires_at"))
+        expires = parse_provider_datetime(snapshot.get("link_expires_at"))
         if expires:
             session.link_expires_at = expires
         error_code = str(snapshot.get("error_code") or "")
         error_message = str(snapshot.get("error_message") or "")
 
         if status == "completed":
-            session.refunded_amount = _money(snapshot.get("refunded_amount")) or session.refunded_amount
+            session.refunded_amount = provider_money(snapshot.get("refunded_amount")) or session.refunded_amount
             session.receipt_url = str(snapshot.get("receipt_url") or session.receipt_url)[:1000]
             _finish_locked(session, "completed")
         elif status in ("expired", "failed"):
@@ -255,7 +239,7 @@ def _fetch_operations(session: ApiPayQrRefund, credentials) -> list[dict[str, An
     for _ in range(OPERATION_PAGES_LIMIT):
         path = f"/qr-refunds/{session.session_id}/operations"
         if cursor:
-            path += f"?cursor={apipay_client.urllib.parse.quote(cursor)}"
+            path += f"?cursor={urllib.parse.quote(cursor)}"
         page = apipay_client.api_request("GET", path, credentials=credentials)
         operations.extend(op for op in page.get("operations") or [] if isinstance(op, dict))
         cursor = str(page.get("next_cursor") or "")
@@ -268,7 +252,7 @@ def _returnable_choices(operations: list[dict[str, Any]]) -> list[dict[str, Any]
     return [
         {
             "ref": str(op.get("ref")),
-            "amount": str(_money(op.get("amount")) or ""),
+            "amount": str(provider_money(op.get("amount")) or ""),
             "date": op.get("date"),
             "returnable": op.get("returnable"),
             "client_name": op.get("client_name"),
@@ -282,12 +266,12 @@ def _matching_operation(session: ApiPayQrRefund, choices: list[dict[str, Any]]) 
     invoice = session.invoice
     payment = invoice.payment
     paid_at = invoice.paid_at or payment.paid_at
-    same_amount = [op for op in choices if _money(op["amount"]) == payment.amount]
+    same_amount = [op for op in choices if provider_money(op["amount"]) == payment.amount]
     if not paid_at:
         return same_amount[0] if len(same_amount) == 1 else None
     near = [
         op for op in same_amount
-        if (moment := apipay_client._parsed_datetime(op.get("date"))) and abs(moment - paid_at) <= OPERATION_MATCH_WINDOW
+        if (moment := parse_provider_datetime(op.get("date"))) and abs(moment - paid_at) <= OPERATION_MATCH_WINDOW
     ]
     return near[0] if len(near) == 1 else None
 
@@ -315,7 +299,12 @@ def auto_execute_qr_refund(session_pk: int) -> None:
                 session.error_message = _message(code)
                 session.save()
         return
-    execute_qr_refund(session_pk, match["ref"], user=None, choices=choices)
+    try:
+        execute_qr_refund(session_pk, match["ref"], user=None, choices=choices)
+    except ValidationError as exc:
+        # Сессию успел исполнить параллельный вебхук или сверка: отказ случился
+        # до сети, второго денежного запроса не было.
+        log.info("ApiPay QR refund auto-execute skipped session=%s: %s", session.session_id, exc.detail)
 
 
 def execute_qr_refund(session_pk: int, operation_ref: str, *, user, choices: list[dict[str, Any]] | None = None) -> ApiPayQrRefund:
@@ -340,7 +329,7 @@ def execute_qr_refund(session_pk: int, operation_ref: str, *, user, choices: lis
         credentials = apipay_client.credentials_for_invoice(session.invoice)
 
     payload: dict[str, Any] = {"operation_ref": operation_ref}
-    operation_amount = _money(operation.get("amount"))
+    operation_amount = provider_money(operation.get("amount"))
     if operation_amount is None or amount < operation_amount:
         payload["amount"] = float(amount)
     try:
@@ -364,7 +353,7 @@ def execute_qr_refund(session_pk: int, operation_ref: str, *, user, choices: lis
     with transaction.atomic():
         session = ApiPayQrRefund.objects.select_for_update().get(pk=session_pk)
         if response.get("status") == "completed" and not response.get("error_code"):
-            session.refunded_amount = _money(response.get("refunded_amount")) or amount
+            session.refunded_amount = provider_money(response.get("refunded_amount")) or amount
             session.receipt_url = str(response.get("receipt_url") or "")[:1000]
             _finish_locked(session, "completed")
         else:
@@ -456,7 +445,7 @@ def reconcile_qr_refunds(*, limit: int) -> dict[str, int]:
         try:
             refresh_qr_refund(pk, source="reconciliation")
             stats["checked"] += 1
-        except (apipay_client.ApiPayAPIError, apipay_client.ApiPayConfigurationError, ValueError):
+        except (apipay_client.ApiPayAPIError, apipay_client.ApiPayConfigurationError, ValidationError, ValueError):
             stats["failed"] += 1
             log.warning("ApiPay QR refund reconciliation failed session_pk=%s", pk, exc_info=True)
     return stats
@@ -467,6 +456,8 @@ def serialize_qr_refund(session: ApiPayQrRefund) -> dict[str, Any]:
     return {
         "id": session.pk,
         "status": session.status,
+        # Сессия ещё может дойти до денег — касса опрашивает её, пока флаг поднят.
+        "active": session.status in ApiPayQrRefund.ACTIVE_STATUSES,
         "amount": str(session.refund.amount),
         "refunded_amount": str(session.refunded_amount) if session.refunded_amount is not None else None,
         "client_name": session.client_name or None,

@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, Calculator, ListChecks, PackageCheck } from "lucide-react";
 import { api, apiError } from "@/lib/api";
-import { currencySymbol, formatMoney } from "@/lib/utils";
+import { formatEstimate, orderedBagCount, requestEstimate } from "@/lib/orders";
+import { currencySymbol, formatCurrency } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
+import { PillToggle } from "@/components/ui/segmented";
 
 type Mode = "total" | "per_item";
 
@@ -23,7 +26,8 @@ export function OrderPriceCorrectionModal({
 }) {
   const [mode, setMode] = useState<Mode>("total");
   const [totalAmount, setTotalAmount] = useState("");
-  const [prices, setPrices] = useState<Record<number, string>>({});
+  // Новая цена мешка по id позиции — те же overrides.prices, что в окне подтверждения.
+  const [prices, setPrices] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -33,19 +37,16 @@ export function OrderPriceCorrectionModal({
     setTotalAmount(order.total_amount);
     setPrices(
       Object.fromEntries(
-        order.items
-          .filter((item) => item.id != null)
-          .map((item) => [item.id as number, String(item.unit_price ?? item.price ?? "")]),
+        order.items.filter((item) => item.id != null).map((item) => [String(item.id), item.unit_price ?? ""]),
       ),
     );
     setBusy(false);
     setError("");
   }, [order]);
 
-  const bags = useMemo(() => order?.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0) ?? 0, [order]);
+  const bags = order ? orderedBagCount(order) : 0;
   const dividedPrice = bags > 0 && Number(totalAmount) > 0 ? Number(totalAmount) / bags : 0;
-  const perItemTotal =
-    order?.items.reduce((sum, item) => sum + Number(prices[item.id ?? -1] || 0) * Number(item.quantity || 0), 0) ?? 0;
+  const perItemTotal = order ? requestEstimate(order.items, { prices }).amount : null;
   const symbol = currencySymbol(order?.currency ?? "KZT");
 
   async function submit(event: React.FormEvent) {
@@ -61,7 +62,7 @@ export function OrderPriceCorrectionModal({
               prices: Object.fromEntries(
                 order.items
                   .filter((item) => item.id != null)
-                  .map((item) => [String(item.id), prices[item.id as number] ?? ""]),
+                  .map((item) => [String(item.id), prices[String(item.id)] ?? ""]),
               ),
             };
       await api.post(`/orders/${order.id}/correct-price/`, body);
@@ -90,7 +91,7 @@ export function OrderPriceCorrectionModal({
                 Сейчас
               </div>
               <div className="mt-1 truncate text-sm font-bold tabular-nums">
-                {formatMoney(order.total_amount)} {symbol}
+                {formatCurrency(order.total_amount, order.currency)}
               </div>
             </div>
             <div className="rounded-xl border bg-[var(--muted)]/35 p-3">
@@ -102,41 +103,38 @@ export function OrderPriceCorrectionModal({
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700">Оплачено</div>
               <div className="mt-1 truncate text-sm font-bold tabular-nums text-emerald-950">
-                {formatMoney(order.paid_total)} {symbol}
+                {formatCurrency(order.paid_total, order.currency)}
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-[var(--muted)] p-1.5">
-            <button
-              type="button"
-              onClick={() => {
-                setMode("total");
-                setError("");
-              }}
-              className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${
-                mode === "total"
-                  ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              <Calculator className="size-4" /> Общая сумма
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("per_item");
-                setError("");
-              }}
-              className={`flex min-h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${
-                mode === "per_item"
-                  ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
-                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-              }`}
-            >
-              <ListChecks className="size-4" /> По позициям
-            </button>
-          </div>
+          <PillToggle
+            ariaLabel="Способ корректировки"
+            className="grid w-full grid-cols-2"
+            value={mode}
+            onChange={(next) => {
+              setMode(next);
+              setError("");
+            }}
+            options={[
+              {
+                value: "total",
+                label: (
+                  <>
+                    <Calculator className="size-4" /> Общая сумма
+                  </>
+                ),
+              },
+              {
+                value: "per_item",
+                label: (
+                  <>
+                    <ListChecks className="size-4" /> По позициям
+                  </>
+                ),
+              },
+            ]}
+          />
 
           {mode === "total" ? (
             <section className="space-y-3 rounded-2xl border p-4">
@@ -167,10 +165,10 @@ export function OrderPriceCorrectionModal({
                 </span>
                 <div>
                   <div className="font-semibold">
-                    {bags > 0 ? `${formatMoney(String(dividedPrice))} ${symbol} за мешок` : "В заказе нет мешков"}
+                    {bags > 0 ? `${formatCurrency(dividedPrice, order.currency)} за мешок` : "В заказе нет мешков"}
                   </div>
                   <div className="text-xs text-blue-700">
-                    {formatMoney(totalAmount || "0")} {symbol} ÷ {bags} мешков
+                    {formatCurrency(totalAmount || "0", order.currency)} ÷ {bags} мешков
                   </div>
                 </div>
               </div>
@@ -194,10 +192,10 @@ export function OrderPriceCorrectionModal({
                       step="0.01"
                       inputMode="decimal"
                       aria-label={`Новая цена за мешок, ${item.product_label || `позиция ${index + 1}`}`}
-                      value={prices[item.id ?? -1] ?? ""}
+                      value={item.id == null ? "" : (prices[String(item.id)] ?? "")}
                       onChange={(event) => {
                         if (item.id == null) return;
-                        setPrices((current) => ({ ...current, [item.id as number]: event.target.value }));
+                        setPrices((current) => ({ ...current, [String(item.id)]: event.target.value }));
                       }}
                       className="rounded-xl pr-10 font-semibold tabular-nums"
                       required
@@ -210,9 +208,7 @@ export function OrderPriceCorrectionModal({
               ))}
               <div className="flex justify-between rounded-xl bg-[var(--muted)]/60 px-3 py-2.5 text-sm">
                 <span className="text-[var(--muted-foreground)]">Новый итог</span>
-                <strong className="tabular-nums">
-                  {formatMoney(String(perItemTotal))} {symbol}
-                </strong>
+                <strong className="tabular-nums">{formatEstimate(perItemTotal, order.currency)}</strong>
               </div>
             </section>
           )}
@@ -225,14 +221,7 @@ export function OrderPriceCorrectionModal({
             </span>
           </div>
 
-          {error && (
-            <p
-              role="alert"
-              className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]"
-            >
-              {error}
-            </p>
-          )}
+          <FormError message={error} className="rounded-xl py-2.5 font-medium" />
 
           <div className="flex justify-end gap-2 border-t pt-4">
             <Button type="button" variant="outline" onClick={onClose} disabled={busy}>

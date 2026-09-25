@@ -3,10 +3,21 @@ import { useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { useDismiss } from "@/lib/use-dismiss";
 
-function Fixture({ active = true, onClose }: { active?: boolean; onClose: () => void }) {
+function Fixture({
+  active = true,
+  onClose,
+  returnFocus = false,
+}: {
+  active?: boolean;
+  onClose: () => void;
+  returnFocus?: boolean;
+}) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  useDismiss(popoverRef, onClose, active, [triggerRef]);
+  useDismiss(popoverRef, onClose, active, {
+    ignoreRefs: [triggerRef],
+    returnFocusRef: returnFocus ? triggerRef : undefined,
+  });
 
   return (
     <>
@@ -56,5 +67,23 @@ describe("useDismiss", () => {
 
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledOnce();
+  });
+
+  it("returns focus to the trigger on Escape only when focus was inside the popover", () => {
+    const onClose = vi.fn();
+    const { getByRole } = render(<Fixture onClose={onClose} returnFocus />);
+    const trigger = getByRole("button", { name: "Триггер" });
+    const inside = getByRole("button", { name: "Внутри" });
+    const outside = getByRole("button", { name: "Снаружи" });
+
+    inside.focus();
+    fireEvent.keyDown(inside, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(trigger).toHaveFocus();
+
+    outside.focus();
+    fireEvent.keyDown(outside, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(outside).toHaveFocus();
   });
 });

@@ -11,7 +11,7 @@ from apps.orders import services
 def order(db):
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
     p = Product.objects.create(
-        name="F", color="Red", weight_kg=Decimal("50"), price=Decimal("100")
+        name="F", color="Red", weight_kg=Decimal("50")
     )
     o = Order.objects.create(client=c, status="shipped")
     OrderItem.objects.create(

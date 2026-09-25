@@ -15,6 +15,7 @@ import { Field, fieldErrorId } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { PhoneInput } from "@/components/ui/phone-input";
+import { FormError } from "@/components/ui/data-state";
 
 const EMPTY_FORM = {
   first_name: "",
@@ -233,14 +234,7 @@ export default function RegisterPage() {
                 Добавить ТОО / ИП и ИИН/БИН
               </button>
             )}
-            {error && (
-              <p
-                role="alert"
-                className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
-              >
-                {error}
-              </p>
-            )}
+            <FormError message={error} />
             <Button type="submit" disabled={busy} className="mt-1">
               {busy ? "Регистрация…" : "Зарегистрироваться"}
             </Button>

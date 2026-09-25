@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DepartmentDot } from "@/components/ui/department-badge";
 import { Select } from "@/components/ui/select";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { downloadBlob } from "@/lib/download";
 import { formatCurrency } from "@/lib/utils";
 import type { DepartmentReport } from "@/lib/types";
 
@@ -49,16 +51,12 @@ export function DepartmentComparison({
         ]),
       ),
     ];
-    const url = URL.createObjectURL(
+    downloadBlob(
       new Blob(["\uFEFF", lines.map((line) => line.map(cell).join(";")).join("\r\n")], {
         type: "text/csv;charset=utf-8",
       }),
+      `departments-${from || "all"}-${to || "current"}.csv`,
     );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `departments-${from || "all"}-${to || "current"}.csv`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   return (
     <Card>
@@ -105,7 +103,7 @@ export function DepartmentComparison({
                 <TR key={row.code}>
                   <TD>
                     <span className="inline-flex items-center gap-2 font-medium">
-                      <span className="size-2 rounded-full" style={{ backgroundColor: row.color }} />
+                      <DepartmentDot color={row.color} className="size-2" />
                       {row.name}
                     </span>
                     {leading > 0 && sales(row) === leading && (

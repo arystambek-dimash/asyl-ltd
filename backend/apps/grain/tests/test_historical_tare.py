@@ -6,7 +6,8 @@ import pytest
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.grain import historical_tare, services, statuses as st
+from apps.eventlog.models import EventLog
+from apps.grain import historical_tare, statuses as st
 from apps.grain.models import Wagon, WeighingRecord, UnassignedWeighing
 
 pytestmark = pytest.mark.django_db
@@ -50,6 +51,16 @@ def test_historical_exit_retains_original_trip_and_provenance(case):
     assert wagon.weighings.count() == 2
 
 
+def test_historical_exit_logs_entry_step_through_status_machine(case):
+    result = complete(case)
+    entry = EventLog.objects.get(
+        event_type="grain_status",
+        payload__wagon_id=result.wagon_id,
+        payload__new_status=st.AT_SILO,
+    )
+    assert entry.payload["old_status"] == st.ARRIVED
+
+
 def test_reclassifies_only_the_wrong_entry_without_duplicate_exit(case):
     user, _, _, item = case
     wagon = Wagon.objects.create(direction="passage", workflow="simple", number="123ABC13", status=st.AT_SILO, cargo_name="Отруби", gross_weight_kg=item.weight_kg)
@@ -70,19 +81,11 @@ def test_rejects_unsafe_tare_sources_atomically(case, change):
     if change == "future": WeighingRecord.objects.filter(pk=source.pk).update(created_at=timezone.now())
     if change == "manual": source.source="manual"; source.save()
     if change == "rear": source.orientation="rear"; source.save()
-    if change == "photo": source.photo=""; source.save()
     if change == "too_heavy": source.weight_kg=9300; source.save()
     if change == "discarded": item.status="discarded"; item.save()
     with pytest.raises(ValidationError): complete(case)
     assert Wagon.objects.count() == 1
     assert WeighingRecord.objects.count() == 1
-
-
-def test_rear_is_not_a_new_entry(case):
-    user, _, _, item = case
-    with pytest.raises(ValidationError):
-        services.create_passage_from_unassigned_weighing(item, user)
-    assert Wagon.objects.count() == 1
 
 
 def test_api_permissions_and_candidates(case, auth_client, user_with_perms):

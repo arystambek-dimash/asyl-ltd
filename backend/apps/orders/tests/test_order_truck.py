@@ -8,7 +8,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _product():
-    p = Product.objects.create(name="Премиум", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="Премиум", color="Red", weight_kg="50")
     StockItem.objects.create(product=p, bags=500)
     return p
 

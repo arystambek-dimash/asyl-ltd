@@ -18,17 +18,6 @@ ALL_CLIENT_SECTIONS = (
     "debts",
 )
 
-SECTION_LABELS = {
-    "summary": "Сводка",
-    "clients": "Клиенты",
-    "ledger": "Операции",
-    "orders": "Заказы",
-    "items": "Позиции",
-    "payments": "Платежи",
-    "debts": "Долги",
-}
-
-
 def select_sections(
     sections,
     available: tuple[str, ...],

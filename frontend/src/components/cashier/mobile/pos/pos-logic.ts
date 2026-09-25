@@ -1,9 +1,10 @@
-import { availableCents, blockingStore, type DebtStore } from "@/lib/debt-orders";
+import { invoiceIsClosed } from "@/lib/apipay-invoice";
+import { availableCents, blockingStore, storeBlockReason, type DebtStore } from "@/lib/debt-orders";
 import type { Order, Payment } from "@/lib/types";
 
 export type PosTab = "qr" | "remote" | "history";
 export type PosFlow = Exclude<PosTab, "history">;
-export type PosStep = "client" | "order" | "amount" | "phone" | "result";
+type PosStep = "client" | "order" | "amount" | "phone" | "result";
 
 export interface PosState {
   /** Видимая вкладка нижней панели POS. */
@@ -51,21 +52,6 @@ export type PosAction =
   | { type: "retry" }
   | { type: "reset" };
 
-const MAX_DIGITS = 12;
-const CLOSED_PROVIDER_STATUSES = new Set(["expired", "cancelled", "error", "superseded"]);
-
-/** Цифра с клавиатуры: без ведущего нуля и не больше доступного. */
-export function appendDigit(amount: string, digit: string, max: number): string {
-  if (!/^\d$/.test(digit)) return amount;
-  const next = amount === "" ? (digit === "0" ? "" : digit) : amount + digit;
-  if (next.length > MAX_DIGITS || Number(next || "0") > max) return amount;
-  return next;
-}
-
-export function eraseDigit(amount: string): string {
-  return amount.slice(0, -1);
-}
-
 /** Сколько целых тенге можно взять по QR и сколько тиынов останется на другой способ. */
 export function wholeTengeLimit(order: Order): { max: number; tiyn: number } {
   const cents = availableCents(order);
@@ -76,7 +62,7 @@ export function wholeTengeLimit(order: Order): { max: number; tiyn: number } {
 export function posOrderBlock(order: Order, stores: readonly DebtStore[]): string | null {
   if (order.currency !== "KZT") return "QR только в тенге";
   const store = blockingStore(order, stores);
-  if (store) return `Оплата для магазина «${store.name}» сегодня недоступна`;
+  if (store) return storeBlockReason(store);
   if (wholeTengeLimit(order).max < 1) {
     return (order.pending_payments ?? []).length > 0 ? "Всё уже ожидает подтверждения" : "Нечего оплачивать";
   }
@@ -88,7 +74,7 @@ export type PaymentOutcome = "waiting" | "paid" | "failed";
 /** Итог выданной оплаты: деньги пришли, QR/счёт закрыт без денег или ждём клиента. */
 export function paymentOutcome(payment: Payment): PaymentOutcome {
   if (payment.status === "confirmed") return "paid";
-  if (payment.status === "rejected" || (payment.provider && CLOSED_PROVIDER_STATUSES.has(payment.provider.status))) {
+  if (payment.status === "rejected" || (payment.provider && invoiceIsClosed(payment.provider.status))) {
     return "failed";
   }
   return "waiting";

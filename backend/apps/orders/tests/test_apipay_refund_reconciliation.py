@@ -6,12 +6,9 @@ import pytest
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.catalog.models import Product
-from apps.clients.models import Client
 from apps.orders.apipay import (
     ApiPayAPIError,
     ApiPayConfigurationError,
-    _sync_refund_totals,
     apply_refund_status,
     create_refund,
     get_invoice_refunds,
@@ -19,58 +16,13 @@ from apps.orders.apipay import (
 from apps.orders.models import (
     ApiPayInvoice,
     Order,
-    OrderItem,
-    Payment,
     PaymentRefund,
 )
 from apps.orders.refund_reconciliation import reconcile_apipay_refunds
+from apps.orders.refunds import sync_refund_totals
+from apps.orders.tests.apipay_fakes import paid_invoice
 
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
-
-
-def _invoice(*, channel="phone", amount="100.00", invoice_id=800):
-    client = Client.objects.create_with_user(
-        first_name="Возврат",
-        phone="87762838451",
-    )
-    product = Product.objects.create(
-        name=f"Товар для возврата {invoice_id}",
-        color="Red",
-        weight_kg="50",
-        price=amount,
-    )
-    order = Order.objects.create(
-        client=client,
-        status="shipped",
-        currency="KZT",
-    )
-    OrderItem.objects.create(
-        order=order,
-        product=product,
-        quantity=1,
-        unit_price=amount,
-    )
-    payment = Payment.objects.create(
-        order=order,
-        amount=amount,
-        method="kaspi" if channel == "qr" else "invoice",
-        status="confirmed",
-        confirmed_at=timezone.now(),
-    )
-    invoice = ApiPayInvoice.objects.create(
-        payment=payment,
-        invoice_id=invoice_id,
-        idempotency_key=f"asyl-payment-{payment.id}",
-        channel=channel,
-        status="paid",
-    )
-    return invoice
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
 
 def _reserve(invoice, *, amount="10.00", reason="Возврат", created_at=None):
@@ -84,7 +36,7 @@ def _reserve(invoice, *, amount="10.00", reason="Возврат", created_at=Non
     if created_at is not None:
         PaymentRefund.objects.filter(pk=refund.pk).update(created_at=created_at)
         refund.refresh_from_db()
-    _sync_refund_totals(invoice.payment, invoice.payment.order)
+    sync_refund_totals(invoice.payment, invoice.payment.order)
     return refund
 
 
@@ -92,7 +44,7 @@ def _reserve(invoice, *, amount="10.00", reason="Возврат", created_at=Non
 def test_refund_status_read_uses_documented_invoice_refunds_endpoint(
     api_request,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     api_request.return_value = {"refunds": [], "total": 0}
 
     assert get_invoice_refunds(invoice) == {"refunds": [], "total": 0}
@@ -103,42 +55,12 @@ def test_refund_status_read_uses_documented_invoice_refunds_endpoint(
     assert api_request.call_args.kwargs["credentials"].api_key == "server-only-key"
 
 
-@patch("apps.orders.apipay.api_request")
-def test_qr_invoice_refund_is_sent_to_apipay(api_request, accountant):
-    invoice = _invoice(channel="qr")
-    api_request.return_value = {
-        "refund": {
-            "id": 801,
-            "amount": "25.00",
-            "status": "pending",
-            "reason": "QR возврат",
-        }
-    }
-
-    refund = create_refund(
-        invoice,
-        accountant,
-        amount="25.00",
-        reason="QR возврат",
-    )
-
-    assert refund.refund_id == 801
-    api_request.assert_called_once_with(
-        "POST",
-        f"/invoices/{invoice.invoice_id}/refund",
-        {"amount": 25.0, "reason": "QR возврат"},
-        credentials=ANY,
-    )
-    invoice.payment.refresh_from_db()
-    assert invoice.payment.pending_refund_amount == Decimal("25.00")
-
-
 @patch("apps.orders.apipay.log_event")
 @patch("apps.orders.apipay.api_request")
 def test_audit_log_failure_cannot_turn_accepted_refund_into_retryable_error(
     api_request, log_event, accountant,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     api_request.return_value = {
         "refund": {
             "id": 811,
@@ -167,7 +89,7 @@ def test_audit_log_failure_cannot_turn_accepted_refund_into_retryable_error(
 def test_completed_webhook_racing_refund_response_is_not_duplicated_or_regressed(
     api_request, accountant,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
 
     def webhook_wins(*_args, **_kwargs):
         apply_refund_status(
@@ -213,7 +135,7 @@ def test_completed_webhook_racing_refund_response_is_not_duplicated_or_regressed
 def test_second_refund_is_blocked_while_first_has_no_provider_id(
     api_request, accountant,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     first = _reserve(invoice, amount="10.00")
 
     with pytest.raises(ValidationError) as raised:
@@ -234,7 +156,7 @@ def test_second_refund_is_blocked_while_first_has_no_provider_id(
 def test_provider_configuration_failure_releases_local_reservation(
     api_request, accountant,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     api_request.side_effect = ApiPayConfigurationError("missing API key")
 
     with pytest.raises(ApiPayConfigurationError):
@@ -259,7 +181,7 @@ def test_provider_configuration_failure_releases_local_reservation(
 def test_ambiguous_post_is_never_retried_and_is_released_after_observation(
     api_request, get_refunds, accountant,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     api_request.side_effect = ApiPayAPIError(
         503,
         "apipay_unavailable",
@@ -304,7 +226,7 @@ def test_ambiguous_post_is_never_retried_and_is_released_after_observation(
 
 
 def test_webhook_correlates_same_amount_by_echoed_reason():
-    invoice = _invoice()
+    invoice = paid_invoice()
     first = _reserve(invoice, amount="10.00", reason="Первая причина")
     second = _reserve(invoice, amount="10.00", reason="Вторая причина")
 
@@ -331,7 +253,7 @@ def test_webhook_correlates_same_amount_by_echoed_reason():
 
 
 def test_terminal_refund_status_cannot_regress_to_processing():
-    invoice = _invoice()
+    invoice = paid_invoice()
     local = _reserve(invoice, amount="10.00", reason="Терминальный")
     payload = {
         "id": 807,
@@ -357,7 +279,7 @@ def test_terminal_refund_status_cannot_regress_to_processing():
 
 
 def test_external_provider_refund_is_recorded_in_generic_payment_totals():
-    invoice = _invoice()
+    invoice = paid_invoice()
 
     changed = apply_refund_status(
         invoice,
@@ -379,7 +301,6 @@ def test_external_provider_refund_is_recorded_in_generic_payment_totals():
     assert local.provider_refund.refund_id == 812
     assert invoice.payment.refunded_amount == Decimal("15.00")
     assert invoice.payment.pending_refund_amount == Decimal("0.00")
-    assert invoice.total_refunded == Decimal("15.00")
 
 
 @patch(
@@ -388,7 +309,7 @@ def test_external_provider_refund_is_recorded_in_generic_payment_totals():
 def test_reconcile_correlates_legacy_concurrent_same_amount_refunds(
     get_refunds,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     now = timezone.now().replace(microsecond=0)
     first = _reserve(
         invoice,
@@ -441,7 +362,7 @@ def test_reconcile_correlates_legacy_concurrent_same_amount_refunds(
     "apps.orders.refund_reconciliation.get_invoice_refunds"
 )
 def test_reconcile_advances_linked_pending_refund_to_completed(get_refunds):
-    invoice = _invoice()
+    invoice = paid_invoice()
     local = _reserve(invoice, amount="10.00", reason="Timeout")
     get_refunds.return_value = {
         "refunds": [{
@@ -480,7 +401,7 @@ def test_reconcile_advances_linked_pending_refund_to_completed(get_refunds):
 def test_reconcile_failed_provider_refund_releases_reserved_amount(
     get_refunds,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     local = _reserve(invoice, amount="10.00", reason="Неуспешный возврат")
     get_refunds.return_value = {
         "refunds": [{
@@ -514,7 +435,7 @@ def test_reconcile_failed_provider_refund_releases_reserved_amount(
 def test_complete_snapshot_releases_old_unobserved_timeout_reservation(
     get_refunds,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     now = timezone.now().replace(microsecond=0)
     local = _reserve(
         invoice,
@@ -539,20 +460,39 @@ def test_complete_snapshot_releases_old_unobserved_timeout_reservation(
     get_refunds.assert_called_once_with(invoice)
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "counted_as"),
+    [
+        ({"refunds": [], "total": 1}, {"incomplete": 1, "ambiguous": 1}),
+        (
+            {
+                "refunds": [{
+                    "id": 815,
+                    "amount": "10.00",
+                    "status": "unknown-provider-state",
+                }],
+                "total": 1,
+            },
+            {"incomplete": 1, "ambiguous": 1},
+        ),
+        ({"refunds": [], "total": 0.5}, {"failed": 1}),
+    ],
+    ids=["incomplete", "malformed-row", "fractional-total"],
+)
 @patch(
     "apps.orders.refund_reconciliation.get_invoice_refunds"
 )
-def test_incomplete_snapshot_never_releases_ambiguous_reservation(
-    get_refunds,
+def test_unreliable_snapshot_never_releases_ambiguous_reservation(
+    get_refunds, snapshot, counted_as,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     now = timezone.now().replace(microsecond=0)
     local = _reserve(
         invoice,
         amount="10.00",
         created_at=now - timedelta(hours=1),
     )
-    get_refunds.return_value = {"refunds": [], "total": 1}
+    get_refunds.return_value = snapshot
 
     stats = reconcile_apipay_refunds(
         now=now,
@@ -561,72 +501,7 @@ def test_incomplete_snapshot_never_releases_ambiguous_reservation(
 
     local.refresh_from_db()
     invoice.payment.refresh_from_db()
-    assert stats.incomplete == 1
-    assert stats.released_orphans == 0
-    assert stats.ambiguous == 1
-    assert local.status == "pending"
-    assert invoice.payment.pending_refund_amount == Decimal("10.00")
-
-
-@patch(
-    "apps.orders.refund_reconciliation.get_invoice_refunds"
-)
-def test_malformed_refund_row_never_releases_ambiguous_reservation(
-    get_refunds,
-):
-    invoice = _invoice()
-    now = timezone.now().replace(microsecond=0)
-    local = _reserve(
-        invoice,
-        amount="10.00",
-        created_at=now - timedelta(hours=1),
-    )
-    get_refunds.return_value = {
-        "refunds": [{
-            "id": 815,
-            "amount": "10.00",
-            "status": "unknown-provider-state",
-        }],
-        "total": 1,
-    }
-
-    stats = reconcile_apipay_refunds(
-        now=now,
-        orphan_grace=timedelta(minutes=15),
-    )
-
-    local.refresh_from_db()
-    invoice.payment.refresh_from_db()
-    assert stats.incomplete == 1
-    assert stats.released_orphans == 0
-    assert stats.ambiguous == 1
-    assert local.status == "pending"
-    assert invoice.payment.pending_refund_amount == Decimal("10.00")
-
-
-@patch(
-    "apps.orders.refund_reconciliation.get_invoice_refunds"
-)
-def test_fractional_snapshot_total_never_releases_ambiguous_reservation(
-    get_refunds,
-):
-    invoice = _invoice(invoice_id=816)
-    now = timezone.now().replace(microsecond=0)
-    local = _reserve(
-        invoice,
-        amount="10.00",
-        created_at=now - timedelta(hours=1),
-    )
-    get_refunds.return_value = {"refunds": [], "total": 0.5}
-
-    stats = reconcile_apipay_refunds(
-        now=now,
-        orphan_grace=timedelta(minutes=15),
-    )
-
-    local.refresh_from_db()
-    invoice.payment.refresh_from_db()
-    assert stats.failed == 1
+    assert {name: getattr(stats, name) for name in counted_as} == counted_as
     assert stats.released_orphans == 0
     assert local.status == "pending"
     assert invoice.payment.pending_refund_amount == Decimal("10.00")
@@ -638,7 +513,7 @@ def test_fractional_snapshot_total_never_releases_ambiguous_reservation(
 def test_one_observed_legacy_refund_completes_and_extra_reservation_releases(
     get_refunds,
 ):
-    invoice = _invoice()
+    invoice = paid_invoice()
     now = timezone.now().replace(microsecond=0)
     absent = _reserve(
         invoice,
@@ -680,23 +555,25 @@ def test_one_observed_legacy_refund_completes_and_extra_reservation_releases(
     assert invoice.payment.pending_refund_amount == Decimal("0.00")
 
 
+@pytest.mark.parametrize(
+    "reserved", [True, False], ids=["pending-refunds", "provider-sweep"],
+)
 @patch(
     "apps.orders.refund_reconciliation.get_invoice_refunds"
 )
-def test_refund_reconciliation_is_oldest_first_and_round_robins_at_limit(
-    get_refunds,
+def test_refund_reconciliation_is_bounded_oldest_first_and_round_robins(
+    get_refunds, reserved,
 ):
+    """И свои резервы, и обход провайдера: limit, старые первыми, по кругу."""
     now = timezone.now().replace(microsecond=0)
-    oldest = _invoice(invoice_id=820)
-    next_oldest = _invoice(invoice_id=821)
-    _reserve(oldest, amount="10.00")
-    _reserve(next_oldest, amount="10.00")
-    ApiPayInvoice.objects.filter(pk=oldest.pk).update(
-        refund_checked_at=now - timedelta(hours=2)
-    )
-    ApiPayInvoice.objects.filter(pk=next_oldest.pk).update(
-        refund_checked_at=now - timedelta(hours=1)
-    )
+    invoices = [paid_invoice(invoice_id=820 + n) for n in range(3)]
+    for hours_ago, invoice in zip((3, 2, 1), invoices):
+        if reserved:
+            _reserve(invoice, amount="10.00")
+        ApiPayInvoice.objects.filter(pk=invoice.pk).update(
+            refund_checked_at=now - timedelta(hours=hours_ago)
+        )
+    oldest, next_oldest, _newest = invoices
     get_refunds.side_effect = [
         ApiPayAPIError(503, "apipay_unavailable", "Временная ошибка", {}),
         {"refunds": [], "total": 0},
@@ -731,7 +608,7 @@ def test_refund_reconciliation_is_oldest_first_and_round_robins_at_limit(
 def test_sweep_discovers_external_completed_refund_without_local_request(
     get_refunds,
 ):
-    invoice = _invoice(invoice_id=830)
+    invoice = paid_invoice(invoice_id=830)
     now = timezone.now().replace(microsecond=0)
     get_refunds.return_value = {
         "refunds": [{
@@ -754,7 +631,6 @@ def test_sweep_discovers_external_completed_refund_without_local_request(
     assert local.provider_refund.refund_id == 831
     assert local.status == "completed"
     assert invoice.payment.refunded_amount == Decimal("15.00")
-    assert invoice.total_refunded == Decimal("15.00")
     assert invoice.refund_checked_at == now
 
 
@@ -764,7 +640,7 @@ def test_sweep_discovers_external_completed_refund_without_local_request(
 def test_sweep_includes_partially_refunded_invoice_without_local_request(
     get_refunds,
 ):
-    invoice = _invoice(invoice_id=832)
+    invoice = paid_invoice(invoice_id=832)
     ApiPayInvoice.objects.filter(pk=invoice.pk).update(
         status="partially_refunded"
     )
@@ -787,11 +663,11 @@ def test_discovery_budget_does_not_starve_local_pending_refunds(
     get_refunds,
 ):
     discoveries = [
-        _invoice(invoice_id=840),
-        _invoice(invoice_id=841),
-        _invoice(invoice_id=842),
+        paid_invoice(invoice_id=840),
+        paid_invoice(invoice_id=841),
+        paid_invoice(invoice_id=842),
     ]
-    pending = _invoice(invoice_id=843)
+    pending = paid_invoice(invoice_id=843)
     _reserve(pending, amount="10.00")
     get_refunds.return_value = {"refunds": [], "total": 0}
 
@@ -815,9 +691,9 @@ def test_limit_one_rotates_between_pending_and_provider_discovery(
     get_refunds,
 ):
     now = timezone.now().replace(microsecond=0)
-    pending = _invoice(invoice_id=844)
+    pending = paid_invoice(invoice_id=844)
     _reserve(pending, amount="10.00")
-    provider_only = _invoice(invoice_id=845)
+    provider_only = paid_invoice(invoice_id=845)
     get_refunds.return_value = {"refunds": [], "total": 0}
 
     for offset in range(3):
@@ -836,50 +712,8 @@ def test_limit_one_rotates_between_pending_and_provider_discovery(
 @patch(
     "apps.orders.refund_reconciliation.get_invoice_refunds"
 )
-def test_provider_sweep_is_bounded_oldest_first_and_round_robins(
-    get_refunds,
-):
-    now = timezone.now().replace(microsecond=0)
-    oldest = _invoice(invoice_id=850)
-    next_oldest = _invoice(invoice_id=851)
-    newest = _invoice(invoice_id=852)
-    ApiPayInvoice.objects.filter(pk=oldest.pk).update(
-        refund_checked_at=now - timedelta(hours=3)
-    )
-    ApiPayInvoice.objects.filter(pk=next_oldest.pk).update(
-        refund_checked_at=now - timedelta(hours=2)
-    )
-    ApiPayInvoice.objects.filter(pk=newest.pk).update(
-        refund_checked_at=now - timedelta(hours=1)
-    )
-    get_refunds.side_effect = [
-        ApiPayAPIError(503, "apipay_unavailable", "Временная ошибка", {}),
-        {"refunds": [], "total": 0},
-    ]
-
-    first = reconcile_apipay_refunds(limit=1, now=now)
-
-    assert first.selected == 1
-    assert first.failed == 1
-    assert get_refunds.call_args.args[0].pk == oldest.pk
-    oldest.refresh_from_db()
-    assert oldest.refund_checked_at == now
-
-    get_refunds.reset_mock()
-    second = reconcile_apipay_refunds(
-        limit=1,
-        now=now + timedelta(seconds=1),
-    )
-
-    assert second.selected == 1
-    assert get_refunds.call_args.args[0].pk == next_oldest.pk
-
-
-@patch(
-    "apps.orders.refund_reconciliation.get_invoice_refunds"
-)
 def test_slower_overlapping_sweep_cannot_regress_refund_cursor(get_refunds):
-    invoice = _invoice(invoice_id=853)
+    invoice = paid_invoice(invoice_id=853)
     observed_at = timezone.now().replace(microsecond=0)
     newer_observation = observed_at + timedelta(seconds=1)
 
@@ -904,7 +738,7 @@ def test_slower_overlapping_sweep_cannot_regress_refund_cursor(get_refunds):
 def test_incomplete_sweep_applies_valid_external_refund_without_releasing_money(
     get_refunds,
 ):
-    invoice = _invoice(invoice_id=860)
+    invoice = paid_invoice(invoice_id=860)
     now = timezone.now().replace(microsecond=0)
     ambiguous = _reserve(
         invoice,
@@ -955,7 +789,7 @@ def test_incomplete_sweep_applies_valid_external_refund_without_releasing_money(
     "apps.orders.refund_reconciliation.get_invoice_refunds"
 )
 def test_sweep_reconciles_refund_for_soft_deleted_order(get_refunds):
-    invoice = _invoice(invoice_id=870)
+    invoice = paid_invoice(invoice_id=870)
     Order.all_objects.filter(pk=invoice.payment.order_id).update(
         deleted_at=timezone.now()
     )

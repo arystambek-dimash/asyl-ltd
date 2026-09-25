@@ -1,16 +1,16 @@
 "use client";
 import { useState, useEffect } from "react";
-import type { AxiosError } from "axios";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 import { useAuth } from "@/store/auth";
 import { homeFor } from "@/lib/can";
-import { apiError } from "@/lib/api";
+import { apiError, apiErrorCode } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
+import { FormError } from "@/components/ui/data-state";
 
 export default function LoginPage() {
   const { login, completeInitialPasswordChange, me, loadMe } = useAuth();
@@ -39,13 +39,11 @@ export default function LoginPage() {
         setError("Новые пароли не совпадают.");
         return;
       }
-      const m = passwordChangeRequired
-        ? await completeInitialPasswordChange(username, password, newPassword)
-        : await login(username, password);
-      router.replace(homeFor(m));
+      // Вход кладёт me в стор — на домашнюю страницу уводит эффект выше.
+      if (passwordChangeRequired) await completeInitialPasswordChange(username, password, newPassword);
+      else await login(username, password);
     } catch (err) {
-      const code = (err as AxiosError<{ code?: string }>).response?.data?.code;
-      if (code === "password_change_required") {
+      if (apiErrorCode(err) === "password_change_required") {
         setPasswordChangeRequired(true);
         setError("Установите личный пароль перед первым входом.");
         return;
@@ -129,11 +127,7 @@ export default function LoginPage() {
                 </div>
               </>
             )}
-            {error && (
-              <p className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-                {error}
-              </p>
-            )}
+            <FormError message={error} />
             <Button type="submit" disabled={busy} className="mt-1">
               {busy
                 ? passwordChangeRequired

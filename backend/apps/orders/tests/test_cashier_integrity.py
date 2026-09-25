@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import timedelta
 from decimal import Decimal
 from threading import Barrier
 from unittest.mock import patch
@@ -11,28 +10,20 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.eventlog.models import EventLog
 from apps.orders import apipay
-from apps.orders.apipay import create_cash_refund
+from apps.orders.refunds import create_cash_refund
 from apps.orders.models import Order, Payment, PaymentRefund
 from apps.orders.reports import summary_report
-from apps.orders.services import record_staff_payment, reopen_confirmed_payment, accountant_confirm_payment
-from apps.orders.tests.test_payment_regressions import _order
-from apps.orders.tests.test_apipay_refund_reconciliation import _invoice
+from apps.orders.services import record_staff_payment, reopen_confirmed_payment
+from apps.orders.tests.apipay_fakes import paid_invoice, shipped_order
 
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
 
 @pytest.mark.parametrize('mode', ['cash', 'apipay'])
 @pytest.mark.parametrize('archived_field', ['deleted_at', 'purged_at'])
 def test_archived_order_rejects_new_refund(auth_client, accountant, mode, archived_field):
-    invoice = _invoice()
+    invoice = paid_invoice()
     archived = {'deleted_at': timezone.now()}
     if archived_field == 'purged_at':
         archived['purged_at'] = timezone.now()
@@ -49,8 +40,8 @@ def test_archived_order_rejects_new_refund(auth_client, accountant, mode, archiv
 
 
 def test_archive_between_reservation_and_provider_call_releases_refund(accountant, monkeypatch):
-    invoice = _invoice()
-    fence = apipay._provider_scope_fence
+    invoice = paid_invoice()
+    fence = apipay.provider_scope_fence
 
     @contextmanager
     def archive_then_lock(order_id, user, **kwargs):
@@ -58,7 +49,7 @@ def test_archive_between_reservation_and_provider_call_releases_refund(accountan
         with fence(order_id, user, **kwargs) as order:
             yield order
 
-    monkeypatch.setattr(apipay, '_provider_scope_fence', archive_then_lock)
+    monkeypatch.setattr(apipay, 'provider_scope_fence', archive_then_lock)
     with patch('apps.orders.apipay.api_request') as provider:
         with pytest.raises(ValidationError) as error:
             apipay.create_refund(invoice, accountant, amount='20', reason='Возврат')
@@ -71,7 +62,7 @@ def test_archive_between_reservation_and_provider_call_releases_refund(accountan
 
 
 def test_cash_refund_cannot_be_reopened_and_keeps_income(auth_client, accountant):
-    order = _order()
+    order = shipped_order()
     payment = record_staff_payment(order, '100', accountant)
     create_cash_refund(payment, accountant, amount='20', reason='Частичный возврат')
     response = auth_client(accountant).post(f'/api/orders/{order.pk}/payments/{payment.pk}/reopen/')
@@ -81,13 +72,11 @@ def test_cash_refund_cannot_be_reopened_and_keeps_income(auth_client, accountant
     assert payment.status == 'confirmed'
     assert payment.net_amount == Decimal('80')
     assert summary_report(Order.objects.all(), income_only=True)['income']['total'] == '80.00'
-    events = auth_client(accountant).get('/api/orders/cashier-log/').data
-    assert not any(row['can_reopen'] for row in events)
 
 
 @pytest.mark.parametrize('status,allowed', [('pending', False), ('completed', False), ('failed', True)])
 def test_refund_ledger_prevents_reopen_even_if_cached_amounts_drift(accountant, status, allowed):
-    payment = record_staff_payment(_order(), '100', accountant)
+    payment = record_staff_payment(shipped_order(), '100', accountant)
     PaymentRefund.objects.create(payment=payment, amount='10', method='cash', status=status, reason='Проверка')
     if allowed:
         reopen_confirmed_payment(payment, accountant)
@@ -98,28 +87,8 @@ def test_refund_ledger_prevents_reopen_even_if_cached_amounts_drift(accountant, 
         assert error.value.detail['code'] == 'payment_has_refunds'
 
 
-def test_journal_only_latest_confirmation_can_reopen_across_pages_and_dates(auth_client, accountant):
-    payment = record_staff_payment(_order(), '100', accountant)
-    old_event = EventLog.objects.filter(payload__payment_id=payment.pk, payload__payment_stage='confirmed').get()
-    yesterday = timezone.now() - timedelta(days=1)
-    EventLog.objects.filter(pk=old_event.pk).update(created_at=yesterday)
-    reopen_confirmed_payment(payment, accountant)
-    accountant_confirm_payment(payment, accountant)
-    latest = EventLog.objects.filter(payload__payment_id=payment.pk, payload__payment_stage='confirmed').first()
-    for _ in range(52):
-        EventLog.objects.create(event_type='payment', order=payment.order, message='Проверка журнала')
-    client = auth_client(accountant)
-    old_page = client.get('/api/orders/cashier-log/?page=2&page_size=50')
-    rows = old_page.data['results']
-    assert next(row for row in rows if row['id'] == latest.pk)['can_reopen'] is True
-    assert next(row for row in rows if row['id'] == old_event.pk)['can_reopen'] is False
-    day = timezone.localdate(yesterday).isoformat()
-    old_period = client.get(f'/api/orders/cashier-log/?date_from={day}&date_to={day}')
-    assert next(row for row in old_period.data if row['id'] == old_event.pk)['can_reopen'] is False
-
-
 def test_income_projection_matches_full_report_with_three_queries(accountant):
-    first = record_staff_payment(_order(), '100', accountant)
+    first = record_staff_payment(shipped_order(), '100', accountant)
     create_cash_refund(first, accountant, amount='20', reason='Возврат')
     from apps.orders.models import OrderItem
     second = Order.objects.create(client=first.order.client, status='shipped', currency='USD')
@@ -141,7 +110,7 @@ def test_income_projection_matches_full_report_with_three_queries(accountant):
 
 @pytest.mark.django_db(transaction=True)
 def test_refund_racing_reopen_cannot_commit_both(accountant):
-    payment = record_staff_payment(_order(), '100', accountant)
+    payment = record_staff_payment(shipped_order(), '100', accountant)
     barrier = Barrier(2)
     def run(action):
         close_old_connections()

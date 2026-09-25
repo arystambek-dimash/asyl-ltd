@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import CashierPage from "@/app/accounting/page";
 import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
-import type { TopbarBack } from "@/components/layout/topbar";
+import { CASHIER_DEPARTMENTS, stubPhoneMatchMedia } from "@/test-utils/cashier";
 
 type SalesDepartment = { id: number; code: string; name: string; color: string } | null;
 const mocks = vi.hoisted(() => ({
@@ -18,45 +18,14 @@ const mocks = vi.hoisted(() => ({
     last_name: "",
     sales_department: null as SalesDepartment,
   },
-  byMethod: true,
   awaitingCount: 0,
 }));
+const defaultMe = mocks.me;
 vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/lib/use-visible-polling", () => ({ useVisiblePolling: () => {} }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({
-    title,
-    section,
-    back,
-    trailing,
-    children,
-    footer,
-  }: {
-    title: React.ReactNode;
-    section?: string;
-    back?: TopbarBack;
-    trailing?: React.ReactNode;
-    children: React.ReactNode;
-    footer?: React.ReactNode;
-  }) => (
-    <div>
-      {section && <p data-testid="section">{section}</p>}
-      <h1>{title}</h1>
-      {back && (
-        <button type="button" onClick={back.onClick}>
-          {back.label}
-        </button>
-      )}
-      {trailing}
-      {children}
-      <div data-testid="footer">{footer}</div>
-    </div>
-  ),
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   api: { get: (...args: unknown[]) => mocks.get(...args), post: (...args: unknown[]) => mocks.post(...args) },
@@ -112,68 +81,32 @@ const transaction = {
   method: "cash",
   method_label: "Наличные",
   status: "confirmed",
+  status_label: "Оплачено",
   effective_status: "confirmed",
+  effective_status_label: "Оплачено",
   paid_at: `${todayIso}T10:00:00`,
-  recorded_by: null,
   client_name: "Клиент",
   available_for_refund: "100",
 };
 
-beforeAll(() => {
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    writable: true,
-    value: () => ({ matches: true, media: "", addEventListener: () => {}, removeEventListener: () => {} }),
-  });
-});
+beforeAll(stubPhoneMatchMedia);
 
 beforeEach(() => {
   resetNavigation("/accounting");
   localStorage.clear();
-  mocks.me = {
-    is_superuser: true,
-    permissions: [],
-    id: 7,
-    username: "kassa",
-    first_name: "",
-    last_name: "",
-    sales_department: null,
-  };
-  mocks.byMethod = true;
+  mocks.me = defaultMe;
   mocks.awaitingCount = 0;
   mocks.get.mockReset();
   mocks.post.mockReset();
   mocks.post.mockResolvedValue({ data: {} });
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
-    if (url.pathname === "/departments/")
-      return {
-        data: [
-          {
-            id: 1,
-            code: "main",
-            name: "Мельница",
-            color: "#123456",
-            is_active: true,
-            is_default: true,
-            order_count: 0,
-          },
-          {
-            id: 2,
-            code: "field",
-            name: "Нью-Сити",
-            color: "#654321",
-            is_active: true,
-            is_default: false,
-            order_count: 0,
-          },
-        ],
-      };
+    if (url.pathname === "/departments/") return { data: CASHIER_DEPARTMENTS };
     if (url.pathname === "/reports/summary/") {
       return {
         data: {
-          from: url.searchParams.get("from"),
-          to: url.searchParams.get("to"),
+          from: url.searchParams.get("date_from"),
+          to: url.searchParams.get("date_to"),
           income: {
             total: "100",
             cash: "100",
@@ -188,9 +121,9 @@ beforeEach(() => {
             cashless_by_currency: { KZT: "0" },
             gross_by_currency: { KZT: "100" },
             refunded_by_currency: {},
-            ...(mocks.byMethod
-              ? { by_method_by_currency: { KZT: { cash: "100" } }, payments_by_method: { cash: 1 } }
-              : {}),
+            by_method_by_currency: { KZT: { cash: "100" } },
+            payments_by_method: { cash: 1 },
+            method_labels: { cash: "Наличные" },
           },
           departments: [
             {
@@ -246,10 +179,12 @@ beforeEach(() => {
           pages: 1,
           count: 1,
           status_counts: { confirmed: 1 },
+          status_labels: { requested: "Ожидает", received: "В кассе", confirmed: "Оплачено", rejected: "Отклонено" },
           summary: {
             paid_by_currency: { KZT: "100", USD: "0" },
             refunded_by_currency: { KZT: "0", USD: "0" },
             paid_by_method: { KZT: { cash: "100" } },
+            method_labels: { cash: "Наличные" },
           },
         },
       };
@@ -277,7 +212,9 @@ it("shows the home menu with live subtitles and opens a section by pushing ?view
   const headline = await screen.findByRole("button", { name: /Поступления за сегодня/ });
   expect(headline).toHaveTextContent("100 ₸");
   expect(
-    mocks.get.mock.calls.some(([url]) => url === `/reports/summary/?section=income&from=${todayIso}&to=${todayIso}`),
+    mocks.get.mock.calls.some(
+      ([url]) => url === `/reports/summary/?section=income&date_from=${todayIso}&date_to=${todayIso}`,
+    ),
   ).toBe(true);
 
   await user.click(menu.getByRole("button", { name: /^Оплаты/ }));
@@ -301,6 +238,7 @@ it("opens POS from the single-button bottom bar: with history from home, by repl
   await user.click(bar.getByRole("button", { name: "POS" }));
   expect(routerCalls.push).toEqual(["/accounting?view=pos"]);
   expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Оплата" })).toHaveAttribute("aria-current", "page");
   // Внутри POS — свои вкладки, панели кассы нет.
   expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
   expect(
@@ -364,7 +302,7 @@ it("lets staff with access to every department switch the cashier's department",
   );
   expect(
     mocks.get.mock.calls.some(
-      ([url]) => url === `/reports/summary/?section=income&from=${todayIso}&to=${todayIso}&department=main`,
+      ([url]) => url === `/reports/summary/?section=income&date_from=${todayIso}&date_to=${todayIso}&department=main`,
     ),
   ).toBe(true);
   // Итоги «Ждут оплаты» на главной считаются по выбранному отделу.
@@ -403,21 +341,6 @@ it("remembers the chosen department on the device and forgets a department that 
   render(<CashierPage />);
   expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
   await waitFor(() => expect(localStorage.getItem("asyl_cashier_department:7")).toBe("all"));
-});
-
-it("starts a superuser on the department from the employee card but lets them switch", async () => {
-  const user = userEvent.setup();
-  mocks.me = { ...mocks.me, sales_department: { id: 1, code: "main", name: "Мельница", color: "#123456" } };
-  render(<CashierPage />);
-  expect(await screen.findByRole("heading", { name: "Мельница" })).toBeInTheDocument();
-  await waitFor(() =>
-    expect(mocks.get.mock.calls.some(([url]) => url === "/clients/debts/?department=main")).toBe(true),
-  );
-  await user.click(screen.getByRole("button", { name: "Мельница" }));
-  await user.click(
-    within(await screen.findByRole("dialog", { name: "Отдел" })).getByRole("button", { name: "Все отделы" }),
-  );
-  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
 });
 
 it("locks a cashier to the department from the employee card", async () => {
@@ -468,7 +391,9 @@ it("shows a locked cashier the shared queue of every department, keeping the res
   expect(urls()).toContain("/orders/payments-queue/?summary=1");
   expect(urls()).toContain("/orders/awaiting-payment/?summary=1&department=field");
   await waitFor(() => expect(urls()).toContain("/clients/debts/?department=field"));
-  expect(urls()).toContain(`/reports/summary/?section=income&from=${todayIso}&to=${todayIso}&department=field`);
+  expect(urls()).toContain(
+    `/reports/summary/?section=income&date_from=${todayIso}&date_to=${todayIso}&department=field`,
+  );
 
   await user.click(menu.getByRole("button", { name: /^Оплаты/ }));
   expect(await screen.findByRole("heading", { name: "Оплаты" })).toBeInTheDocument();
@@ -537,7 +462,6 @@ it("takes a prepayment on the payments screen from «К отгрузке»", asy
     expect(mocks.post).toHaveBeenCalledWith("/orders/31/payments/", {
       amount: "250",
       method: "cash",
-      stage: "received",
     }),
   );
   const urls = mocks.get.mock.calls.map(([url]) => String(url));
@@ -584,14 +508,6 @@ it("hides department chips from a cashier locked to a department", async () => {
   const quick = within(await screen.findByRole("group", { name: "Быстрые фильтры" }));
   expect(quick.getByRole("button", { name: "Сегодня" })).toBeInTheDocument();
   expect(quick.queryByRole("button", { name: "Мельница" })).not.toBeInTheDocument();
-});
-
-it("has no journal: an old ?view=journal link opens the home screen", async () => {
-  resetNavigation("/accounting?view=journal");
-  render(<CashierPage />);
-  const menu = within(await screen.findByRole("navigation", { name: "Разделы кассы" }));
-  expect(menu.queryByRole("button", { name: /Журнал/ })).not.toBeInTheDocument();
-  expect(mocks.get.mock.calls.some(([url]) => String(url).startsWith("/orders/cashier-log/"))).toBe(false);
 });
 
 it("returns a mistakenly confirmed payment to review from the transaction sheet", async () => {
@@ -652,15 +568,6 @@ it("draws the report for today and switches the breakdown", async () => {
   await waitFor(() =>
     expect(mocks.get.mock.calls.some(([url]) => url === "/reports/summary/?section=income")).toBe(true),
   );
-});
-
-it("shows cash and cashless when the backend has no method breakdown", async () => {
-  const user = userEvent.setup();
-  mocks.byMethod = false;
-  resetNavigation("/accounting?view=report");
-  render(<CashierPage />);
-  await user.click(await screen.findByRole("tab", { name: "По способу" }));
-  await waitFor(() => expect(screen.getByText("Безналичные")).toBeInTheDocument());
 });
 
 it("does not claim there are no debts while the list failed to load", async () => {

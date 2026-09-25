@@ -3,13 +3,12 @@ import { ChartPie, ChevronRight, HandCoins, Receipt, Users } from "lucide-react"
 import { ErrorAlert } from "@/components/ui/data-state";
 import { NavList } from "@/components/ui/nav-list";
 import { cn, formatCompactCurrency, formatCurrency, pluralRu } from "@/lib/utils";
+import { formatCompactTotals } from "../totals";
 import type { CashierModel } from "../use-cashier";
 import type { MobileMenuKey } from "../view";
 
 /** Строки главной: разделы меню; POS и удалённая оплата живут в панели внизу. */
-export type HomeItemKey = MobileMenuKey;
-
-const ITEMS: Record<HomeItemKey, { title: string; icon: React.ElementType; hint: string }> = {
+const ITEMS: Record<MobileMenuKey, { title: string; icon: React.ElementType; hint: string }> = {
   confirm: { title: "Оплаты", icon: HandCoins, hint: "Подтверждение и приём оплат" },
   debts: { title: "Долги клиентов", icon: Users, hint: "Остатки по клиентам" },
   transactions: { title: "Транзакции", icon: Receipt, hint: "Все платежи, возвраты и чеки" },
@@ -39,13 +38,9 @@ function debtsSubtitle(model: CashierModel): string {
   const { clients, total, currency, other, overdue } = model.debtTotals;
   if (clients === 0) return "Долгов нет";
   // Валюты не складываются: «1,2 млн ₸ + 500 $».
-  const amount = [
-    formatCompactCurrency(total, currency),
-    ...other.map(([unit, value]) => formatCompactCurrency(value, unit)),
-  ].join(" + ");
   return [
     `${clients} ${pluralRu(clients, ["клиент", "клиента", "клиентов"])}`,
-    amount,
+    formatCompactTotals({ total, currency, other }),
     overdue > 0 ? `${overdue} с просрочкой` : null,
   ]
     .filter(Boolean)
@@ -60,7 +55,7 @@ export function HomeScreen({
 }: {
   model: CashierModel;
   menu: MobileMenuKey[];
-  onOpen: (view: HomeItemKey) => void;
+  onOpen: (view: MobileMenuKey) => void;
 }) {
   const { perms, income, incomeReady, queueTotals, queueReady, summary, queueSummary, debts } = model;
   const headline = perms.canReports
@@ -82,7 +77,7 @@ export function HomeScreen({
           target: "confirm" as const,
         }
       : null;
-  const subtitles: Record<HomeItemKey, string> = {
+  const subtitles: Record<MobileMenuKey, string> = {
     confirm: confirmSubtitle(model),
     debts: debtsSubtitle(model),
     transactions: ITEMS.transactions.hint,

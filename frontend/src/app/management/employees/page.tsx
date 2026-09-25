@@ -9,7 +9,6 @@ import {
   KeyRound,
   Pencil,
   Plus,
-  Search,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -22,20 +21,23 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DepartmentBadge, DepartmentDot } from "@/components/ui/department-badge";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Modal } from "@/components/ui/modal";
 import { PasswordInput } from "@/components/ui/password-input";
 import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
 import { StatCard } from "@/components/ui/stat-card";
-import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { EmptyRow, Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { PERMISSION_PRESETS, applyPreset, type PermissionPreset } from "@/lib/permission-presets";
 import type { Department, Employee, Permission } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import { cn } from "@/lib/utils";
+import { useConfirmAction } from "@/lib/use-confirm-action";
+import { cn, toggledSet } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 
 const emptyForm = {
@@ -53,7 +55,6 @@ function EmployeesPageInner() {
   const { me, refreshMe } = useAuth();
   const canManage = can(me, "employees.manage");
   const canManageSecurity = canManage && can(me, "sys_permissions.manage");
-  const canCreateOrDelete = canManageSecurity;
 
   const { data: employees, error: loadError, reload } = useApi<Employee[]>("/employees/");
   const { data: permissions } = useApi<Permission[]>(canManage ? "/permissions/" : null);
@@ -66,37 +67,27 @@ function EmployeesPageInner() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [deleteEmployee, setDeleteEmployee] = useState<Employee | null>(null);
-  const [deleteError, setDeleteError] = useState("");
-  const [deleteBusy, setDeleteBusy] = useState(false);
+  // Кнопка удаления есть только при canManageSecurity, окно без неё не открыть.
+  const del = useConfirmAction<Employee>(async (employee) => {
+    await api.delete(`/employees/${employee.id}/`);
+    reload();
+  });
   const [query, setQuery] = useState("");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  const canEditSecurity =
-    canManageSecurity &&
-    (!editing ||
-      (editing.username !== me?.username &&
-        (Boolean(me?.is_superuser) || editing.permissions.every((code) => me?.permissions.includes(code)))));
-  const canChangePassword =
-    canManageSecurity &&
-    (!editing ||
-      editing.username === me?.username ||
-      Boolean(me?.is_superuser) ||
-      editing.permissions.every((code) => me?.permissions.includes(code)));
-  const canEditDepartment = editing ? canEditSecurity : canCreateOrDelete;
-  const ungrantablePermissions = new Set(
-    (permissions ?? [])
-      .filter(
-        (permission) =>
-          !me?.is_superuser && !me?.permissions.includes(permission.code) && !selectedPermissions.has(permission.code),
-      )
-      .map((permission) => permission.code),
+  // Учётную запись с более широкими правами, чем у себя, менять нельзя.
+  const withinMyRights = !editing || editing.permissions.every((code) => can(me, code));
+  const canChangePassword = canManageSecurity && withinMyRights;
+  const canEditSecurity = canChangePassword && editing?.username !== me?.username;
+  // Права, которых нет у самого администратора: их не выдать ни вручную, ни шаблоном.
+  const ungrantable = new Set(
+    (permissions ?? []).map((permission) => permission.code).filter((code) => !can(me, code)),
   );
 
   const { data: departments } = useApi<Department[]>(open && canManage ? "/departments/?all=1" : null);
 
   function openNew() {
-    if (!canCreateOrDelete) return;
+    if (!canManageSecurity) return;
     setEditing(null);
     setForm(emptyForm);
     setSelectedPermissions(new Set());
@@ -125,21 +116,12 @@ function EmployeesPageInner() {
     setOpen(true);
   }
 
-  // Шаблон не выдаёт права, которых нет у самого администратора.
-  const presetBlocked = new Set(
-    (permissions ?? [])
-      .filter((permission) => !me?.is_superuser && !me?.permissions.includes(permission.code))
-      .map((permission) => permission.code),
-  );
   function choosePreset(preset: PermissionPreset) {
-    setSelectedPermissions(applyPreset(preset, presetBlocked));
+    setSelectedPermissions(applyPreset(preset, ungrantable));
   }
 
   function togglePermission(code: string) {
-    const next = new Set(selectedPermissions);
-    if (next.has(code)) next.delete(code);
-    else next.add(code);
-    setSelectedPermissions(next);
+    setSelectedPermissions(toggledSet(selectedPermissions, code));
   }
 
   async function submit(event: React.FormEvent) {
@@ -215,21 +197,6 @@ function EmployeesPageInner() {
     }
   }
 
-  async function confirmDelete() {
-    if (!deleteEmployee || !canCreateOrDelete) return;
-    setDeleteBusy(true);
-    setDeleteError("");
-    try {
-      await api.delete(`/employees/${deleteEmployee.id}/`);
-      setDeleteEmployee(null);
-      reload();
-    } catch (caught) {
-      setDeleteError(apiError(caught));
-    } finally {
-      setDeleteBusy(false);
-    }
-  }
-
   const list = employees ?? [];
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = list.filter((employee) => {
@@ -247,7 +214,7 @@ function EmployeesPageInner() {
       section="Управление"
       description="Учётные записи, должности, отделы и персональные системные права."
       actions={
-        canCreateOrDelete ? (
+        canManageSecurity ? (
           <Button size="sm" onClick={openNew} aria-label="Добавить сотрудника">
             <Plus className="size-4" />
             <span className="hidden sm:inline">Добавить сотрудника</span>
@@ -261,15 +228,12 @@ function EmployeesPageInner() {
       </section>
 
       <div className="mb-4">
-        <div className="relative max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input
-            className="pl-9"
-            placeholder="Поиск по имени, логину, должности"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
+        <SearchInput
+          wrapperClassName="max-w-md"
+          placeholder="Поиск по имени, логину, должности"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
       </div>
 
       {loadError && !employees && (
@@ -305,13 +269,11 @@ function EmployeesPageInner() {
                   <TD>
                     <div>{employee.position || "—"}</div>
                     {employee.sales_department && (
-                      <div className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-                        <span
-                          className="size-1.5 rounded-full"
-                          style={{ backgroundColor: employee.sales_department_color || "#315FD5" }}
-                        />
-                        {employee.sales_department_name}
-                      </div>
+                      <DepartmentBadge
+                        name={employee.sales_department_name}
+                        color={employee.sales_department_color}
+                        className="mt-1"
+                      />
                     )}
                   </TD>
                   <TD>{employee.permissions.length}</TD>
@@ -326,15 +288,12 @@ function EmployeesPageInner() {
                         <Button size="sm" variant="ghost" onClick={() => openEdit(employee)} title="Изменить">
                           <Pencil className="size-4" />
                         </Button>
-                        {canCreateOrDelete && (
+                        {canManageSecurity && (
                           <Button
                             size="sm"
                             variant="ghost"
                             className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                            onClick={() => {
-                              setDeleteError("");
-                              setDeleteEmployee(employee);
-                            }}
+                            onClick={() => del.open(employee)}
                             title="Удалить"
                           >
                             <Trash2 className="size-4" />
@@ -345,13 +304,7 @@ function EmployeesPageInner() {
                   </TD>
                 </TR>
               ))}
-              {sorted.length === 0 && (
-                <TR>
-                  <TD colSpan={6} className="py-4 text-center text-[var(--muted-foreground)]">
-                    Сотрудников пока нет.
-                  </TD>
-                </TR>
-              )}
+              {sorted.length === 0 && <EmptyRow colSpan={6}>Сотрудников пока нет.</EmptyRow>}
             </TBody>
           </Table>
         </CardContent>
@@ -512,7 +465,7 @@ function EmployeesPageInner() {
                 <input
                   type="checkbox"
                   checked={salesEmployee}
-                  disabled={!canEditDepartment}
+                  disabled={!canEditSecurity}
                   onChange={(event) => {
                     const checked = event.target.checked;
                     setSalesEmployee(checked);
@@ -543,7 +496,7 @@ function EmployeesPageInner() {
                       <button
                         key={department.id}
                         type="button"
-                        disabled={!department.is_active || !canEditDepartment}
+                        disabled={!department.is_active || !canEditSecurity}
                         onClick={() =>
                           setForm((current) => ({
                             ...current,
@@ -556,10 +509,7 @@ function EmployeesPageInner() {
                             : "border-slate-200 bg-white text-slate-700 disabled:opacity-45"
                         }`}
                       >
-                        <span
-                          className="size-2.5 shrink-0 rounded-full"
-                          style={{ backgroundColor: department.color }}
-                        />
+                        <DepartmentDot color={department.color} />
                         <span className="truncate">{department.name}</span>
                       </button>
                     );
@@ -592,7 +542,7 @@ function EmployeesPageInner() {
                   perms={permissions ?? []}
                   selected={selectedPermissions}
                   onToggle={togglePermission}
-                  disabled={ungrantablePermissions}
+                  disabled={ungrantable}
                 />
               </fieldset>
               {!canEditSecurity && (
@@ -610,17 +560,11 @@ function EmployeesPageInner() {
       </Modal>
 
       <ConfirmDialog
-        open={Boolean(deleteEmployee)}
-        onClose={() => setDeleteEmployee(null)}
+        {...del.dialog}
         title="Удалить сотрудника?"
         description={
-          deleteEmployee
-            ? `Профиль «${deleteEmployee.name}» будет удалён, а учётная запись ${deleteEmployee.username} — отключена.`
-            : ""
+          del.item ? `Профиль «${del.item.name}» будет удалён, а учётная запись ${del.item.username} — отключена.` : ""
         }
-        busy={deleteBusy}
-        error={deleteError}
-        onConfirm={confirmDelete}
       />
     </AppShell>
   );

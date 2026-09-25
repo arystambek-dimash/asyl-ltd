@@ -1,21 +1,35 @@
-from decimal import Decimal
-
-from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils.functional import cached_property
 from rest_framework import serializers
 
 from apps.clients.models import Client, Store
-from apps.common.money import money_string
-from apps.sales.access import scope_by_client_department
+from apps.common.money import CURRENCY_CHOICES, money_string
+from apps.sales.access import assigned_department_id, scope_by_client_department
+from apps.sales.labels import department_label
 from apps.sales.models import Department
+from apps.shipments.services import estimated_load_kg
 
 from .debt import order_overpaid
-from .fixation import OrderFixationSerializer, assert_can_fixate, fixate_order
-from .labels import payment_method_label
+from .fixation import OrderFixationSerializer
+from .labels import (
+    order_payment_method_label,
+    payment_method_label,
+    payment_stage_label,
+    payment_status_label,
+)
 from .models import Order, OrderItem, Payment, StatusChangeRequest
-from .services import set_order_department, set_transport_type
-from .statuses import AWAITING_SHIPMENT_STATUSES, is_payment_open, public_status_label
+from .services import (
+    create_staff_order,
+    lock_live_order,
+    order_items_error,
+    reopen_confirmed_payment_error,
+    replace_items,
+    restore_rejected_payment_error,
+    set_order_department,
+    set_order_warehouse,
+    set_transport_type,
+)
+from .statuses import REVIEWABLE_STATUSES, is_payment_method_allowed, is_payment_open
 from .transport import (
     clean_transport_pair,
     order_wagons,
@@ -28,7 +42,6 @@ from .transport import (
 
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(read_only=True)
-    cv_class = serializers.SerializerMethodField()
     quantity = serializers.IntegerField(min_value=1, max_value=2_147_483_647)
     unit_price = serializers.DecimalField(
         max_digits=12,
@@ -36,10 +49,8 @@ class OrderItemSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True
     )
-    price = serializers.SerializerMethodField()
     client_price = serializers.SerializerMethodField()
     weight_kg = serializers.SerializerMethodField()
-    ask_truck_weight = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
@@ -47,29 +58,17 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "id",
             "product",
             "product_label",
-            "cv_class",
             "quantity",
-            "price",
             "unit_price",
             "client_price",
             "weight_kg",
-            "ask_truck_weight"
         ]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }
 
-    def get_cv_class(self, obj):
-        return obj.product_cv_class
-
     def get_weight_kg(self, obj):
         return str(obj.product_weight_kg)
-
-    def get_ask_truck_weight(self, obj):
-        return obj.product_ask_truck_weight
-
-    def get_price(self, obj):
-        return str(obj.unit_price) if obj.unit_price is not None else None
 
     def get_client_price(self, obj):
         if obj.unit_price is not None:
@@ -80,18 +79,40 @@ class OrderItemSerializer(serializers.ModelSerializer):
         client = obj.order.client
         cache_key = (client.id, obj.order.currency)
         if cache_key not in cache:
-            prefetched = getattr(client, "_prefetched_objects_cache", {}).get("prices")
-            prices = prefetched if prefetched is not None else client.prices.all()
             cache[cache_key] = {
                 cp.product_id: str(cp.price)
-                for cp in prices if cp.currency == obj.order.currency
+                for cp in client.prices.all() if cp.currency == obj.order.currency
             }
         return cache[cache_key].get(obj.product_id)
 
 
+def _username_field(relation: str) -> serializers.CharField:
+    """Логин автора по связи; пустая связь — None."""
+    return serializers.CharField(source=f"{relation}.username", default=None, read_only=True)
+
+
+def _invoice(payment):
+    """Счёт ApiPay оплаты или None (у кассовой оплаты его нет)."""
+    return getattr(payment, "apipay_invoice", None)
+
+
+def apipay_invoice_data(invoice):
+    """Счёт ApiPay в ответе API — один вид для кассы и кабинета клиента."""
+    if invoice is None:
+        return None
+    return {
+        "invoice_id": invoice.invoice_id,
+        "channel": invoice.channel,
+        "status": invoice.status,
+        "phone_number": invoice.phone_number or None,
+        "qr_token_url": invoice.qr_token_url or None,
+        "qr_image_url": invoice.qr_image_url or None,
+        "qr_expires_at": invoice.qr_expires_at,
+    }
+
+
 class StatusChangeRequestSerializer(serializers.ModelSerializer):
-    requested_by_name = serializers.SerializerMethodField()
-    to_status_label = serializers.SerializerMethodField()
+    requested_by_name = _username_field("requested_by")
 
     class Meta:
         model = StatusChangeRequest
@@ -99,35 +120,24 @@ class StatusChangeRequestSerializer(serializers.ModelSerializer):
             "id",
             "order",
             "to_status",
-            "to_status_label",
             "status",
-            "requested_by",
             "requested_by_name",
-            "decided_by",
             "created_at",
             "decided_at"
         ]
 
-    def get_requested_by_name(self, obj):
-        return obj.requested_by.username if obj.requested_by else None
-
-    def get_to_status_label(self, obj):
-        return public_status_label(obj.to_status)
-
-
-def _username(user):
-    return user.username if user else None
-
 
 class PaymentSerializer(serializers.ModelSerializer):
-    recorded_by_name = serializers.SerializerMethodField()
-    received_by_name = serializers.SerializerMethodField()
-    confirmed_by_name = serializers.SerializerMethodField()
+    recorded_by_name = _username_field("recorded_by")
+    received_by_name = _username_field("received_by")
+    confirmed_by_name = _username_field("confirmed_by")
     method_label = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
     currency = serializers.CharField(source="order.currency", read_only=True)
     provider = serializers.SerializerMethodField()
     client_name = serializers.CharField(source="order.client.name", read_only=True)
     effective_status = serializers.SerializerMethodField()
+    effective_status_label = serializers.SerializerMethodField()
     available_for_refund = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
     can_restore = serializers.SerializerMethodField()
@@ -137,33 +147,26 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Payment
-        fields = ["id", "order", "currency", "amount", "method", "method_label", "status",
-                  "note", "paid_at", "recorded_by", "recorded_by_name",
+        fields = ["id", "order", "currency", "amount", "method", "method_label", "status", "status_label",
+                  "note", "paid_at", "recorded_by_name",
                   "received_by_name", "received_at",
-                  "confirmed_by", "confirmed_by_name", "confirmed_at",
-                  "client_name", "provider", "effective_status",
+                  "confirmed_by_name", "confirmed_at",
+                  "client_name", "provider", "effective_status", "effective_status_label",
                   "refunded_amount", "pending_refund_amount",
                   "available_for_refund", "refunds",
                   "can_restore", "can_reopen", "can_issue", "confirmation_mode"]
-        read_only_fields = ["order", "paid_at", "recorded_by", "confirmed_by"]
-
-    def get_recorded_by_name(self, obj):
-        return _username(obj.recorded_by)
-
-    def get_received_by_name(self, obj):
-        return _username(obj.received_by)
-
-    def get_confirmed_by_name(self, obj):
-        return _username(obj.confirmed_by)
+        read_only_fields = ["order", "paid_at"]
 
     def get_method_label(self, obj):
         return payment_method_label(obj.method)
 
+    def get_status_label(self, obj):
+        return payment_status_label(obj.status)
+
     def get_effective_status(self, obj):
         if obj.status in Payment.IN_PROGRESS_STATUSES:
-            try:
-                provider = obj.apipay_invoice
-            except ObjectDoesNotExist:
+            provider = _invoice(obj)
+            if provider is None:
                 return obj.status
             if provider.status == "cancelling":
                 return "cancellation_pending"
@@ -180,64 +183,29 @@ class PaymentSerializer(serializers.ModelSerializer):
             return "partially_refunded"
         return "confirmed"
 
+    def get_effective_status_label(self, obj):
+        return payment_stage_label(self.get_effective_status(obj))
+
     def get_available_for_refund(self, obj):
         return money_string(obj.available_for_refund)
 
     def _request_can(self, code):
+        # Без запроса права не известны — действия не предлагаем (как
+        # OrderSerializer.get_pending_payments): иначе флаги ушли бы «как админу».
         request = self.context.get("request")
-        return request is None or request.user.has_perm_code(code)
+        return request is not None and request.user.has_perm_code(code)
 
     def get_can_reopen(self, obj):
-        """Ошибочно подтверждённую оплату кассы можно вернуть на проверку.
-
-        Те же условия, что у services.reopen_confirmed_payment: онлайн-оплату
-        и оплату с возвратом так не откатывают — приход и возврат остаются в истории.
-        """
-        if not self._request_can("payments.confirm") or obj.status != "confirmed":
-            return False
-        if obj.refunded_amount > 0 or obj.pending_refund_amount > 0:
-            return False
-        try:
-            obj.apipay_invoice
-        except ObjectDoesNotExist:
-            return True
-        return False
+        """Ошибочно подтверждённую оплату кассы можно вернуть на проверку."""
+        return (
+            self._request_can("payments.confirm")
+            and reopen_confirmed_payment_error(obj) is None
+        )
 
     def get_can_restore(self, obj):
-        if (
-                not self._request_can("payments.confirm")
-                or obj.status != "rejected"
-        ):
-            return False
-        confirmed = sum(
-            (
-                payment.net_amount
-                for payment in obj.order.payments.all()
-                if payment.status == "confirmed"
-            ),
-            Decimal("0"),
-        )
-        reserved = sum(
-            (
-                payment.amount
-                for payment in obj.order.payments.all()
-                if payment.status in Payment.IN_PROGRESS_STATUSES
-            ),
-            Decimal("0"),
-        )
-        available = max(
-            Decimal("0"),
-            obj.order.total_amount - confirmed - reserved,
-        )
-        if obj.amount > available:
-            return False
-        try:
-            invoice = obj.apipay_invoice
-        except ObjectDoesNotExist:
-            return True
-        return not (
-                invoice.invoice_id is not None
-                and invoice.status in ("cancelled", "expired", "error", "superseded")
+        return (
+            self._request_can("payments.confirm")
+            and restore_rejected_payment_error(obj) is None
         )
 
     def get_can_issue(self, obj):
@@ -247,24 +215,15 @@ class PaymentSerializer(serializers.ModelSerializer):
                 or obj.method != "invoice"
         ):
             return False
-        try:
-            invoice = obj.apipay_invoice
-        except ObjectDoesNotExist:
+        invoice = _invoice(obj)
+        if invoice is None:
             return True
-        return (
-                invoice.invoice_id is None
-                and not (
-                invoice.channel == "qr"
-                and invoice.status == "creating"
-        )
+        return invoice.invoice_id is None and not (
+            invoice.channel == "qr" and invoice.status == "creating"
         )
 
     def get_confirmation_mode(self, obj):
-        try:
-            obj.apipay_invoice
-        except ObjectDoesNotExist:
-            return "manual"
-        return "automatic"
+        return "automatic" if _invoice(obj) else "manual"
 
     def get_refunds(self, obj):
         return [
@@ -274,7 +233,7 @@ class PaymentSerializer(serializers.ModelSerializer):
                 "method": row.method,
                 "status": row.status,
                 "reason": row.reason,
-                "requested_by_name": _username(row.requested_by),
+                "requested_by_name": row.requested_by.username if row.requested_by else None,
                 "completed_at": row.completed_at,
                 "created_at": row.created_at,
             }
@@ -282,32 +241,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         ]
 
     def get_provider(self, obj):
-        try:
-            invoice = obj.apipay_invoice
-        except ObjectDoesNotExist:
-            return None
-        return {
-            "invoice_id": invoice.invoice_id,
-            "channel": invoice.channel,
-            "status": invoice.status,
-            "phone_number": invoice.phone_number or None,
-            "qr_token_url": invoice.qr_token_url or None,
-            "qr_image_url": invoice.qr_image_url or None,
-            "qr_expires_at": invoice.qr_expires_at,
-            "total_refunded": money_string(invoice.total_refunded),
-            "available_for_refund": money_string(obj.available_for_refund),
-            "refunds": [
-                {
-                    "id": row.refund_id,
-                    "amount": money_string(row.amount),
-                    "status": row.status,
-                    "reason": row.reason,
-                    "error_code": row.error_code or None,
-                    "created_at": row.created_at,
-                }
-                for row in invoice.refunds.all()
-            ],
-        }
+        return apipay_invoice_data(_invoice(obj))
 
 
 class DepartmentLabelMixin:
@@ -321,29 +255,23 @@ class DepartmentLabelMixin:
 
     def get_department_name(self, obj):
         code = self._department_code(obj)
-        row = self._department(code)
-        return row.name if row else (code or "Нет отдела")
+        return department_label(code, self._department(code))[0]
 
     def get_department_color(self, obj):
-        row = self._department(self._department_code(obj))
-        return row.color if row else "#64748B"
+        code = self._department_code(obj)
+        return department_label(code, self._department(code))[1]
 
 
 class PaymentQueueSerializer(DepartmentLabelMixin, PaymentSerializer):
-    client_name = serializers.CharField(source="order.client.name", read_only=True)
     department = serializers.CharField(source="order.department", read_only=True)
     department_name = serializers.SerializerMethodField()
     department_color = serializers.SerializerMethodField()
-    order_status = serializers.CharField(source="order.status", read_only=True)
-    store = serializers.IntegerField(source="order.store_id", read_only=True,
-                                     allow_null=True)
     store_name = serializers.CharField(source="order.store.name", read_only=True,
                                        allow_null=True)
 
     class Meta(PaymentSerializer.Meta):
         fields = PaymentSerializer.Meta.fields + [
-            "client_name", "department", "department_name", "department_color",
-            "order_status", "store", "store_name"]
+            "department", "department_name", "department_color", "store_name"]
 
     def _department_code(self, obj):
         return obj.order.department
@@ -399,16 +327,16 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
     status = serializers.CharField(read_only=True)
     loading_camera = serializers.CharField(read_only=True)
     payment_status = serializers.CharField(read_only=True)
-    settlement_intent = serializers.ChoiceField(
-        choices=Order.SETTLEMENT_INTENTS,
-        required=False,
-    )
+    # Способ расчёта меняют только сервисы оплаты и долга (журнал, проверки).
+    settlement_intent = serializers.CharField(read_only=True)
     payment_method = serializers.CharField(read_only=True)
+    payment_method_label = serializers.SerializerMethodField()
     total_amount = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
     paid_total = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
     remaining_amount = serializers.DecimalField(max_digits=30, decimal_places=2, read_only=True)
-    # Окно оплаты для сотрудника считает сервер (statuses.is_payment_open):
-    # фронт не повторяет правило статусов и показывает только открытые способы.
+    # Окно оплаты для сотрудника считает сервер (statuses.is_payment_open и
+    # is_payment_method_allowed): фронт не повторяет правила статусов и валюты
+    # и показывает только открытые способы.
     payment_open = serializers.SerializerMethodField()
     payment_open_methods = serializers.SerializerMethodField()
     # «kaspi» в способах — свой терминал; Kaspi QR и счёт на телефон — запрос
@@ -419,18 +347,11 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
     is_debt = serializers.BooleanField(read_only=True)
     client_name = serializers.CharField(source="client.name", read_only=True)
     client_phone = serializers.CharField(source="client.phone", read_only=True)
-    warehouse_name = serializers.CharField(
-        source="warehouse.name",
-        read_only=True,
-        allow_null=True,
-        default=None,
-    )
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     weigh_in_kg = serializers.SerializerMethodField()
     bags_loaded = serializers.SerializerMethodField()
     bag_estimate_kg = serializers.SerializerMethodField()
-    bag_weight_kg = serializers.SerializerMethodField()
-    debt_override_by_name = serializers.SerializerMethodField()
-    deleted_by_name = serializers.SerializerMethodField()
+    deleted_by_name = _username_field("deleted_by")
     pending_status_requests = serializers.SerializerMethodField()
     payments = serializers.SerializerMethodField()
     pending_payments = serializers.SerializerMethodField()
@@ -439,9 +360,7 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
     department = serializers.CharField(required=False, allow_blank=True)
     department_name = serializers.SerializerMethodField()
     department_color = serializers.SerializerMethodField()
-    reviewed_at = serializers.DateTimeField(read_only=True)
-    reviewed_by = serializers.PrimaryKeyRelatedField(read_only=True)
-    currency = serializers.ChoiceField(choices=Order.CURRENCIES, required=False)
+    currency = serializers.ChoiceField(choices=CURRENCY_CHOICES, required=False)
     # Источник шаблона передаётся только при создании. Сам заказ всё равно
     # создаётся обычной формой после ручной проверки менеджером.
     template_order = serializers.PrimaryKeyRelatedField(
@@ -450,6 +369,12 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
     # Заказ задним числом: дата, статус и оплата проставляются одной
     # транзакцией с созданием (см. orders/fixation.py).
     backdate = OrderFixationSerializer(write_only=True, required=False)
+    # Цены по id товара: ошибки значений задаёт apply_item_prices.
+    prices = serializers.DictField(
+        write_only=True,
+        required=False,
+        error_messages={"not_a_dict": "Ожидается объект цен по идентификаторам товаров"},
+    )
 
     class Meta:
         model = Order
@@ -467,13 +392,12 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
             "department_name",
             "department_color",
             "status",
-            "reviewed_at",
-            "reviewed_by",
             "rejection_reason",
             "currency",
             "payment_status",
             "settlement_intent",
             "payment_method",
+            "payment_method_label",
             "transport_type",
             "truck_number",
             "trailer_number",
@@ -491,27 +415,24 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
             "overpaid_amount",
             "is_fully_paid",
             "is_debt",
-            "debt_override",
-            "debt_override_by_name",
             "pending_status_requests",
             "payments",
             "pending_payments",
             "weigh_in_kg",
             "bags_loaded",
             "bag_estimate_kg",
-            "bag_weight_kg",
             "created_at",
             "shipped_at",
             "loading_camera",
             "repeated_from",
             "template_order",
             "backdate",
+            "prices",
             "edit_reason",
             "deleted_at",
             "deleted_by_name",
         ]
         read_only_fields = [
-            "debt_override",
             "repeated_from",
             "deleted_at",
             "rejection_reason",
@@ -524,7 +445,6 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
             "arrival_date": {"required": False, "allow_null": True},
             "store": {"required": False, "allow_null": True},
             "warehouse": {"required": False, "allow_null": True},
-            "transport_type": {"required": False},
         }
 
     def get_fields(self):
@@ -565,11 +485,6 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         s = self._shipment(obj)
         return s.shipped_at if s else None
 
-    def _first_item(self, obj):
-        # items предзагружены — берём из кэша, .first() породил бы новый запрос.
-        items = list(obj.items.all())
-        return items[0] if items else None
-
     def get_bag_estimate_kg(self, obj):
         """Ожидаемый вес груза по факту камеры.
 
@@ -578,47 +493,35 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         20×25кг давало 2500 вместо 2000). Расчёт должен совпадать с итогом
         поста погрузки и не зависит от физического сервиса весов Grain.
         """
-        items = list(obj.items.all())
-        ordered = sum(item.quantity for item in items)
-        full_weight = sum(
-            (item.quantity * item.product_weight_kg for item in items), Decimal("0"))
+        ordered = obj.ordered_bags
+        if not ordered:
+            return money_string(0)
         shipment = self._shipment(obj)
         bags = shipment.bags_loaded if shipment else 0
-        if not ordered:
-            return str(Decimal("0"))
-        if bags == ordered:
-            return str(full_weight)
         # Камера насчитала не столько, сколько заказано: состав недогруза
         # неизвестен, поэтому масштабируем средним весом мешка по заказу.
-        return str(full_weight * Decimal(bags) / Decimal(ordered))
+        return money_string(estimated_load_kg(obj) * bags / ordered)
 
-    def get_bag_weight_kg(self, obj):
-        first = self._first_item(obj)
-        per = first.product_weight_kg if first else Decimal("0")
-        return str(per)
+    def get_payment_method_label(self, obj):
+        return order_payment_method_label(obj.payment_method)
 
     def get_payment_open_methods(self, obj):
         return [
             method for method in Payment.CASHIER_METHODS
             if is_payment_open(obj.status, method=method)
+            and is_payment_method_allowed(obj.currency, method)
         ]
 
     def get_payment_open(self, obj):
         return bool(self.get_payment_open_methods(obj))
 
     def get_payment_request_open(self, obj):
-        return is_payment_open(obj.status, method=None)
+        return is_payment_open(obj.status, method=None) and is_payment_method_allowed(
+            obj.currency, None
+        )
 
     def get_overpaid_amount(self, obj):
         return money_string(order_overpaid(obj))
-
-    def get_debt_override_by_name(self, obj):
-        u = obj.debt_override_by
-        return u.username if u else None
-
-    def get_deleted_by_name(self, obj):
-        u = obj.deleted_by
-        return u.username if u else None
 
     @cached_property
     def _status_request_list_serializer(self):
@@ -654,16 +557,8 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         return self._payment_list_serializer.to_representation(rows)
 
     def validate_department(self, code):
-        request = self.context.get("request")
-        employee = getattr(getattr(request, "user", None), "employee", None)
-        assigned = getattr(employee, "sales_department", None)
-        if self.instance is None and assigned is not None:
-            if not assigned.is_active:
-                raise serializers.ValidationError(
-                    "Закреплённый отдел продаж отключён — обратитесь к администратору")
-            return assigned.code
         if not code:
-            if self.instance and self.instance.status not in ("draft", "pending"):
+            if self.instance and self.instance.status not in REVIEWABLE_STATUSES:
                 raise serializers.ValidationError("У подтверждённого заказа должен быть отдел продаж")
             return ""
         qs = Department.objects.filter(code=code)
@@ -673,6 +568,29 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         if not qs.filter(is_active=True).exists():
             raise serializers.ValidationError("Выберите действующий отдел")
         return code
+
+    def _new_order_department(self, client, requested: str) -> str:
+        """Отдел нового заказа: отдел клиента, иначе отдел сотрудника, иначе из формы.
+
+        Выбор в форме у сотрудника отдела не учитывается (как у клиентов):
+        его область — только свой отдел. Суперюзер — без отдела (sales.access).
+        """
+        department_id = assigned_department_id(self.context["request"].user)
+        if client.department_id is not None:
+            department = client.department
+            if department_id is None and requested not in ("", department.code):
+                raise serializers.ValidationError(
+                    {"department": "Заказ должен учитываться в отделе клиента"}
+                )
+        elif department_id is not None:
+            department = Department.objects.get(pk=department_id)
+        else:
+            return requested
+        if not department.is_active:
+            raise serializers.ValidationError(
+                {"department": "Закреплённый отдел продаж отключён — обратитесь к администратору"}
+            )
+        return department.code
 
     def validate(self, attrs):
         if self.instance is None:
@@ -684,18 +602,12 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         else:
             # Ранняя проверка итоговой пары; под блокировкой её повторяет update().
             _final_transport(self.instance, attrs)
-        if "prices" in self.initial_data and not isinstance(self.initial_data["prices"], dict):
-            raise serializers.ValidationError({"prices": "Ожидается объект цен по идентификаторам товаров"})
         items = attrs.get("items")
         if items is not None:
             historical_ids = (set(self.instance.items.values_list("product_id", flat=True))
                               if self.instance is not None else set())
-            if any(not item["product"].is_active and item["product"].pk not in historical_ids
-                   for item in items):
-                raise serializers.ValidationError({"items": "Архивный товар нельзя добавлять в заказ"})
-            product_ids = [item["product"].pk for item in items]
-            if len(product_ids) != len(set(product_ids)):
-                raise serializers.ValidationError({"items": "Объедините повторяющиеся товары в одну строку"})
+            if error := order_items_error(items, historical_ids):
+                raise serializers.ValidationError({"items": error})
         if self.instance is not None and attrs.get("template_order") is not None:
             raise serializers.ValidationError(
                 {
@@ -712,19 +624,14 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
                         "code": "backdate_on_update",
                     }
                 )
-            if not self.initial_data.get("prices"):
+            if not attrs.get("prices"):
                 raise serializers.ValidationError(
                     {"backdate": "Для заказа задним числом укажите цены по всем позициям"}
                 )
         store = attrs.get("store")
         client = attrs.get("client") or getattr(self.instance, "client", None)
-        if self.instance is None and client and client.department_id:
-            code = client.department.code
-            if attrs.get("department") not in (None, "", code):
-                raise serializers.ValidationError(
-                    {"department": "Заказ должен учитываться в отделе клиента"}
-                )
-            attrs["department"] = code
+        if self.instance is None:
+            attrs["department"] = self._new_order_department(client, attrs.get("department", ""))
         if store and client and store.client_id != client.id:
             raise serializers.ValidationError(
                 {
@@ -732,106 +639,27 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
                     "code": "store_mismatch",
                 }
             )
-        intent = attrs.get("settlement_intent")
-        if self.instance is None and intent is not None:
-            attrs["payment_method"] = {
-                "pending": "pending",
-                "debt": "debt",
-                "instant": "invoice",
-            }[intent]
         return attrs
 
-    @transaction.atomic
     def create(self, validated_data):
-        from apps.warehouse.services import (
-            ensure_products_available,
-            resolve_warehouse,
-        )
-
-        from .services import apply_item_prices, confirm_order
-
-        items = validated_data.pop("items")
         # A reason applies only to a post-shipment correction. Ignore this
         # optional write-only transport field on ordinary order creation.
         validated_data.pop("edit_reason", None)
-        template_order = validated_data.pop("template_order", None)
-        backdate = validated_data.pop("backdate", None)
-        user = self.context["request"].user
-        if backdate is not None:
-            # Права проверяем до записи: отказ откатывает всю транзакцию.
-            assert_can_fixate(user, paid=backdate.get("paid", False))
-        warehouse = resolve_warehouse(validated_data.get("warehouse"))
-        validated_data["warehouse"] = warehouse
-        # Исторический заказ склад не списывает, поэтому и остаток на сегодня
-        # для него не важен — товара могло уже не остаться.
-        if backdate is None:
-            ensure_products_available(
-                (item["product"] for item in items),
-                warehouse=warehouse,
-            )
-        validated_data["created_by"] = user
-        if validated_data.get("truck_number") or validated_data.get("trailer_number"):
-            validated_data["truck_number_set_by"] = user
-        validated_data.setdefault("currency", validated_data["client"].currency)
-
-        employee = getattr(user, "employee", None)
-        assigned = validated_data["client"].department or getattr(
-            employee, "sales_department", None
+        items = validated_data.pop("items")
+        return create_staff_order(
+            self.context["request"].user,
+            validated_data,
+            items,
+            prices=validated_data.pop("prices", None),
+            template_order=validated_data.pop("template_order", None),
+            backdate=validated_data.pop("backdate", None),
         )
-        if assigned is not None:
-            if not assigned.is_active:
-                raise serializers.ValidationError(
-                    {
-                        "department": "Закреплённый отдел продаж отключён — обратитесь к администратору"
-                    }
-                )
-            validated_data["department"] = assigned.code
-        else:
-            validated_data.setdefault(
-                "department",
-                validated_data["client"].department.code
-                if validated_data["client"].department_id else "",
-            )
-        if template_order is not None:
-            validated_data["repeated_from"] = template_order
-        prices_by_product = self.initial_data.get("prices")
-        if prices_by_product:
-            validated_data["status"] = "pending"
-        order = Order.objects.create(**validated_data)
-        created = [OrderItem.objects.create(order=order, **item) for item in items]
-        if prices_by_product:
-            prices_by_item = {
-                it.id: prices_by_product.get(str(it.product_id),
-                                             prices_by_product.get(it.product_id))
-                for it in created
-            }
-            if user.has_perm_code("orders.confirm") and order.department:
-                confirm_order(order, user, prices=prices_by_item)
-            else:
-                apply_item_prices(order, prices_by_item, user)
-            order.refresh_from_db()
-        if template_order is not None:
-            from apps.eventlog.services import log_event
-            log_event(
-                "order_repeat",
-                f"Создан заказ #{order.pk} по шаблону заказа #{template_order.pk}",
-                user=user,
-                order=order,
-                payload={
-                    "source_order_id": template_order.pk,
-                    "new_order_id": order.pk,
-                    "mode": "reviewed_template",
-                },
-            )
-        if backdate is not None:
-            order = fixate_order(order, user, set_created=True, **backdate)
-        return order
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        from .services import lock_live_order, replace_items
         user = self.context["request"].user
         edit_reason = validated_data.pop("edit_reason", "")
+        prices = validated_data.pop("prices", None)
         # ModelSerializer.save() writes the whole instance. Re-read it under
         # the same parent lock as AI start/finish so a stale PATCH cannot put
         # status/loading_camera back after a physical transition.
@@ -839,75 +667,14 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         # Recheck the final pair against the locked row: another edit may have
         # changed the transport after serializer validation.
         _final_transport(instance, validated_data)
-        warehouse_supplied = "warehouse" in validated_data
-        requested_warehouse = validated_data.pop("warehouse", None)
-        if warehouse_supplied:
-            from apps.warehouse.services import (
-                ensure_products_available,
-                resolve_warehouse,
+        if "warehouse" in validated_data:
+            # До replace_items: его проверка остатка идёт уже по новому складу.
+            set_order_warehouse(
+                instance,
+                validated_data.pop("warehouse"),
+                user,
+                check_items="items" not in validated_data,
             )
-
-            current_warehouse = resolve_warehouse(
-                instance.warehouse,
-                require_active=False,
-            )
-            requested_warehouse = resolve_warehouse(
-                requested_warehouse,
-                require_active=False,
-            )
-            if requested_warehouse.pk != current_warehouse.pk:
-                if instance.status in (*AWAITING_SHIPMENT_STATUSES, "shipped"):
-                    raise serializers.ValidationError({
-                        "detail": "Склад отгрузки нельзя изменить после подтверждения заказа",
-                        "code": "warehouse_locked",
-                    })
-                # A newly selected warehouse must be active. The relaxed
-                # resolution above only lets an existing inactive pin remain
-                # readable and comparable.
-                requested_warehouse = resolve_warehouse(requested_warehouse)
-                # Persist before replace_items so its availability check uses the
-                # selected warehouse. transaction.atomic rolls this back if a
-                # later scalar or item validation fails.
-                instance.warehouse = requested_warehouse
-                instance.save(update_fields=["warehouse"])
-                if "items" not in validated_data:
-                    current_items = list(
-                        instance.items.select_related("product")
-                    )
-                    deleted = [
-                        item.product_label
-                        for item in current_items
-                        if item.product_id is None
-                    ]
-                    if deleted:
-                        raise serializers.ValidationError({
-                            "detail": (
-                                "Нельзя сменить склад: удалены товары — "
-                                + ", ".join(deleted)
-                            ),
-                            "code": "product_deleted",
-                        })
-                    ensure_products_available(
-                        (item.product for item in current_items),
-                        warehouse=requested_warehouse,
-                    )
-            elif instance.warehouse_id is None:
-                # Explicitly selecting the effective default pins a legacy-null
-                # order without treating it as a business-level warehouse move.
-                instance.warehouse = requested_warehouse
-                instance.save(update_fields=["warehouse"])
-        new_intent = validated_data.get("settlement_intent")
-        if new_intent is not None and new_intent != instance.settlement_intent:
-            if instance.status == "shipped":
-                raise serializers.ValidationError({
-                    "detail": "Способ расчёта нельзя изменить после выезда",
-                    "code": "settlement_intent_locked",
-                })
-            validated_data["payment_method"] = {
-                "pending": "pending",
-                "debt": "debt",
-                "instant": "invoice",
-            }[new_intent]
         new_client = validated_data.pop("client", None)
         if new_client is not None and new_client.id != instance.client_id:
             raise serializers.ValidationError(
@@ -945,7 +712,7 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
             replace_items(
                 instance,
                 items,
-                self.initial_data.get("prices"),
+                prices,
                 user,
                 edit_reason=edit_reason,
             )
@@ -963,7 +730,7 @@ class TransportNumbersSerializer(serializers.Serializer):
 class ConfirmOrderSerializer(TransportNumbersSerializer):
     """Подтверждение заявки: отдел, цены, «сколько есть» и номер транспорта.
 
-    Цены уходят в сервис как есть — их ошибки и коды задаёт ``_apply_prices``.
+    Цены уходят в сервис как есть — их ошибки и коды задаёт ``apply_item_prices``.
     Количество — от 1 мешка; больше запрошенного и чужую позицию отсекает
     сервис. Пустой номер — «не передан»: подтверждение номер не стирает.
     """

@@ -13,42 +13,44 @@ from apps.bots.models import BotClientProfile, WhatsAppBotSettings
 from apps.bots.parsing import parse_rail_report
 from apps.bots.rail import (
     conduct_rail_report,
-    create_rail_order,
     remember_client_profile,
     resolve_report,
 )
-from apps.bots.tests.samples import CONDUCT_CODES, OWNER_BAGS, OWNER_DAY, OWNER_REPORT, OWNER_WAGONS, report
+from apps.bots.tests.samples import (
+    CONDUCT_CODES,
+    OWNER_BAGS,
+    OWNER_DAY,
+    OWNER_REPORT,
+    OWNER_WAGONS,
+    issue_codes,
+    move_to_retail,
+    report,
+    stock_bags,
+    train_order,
+)
 from apps.catalog.models import ClientPrice, Product, ProductAlias
 from apps.catalog.services import remember_product_alias
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.notifications.models import Notification
 from apps.orders.backdate import backdate_moment
-from apps.orders.models import Order, OrderItem
-from apps.sales.models import Department
-from apps.shipments.models import Shipment, ShipmentWagon
+from apps.orders.models import Order
+from apps.shipments.models import ShipmentWagon
 from apps.warehouse.models import StockItem, StockMovement
 
 pytestmark = pytest.mark.django_db
 
-def _resolve(text=OWNER_REPORT, **options):
-    return resolve_report(parse_rail_report(text), **options)
-
-
-def _codes(resolved, kind="issues"):
-    return [issue.code for issue in getattr(resolved, kind)]
+def _resolve(text=OWNER_REPORT):
+    return resolve_report(parse_rail_report(text))
 
 
 def _header(day, client_name="ООО OSIYO NAV NIHOL"):
     return f"{day:%d.%m.%y} Узбекистан {client_name}"
 
 
-def _shipped_train_order(client, product, *, day, bags=OWNER_BAGS, unit_price="7.50", currency="USD", **fields):
-    order = Order.objects.create(
-        client=client, currency=currency, transport_type="train", status="shipped", department="export", **fields)
-    OrderItem.objects.create(order=order, product=product, quantity=bags, unit_price=unit_price)
-    Shipment.objects.create(order=order, bags_loaded=bags, shipped_at=backdate_moment(day))
-    return order
+def _shipped_before(client, product, days, **fields):
+    """Вагонный заказ, отгруженный за ``days`` дней до отчёта владельца."""
+    return train_order(client, product, shipped_at=backdate_moment(OWNER_DAY - timedelta(days=days)), **fields)
 
 
 # --- словари -------------------------------------------------------------------------------------
@@ -68,7 +70,7 @@ def test_alias_and_profile_store_layout_free_keys(client, product):
 
 def test_remembered_product_code_resolves_the_next_report(client, price, product, boss):
     ProductAlias.objects.all().delete()
-    assert _codes(_resolve()) == ["product_unknown"]
+    assert issue_codes(_resolve()) == ["product_unknown"]
 
     alias = remember_product_alias(" д1c ", product, boss)
 
@@ -144,7 +146,7 @@ def test_remembered_client_name_resolves_with_its_currency(client, product, depa
     client.company_name = "Осиё Нав"
     client.save()
     ClientPrice.objects.create(client=client, product=product, currency="KZT", price="3700")
-    assert _codes(_resolve()) == ["client_unknown"]
+    assert issue_codes(_resolve()) == ["client_unknown"]
 
     profile = remember_client_profile("ООО  OSIYO NAV NIHOL", client, "KZT", boss)
 
@@ -236,7 +238,7 @@ def test_client_matches_by_person_name_without_company(product, department):
 def test_unknown_client_needs_review(product):
     resolved = _resolve()
 
-    assert _codes(resolved) == ["client_unknown"]
+    assert issue_codes(resolved) == ["client_unknown"]
     assert resolved.issues[0].subject == "ООО OSIYO NAV NIHOL"
     assert resolved.client is None
     assert not resolved.ok
@@ -248,7 +250,7 @@ def test_two_clients_with_the_same_name_need_review(client, product, department)
 
     resolved = _resolve()
 
-    assert _codes(resolved) == ["client_ambiguous"]
+    assert issue_codes(resolved) == ["client_ambiguous"]
     assert resolved.client is None
 
 
@@ -256,14 +258,14 @@ def test_client_without_department_needs_review(client, product, price):
     client.department = None
     client.save()
 
-    assert _codes(_resolve()) == ["client_department_missing"]
+    assert issue_codes(_resolve()) == ["client_department_missing"]
 
 
 def test_client_with_disabled_department_needs_review(client, product, price, department):
     department.is_active = False
     department.save()
 
-    assert _codes(_resolve()) == ["client_department_inactive"]
+    assert issue_codes(_resolve()) == ["client_department_inactive"]
 
 
 def test_unknown_product_code_is_reported_once(client, price):
@@ -271,7 +273,7 @@ def test_unknown_product_code_is_reported_once(client, price):
 
     resolved = _resolve()
 
-    assert _codes(resolved) == ["product_unknown"]
+    assert issue_codes(resolved) == ["product_unknown"]
     assert resolved.issues[0].subject == "Д1с"
     assert resolved.wagons == ()
 
@@ -287,30 +289,30 @@ def test_archived_product_needs_review(client, product, price):
     product.is_active = False
     product.save()
 
-    assert _codes(_resolve()) == ["product_archived"]
+    assert issue_codes(_resolve()) == ["product_archived"]
 
 
 def test_missing_client_price_needs_review(client, product):
     resolved = _resolve()
 
-    assert _codes(resolved) == ["price_missing"]
+    assert issue_codes(resolved) == ["price_missing"]
     assert "USD" in resolved.issues[0].message
 
 
 def test_price_far_from_last_wagon_order_needs_review(client, product, price):
-    previous = _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=30), unit_price="6.00")
+    previous = _shipped_before(client, product, 30, unit_price="6.00")
 
     resolved = _resolve()
 
-    assert _codes(resolved) == ["price_mismatch"]
+    assert issue_codes(resolved) == ["price_mismatch"]
     assert resolved.issues[0].order_id == previous.pk
     assert "25%" in resolved.issues[0].message
     assert resolved.items[0].reference_price == Decimal("6.00")
 
 
 def test_price_within_tolerance_of_last_wagon_order_is_fine(client, product, price):
-    _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=60), unit_price="5.00")
-    latest = _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=30), unit_price="7.00")
+    _shipped_before(client, product, 60, unit_price="5.00")
+    latest = _shipped_before(client, product, 30, unit_price="7.00")
 
     resolved = _resolve()
 
@@ -319,10 +321,8 @@ def test_price_within_tolerance_of_last_wagon_order_is_fine(client, product, pri
 
 
 def test_legacy_shipment_without_date_does_not_become_the_reference(client, product, price):
-    latest = _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=30), unit_price="7.00")
-    legacy = Order.objects.create(
-        client=client, currency="USD", transport_type="train", status="shipped", department="export")
-    OrderItem.objects.create(order=legacy, product=product, quantity=OWNER_BAGS, unit_price="1.00")
+    latest = _shipped_before(client, product, 30, unit_price="7.00")
+    train_order(client, product, unit_price="1.00")  # отгружен, а отгрузки с датой нет
 
     resolved = _resolve()
 
@@ -331,10 +331,8 @@ def test_legacy_shipment_without_date_does_not_become_the_reference(client, prod
 
 
 def test_price_check_ignores_other_currency_and_trucks(client, product, price):
-    _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=30), unit_price="3700", currency="KZT")
-    truck = _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=20), unit_price="1.00")
-    truck.transport_type = "truck"
-    truck.save()
+    _shipped_before(client, product, 30, unit_price="3700", currency="KZT")
+    _shipped_before(client, product, 20, unit_price="1.00", transport_type="truck")
 
     resolved = _resolve()
 
@@ -342,16 +340,25 @@ def test_price_check_ignores_other_currency_and_trucks(client, product, price):
     assert resolved.items[0].reference_price is None
 
 
-def test_price_tolerance_is_configurable(client, product, price):
-    _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=30), unit_price="7.00")
+def test_price_tolerance_comes_from_the_bot_settings(client, product, price):
+    _shipped_before(client, product, 30, unit_price="7.00")
+    assert _resolve().ok
 
-    assert _codes(_resolve(price_tolerance_pct=5)) == ["price_mismatch"]
+    WhatsAppBotSettings.objects.create(price_tolerance_pct=5)
+
+    assert issue_codes(_resolve()) == ["price_mismatch"]
+
+
+def test_zero_tons_wagon_has_one_reason(client, product, price):
+    resolved = _resolve(report(f"Д1с-{OWNER_WAGONS[0]}-0 тн"))
+
+    assert issue_codes(resolved) == ["bad_tons"]
 
 
 def test_tons_must_split_into_whole_bags(client, product, price):
     resolved = _resolve(report(f"Д1с-{OWNER_WAGONS[0]}-68,01 тн"))
 
-    assert _codes(resolved) == ["bags_not_whole"]
+    assert issue_codes(resolved) == ["bags_not_whole"]
     assert resolved.issues[0].subject == OWNER_WAGONS[0]
 
 
@@ -360,13 +367,13 @@ def test_report_from_the_future_needs_review(client, product, price):
 
     resolved = _resolve(report(f"Д1с-{OWNER_WAGONS[0]}-68 тн", header=_header(tomorrow)))
 
-    assert _codes(resolved) == ["future_day"]
+    assert issue_codes(resolved) == ["future_day"]
 
 
 def test_parse_issues_are_kept_alongside_resolution(client, product, price):
     resolved = _resolve(report(f"Д1с-{OWNER_WAGONS[0]}-68 тн", "Итого 68 т"))
 
-    assert "unknown_line" in _codes(resolved)
+    assert "unknown_line" in issue_codes(resolved)
     assert not resolved.ok
 
 
@@ -376,15 +383,12 @@ def test_short_stock_is_a_warning_not_a_blocker(client, product, price, boss):
     resolved = _resolve()
 
     assert resolved.ok
-    assert _codes(resolved, "warnings") == ["stock_short"]
+    assert issue_codes(resolved, "warnings") == ["stock_short"]
     assert "100" in resolved.warnings[0].message
 
 
 def _shipped_wagon(client, product, *, day, number=OWNER_WAGONS[3]):
-    earlier = _shipped_train_order(client, product, day=day, bags=1360)
-    ShipmentWagon.objects.create(
-        shipment=earlier.shipment, number=number, product=product, bags=1360, weight_kg="68000", position=1)
-    return earlier
+    return train_order(client, product, shipped_at=backdate_moment(day), wagons=[number])
 
 
 @pytest.mark.parametrize(
@@ -399,7 +403,7 @@ def test_wagon_is_a_duplicate_only_within_three_days_of_the_report_date(
 
     resolved = _resolve()
 
-    assert _codes(resolved) == (["wagon_already_shipped"] if duplicate else [])
+    assert issue_codes(resolved) == (["wagon_already_shipped"] if duplicate else [])
     if duplicate:
         assert resolved.issues[0].order_id == earlier.pk
         assert resolved.issues[0].subject == OWNER_WAGONS[3]
@@ -409,8 +413,9 @@ def test_duplicate_window_comes_from_the_bot_settings(client, product, price):
     WhatsAppBotSettings.objects.create(duplicate_window_days=10)
     _shipped_wagon(client, product, day=OWNER_DAY - timedelta(days=10))
 
-    assert _codes(_resolve()) == ["wagon_already_shipped"]
-    assert _resolve(duplicate_window_days=3).ok
+    assert issue_codes(_resolve()) == ["wagon_already_shipped"]
+    WhatsAppBotSettings.objects.update(duplicate_window_days=3)
+    assert _resolve().ok
 
 
 def test_duplicate_window_without_the_settings_row_is_three_days(client, product, price):
@@ -434,10 +439,7 @@ def test_old_default_window_moves_to_three_days(stored, migrated):
 
 
 def test_wagon_of_a_deleted_order_is_not_a_duplicate(client, product, price):
-    earlier = _shipped_train_order(client, product, day=OWNER_DAY - timedelta(days=3), bags=1360)
-    ShipmentWagon.objects.create(
-        shipment=earlier.shipment, number=OWNER_WAGONS[0], product=product, bags=1360,
-        weight_kg="68000", position=1)
+    earlier = _shipped_wagon(client, product, day=OWNER_DAY - timedelta(days=3), number=OWNER_WAGONS[0])
     Order.all_objects.filter(pk=earlier.pk).update(deleted_at=timezone.now())
 
     assert _resolve().ok
@@ -455,14 +457,11 @@ def test_wagon_of_a_deleted_order_is_not_a_duplicate(client, product, price):
     ],
 )
 def test_manual_wagon_order_for_the_same_bags_is_a_duplicate(client, product, price, fields, duplicate):
-    fields = {"status": "shipped", "transport_type": "train", "bags": OWNER_BAGS, **fields}
-    bags = fields.pop("bags")
-    manual = Order.objects.create(client=client, currency="USD", department="export", **fields)
-    OrderItem.objects.create(order=manual, product=product, quantity=bags, unit_price="7.50")
+    manual = train_order(client, product, **fields)
 
     resolved = _resolve()
 
-    assert _codes(resolved) == (["manual_order_duplicate"] if duplicate else [])
+    assert issue_codes(resolved) == (["manual_order_duplicate"] if duplicate else [])
     if duplicate:
         assert resolved.issues[0].order_id == manual.pk
 
@@ -470,17 +469,14 @@ def test_manual_wagon_order_for_the_same_bags_is_a_duplicate(client, product, pr
 @pytest.mark.parametrize("dated_by", ["created_at", "shipped_at"])
 def test_manual_wagon_order_without_arrival_date_is_found_by_its_dates(client, product, price, dated_by):
     """Динара не всегда ставит дату прибытия: ручной заказ опознаётся и по созданию, и по отгрузке."""
-    manual = Order.objects.create(
-        client=client, currency="USD", department="export", transport_type="train", status="shipped")
-    OrderItem.objects.create(order=manual, product=product, quantity=OWNER_BAGS, unit_price="7.50")
     far = backdate_moment(OWNER_DAY - timedelta(days=30))
     near = backdate_moment(OWNER_DAY + timedelta(days=1))
+    manual = train_order(client, product, shipped_at=near if dated_by == "shipped_at" else far)
     Order.objects.filter(pk=manual.pk).update(created_at=near if dated_by == "created_at" else far)
-    Shipment.objects.create(order=manual, bags_loaded=OWNER_BAGS, shipped_at=near if dated_by == "shipped_at" else far)
 
     resolved = _resolve()
 
-    assert _codes(resolved) == ["manual_order_duplicate"]
+    assert issue_codes(resolved) == ["manual_order_duplicate"]
     assert resolved.issues[0].order_id == manual.pk
 
 
@@ -497,7 +493,7 @@ def test_manual_duplicate_check_skips_orders_shipped_by_report(client, product, 
     assert _resolve().ok
 
 
-# --- create_rail_order / conduct_rail_report ------------------------------------------------------
+# --- conduct_rail_report -------------------------------------------------------------------------
 
 
 def _local_date(value):
@@ -517,7 +513,7 @@ def test_owner_report_is_conducted_into_a_shipped_wagon_order(client, product, p
     (item,) = order.items.all()
     assert (item.product, item.quantity, item.unit_price) == (product, OWNER_BAGS, Decimal("7.50"))
     assert order.total_amount == Decimal("122400.00")
-    assert StockItem.objects.get(product=product).bags == 20000 - OWNER_BAGS
+    assert stock_bags(product) == 20000 - OWNER_BAGS
     wagons = list(order.shipment.wagons.all())
     assert [wagon.number for wagon in wagons] == list(OWNER_WAGONS)
     assert {(wagon.bags, wagon.weight_kg) for wagon in wagons} == {(1360, Decimal("68000.00"))}
@@ -605,20 +601,18 @@ def test_short_stock_does_not_stop_a_wagon_that_already_left(client, product, pr
     order = conduct_rail_report(parse_rail_report(OWNER_REPORT), conductor)
 
     assert order.status == "shipped"
-    assert StockItem.objects.get(product=product).bags == 100 - OWNER_BAGS
+    assert stock_bags(product) == 100 - OWNER_BAGS
 
 
 def test_employee_of_another_department_cannot_conduct(client, product, price, conductor):
-    other = Department.objects.create(code="retail", name="Розница")
-    conductor.employee.sales_department = other
-    conductor.employee.save()
+    move_to_retail(conductor)
 
     with pytest.raises(PermissionDenied) as caught:
         conduct_rail_report(parse_rail_report(OWNER_REPORT), conductor)
 
     assert "другим отделом" in str(caught.value.detail)
     assert not Order.objects.exists()
-    assert StockItem.objects.get(product=product).bags == 20000
+    assert stock_bags(product) == 20000
 
 
 def test_report_needing_review_creates_nothing(client, price, conductor):
@@ -643,7 +637,7 @@ def test_same_report_twice_is_refused_as_duplicate(client, product, price, condu
 
     assert caught.value.detail["code"] == "rail_report_needs_review"
     assert Order.objects.count() == 1
-    assert StockItem.objects.get(product=product).bags == 20000 - OWNER_BAGS
+    assert stock_bags(product) == 20000 - OWNER_BAGS
 
 
 @pytest.mark.parametrize("missing", ["orders.create", "orders.confirm", "loader.confirm", "loader.wagons"])
@@ -654,7 +648,7 @@ def test_conducting_needs_order_and_wagon_rights(client, product, price, user_wi
         conduct_rail_report(parse_rail_report(OWNER_REPORT), user)
 
     assert not Order.objects.exists()
-    assert StockItem.objects.get(product=product).bags == 20000
+    assert stock_bags(product) == 20000
 
 
 def test_trucks_loader_cannot_conduct_wagons(client, product, price, user_with_perms):
@@ -664,39 +658,4 @@ def test_trucks_loader_cannot_conduct_wagons(client, product, price, user_with_p
     with pytest.raises(PermissionDenied):
         conduct_rail_report(parse_rail_report(OWNER_REPORT), user)
 
-    assert not Order.objects.exists()
-
-
-def test_create_rail_order_confirms_without_shipping(client, product, price, user_with_perms):
-    user = user_with_perms("rail-creator", codes=["orders.create", "orders.confirm"])
-
-    order = create_rail_order(_resolve(), user)
-
-    order.refresh_from_db()
-    assert (order.status, order.transport_type, order.rail_station) == ("confirmed", "train", "Раустан")
-    assert order.items.get().quantity == OWNER_BAGS
-    assert StockItem.objects.get(product=product).bags == 20000
-
-
-def test_create_rail_order_checks_the_client_department(client, product, price, user_with_perms):
-    """Подтверждение отдел не проверяет — заказ по отчёту проверяет его сам."""
-    user = user_with_perms("rail-creator", codes=["orders.create", "orders.confirm"])
-    user.employee.sales_department = Department.objects.create(code="retail", name="Розница")
-    user.employee.save()
-
-    with pytest.raises(PermissionDenied) as caught:
-        create_rail_order(_resolve(), user)
-
-    assert "другим отделом" in str(caught.value.detail)
-    assert not Order.objects.exists()
-
-
-def test_create_rail_order_refuses_an_unresolved_report(client, price, user_with_perms):
-    ProductAlias.objects.all().delete()
-    user = user_with_perms("rail-creator", codes=["orders.create", "orders.confirm"])
-
-    with pytest.raises(ValidationError) as caught:
-        create_rail_order(_resolve(), user)
-
-    assert caught.value.detail["code"] == "rail_report_needs_review"
     assert not Order.objects.exists()

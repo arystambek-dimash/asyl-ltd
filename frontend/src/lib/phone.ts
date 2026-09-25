@@ -94,3 +94,9 @@ export function missingPhoneDigits(value: string): number {
 }
 
 export const isPhoneComplete = (value: string) => Boolean(onlyDigits(value)) && missingPhoneDigits(value) === 0;
+
+/** Телефон для счёта Kaspi — то же правило, что normalize_phone на сервере: 10 цифр или 11 с 7/8 в начале. */
+export function isKaspiInvoicePhone(value: string): boolean {
+  const digits = onlyDigits(value);
+  return digits.length === 10 || (digits.length === 11 && (digits[0] === "7" || digits[0] === "8"));
+}

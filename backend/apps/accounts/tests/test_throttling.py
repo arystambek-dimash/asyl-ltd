@@ -1,6 +1,7 @@
 """Троттлинг чувствительных эндпоинтов. По умолчанию под pytest он выключен —
 здесь включаем его точечно через override_settings и проверяем 429."""
 import pytest
+from django.conf import settings
 from django.core.cache import cache
 from django.test import override_settings
 from rest_framework.test import APIClient
@@ -9,19 +10,8 @@ pytestmark = pytest.mark.django_db
 
 
 THROTTLED = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
-    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
-    "EXCEPTION_HANDLER": "config.exceptions.api_exception_handler",
-    "DEFAULT_THROTTLE_CLASSES": (
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
-    ),
-    "DEFAULT_THROTTLE_RATES": {
-        "anon": "60/min", "user": "600/min", "burst": "30/sec",
-        "login": "3/min", "register": "2/min",
-    },
+    **settings.REST_FRAMEWORK,
+    "DEFAULT_THROTTLE_RATES": {"login": "3/min", "register": "2/min"},
     "NUM_PROXIES": 1,
 }
 
@@ -83,20 +73,3 @@ def test_registration_throttle_ignores_client_supplied_xff_prefix():
         )
 
     assert 429 in codes, f"spoofed XFF prefixes must share one bucket: {codes}"
-
-
-@override_settings(REST_FRAMEWORK=THROTTLED)
-def test_authenticated_api_has_user_throttle(auth_client, make_user):
-    # Обычный пользователь под user-лимитом (600/min) — при нормальной работе
-    # 429 не ловит; проверяем, что троттл-класс подключён и не роняет запрос.
-    u = make_user(username="thr")
-    r = auth_client(u).get("/api/auth/me/")
-    assert r.status_code == 200
-
-
-def test_throttling_disabled_by_default(auth_client, make_user):
-    # Базовые настройки под pytest — троттлинг не мешает обычным прогонам.
-    u = make_user(username="nothrottle")
-    for _ in range(30):
-        r = auth_client(u).get("/api/auth/me/")
-    assert r.status_code == 200

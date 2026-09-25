@@ -1,8 +1,6 @@
 from typing import NoReturn
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils.crypto import constant_time_compare
 from rest_framework import serializers
@@ -14,7 +12,10 @@ from rest_framework_simplejwt.serializers import (
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.utils import get_md5_hash_password
 
+from apps.sales.access import assigned_department_id
+
 from .models import User
+from .passwords import validate_new_password
 
 
 def _password_change_required():
@@ -29,11 +30,7 @@ def _password_change_required():
 class PasswordChangeAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
-        if (
-            self.user.is_active
-            and self.user.is_client
-            and self.user.must_change_password
-        ):
+        if self.user.is_client and self.user.must_change_password:
             raise _password_change_required()
         return data
 
@@ -123,11 +120,9 @@ class InitialPasswordSerializer(serializers.Serializer):
             )
 
         try:
-            validate_password(new_password, user=user)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(
-                {"new_password": exc.messages}
-            ) from exc
+            validate_new_password(new_password, user=user)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({"new_password": exc.detail}) from exc
 
         user.set_password(new_password)
         user.must_change_password = False
@@ -137,7 +132,6 @@ class InitialPasswordSerializer(serializers.Serializer):
 
 class MeSerializer(serializers.ModelSerializer):
     permissions = serializers.SerializerMethodField()
-    client_id = serializers.SerializerMethodField()
     position = serializers.SerializerMethodField()
     sales_department = serializers.SerializerMethodField()
 
@@ -146,7 +140,7 @@ class MeSerializer(serializers.ModelSerializer):
         fields = [
             "id", "username", "first_name", "last_name",
             "is_client", "is_superuser",
-            "permissions", "position", "client_id", "sales_department"]
+            "permissions", "position", "sales_department"]
 
 
     def get_permissions(self, obj):
@@ -156,15 +150,11 @@ class MeSerializer(serializers.ModelSerializer):
         emp = getattr(obj, "employee", None)
         return emp.position if emp else None
 
-    def get_client_id(self, obj):
-        profile = getattr(obj, "client_profile", None)
-        return profile.id if profile else None
-
     def get_sales_department(self, obj):
-        employee = getattr(obj, "employee", None)
-        department = getattr(employee, "sales_department", None)
-        if department is None:
+        """Отдел, которым сервер ограничивает пользователя (sales.access); у суперюзера — нет."""
+        if assigned_department_id(obj) is None:
             return None
+        department = obj.employee.sales_department
         return {
             "id": department.id,
             "code": department.code,

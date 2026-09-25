@@ -1,5 +1,6 @@
 "use client";
 import type { KeyboardEvent } from "react";
+import { nextRovingIndex } from "@/lib/focus";
 import { cn } from "@/lib/utils";
 
 export interface TabDef {
@@ -45,12 +46,8 @@ export function Tabs({
   label?: string;
 }) {
   function moveFocus(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    let nextIndex: number | null = null;
-    if (event.key === "ArrowRight") nextIndex = (index + 1) % tabs.length;
-    if (event.key === "ArrowLeft") nextIndex = (index - 1 + tabs.length) % tabs.length;
-    if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = tabs.length - 1;
-    if (nextIndex === null || !tabs[nextIndex]) return;
+    const nextIndex = nextRovingIndex(event.key, index, tabs.length, "horizontal");
+    if (nextIndex === null) return;
 
     event.preventDefault();
     onChange(tabs[nextIndex].key);

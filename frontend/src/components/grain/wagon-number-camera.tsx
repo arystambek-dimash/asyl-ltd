@@ -1,86 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Check, RefreshCw, ScanLine, Settings2, VideoOff } from "lucide-react";
-import { playableCameras, type CameraFeed } from "@/components/camera-wall";
-import { CameraStream } from "@/components/camera-stream";
+import { Check, ScanLine, Settings2 } from "lucide-react";
+import { CameraChoice } from "@/components/camera-choice";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
+import { isLogicalCamera, playableCameras, type PlayableCamera } from "@/lib/shipping-cameras";
 import { showSuccess } from "@/lib/toast";
-import type { WagonNumberCameraSettings } from "@/lib/types";
+import type { CameraFeed, WagonNumberCameraSettings } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import { cn } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
 import { WagonArchCameraPanel } from "./wagon-arch-camera";
-
-function CameraChoice({
-  camera,
-  checked,
-  onSelect,
-}: {
-  camera: CameraFeed & { src: string };
-  checked: boolean;
-  onSelect: () => void;
-}) {
-  const [streamOnline, setStreamOnline] = useState(false);
-
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-pressed={checked}
-      className={cn(
-        "group overflow-hidden rounded-2xl border text-left transition duration-200",
-        checked
-          ? "border-amber-400 bg-amber-50 shadow-[0_10px_28px_rgba(180,116,24,0.16)] ring-2 ring-amber-500/20"
-          : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md",
-      )}
-    >
-      <div className="relative aspect-video overflow-hidden bg-[#111318]">
-        <CameraStream
-          src={camera.src}
-          onStateChange={setStreamOnline}
-          className="absolute inset-0 size-full object-cover transition duration-300 group-hover:scale-[1.02]"
-        />
-        {!streamOnline && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-950/75 text-white/45">
-            <VideoOff className="size-5" />
-            <span className="text-[11px]">Нет изображения</span>
-          </div>
-        )}
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 to-transparent px-3 pb-8 pt-2.5">
-          <span className="flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[10px] font-semibold text-white backdrop-blur-md">
-            <span className={cn("size-1.5 rounded-full", streamOnline ? "bg-emerald-400" : "bg-amber-400")} />
-            {streamOnline ? "ОНЛАЙН" : "НЕТ СИГНАЛА"}
-          </span>
-          <span
-            className={cn(
-              "flex size-7 items-center justify-center rounded-full border backdrop-blur-md transition",
-              checked ? "border-amber-300 bg-amber-500 text-white" : "border-white/35 bg-black/25 text-transparent",
-            )}
-          >
-            <Check className="size-4" />
-          </span>
-        </div>
-      </div>
-      <div className="flex items-center gap-3 px-3.5 py-3">
-        <span
-          className={cn(
-            "flex size-9 shrink-0 items-center justify-center rounded-xl",
-            checked ? "bg-amber-500 text-white" : "bg-slate-100 text-slate-400",
-          )}
-        >
-          <ScanLine className="size-4" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-bold text-slate-800">{camera.zone}</span>
-          <span className="mt-0.5 block truncate text-[11px] text-slate-400">{camera.name}</span>
-        </span>
-      </div>
-    </button>
-  );
-}
 
 function AssignmentModal({
   cameras,
@@ -88,7 +20,7 @@ function AssignmentModal({
   onSaved,
   onClose,
 }: {
-  cameras: (CameraFeed & { src: string })[];
+  cameras: PlayableCamera[];
   settings: WagonNumberCameraSettings | null;
   onSaved: (next: WagonNumberCameraSettings) => void;
   onClose: () => void;
@@ -153,20 +85,15 @@ function AssignmentModal({
         </div>
       </div>
 
-      {settings?.sync_status === "pending" && (
-        <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-          <RefreshCw className="mt-0.5 size-4 shrink-0" />
-          <p>{settings.detail || "ПК камер переподключается. Назначение применится автоматически."}</p>
-        </div>
-      )}
-
       <div className="grid gap-3 sm:grid-cols-2">
         {cameras.map((camera) => (
           <CameraChoice
             key={camera.id}
             camera={camera}
             checked={selected === camera.src}
-            onSelect={() => {
+            accent="amber"
+            icon={ScanLine}
+            onToggle={() => {
               setSelected(camera.src);
               setError("");
             }}
@@ -183,8 +110,14 @@ function AssignmentModal({
   );
 }
 
-export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: boolean }) {
-  const { data: cameraRows, error: camerasError, reload: reloadCameras } = useApi<CameraFeed[]>("/cameras/");
+export function WagonNumberCameraWorkspace() {
+  const canManage = useAuth((state) => Boolean(state.me?.is_superuser));
+  // Список камер нужен только окну назначения, а оно есть только у суперадмина.
+  const {
+    data: cameraRows,
+    error: camerasError,
+    reload: reloadCameras,
+  } = useApi<CameraFeed[]>(canManage ? "/cameras/" : null);
   const {
     data: settings,
     error: settingsError,
@@ -193,7 +126,7 @@ export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: 
   } = useApi<WagonNumberCameraSettings>("/cameras/wagon-number-settings/");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const cameras = useMemo(
-    () => playableCameras(cameraRows).filter((camera) => /^cam[1-9]\d*$/.test(camera.src)),
+    () => playableCameras(cameraRows).filter((camera) => isLogicalCamera(camera.src)),
     [cameraRows],
   );
   return (
@@ -206,7 +139,6 @@ export function WagonNumberCameraWorkspace({ canManage = false }: { canManage?: 
       )}
       <WagonArchCameraPanel
         assignedCamera={settings?.camera_source ?? null}
-        syncStatus={settings?.sync_status ?? null}
         assignAction={
           canManage ? (
             <Button

@@ -1,31 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { cameraOwnersFor, isAiOnlineStatus } from "@/lib/shipping-cameras";
-import type { AiCountingSession, Order } from "@/lib/types";
+import { cameraOwnersFor, isLogicalCamera } from "@/lib/shipping-cameras";
+import type { AiCountingSession } from "@/lib/types";
+import { makeOrder } from "@/test-utils/factories";
 
-const order: Order = {
-  id: 401,
-  client: 1,
-  client_name: "Магнум",
-  currency: "KZT",
-  status: "confirmed",
-  transport_type: "truck",
-  truck_number: "",
-  items: [],
-  total_amount: "0.00",
-  paid_total: "0.00",
-  is_fully_paid: true,
-  debt_override: false,
-  created_at: "2026-08-15T00:00:00Z",
-};
-
-describe("isAiOnlineStatus", () => {
-  it("accepts both the new and the legacy processor status", () => {
-    expect(isAiOnlineStatus("online")).toBe(true);
-    expect(isAiOnlineStatus(" Онлайн ")).toBe(true);
-    expect(isAiOnlineStatus("запуск...")).toBe(false);
-    expect(isAiOnlineStatus(undefined)).toBe(false);
-  });
-});
+const order = makeOrder();
 
 describe("cameraOwnersFor", () => {
   it("prefers live sessions over the order's loading camera", () => {
@@ -38,5 +16,12 @@ describe("cameraOwnersFor", () => {
       [session],
     );
     expect(owners).toEqual({ cam2: 500 });
+  });
+});
+
+describe("isLogicalCamera", () => {
+  it("пропускает только логические камеры camN", () => {
+    expect(["cam1", "cam12"].map(isLogicalCamera)).toEqual([true, true]);
+    expect(["cam0", "cam_8c26", "cam1_sub", "nvr1"].map(isLogicalCamera)).toEqual([false, false, false, false]);
   });
 });

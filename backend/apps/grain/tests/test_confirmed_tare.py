@@ -1,15 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from importlib import import_module
 from threading import Event
 
 import pytest
-from django.apps import apps
 from django.db import IntegrityError, close_old_connections, connection, connections
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.eventlog.models import EventLog
 from apps.grain import automatic_routing, historical_tare, services, statuses as st
 from apps.grain.models import PassageScaleAutomationState, UnassignedWeighing, VehicleTareMemory, Wagon, WeighingRecord
 from apps.grain.serializers import WeighingRecordSerializer
@@ -132,28 +129,25 @@ def test_setting_plate_refreshes_latest_confirmed_manual_tare(staff, settings):
     assert VehicleTareMemory.objects.get(number="676VEA13").record_id == source.pk
 
 
-def test_backfill_seeds_only_eligible_latest_sources_with_audit_and_preserves_newer(staff):
-    migration = import_module("apps.grain.migrations.0019_confirmed_entry_tare_memory")
-    measured = _source(source="scale", orientation="", operator=staff)
-    manual = _source(number="201 DFA 13", source="manual", operator=staff, manual_reason="Ввод подтверждён")
-    rear = _source(number="999ABC13", source="scale", orientation="rear", operator=staff)
-    unknown = _source(number="998ABC13", source="scale", orientation="")
-    newer = _source(number="123SMA13", source="scale", orientation="front", minutes=30)
-    historical_tare.remember(newer, newer.wagon.number)
-    old_memory = VehicleTareMemory.objects.get(number="123SMA13")
-    with connection.schema_editor() as schema_editor:
-        migration.seed_confirmed_entry_tares(apps, schema_editor)
-        migration.seed_confirmed_entry_tares(apps, schema_editor)
-    assert VehicleTareMemory.objects.get(number="123SMA13").record_id == old_memory.record_id
-    assert VehicleTareMemory.objects.get(number="201DFA13").record_id == manual.pk
-    assert not VehicleTareMemory.objects.filter(number__in=[rear.wagon.number, unknown.wagon.number]).exists()
-    audit = EventLog.objects.get(event_type="grain_tare_memory_backfill")
-    assert audit.payload["record_id"] == manual.pk and audit.payload["source"] == "manual"
-    assert audit.payload["operator_id"] == staff.pk
-    manual.refresh_from_db(); measured.refresh_from_db()
-    assert manual.source == "manual" and manual.orientation == "" and not manual.photo
-    assert measured.source == "scale" and measured.orientation == ""
-    assert historical_tare.latest_before(_exit("201DFA13"), "201DFA13").pk == manual.pk
+def test_plate_typed_in_cyrillic_is_saved_in_latin_for_camera_matching(staff, settings):
+    # Оператор с русской раскладкой: «465 ВСА 13» — тот же номер, что камера читает как 465BCA13.
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = False
+    source = _source(number="", source="manual", operator=staff, manual_reason="Ввод подтверждён")
+    source.wagon.status = st.AT_SILO
+    source.wagon.save(update_fields=["status"])
+    services.set_passage_number(source.wagon, "465 ВСА 13", staff)
+    source.wagon.refresh_from_db()
+    assert source.wagon.number == "465BCA13"
+    assert VehicleTareMemory.objects.get(number="465BCA13").record_id == source.pk
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("465 всА-13", "465BCA13"),
+    ("Х 209 LAN", "X209LAN"),
+    ("  Прицеп 7 ", "Прицеп 7"),
+])
+def test_passage_number_takes_cyrillic_twins_only_for_kazakhstan_plates(raw, expected):
+    assert services.normalize_passage_number(raw) == expected
 
 
 @pytest.mark.django_db(transaction=True)

@@ -5,25 +5,19 @@ import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
-import { api, apiError } from "@/lib/api";
-import { copyText } from "@/lib/rail-report";
-import { cn, PHONE_INPUT_TEXT } from "@/lib/utils";
+import { Textarea } from "@/components/ui/textarea";
+import { api, apiError, apiErrorCode } from "@/lib/api";
+import { copyText, whatsappLink } from "@/lib/clipboard";
 import {
   composeUrl,
   newSendKey,
   recipientLine,
   WAGON_REPORT_API,
-  whatsappLink,
   type WagonReportDelivery,
   type WagonReportDraft,
   type WagonReportScope,
   type WagonReportSent,
 } from "@/lib/wagon-report";
-
-const TEXTAREA =
-  "w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 font-mono leading-snug outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15";
-
-const errorCode = (cause: unknown) => (cause as { response?: { data?: { code?: string } } }).response?.data?.code;
 
 /**
  * «Отправить отчёт» из истории вагонов: сервер составляет отчёт в формате
@@ -72,7 +66,7 @@ export function WagonReportModal({
     setLoading(true);
     compose()
       .catch((cause: unknown) => {
-        if (active) setError(apiError(cause) || "Не удалось составить отчёт");
+        if (active) setError(apiError(cause));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -103,9 +97,9 @@ export function WagonReportModal({
       setSent(data);
       onSent(data);
     } catch (cause) {
-      setError(apiError(cause) || "Не удалось отправить отчёт");
+      setError(apiError(cause));
       // Бота выключили, пока окно было открыто: покажем, как отчёт уйдёт теперь.
-      if (errorCode(cause) === "report_bot_unavailable") void compose({ keepText: true }).catch(() => undefined);
+      if (apiErrorCode(cause) === "report_bot_unavailable") void compose({ keepText: true }).catch(() => undefined);
     } finally {
       setBusy(false);
     }
@@ -195,7 +189,8 @@ export function WagonReportModal({
         {draft && !empty && (
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="wagon-report-text">Текст отчёта</Label>
-            <textarea
+            <Textarea
+              mono
               id="wagon-report-text"
               rows={Math.min(14, Math.max(5, text.split("\n").length + 1))}
               spellCheck={false}
@@ -205,7 +200,6 @@ export function WagonReportModal({
                 setText(event.target.value);
                 setCopied("");
               }}
-              className={cn(TEXTAREA, PHONE_INPUT_TEXT)}
             />
             {copied === "failed" && (
               <p className="text-[12px] text-[var(--destructive)]">

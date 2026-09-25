@@ -2,14 +2,6 @@ import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, apiError, clearTokens, setTokens } from "@/lib/api";
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 function unauthorized(config: InternalAxiosRequestConfig): never {
   const response = {
     config,
@@ -49,7 +41,7 @@ describe("auth refresh generation", () => {
     const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => unauthorized(config));
     api.defaults.adapter = adapter;
 
-    const refresh = deferred<AxiosResponse<{ access: string }>>();
+    const refresh = Promise.withResolvers<AxiosResponse<{ access: string }>>();
     vi.spyOn(axios, "post").mockReturnValue(refresh.promise);
 
     const outcome = api.get("/protected/").catch((error: unknown) => error);
@@ -85,7 +77,7 @@ describe("auth refresh generation", () => {
     });
     api.defaults.adapter = adapter;
 
-    const refresh = deferred<AxiosResponse<{ access: string }>>();
+    const refresh = Promise.withResolvers<AxiosResponse<{ access: string }>>();
     vi.spyOn(axios, "post").mockReturnValue(refresh.promise);
 
     const first = api.get("/first/");
@@ -136,7 +128,7 @@ describe("auth refresh generation", () => {
     setTokens("expired-access", "refresh-one");
     api.defaults.adapter = vi.fn(async (config: InternalAxiosRequestConfig) => unauthorized(config));
 
-    const refresh = deferred<AxiosResponse<{ access: string }>>();
+    const refresh = Promise.withResolvers<AxiosResponse<{ access: string }>>();
     vi.spyOn(axios, "post").mockReturnValue(refresh.promise);
 
     const outcome = api.get("/protected/").catch((error: unknown) => error);
@@ -159,14 +151,14 @@ describe("auth refresh generation", () => {
   it("does not refresh or retry a late 401 from an older session", async () => {
     setTokens("session-a-access", "session-a-refresh");
     const refreshSpy = vi.spyOn(axios, "post");
-    const oldResponse = deferred<void>();
+    const oldResponse = Promise.withResolvers<void>();
     const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => {
       await oldResponse.promise;
       return unauthorized(config);
     });
     api.defaults.adapter = adapter;
 
-    const outcome = api.post("/orders/1/finish-loading/", {}).catch((error: unknown) => error);
+    const outcome = api.post("/loader/orders/1/dispatch/", {}).catch((error: unknown) => error);
     await vi.waitFor(() => expect(adapter).toHaveBeenCalledTimes(1));
 
     setTokens("session-b-access", "session-b-refresh");

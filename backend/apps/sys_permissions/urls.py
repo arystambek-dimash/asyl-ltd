@@ -1,6 +1,6 @@
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from .views import PermissionViewSet
 
-router = DefaultRouter()
+router = SimpleRouter()
 router.register("permissions", PermissionViewSet, basename="permissions")
 urlpatterns = router.urls

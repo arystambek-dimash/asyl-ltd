@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/api", () => ({ apiError: (error: Error) => error.message }));
 
 import type { AlwaysOnProductMapping } from "@/lib/types";
-import { InferredBadge, inferredLabel, UnknownColorDialog, unresolvedBagsLabel } from "./unknown-color";
+import { InferredBadge, UnknownColorDialog, unresolvedBagsLabel } from "./unknown-color";
 
 const mappings: AlwaysOnProductMapping[] = [
   { color: "red", product: 1, product_label: "Мука красная · 50 кг" },
@@ -30,12 +30,18 @@ function renderDialog(overrides: Partial<Parameters<typeof UnknownColorDialog>[0
 }
 
 describe("InferredBadge", () => {
-  it("подписывает способ и число мешков", () => {
-    expect(inferredLabel({ neighbors: 2 })).toBe("по соседям · 2");
-    expect(inferredLabel({ votes: 1, neighbors: 3 })).toBe("по соседям 3 · по голосам 1");
-    expect(inferredLabel({ manual: 1 })).toBe("вручную · 1");
-    expect(inferredLabel({})).toBe("");
-    expect(inferredLabel(undefined)).toBe("");
+  it.each([
+    [{ neighbors: 2 }, "по соседям · 2"],
+    [{ votes: 1, neighbors: 3 }, "по соседям 3 · по голосам 1"],
+    [{ manual: 1 }, "вручную · 1"],
+  ])("подписывает способ и число мешков: %o", (inferred, label) => {
+    render(<InferredBadge inferred={inferred} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("не рисуется без данных о способе", () => {
+    const { container } = render(<InferredBadge />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("не рисуется, когда всё распознала камера", () => {

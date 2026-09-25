@@ -2,9 +2,10 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { OrderConfirmation, type ConfirmContext } from "./order-confirmation";
-import type { Department, Me, Order } from "@/lib/types";
+import type { Order } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
+import { makeDepartment, makeMe } from "@/test-utils/factories";
 
 const mocks = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("@/lib/api", () => ({
@@ -32,20 +33,17 @@ const order = {
   items: [{ id: 1, product: 1, product_label: "Мука", quantity: 2, unit_price: "100" }],
 } as Order;
 const departments = [
-  { code: "main", name: "Мельница", is_active: true },
-  { code: "city", name: "Город", is_active: true },
-] as Department[];
+  makeDepartment({ id: 1, code: "main", name: "Мельница", is_default: false }),
+  makeDepartment({ id: 2, code: "city", name: "Город", is_default: false }),
+];
+
+function renderConfirmation(order: Order, onConfirm = vi.fn()) {
+  render(<OrderConfirmation order={order} departments={departments} busy={false} onConfirm={onConfirm} />);
+}
 
 it("uses the assigned client department and cannot redirect a sale to another", async () => {
   const confirm = vi.fn();
-  render(
-    <OrderConfirmation
-      order={{ ...order, client_department: "city", client_department_name: "Город" }}
-      departments={departments}
-      busy={false}
-      onConfirm={confirm}
-    />,
-  );
+  renderConfirmation({ ...order, client_department: "city", client_department_name: "Город" }, confirm);
   expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toHaveValue("city");
   expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toBeDisabled();
   expect(screen.queryByRole("option", { name: "Мельница" })).not.toBeInTheDocument();
@@ -56,7 +54,7 @@ it("uses the assigned client department and cannot redirect a sale to another", 
 it("requires an explicit department even when a legacy order contains the default", async () => {
   const user = userEvent.setup();
   const confirm = vi.fn();
-  render(<OrderConfirmation order={order} departments={departments} busy={false} onConfirm={confirm} />);
+  renderConfirmation(order, confirm);
   expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toHaveValue("");
   expect(screen.getByRole("button", { name: "Подтвердить заказ" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox", { name: "Отдел продаж" }), "city");
@@ -70,9 +68,9 @@ it("requires an explicit department even when a legacy order contains the defaul
 it("offers a department employee only their own department and asks before assigning the client", async () => {
   const user = userEvent.setup();
   const confirm = vi.fn();
-  useAuth.setState({ me: { sales_department: { id: 2, code: "city", name: "Город", color: "#000" } } as Me });
+  useAuth.setState({ me: makeMe({ sales_department: { id: 2, code: "city", name: "Город", color: "#000" } }) });
   try {
-    render(<OrderConfirmation order={order} departments={departments} busy={false} onConfirm={confirm} />);
+    renderConfirmation(order, confirm);
 
     expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toHaveValue("city");
     expect(screen.getByRole("combobox", { name: "Отдел продаж" })).toBeDisabled();
@@ -96,7 +94,10 @@ it("requires positive prices and hides inactive department choices", async () =>
   render(
     <OrderConfirmation
       order={order}
-      departments={[...departments, { code: "old", name: "Архивный", is_active: false } as Department]}
+      departments={[
+        ...departments,
+        makeDepartment({ id: 3, code: "old", name: "Архивный", is_active: false, is_default: false }),
+      ]}
       busy={false}
       onConfirm={vi.fn()}
     />,
@@ -126,7 +127,7 @@ it("loads stock on open and gives out what is on hand", async () => {
   stock({
     items: { "1": { on_hand: 8, awaiting_shipment: 5 }, "2": { on_hand: 0, awaiting_shipment: 0 } },
   });
-  render(<OrderConfirmation order={request} departments={departments} busy={false} onConfirm={confirm} />);
+  renderConfirmation(request, confirm);
 
   expect(mocks.get).toHaveBeenCalledWith("/orders/12/confirm-context/", expect.anything());
   expect(await screen.findByText("На складе 8 · ждут отгрузки 5")).toBeInTheDocument();
@@ -153,7 +154,7 @@ it("loads stock on open and gives out what is on hand", async () => {
 
 it("keeps the quantity between one bag and the requested amount", async () => {
   const user = userEvent.setup();
-  render(<OrderConfirmation order={request} departments={departments} busy={false} onConfirm={vi.fn()} />);
+  renderConfirmation(request);
   const quantity = screen.getByRole("spinbutton", { name: "Количество: Мука 1с" });
   expect(quantity).toHaveAttribute("min", "1");
   expect(quantity).toHaveAttribute("max", "10");
@@ -172,11 +173,11 @@ it("keeps the quantity between one bag and the requested amount", async () => {
 it("sends a truck and trailer typed in the transport block", async () => {
   const user = userEvent.setup();
   const confirm = vi.fn();
-  render(<OrderConfirmation order={request} departments={departments} busy={false} onConfirm={confirm} />);
+  renderConfirmation(request, confirm);
 
   const transport = screen.getByRole("group", { name: "Транспорт (можно позже)" });
   await user.type(within(transport).getByLabelText("Тягач"), "07 kg 695 adt");
-  await user.type(within(transport).getByLabelText("Прицеп"), "07kg837pb");
+  await user.type(within(transport).getByLabelText("Прицеп (необязательно)"), "07kg837pb");
   await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
 
   expect(confirm).toHaveBeenCalledWith({
@@ -189,8 +190,8 @@ it("sends a truck and trailer typed in the transport block", async () => {
 
 it("says which number the API would refuse and does not block on an empty one", async () => {
   const user = userEvent.setup();
-  render(<OrderConfirmation order={request} departments={departments} busy={false} onConfirm={vi.fn()} />);
-  const trailer = screen.getByLabelText("Прицеп");
+  renderConfirmation(request);
+  const trailer = screen.getByLabelText("Прицеп (необязательно)");
 
   await user.type(trailer, "12");
   await user.tab();
@@ -208,7 +209,7 @@ it("says which number the API would refuse and does not block on an empty one", 
 
 it("shows only the hard error for a truck number that is too short", async () => {
   const user = userEvent.setup();
-  render(<OrderConfirmation order={request} departments={departments} busy={false} onConfirm={vi.fn()} />);
+  renderConfirmation(request);
   const truck = screen.getByLabelText("Тягач");
 
   await user.type(truck, "12");
@@ -221,15 +222,8 @@ it("shows only the hard error for a truck number that is too short", async () =>
 it("takes an eight-digit wagon number", async () => {
   const user = userEvent.setup();
   const confirm = vi.fn();
-  render(
-    <OrderConfirmation
-      order={{ ...request, transport_type: "train" }}
-      departments={departments}
-      busy={false}
-      onConfirm={confirm}
-    />,
-  );
-  expect(screen.queryByLabelText("Прицеп")).not.toBeInTheDocument();
+  renderConfirmation({ ...request, transport_type: "train" }, confirm);
+  expect(screen.queryByLabelText("Прицеп (необязательно)")).not.toBeInTheDocument();
   const wagon = screen.getByLabelText("Номер вагона");
   expect(wagon).toHaveClass("text-base");
   await user.type(wagon, "1234");
@@ -248,14 +242,7 @@ it("shows a number entered by the client read-only", async () => {
   const user = userEvent.setup();
   const confirm = vi.fn();
   stock({ transport_locked: true });
-  render(
-    <OrderConfirmation
-      order={{ ...request, truck_number: "403BJN13" }}
-      departments={departments}
-      busy={false}
-      onConfirm={confirm}
-    />,
-  );
+  renderConfirmation({ ...request, truck_number: "403BJN13" }, confirm);
   expect(await screen.findByText("403 BJN 13")).toBeInTheDocument();
   expect(screen.getByText("Номер указал клиент — изменить его может только он.")).toBeInTheDocument();
   expect(screen.queryByLabelText("Тягач")).not.toBeInTheDocument();
@@ -265,7 +252,7 @@ it("shows a number entered by the client read-only", async () => {
 
 it("shows the total as not calculated while a price is missing", async () => {
   const user = userEvent.setup();
-  render(<OrderConfirmation order={request} departments={departments} busy={false} onConfirm={vi.fn()} />);
+  renderConfirmation(request);
   await user.clear(screen.getByRole("spinbutton", { name: "Цена: Отруби" }));
   expect(screen.getByText("Итого: 14 меш. · Не рассчитана")).toBeInTheDocument();
 });

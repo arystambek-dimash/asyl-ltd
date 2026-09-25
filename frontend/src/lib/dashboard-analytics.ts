@@ -1,6 +1,7 @@
 import type { DashboardOperationalSummary, ReportSummary } from "@/lib/types";
-import { amountForCurrency, finiteMoney, primaryMoneyCurrency } from "@/lib/currency-map";
-import { toLocalIsoDate } from "@/lib/utils";
+import { amountForCurrency, finiteMoney, otherCurrencyAmounts } from "@/lib/currency-map";
+import { reportChartSeries } from "@/lib/report-analytics";
+import { shiftIsoDate } from "@/lib/utils";
 
 const DEFAULT_DASHBOARD_CURRENCY = "KZT";
 
@@ -16,14 +17,14 @@ interface DashboardMoneyPoint {
   received: number;
 }
 
-export interface DashboardShipmentMetrics {
+interface DashboardShipmentMetrics {
   shippedByDay: DashboardShipmentPoint[];
   shippedToday: number;
   shippedYesterday: number;
   shippedTodayOrders: number;
 }
 
-export interface DashboardReportMetrics extends DashboardShipmentMetrics {
+interface DashboardReportMetrics extends DashboardShipmentMetrics {
   spark: DashboardMoneyPoint[];
   moneyCurrency: string;
   periodRevenue: number;
@@ -32,25 +33,29 @@ export interface DashboardReportMetrics extends DashboardShipmentMetrics {
   receivedTodayCount: number;
 }
 
-export interface DashboardDebtMetrics {
+interface DashboardDebtMetrics {
   debtTotal: number;
   debtCurrency: string;
+  /** Долг в остальных валютах — отдельными парами, к основной не прибавляется. */
+  debtOthers: [string, number][];
   overdueTotal: number;
   overdueCurrency: string;
+  overdueOthers: [string, number][];
   overdueClients: number;
 }
 
 export function adaptDashboardDebt(debt: ReportSummary["debt_now"] | undefined): DashboardDebtMetrics {
-  const allByCurrency = debt?.by_currency ?? {};
-  const overdueByCurrency = debt?.overdue_by_currency ?? {};
-  const debtCurrency = debt?.currency || primaryMoneyCurrency(allByCurrency);
-  const overdueCurrency = debt?.overdue_currency || primaryMoneyCurrency(overdueByCurrency);
+  // Основную валюту долга и просрочки выбирает сервер (common.money.primary_currency).
+  const debtCurrency = debt?.currency ?? DEFAULT_DASHBOARD_CURRENCY;
+  const overdueCurrency = debt?.overdue_currency ?? DEFAULT_DASHBOARD_CURRENCY;
 
   return {
-    debtTotal: amountForCurrency(allByCurrency, debt?.total ?? 0, debtCurrency),
+    debtTotal: amountForCurrency(debt?.by_currency ?? {}, debtCurrency),
     debtCurrency,
-    overdueTotal: amountForCurrency(overdueByCurrency, 0, overdueCurrency),
+    debtOthers: otherCurrencyAmounts(debt?.by_currency ?? {}, debtCurrency),
+    overdueTotal: amountForCurrency(debt?.overdue_by_currency ?? {}, overdueCurrency),
     overdueCurrency,
+    overdueOthers: otherCurrencyAmounts(debt?.overdue_by_currency ?? {}, overdueCurrency),
     overdueClients: debt?.overdue_clients ?? 0,
   };
 }
@@ -59,26 +64,17 @@ function normalizedPeriodDays(periodDays: number): number {
   return Math.max(1, Math.trunc(periodDays) || 1);
 }
 
-function localDate(day: string): Date {
-  const [year, month, date] = day.split("-").map(Number);
-  return new Date(year, month - 1, date, 12);
-}
-
 export function dashboardReportRange(currentDay: string, periodDays: number): { from: string; to: string } {
-  const start = localDate(currentDay);
-  start.setDate(start.getDate() - (normalizedPeriodDays(periodDays) - 1));
-  return { from: toLocalIsoDate(start), to: currentDay };
+  return { from: shiftIsoDate(currentDay, 1 - normalizedPeriodDays(periodDays)), to: currentDay };
 }
 
 function periodSlots<T>(currentDay: string, periodDays: number, create: (label: string) => T): Map<string, T> {
   const { from } = dashboardReportRange(currentDay, periodDays);
-  const start = localDate(from);
   const slots = new Map<string, T>();
 
   for (let index = 0; index < normalizedPeriodDays(periodDays); index += 1) {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    slots.set(toLocalIsoDate(date), create(String(date.getDate()).padStart(2, "0")));
+    const day = shiftIsoDate(from, index);
+    slots.set(day, create(day.slice(8, 10)));
   }
 
   return slots;
@@ -109,32 +105,25 @@ export function adaptReportSummary(
   // The report's primary income currency is the most useful operator view;
   // revenue is projected into that same currency via the server breakdown.
   const moneyCurrency = report.income.currency || report.shipped.currency || DEFAULT_DASHBOARD_CURRENCY;
-  const shipmentSlots = periodSlots(currentDay, periodDays, (label) => ({ label, bags: 0, orders: 0 }));
   const moneySlots = periodSlots(currentDay, periodDays, (label) => ({ label, revenue: 0, received: 0 }));
 
-  for (const day of report.days) {
-    const shipment = shipmentSlots.get(day.date);
-    if (shipment) {
-      shipment.bags = finiteMoney(day.bags);
-      shipment.orders = finiteMoney(day.orders);
-    }
-
-    const money = moneySlots.get(day.date);
-    if (money) {
-      money.revenue = amountForCurrency(day.revenue_by_currency, day.revenue, moneyCurrency);
-      money.received = amountForCurrency(day.received_by_currency, day.received, moneyCurrency);
-    }
+  // Денежную серию строит тот же адаптер, что и график отчётов; здесь только слоты календаря.
+  for (const point of reportChartSeries(report.days, moneyCurrency)) {
+    const money = moneySlots.get(point.date);
+    if (!money) continue;
+    money.revenue = point.revenue;
+    money.received = point.received;
   }
 
-  const spark = [...moneySlots.values()];
   const today = report.days.find((day) => day.date === currentDay);
   return {
-    ...shipmentMetrics([...shipmentSlots.values()]),
-    spark,
+    ...adaptOperationalShipments(report.days, currentDay, periodDays),
+    spark: [...moneySlots.values()],
     moneyCurrency,
-    periodRevenue: spark.reduce((total, point) => total + point.revenue, 0),
-    periodReceived: spark.reduce((total, point) => total + point.received, 0),
-    receivedToday: today ? amountForCurrency(today.received_by_currency, today.received, moneyCurrency) : 0,
+    // Итоги периода — серверные: отчёт запрошен за те же даты, что и слоты графика.
+    periodRevenue: amountForCurrency(report.shipped.revenue_by_currency, moneyCurrency),
+    periodReceived: amountForCurrency(report.income.by_currency, moneyCurrency),
+    receivedToday: today ? amountForCurrency(today.received_by_currency, moneyCurrency) : 0,
     receivedTodayCount: today?.payments ?? 0,
   };
 }

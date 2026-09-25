@@ -13,18 +13,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
 import { Modal } from "@/components/ui/modal";
 import { Tabs } from "@/components/ui/tabs";
 import { can } from "@/lib/can";
-import { formatKg, grainTripHref, grainWorkspaceHref } from "@/lib/grain";
+import { formatKg, grainTripHref, grainWorkspaceHref, DEFAULT_GRAIN_TYPE_COLOR } from "@/lib/grain";
 import type { GrainSupply, GrainWagon } from "@/lib/types";
 import { useDebounced } from "@/lib/use-debounced";
 import { useLocalDay } from "@/lib/use-local-day";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useAuth } from "@/store/auth";
-import { ArrowRight, Scale, ScanLine, Search, TrainFront, Truck } from "lucide-react";
+import { ArrowRight, Scale, ScanLine, TrainFront, Truck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -108,7 +109,7 @@ function ExpectedIntakes({
           >
             <div
               className="absolute inset-y-0 left-0 w-1.5"
-              style={{ backgroundColor: supply.grain_type_color || "#B78132" }}
+              style={{ backgroundColor: supply.grain_type_color || DEFAULT_GRAIN_TYPE_COLOR }}
             />
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
@@ -152,18 +153,15 @@ function ExpectedIntakes({
   );
 }
 
-function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection }) {
+const EXPECTED_SUPPLIES_URL = "/grain/supplies/?status=expected&awaiting_arrival=1";
+
+function GrainPageInner({ direction }: { direction: GrainDirection }) {
   const router = useRouter();
   const { me } = useAuth();
   const canSupply = can(me, "grain.supply");
   const canArrive = can(me, "grain.arrive");
   const canWeigh = can(me, "grain.weigh");
-  const [direction, setDirection] = useState<GrainDirection>(initialDirection);
-  const [tabByDirection, setTabByDirection] = useState<Record<GrainDirection, GrainTab>>({
-    intake: "on_site",
-    passage: "on_site",
-  });
-  const tab = tabByDirection[direction];
+  const [tab, setTab] = useState<GrainTab>("on_site");
   const [supplyOpen, setSupplyOpen] = useState(false);
   const [arriveOpen, setArriveOpen] = useState(false);
   const [passageOpen, setPassageOpen] = useState(false);
@@ -184,15 +182,9 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
   // страницу и схлопывал «Показать ещё» во время просмотра старых дней.
   const pollWagons = listTab && !(tab === "finished" && !effectiveFinishedDay);
 
-  const supplies = usePagedApi<GrainSupply>(
-    direction === "intake" && tab === "expected" ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
-    50,
-  );
+  // Один список ожидаемых приходов и для вкладки, и для окна «Принять поезд».
+  const supplies = usePagedApi<GrainSupply>(tab === "expected" || arriveOpen ? EXPECTED_SUPPLIES_URL : null, 100);
   const wagons = usePagedApi<GrainWagon>(wagonsUrl(tab, direction, effectiveFinishedDay, debouncedSearch), 50);
-  const arrivalSupplies = usePagedApi<GrainSupply>(
-    arriveOpen ? "/grain/supplies/?status=expected&awaiting_arrival=1" : null,
-    100,
-  );
   useVisiblePolling(wagons.reload, 10_000, pollWagons && !manualEntryBusy);
 
   /** Выбор сегодняшней даты возвращает режим «за календарём», а не замораживает день. */
@@ -203,38 +195,16 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
   function refreshAll() {
     void supplies.reload();
     void wagons.reload();
-    void arrivalSupplies.reload();
   }
 
-  function selectDirection(next: GrainDirection) {
-    if (next !== direction) {
-      setNotice("");
-      router.push(grainWorkspaceHref(next));
-    }
-    setDirection(next);
-  }
-
-  function selectStatusTab(key: string) {
-    setDirectionTab(direction, key as GrainTab);
-  }
-
-  function setDirectionTab(nextDirection: GrainDirection, nextTab: GrainTab) {
-    setTabByDirection((current) => ({ ...current, [nextDirection]: nextTab }));
+  /** Направление задаёт маршрут: другая вкладка — другая страница. */
+  function changeDirection(key: string) {
+    if (key !== direction && (key === "intake" || key === "passage")) router.push(grainWorkspaceHref(key));
   }
 
   function openArrival(supply?: GrainSupply) {
-    selectDirection("intake");
     setArrivalSupply(supply?.id ?? null);
     setArriveOpen(true);
-  }
-
-  function openPassage() {
-    selectDirection("passage");
-    setPassageOpen(true);
-  }
-
-  function changeDirection(key: string) {
-    if (key === "intake" || key === "passage") selectDirection(key);
   }
 
   return (
@@ -253,12 +223,9 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
             canArrive={canArrive}
             canSupply={canSupply}
             canWeigh={canWeigh}
-            onPassage={openPassage}
+            onPassage={() => setPassageOpen(true)}
             onArrival={() => openArrival()}
-            onSupply={() => {
-              selectDirection("intake");
-              setSupplyOpen(true);
-            }}
+            onSupply={() => setSupplyOpen(true)}
           />
           {direction === "passage" && (
             <ManualPassageEntryDialog onChanged={refreshAll} onBusyChange={setManualEntryBusy} />
@@ -284,7 +251,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
         <Tabs
           tabs={direction === "intake" ? INTAKE_TABS : PASSAGE_TABS}
           active={tab}
-          onChange={selectStatusTab}
+          onChange={(key) => setTab(key as GrainTab)}
           label="Статус рейсов"
           className="overflow-x-auto [&>button]:shrink-0"
         />
@@ -305,17 +272,14 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
                 </Button>
               </>
             )}
-            <div className="relative w-full sm:ml-auto sm:w-72">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-              <Input
-                type="search"
-                aria-label="Поиск"
-                className="pl-8"
-                placeholder="Номер, груз, поставщик"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
+            <SearchInput
+              wrapperClassName="w-full sm:ml-auto sm:w-72"
+              type="search"
+              aria-label="Поиск"
+              placeholder="Номер, груз, поставщик"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
           </div>
         )}
 
@@ -333,7 +297,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
           <WagonArchStops />
         ) : tab === "camera" ? (
           direction === "intake" ? (
-            <WagonNumberCameraWorkspace canManage={Boolean(me?.is_superuser)} />
+            <WagonNumberCameraWorkspace />
           ) : (
             <VehiclePlateCameraWorkspace />
           )
@@ -392,8 +356,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
             onCancel={() => setSupplyOpen(false)}
             onDone={() => {
               setSupplyOpen(false);
-              setDirection("intake");
-              setDirectionTab("intake", "expected");
+              setTab("expected");
               setNotice("Приход создан. Ожидаем номер от камеры проходной.");
               refreshAll();
             }}
@@ -411,14 +374,13 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
       >
         {arriveOpen && (
           <ArrivalForm
-            supplies={arrivalSupplies.items}
+            supplies={supplies.items}
             initialSupply={arrivalSupply}
             onCancel={() => setArriveOpen(false)}
             onDone={(wagon) => {
               setArriveOpen(false);
-              setDirection("intake");
               setNotice(`Поезд ${wagon.number} зарегистрирован. Вагонные весы пока не подключены.`);
-              setDirectionTab("intake", "on_site");
+              setTab("on_site");
               refreshAll();
             }}
           />
@@ -438,9 +400,8 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
             onCancel={() => setPassageOpen(false)}
             onDone={(wagon) => {
               setPassageOpen(false);
-              setDirection("passage");
               setNotice(`Вывоз ${wagon.number || `#${wagon.id}`} оформлен — взвесьте пустую машину на въезде.`);
-              setDirectionTab("passage", "on_site");
+              setTab("on_site");
               refreshAll();
               router.push(grainTripHref(wagon));
             }}
@@ -454,7 +415,7 @@ function GrainPageInner({ initialDirection }: { initialDirection: GrainDirection
 export function GrainWorkspace({ direction }: { direction: GrainDirection }) {
   return (
     <RequirePerm perm="grain.view" title="Приход и вывоз">
-      <GrainPageInner key={direction} initialDirection={direction} />
+      <GrainPageInner key={direction} direction={direction} />
     </RequirePerm>
   );
 }

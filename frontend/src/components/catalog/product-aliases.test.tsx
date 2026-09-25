@@ -6,7 +6,8 @@ import { ProductAliasCodes, ProductAliasesEditor } from "./product-aliases";
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), delete: vi.fn() }));
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: { post: mocks.post, delete: mocks.delete },
   apiError: (error: { response?: { data?: { detail?: string } }; message?: string }) =>
     error.response?.data?.detail ?? error.message,

@@ -9,16 +9,16 @@ from pathlib import Path
 from uuid import UUID
 
 from django.conf import settings
-from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 
 from apps.cameras import ai as camera_ai
+from apps.common.datetimes import parse_aware_datetime
+from apps.common.text import plural_ru
 from weighbridge.outbox import Outbox, is_busy
 from . import passage_scale_automation as automation, services, weighing_photos
-from .models import AutomaticPassageCapture as Capture, PassageScaleAutomationState as Lane, WeighingPhotoDelivery
-from .vehicle_weight_capture import _safe_ai_payload
+from .models import AutomaticPassageCapture as Capture, WeighingPhotoDelivery
+from .plate_recognition import safe_ai_payload
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,6 @@ STALE_AFTER_SECONDS = 10
 # A single missed heartbeat or one failed scale read is not an outage worth
 # flipping the operator's status: the collector must look down this long.
 UNAVAILABLE_GRACE_SECONDS = 20
-PHOTO_RECOVERY_INTERVAL_SECONDS = 30
 BUSY_LOG_INTERVAL_SECONDS = 60
 
 # What this process already knows about each outbox, so a poll neither rewrites
@@ -35,6 +34,8 @@ BUSY_LOG_INTERVAL_SECONDS = 60
 # the collector for the lock) nor forgets the last confirmed state while the
 # file is briefly locked.
 _memory: dict[str, dict] = {}
+# When each outbox last warned that its collector holds the lock (monotonic).
+_busy_logged_at: dict[str, float] = {}
 
 
 def directory():
@@ -47,68 +48,8 @@ def enabled():
 
 def _remembered(path):
     return _memory.setdefault(str(path), {
-        "config": None, "photo_recovery_at": 0.0, "state": None, "down_since": None, "busy_logged_at": 0.0,
+        "config": None, "state": None, "down_since": None,
     })
-
-
-def _bound_camera_frame(event):
-    if "recognition_frame_bound" in event:
-        return event["recognition_frame_bound"] is True
-    # Compatibility with already persisted collector events: an error payload's
-    # direction was retained ONLY when the response arrived during this truck's
-    # occupancy. No direction/late response is not permission to retry a camera.
-    return bool(event.get("recognition")) or (
-        event.get("orientation") in {"front", "rear"}
-        and event.get("recognition_error") == "recognition_unavailable"
-    )
-
-
-def _store_evidence(photo, event):
-    if event.get("photo") and not photo.photo:
-        name = f"grain/evidence/{photo.request_id}.jpg"
-        if not photo.photo.storage.exists(name):
-            name = photo.photo.storage.save(name, ContentFile(event["photo"]))
-        photo.photo.name = name
-    photo.snapshot_attempted = True  # collector captures are never live-retried
-    if photo.photo:
-        photo.status, photo.error_code = "saved", ""
-    elif _bound_camera_frame(event):
-        photo.status, photo.error_code = "pending", "collector_frame_pending"
-        photo.next_attempt_at = timezone.now()
-    else:
-        photo.status, photo.error_code = "unavailable", "collector_photo_unavailable"
-    photo.save()
-    weighing_photos._link_photo(photo)
-
-
-def recover_collector_photos(box, *, limit=20):
-    """Recover acknowledged older releases' missing photos from the same UUID.
-
-    This does not reopen accounting events or issue a fresh camera capture.
-    Missing files already in the durable outbox can also be restored directly.
-    """
-    repaired = 0
-    jobs = WeighingPhotoDelivery.objects.filter(
-        status="unavailable", error_code="collector_photo_unavailable",
-    ).select_related("capture").order_by("-id")[:limit]
-    for job in jobs:
-        event = box.evidence(job.request_id)
-        if event and (event.get("photo") or _bound_camera_frame(event)):
-            with transaction.atomic():
-                locked = WeighingPhotoDelivery.objects.select_for_update().get(pk=job.pk)
-                if locked.status != "unavailable" or locked.error_code != "collector_photo_unavailable":
-                    continue
-                _store_evidence(locked, event)
-            repaired += 1
-    return repaired
-
-
-def _votes_word(count):
-    if count % 10 == 1 and count % 100 != 11:
-        return "голос"
-    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
-        return "голоса"
-    return "голосов"
 
 
 def _weak_plate(votes):
@@ -127,7 +68,7 @@ def _weak_plate(votes):
 
 def _tally(votes):
     ranked = sorted(votes.items(), key=lambda pair: (-pair[1], pair[0]))
-    return ", ".join(f"{count} {_votes_word(count)} за {number}" for number, count in ranked)
+    return ", ".join(f"{count} {plural_ru(count, 'голос', 'голоса', 'голосов')} за {number}" for number, count in ranked)
 
 
 def _failure_detail(diagnostics, error):
@@ -159,7 +100,7 @@ def _store_diagnostics(capture, diagnostics, error, *, now):
     A single plate short of confirmation (two votes of three) is retained as a
     weak number: the identity worker books it only for a truck already on site.
     """
-    safe = _safe_ai_payload(diagnostics)
+    safe = safe_ai_payload(diagnostics)
     raw_votes = diagnostics.get("votes")
     # A tally cut down by the collector or on import may have lost a competing
     # number, and a search cut short never saw the whole window: only a whole
@@ -185,12 +126,11 @@ def import_event(event):
         raise ValueError("Unsupported outbox version; event retained")
     key = UUID(event["id"])
     weight = event["weight_kg"]
-    occurred = parse_datetime(event["stable_weight_at"])
+    occurred = parse_aware_datetime(event["stable_weight_at"])
     if (type(weight) is not int or not 500 < weight <= settings.TRUCK_SCALE_MAX_WEIGHT_KG
-            or occurred is None or timezone.is_naive(occurred) or occurred > timezone.now()):
+            or occurred is None or occurred > timezone.now()):
         raise ValueError("Invalid outbox weight or timestamp; event retained")
-    Lane.objects.get_or_create(scale_number="truck")
-    Lane.objects.select_for_update().get(scale_number="truck")
+    services.lock_passage_lane()
     capture, created = Capture.objects.get_or_create(idempotency_key=key, defaults={
         "camera": event["camera"], "weight_kg": weight, "trigger_weight_kg": weight,
         "stable_weight_at": occurred, "scale_age_seconds": Decimal(event["scale_age_seconds"]),
@@ -204,7 +144,7 @@ def import_event(event):
     if not created and capture.status in {Capture.COMPLETED, Capture.FAILED}:
         return capture
     photo, _ = WeighingPhotoDelivery.objects.get_or_create(request_id=key, defaults={"camera": capture.camera, "capture": capture})
-    _store_evidence(photo, event)
+    weighing_photos.store_collector_evidence(photo, event)
     if event.get("recognition"):
         try:
             automation._persist_recognition(capture.pk, event["recognition"])
@@ -218,7 +158,10 @@ def import_event(event):
     capture = automation._apply_recognized_capture(capture.pk)
     if capture.status not in {Capture.COMPLETED, Capture.FAILED}:
         raise ValueError("Outbox apply incomplete; retry retained")
-    weighing_photos._link_photo(photo)
+    # No lane ever points at a collector capture, so an acknowledge-only
+    # failure would be invisible: its weight goes to the operator's queue.
+    automation.park_failed_capture(capture)
+    weighing_photos.link_photo(photo)
     return capture
 
 
@@ -255,9 +198,6 @@ def _poll(box, remembered):
             break
         import_event(event)  # atomic decorator COMMITs before ack
         box.ack(event["id"])
-    if time.time() - remembered["photo_recovery_at"] >= PHOTO_RECOVERY_INTERVAL_SECONDS:
-        recover_collector_photos(box)
-        remembered["photo_recovery_at"] = time.time()
     heartbeat = box.state("heartbeat") or {}
     state, stale = _collector_state(heartbeat, remembered)
     automation._store_runtime({
@@ -266,21 +206,36 @@ def _poll(box, remembered):
         "stable_weight_seconds": config["stable_weight_seconds"],
         "collector": {**box.counts(), "status": heartbeat.get("status", "starting")},
     })
-    return automation.MonitorIteration(state=state)
+    return state
 
 
-def poll_once():
-    remembered = _remembered(directory())
+def poll_unless_busy(path, poll, on_busy):
+    """Run one poll of a collector's outbox; a lock held by the collector skips the tick.
+
+    The collector holds the write lock for a moment (a photo blob, a WAL
+    checkpoint). Nothing is lost: unacknowledged events replay on the next
+    poll, and ``on_busy()`` answers for this tick meanwhile. Any other SQLite
+    failure is a broken queue file and propagates.
+    """
     try:
-        return _poll(Outbox(directory()), remembered)
+        return poll()
     except sqlite3.OperationalError as exc:
         if not is_busy(exc):
             raise
-        # The collector holds the write lock for a moment (a photo blob, a WAL
-        # checkpoint). Nothing was lost: unacknowledged events replay on the
-        # next poll, and the last confirmed lane state stands meanwhile.
-        state = remembered["state"] or "unavailable"
-        if time.monotonic() - remembered["busy_logged_at"] >= BUSY_LOG_INTERVAL_SECONDS:
-            remembered["busy_logged_at"] = time.monotonic()
-            log.warning("Weighbridge outbox is locked by the collector; keeping state=%s until the next poll", state)
-        return automation.MonitorIteration(state=state)
+    key = str(path)
+    last = _busy_logged_at.get(key)
+    if last is None or time.monotonic() - last >= BUSY_LOG_INTERVAL_SECONDS:
+        _busy_logged_at[key] = time.monotonic()
+        log.warning("Outbox %s is locked by its collector; skipping this poll", path)
+    return on_busy()
+
+
+def poll_once():
+    """Import the collector's finished events; return the lane state for the heartbeat."""
+    remembered = _remembered(directory())
+    return poll_unless_busy(
+        directory(),
+        lambda: _poll(Outbox(directory()), remembered),
+        # The last confirmed lane state stands until the lock is released.
+        lambda: remembered["state"] or "unavailable",
+    )

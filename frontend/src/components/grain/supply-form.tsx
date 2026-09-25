@@ -6,16 +6,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
-import { formatKg } from "@/lib/grain";
-import type { GrainSilo, GrainSupply, GrainType } from "@/lib/types";
+import { DEFAULT_GRAIN_TYPE_COLOR, siloAcceptsType, siloOptionLabel } from "@/lib/grain";
+import type { GrainSilo, GrainSupply, GrainSiloType } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { ArrowRight, Check, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 
-function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainType) => void; onCancel: () => void }) {
+function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainSiloType) => void; onCancel: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [color, setColor] = useState("#B78132");
+  const [color, setColor] = useState(DEFAULT_GRAIN_TYPE_COLOR);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -23,7 +23,7 @@ function GrainTypeCreator({ onCreated, onCancel }: { onCreated: (type: GrainType
     setBusy(true);
     setError("");
     try {
-      const { data } = await api.post<GrainType>("/grain/types/", { name, description, color });
+      const { data } = await api.post<GrainSiloType>("/grain/silo-types/", { name, description, color });
       onCreated(data);
     } catch (cause) {
       setError(apiError(cause));
@@ -86,7 +86,7 @@ export function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel:
     loading: typesLoading,
     error: typesError,
     reload: reloadTypes,
-  } = useApi<GrainType[]>("/grain/types/");
+  } = useApi<GrainSiloType[]>("/grain/silo-types/");
   const {
     data: silos,
     loading: silosLoading,
@@ -105,8 +105,7 @@ export function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel:
   const suitableSilos = useMemo(
     () =>
       (silos ?? []).filter(
-        (silo) =>
-          silo.status === "active" && (!grainType || silo.silo_type == null || silo.silo_type === Number(grainType)),
+        (silo) => silo.status === "active" && (!grainType || siloAcceptsType(silo, Number(grainType))),
       ),
     [grainType, silos],
   );
@@ -120,7 +119,6 @@ export function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel:
         grain_type: Number(grainType),
         assigned_silo: Number(siloId),
         expected_total_kg: Math.round(Number(expectedTons) * 1000),
-        simple_flow: true,
         note: note.trim(),
       });
       onDone();
@@ -205,6 +203,8 @@ export function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel:
           onCancel={() => setCreatingType(false)}
           onCreated={(type) => {
             reloadTypes().then(() => setGrainType(String(type.id)));
+            // Как при выборе типа в списке: силос прежнего типа новому не подходит.
+            setSiloId("");
             setCreatingType(false);
           }}
         />
@@ -234,7 +234,7 @@ export function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel:
             <option value="">{grainType ? "Выберите силос" : "Сначала выберите тип зерна"}</option>
             {suitableSilos.map((silo) => (
               <option key={silo.id} value={silo.id}>
-                {silo.name} · свободно {formatKg(silo.free_capacity_kg)}
+                {siloOptionLabel(silo)}
               </option>
             ))}
           </Select>
@@ -278,8 +278,3 @@ export function SupplyForm({ onDone, onCancel }: { onDone: () => void; onCancel:
     </div>
   );
 }
-
-/**
- * Регистрация вывоза. Ожидаемый вес не спрашиваем: сколько заберут — решают
- * на погрузке, факт станет известен только на выездных весах.
- */

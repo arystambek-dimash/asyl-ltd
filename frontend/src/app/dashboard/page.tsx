@@ -21,16 +21,18 @@ import {
   Wallet,
   Warehouse,
 } from "lucide-react";
-import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import { MoneyTrendChart, TREND_GRID_PROPS, trendXAxisProps } from "@/components/charts/money-trend-chart";
 import { AppShell } from "@/components/layout/app-shell";
 import { StatusBadge } from "@/components/status-badge";
 import { CHART_TOOLTIP_STYLE as TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { formatTransportNumber } from "@/components/ui/transport-number";
 import { Tabs } from "@/components/ui/tabs";
 import { can } from "@/lib/can";
-import { useDashboardMetrics, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
-import { cn, currencySymbol, formatCompact, formatCompactCurrency, formatCurrency, formatMoney } from "@/lib/utils";
+import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
+import { useDashboardMetrics, type DashboardAttentionKey, type DashboardMetrics } from "@/lib/use-dashboard-metrics";
+import { cn, currencySymbol, formatCompact, formatCompactCurrency, formatMoney, formatTime } from "@/lib/utils";
+import { orderTransportText } from "@/lib/wagons";
 import { useAuth } from "@/store/auth";
 
 const CameraWall = dynamic(() => import("@/components/camera-wall").then((module) => module.CameraWall), {
@@ -52,6 +54,7 @@ type SummaryMetric = {
 };
 
 function SummaryHero({ m }: { m: DashboardMetrics }) {
+  const overdue = m.overdueClients > 0;
   const metrics: SummaryMetric[] = [
     {
       key: "shipped",
@@ -69,8 +72,8 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
     {
       key: "received",
       label: "Поступило сегодня",
-      value: formatCompact(String(m.receivedToday)),
-      exact: formatMoney(String(m.receivedToday)),
+      value: formatCompact(m.receivedToday),
+      exact: formatMoney(m.receivedToday),
       unit: currencySymbol(m.moneyCurrency),
       note: m.receivedTodayCount > 0 ? `${m.receivedTodayCount} подтверждённых оплат` : "Подтверждённых оплат пока нет",
       href: "/accounting",
@@ -88,12 +91,12 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
     },
     {
       key: "debt",
-      label: m.overdueClients > 0 ? "Просроченный долг" : "Долг клиентов",
-      value: formatCompact(String(m.overdueClients > 0 ? m.overdueTotal : m.debtTotal)),
-      exact: formatMoney(String(m.overdueClients > 0 ? m.overdueTotal : m.debtTotal)),
-      unit: currencySymbol(m.overdueClients > 0 ? m.overdueCurrency : m.debtCurrency),
-      note: m.overdueClients > 0 ? `${m.overdueClients} клиентов требуют внимания` : "Просроченных оплат нет",
-      href: "/accounting",
+      label: overdue ? "Просроченный долг" : "Долг клиентов",
+      value: formatCompact(overdue ? m.overdueTotal : m.debtTotal),
+      exact: formatMoney(overdue ? m.overdueTotal : m.debtTotal),
+      unit: currencySymbol(overdue ? m.overdueCurrency : m.debtCurrency),
+      note: overdue ? `${m.overdueClients} клиентов требуют внимания` : "Просроченных оплат нет",
+      href: "/accounting?view=debts",
       icon: CircleDollarSign,
     },
   ].filter((metric) => {
@@ -106,8 +109,6 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
   if (metrics.length === 0) return null;
 
   const [primary, ...secondary] = metrics;
-  const attentionCount =
-    m.overdueClients + m.attention.pendingPayments + m.attention.awaitingReview + m.negativeStock.length;
 
   return (
     <section className="analytics-hero relative w-full min-w-0 overflow-hidden rounded-[24px] bg-[var(--analytics-hero)] text-[var(--analytics-hero-foreground)] shadow-[0_18px_60px_rgba(12,28,80,0.2)]">
@@ -118,9 +119,9 @@ function SummaryHero({ m }: { m: DashboardMetrics }) {
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
             <span className="size-2 rounded-full bg-[var(--analytics-hero-accent)] shadow-[0_0_0_5px_rgba(220,229,255,0.14)]" />
             Сводка за сегодня
-            {attentionCount > 0 && (
+            {m.attentionCount > 0 && (
               <span className="w-fit rounded-full bg-white/10 px-2.5 py-1 text-center normal-case tracking-normal text-white/75 min-[360px]:ml-2">
-                {attentionCount} требуют действия
+                {m.attentionCount} требуют действия
               </span>
             )}
           </div>
@@ -200,59 +201,45 @@ function SummaryHeroSkeleton() {
   );
 }
 
-type AttentionItem = {
-  key: string;
-  show: boolean;
+type AttentionView = {
   href: string;
   label: string;
-  hint: string;
-  value: string;
+  hint: (m: DashboardMetrics) => string;
   icon: ElementType;
   urgent?: boolean;
 };
 
+const ATTENTION_VIEWS: Record<DashboardAttentionKey, AttentionView> = {
+  overdue: {
+    href: "/accounting?view=debts",
+    label: "Просрочена оплата",
+    hint: (m) => formatCompactCurrency(m.overdueTotal, m.overdueCurrency),
+    icon: AlertTriangle,
+    urgent: true,
+  },
+  payments: {
+    href: "/accounting?view=confirm",
+    label: "Подтвердить оплаты",
+    hint: () => "Ожидают решения кассы",
+    icon: Wallet,
+  },
+  orders: {
+    href: "/orders",
+    label: "Рассмотреть заказы",
+    hint: () => "Клиенты ждут ответа",
+    icon: ClipboardCheck,
+  },
+  stock: {
+    href: "/warehouse",
+    label: "Исправить остатки",
+    hint: () => "Обнаружен минус на складе",
+    icon: Warehouse,
+    urgent: true,
+  },
+};
+
 function AttentionPanel({ m }: { m: DashboardMetrics }) {
   const allScopesChecked = m.canFinance && m.canPayments && m.canOrders && m.canStock;
-  const items: AttentionItem[] = [
-    {
-      key: "overdue",
-      show: m.canFinance && m.overdueClients > 0,
-      href: "/accounting",
-      label: "Просрочена оплата",
-      hint: formatCompactCurrency(m.overdueTotal, m.overdueCurrency),
-      value: String(m.overdueClients),
-      icon: AlertTriangle,
-      urgent: true,
-    },
-    {
-      key: "payments",
-      show: m.canPayments && m.attention.pendingPayments > 0,
-      href: "/accounting",
-      label: "Подтвердить оплаты",
-      hint: "Ожидают решения кассы",
-      value: String(m.attention.pendingPayments),
-      icon: Wallet,
-    },
-    {
-      key: "orders",
-      show: m.canOrders && m.attention.awaitingReview > 0,
-      href: "/orders",
-      label: "Рассмотреть заказы",
-      hint: "Клиенты ждут ответа",
-      value: String(m.attention.awaitingReview),
-      icon: ClipboardCheck,
-    },
-    {
-      key: "stock",
-      show: m.canStock && m.negativeStock.length > 0,
-      href: "/warehouse",
-      label: "Исправить остатки",
-      hint: "Обнаружен минус на складе",
-      value: String(m.negativeStock.length),
-      icon: Warehouse,
-      urgent: true,
-    },
-  ].filter((item) => item.show);
 
   return (
     <section className="flex min-h-[390px] min-w-0 flex-col rounded-[22px] border bg-[var(--card)] shadow-card">
@@ -267,12 +254,12 @@ function AttentionPanel({ m }: { m: DashboardMetrics }) {
           <span
             className={cn(
               "flex size-9 items-center justify-center rounded-full text-sm font-semibold tabular-nums",
-              items.length > 0
+              m.attentionCount > 0
                 ? "bg-[var(--warning)]/10 text-[var(--warning)]"
                 : "bg-[var(--success)]/10 text-[var(--success)]",
             )}
           >
-            {items.length}
+            {m.attentionCount}
           </span>
         )}
       </div>
@@ -283,7 +270,7 @@ function AttentionPanel({ m }: { m: DashboardMetrics }) {
             <div key={row} className="h-[68px] animate-pulse rounded-2xl bg-[var(--muted)]" />
           ))}
         </div>
-      ) : items.length === 0 ? (
+      ) : m.attention.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center px-6 pb-10 text-center">
           <span className="flex size-14 items-center justify-center rounded-full bg-[var(--success)]/10 text-[var(--success)]">
             <Check className="size-6" strokeWidth={2.4} />
@@ -297,11 +284,12 @@ function AttentionPanel({ m }: { m: DashboardMetrics }) {
         </div>
       ) : (
         <div className="flex flex-1 flex-col gap-2 px-3 pb-3">
-          {items.map((item) => {
+          {m.attention.map(({ key, count }) => {
+            const item = ATTENTION_VIEWS[key];
             const Icon = item.icon;
             return (
               <Link
-                key={item.key}
+                key={key}
                 href={item.href}
                 className="group flex items-center gap-3 rounded-2xl px-3 py-3 transition hover:bg-[var(--muted)]/70"
               >
@@ -317,9 +305,9 @@ function AttentionPanel({ m }: { m: DashboardMetrics }) {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{item.label}</div>
-                  <div className="truncate text-xs text-[var(--muted-foreground)]">{item.hint}</div>
+                  <div className="truncate text-xs text-[var(--muted-foreground)]">{item.hint(m)}</div>
                 </div>
-                <span className="text-lg font-semibold tabular-nums">{item.value}</span>
+                <span className="text-lg font-semibold tabular-nums">{count}</span>
                 <ArrowUpRight className="size-4 text-[var(--muted-foreground)] opacity-0 transition group-hover:opacity-100" />
               </Link>
             );
@@ -406,97 +394,54 @@ function TrendPanel({ m, days }: { m: DashboardMetrics; days: number }) {
         ))}
       </div>
 
-      <div
-        className="h-[235px] w-full px-2 pb-3 sm:px-4"
-        role="img"
-        aria-label={
-          active === "bags"
-            ? `График отгрузок за ${days} дней. Всего ${totalBags} мешков.`
-            : `График выручки и поступлений за ${days} дней.`
-        }
-      >
-        <ResponsiveContainer width="100%" height="100%">
-          {active === "bags" ? (
-            <BarChart data={bagChart} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 7" vertical={false} stroke="var(--border)" />
-              <XAxis
-                dataKey="label"
-                tickLine={false}
-                axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                interval={days > 14 ? 3 : 1}
-                dy={8}
-              />
-              <Tooltip
-                cursor={{ fill: "var(--muted)", opacity: 0.55 }}
-                contentStyle={TOOLTIP_STYLE}
-                formatter={(_value, _name, item) => [
-                  `${formatMoney(Number((item.payload as { bags: number }).bags))} меш.`,
-                  "Отгружено",
-                ]}
-                labelFormatter={(label) => `День ${label}`}
-              />
-              <Bar dataKey="visibleBags" radius={[6, 6, 2, 2]} maxBarSize={32}>
-                {bagChart.map((point) => (
-                  <Cell
-                    key={point.label}
-                    fill={point.bags > chartCap ? "#d6a327" : "var(--ring)"}
-                    opacity={point.bags === 0 ? 0.18 : 0.9}
-                  />
-                ))}
-              </Bar>
-            </BarChart>
-          ) : (
-            <AreaChart data={m.spark} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
-              <defs>
-                <linearGradient id="analytics-revenue-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.22} />
-                  <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 7" vertical={false} stroke="var(--border)" />
-              <XAxis
-                dataKey="label"
-                tickLine={false}
-                axisLine={false}
-                tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                interval={days > 14 ? 3 : 1}
-                dy={8}
-              />
-              <Tooltip
-                contentStyle={TOOLTIP_STYLE}
-                formatter={(value: number, name: string) => [
-                  formatCurrency(value, m.moneyCurrency),
-                  name === "revenue" ? "Выручка" : "Поступления",
-                ]}
-                labelFormatter={(label) => `День ${label}`}
-              />
-              <Area
-                type="monotone"
-                dataKey="revenue"
-                stroke="var(--ring)"
-                strokeWidth={2.25}
-                fill="url(#analytics-revenue-fill)"
-              />
-              <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={2} fillOpacity={0} />
-            </AreaChart>
-          )}
-        </ResponsiveContainer>
-      </div>
-      <ul className="sr-only">
-        {active === "bags"
-          ? m.shippedByDay.map((day) => (
+      {active === "bags" ? (
+        <>
+          <div
+            className="h-[235px] w-full px-2 pb-3 sm:px-4"
+            role="img"
+            aria-label={`График отгрузок за ${days} дней. Всего ${totalBags} мешков.`}
+          >
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={bagChart} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
+                <CartesianGrid {...TREND_GRID_PROPS} />
+                <XAxis {...trendXAxisProps(bagChart.length)} />
+                <Tooltip
+                  cursor={{ fill: "var(--muted)", opacity: 0.55 }}
+                  contentStyle={TOOLTIP_STYLE}
+                  formatter={(_value, _name, item) => [
+                    `${formatMoney(Number((item.payload as { bags: number }).bags))} меш.`,
+                    "Отгружено",
+                  ]}
+                  labelFormatter={(label) => `День ${label}`}
+                />
+                <Bar dataKey="visibleBags" radius={[6, 6, 2, 2]} maxBarSize={32}>
+                  {bagChart.map((point) => (
+                    <Cell
+                      key={point.label}
+                      fill={point.bags > chartCap ? "#d6a327" : "var(--ring)"}
+                      opacity={point.bags === 0 ? 0.18 : 0.9}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <ul className="sr-only">
+            {m.shippedByDay.map((day) => (
               <li key={day.label}>
                 День {day.label}: {day.bags} мешков
               </li>
-            ))
-          : m.spark.map((day) => (
-              <li key={day.label}>
-                День {day.label}: выручка {formatCurrency(day.revenue, m.moneyCurrency)}, поступления{" "}
-                {formatCurrency(day.received, m.moneyCurrency)}
-              </li>
             ))}
-      </ul>
+          </ul>
+        </>
+      ) : (
+        <MoneyTrendChart
+          data={m.spark}
+          currency={m.moneyCurrency}
+          className="h-[235px] w-full px-2 pb-3 sm:px-4"
+          formatLabel={(label) => `День ${label}`}
+        />
+      )}
 
       {active === "bags" && hasOutlier && (
         <div className="mx-5 mb-4 flex items-center gap-2 rounded-xl bg-[var(--warning)]/10 px-3 py-2 text-xs text-[var(--warning)] sm:mx-6">
@@ -537,11 +482,7 @@ function LiveQueue({ m }: { m: DashboardMetrics }) {
             className="group flex items-center gap-3 px-5 py-4 transition hover:bg-[var(--muted)]/60"
           >
             <div className="min-w-0 flex-1">
-              <div className="font-semibold tabular-nums">
-                {order.truck_number
-                  ? formatTransportNumber(order.truck_number, order.transport_type, order.trailer_number)
-                  : `Заказ #${order.id}`}
-              </div>
+              <div className="font-semibold tabular-nums">{orderTransportText(order) || `Заказ #${order.id}`}</div>
               <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
                 {order.client_name || "Клиент не указан"}
               </div>
@@ -562,24 +503,20 @@ const DASHBOARD_VIEWS = [
 type DashboardView = (typeof DASHBOARD_VIEWS)[number]["key"];
 const VIEW_STORAGE_KEY = "dashboard:view";
 
-function ViewSwitch({ view, onChange }: { view: DashboardView; onChange: (view: DashboardView) => void }) {
-  const tabs = DASHBOARD_VIEWS.map((item) => ({ key: item.key, label: item.label, icon: item.icon }));
-  return <Tabs tabs={tabs} active={view} onChange={(key) => onChange(key as DashboardView)} />;
-}
-
 const PERIODS = [7, 14, 30] as const;
 const PERIOD_STORAGE_KEY = "dashboard:period";
 
-function AnalyticsView() {
+function AnalyticsView({ userId }: { userId: number }) {
+  const periodKey = userChoiceKey(PERIOD_STORAGE_KEY, userId);
   const [days, setDays] = useState(14);
   useEffect(() => {
-    const saved = Number(localStorage.getItem(PERIOD_STORAGE_KEY));
+    const saved = Number(readStoredChoice(periodKey));
     if (PERIODS.includes(saved as (typeof PERIODS)[number])) setDays(saved);
-  }, []);
+  }, [periodKey]);
 
   const changeDays = (value: number) => {
     setDays(value);
-    localStorage.setItem(PERIOD_STORAGE_KEY, String(value));
+    storeChoice(periodKey, String(value));
   };
   const m = useDashboardMetrics(days);
   const hasAnyData = m.canOrders || m.canStock || m.canFinance;
@@ -601,12 +538,7 @@ function AnalyticsView() {
             {m.stale && (
               <span className="hidden rounded-full bg-[var(--warning)]/10 px-3 py-1.5 text-xs font-medium text-[var(--warning)] sm:inline">
                 Не обновлено
-                {m.lastUpdatedAt
-                  ? ` · ${m.lastUpdatedAt.toLocaleTimeString("ru-RU", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}`
-                  : ""}
+                {m.lastUpdatedAt ? ` · ${formatTime(m.lastUpdatedAt)}` : ""}
               </span>
             )}
             <div className="relative">
@@ -641,7 +573,7 @@ function AnalyticsView() {
       {m.loadError && <ErrorAlert message={m.loadError} onRetry={m.reload} />}
       {m.loading ? <SummaryHeroSkeleton /> : <SummaryHero m={m} />}
 
-      {(m.canOrders || m.canFinance || m.canStock) && (
+      {hasAnyData && (
         <div className="grid min-w-0 items-stretch gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <TrendPanel m={m} days={days} />
           <AttentionPanel m={m} />
@@ -666,26 +598,35 @@ function AnalyticsView() {
 
 export default function DashboardPage() {
   const { me } = useAuth();
-  const showCameras = can(me, "monoblock.view") || !!me?.is_superuser;
+  const userId = me?.id;
+  const showCameras = can(me, "monoblock.view");
   const [view, setView] = useState<DashboardView | null>(null);
 
+  // До загрузки профиля ключ не известен: чужой выбор на общем устройстве
+  // не подхватываем, а экран всё равно закрыт загрузкой AppShell.
   useEffect(() => {
-    const saved = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (!userId) return;
+    const saved = readStoredChoice(userChoiceKey(VIEW_STORAGE_KEY, userId));
     setView(saved === "cameras" ? "cameras" : "analytics");
-  }, []);
+  }, [userId]);
 
   const changeView = (nextView: DashboardView) => {
     setView(nextView);
-    localStorage.setItem(VIEW_STORAGE_KEY, nextView);
+    storeChoice(userChoiceKey(VIEW_STORAGE_KEY, userId), nextView);
   };
   const activeView = showCameras ? view : "analytics";
 
   return (
     <AppShell
       title="Главная"
-      tabs={showCameras && activeView && <ViewSwitch view={activeView} onChange={changeView} />}
+      tabs={
+        showCameras &&
+        activeView && (
+          <Tabs tabs={[...DASHBOARD_VIEWS]} active={activeView} onChange={(key) => changeView(key as DashboardView)} />
+        )
+      }
     >
-      {activeView && (activeView === "analytics" ? <AnalyticsView /> : <CameraWall />)}
+      {userId && activeView && (activeView === "analytics" ? <AnalyticsView userId={userId} /> : <CameraWall />)}
     </AppShell>
   );
 }

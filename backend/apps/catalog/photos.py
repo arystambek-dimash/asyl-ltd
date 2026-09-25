@@ -13,7 +13,6 @@ import uuid
 from django.core import signing
 from django.core.files.base import ContentFile
 from django.db import transaction
-from django.http import FileResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 from rest_framework.exceptions import NotFound, ValidationError
 
@@ -115,8 +114,5 @@ class ProductPhotoView(SignedMediaView):
             handle = product.photo.open("rb")
         except OSError as exc:
             raise NotFound("Файл фото не найден") from exc
-        response = FileResponse(handle, content_type="image/jpeg")
         # Ссылка меняется вместе с файлом, поэтому кэш может жить долго.
-        response["Cache-Control"] = "private, max-age=31536000, immutable"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response
+        return self.file_response(handle, cache_control="private, max-age=31536000, immutable")

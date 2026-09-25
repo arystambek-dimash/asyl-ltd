@@ -1,12 +1,11 @@
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import generics, serializers
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.accounts.credentials import token_pair, username_taken
+from apps.accounts.passwords import validate_new_password
 from apps.clients.models import Client
 from apps.clients.phone import clean_phone
 from config.throttles import RegisterRateThrottle
@@ -35,23 +34,19 @@ class RegisterSerializer(serializers.Serializer):
     )
 
     def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
+        if username_taken(value):
             raise serializers.ValidationError("Это имя пользователя уже занято")
         return value
 
     def validate_password(self, value):
         # Публичная регистрация — применяем настроенные правила паролей,
         # а не только минимальную длину.
-        candidate = User(
-            username=str(self.initial_data.get("username", "")),
-            first_name=str(self.initial_data.get("first_name", "")),
-            last_name=str(self.initial_data.get("last_name", "")),
+        return validate_new_password(
+            value,
+            username=self.initial_data.get("username"),
+            first_name=self.initial_data.get("first_name"),
+            last_name=self.initial_data.get("last_name"),
         )
-        try:
-            validate_password(value, user=candidate)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(exc.messages)
-        return value
 
     def validate_phone(self, value):
         return clean_phone(value)
@@ -96,7 +91,4 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        refresh = RefreshToken.for_user(user)
-        return Response(
-            {"access": str(refresh.access_token), "refresh": str(refresh)}, status=201)
+        return Response(token_pair(serializer.save()), status=201)

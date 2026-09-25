@@ -13,29 +13,22 @@ from apps.grain import automatic_routing, historical_tare, statuses as st, weigh
 from apps.grain.models import (
     AutomaticPassageCapture, UnassignedWeighing, VehicleTareMemory, Wagon, WeighingIdentityCheck, WeighingRecord,
 )
+from apps.grain.tests.factories import JPEG, process_without_gpt, unassigned_weighing
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture(autouse=True)
-def config(settings, tmp_path, monkeypatch):
-    settings.MEDIA_ROOT = tmp_path
-    settings.OPENAI_API_KEY = "test-key"
-    settings.WEIGHING_AI_ENABLED = True
-    settings.WEIGHING_AI_MAX_DAILY_REQUESTS = 100
+def config(identity_ai, monkeypatch):
     # As on a monitor start: the first pass reconciles stale visits, later passes once per interval.
     monkeypatch.setattr(identity, "_next_reconcile_at", 0.0, raising=False)
 
 
 def event(*, number="", orientation="", weight=4000, minutes=30, photo=True, capture=None):
-    item = UnassignedWeighing.objects.create(
-        vehicle_number=number, orientation=orientation, weight_kg=weight,
-        stable_weight_at=timezone.now()-timedelta(minutes=minutes),
-        camera="cam1", scale_number="truck", photo_request_id=uuid4(), capture=capture,
+    return unassigned_weighing(
+        weight, ago=timedelta(minutes=minutes), photo=photo, vehicle_number=number, orientation=orientation,
+        capture=capture,
     )
-    if photo:
-        item.photo.save("frame.jpg", ContentFile(b"\xff\xd8\xff\xe0" + b"a"*32))
-    return item
 
 
 def weak_event(*, number, orientation, weight, minutes):
@@ -58,14 +51,14 @@ def _pending_unread(weight, minutes, orientation="rear"):
 
 
 def answer(plate="123ABC13", orientation="front"):
-    return {"exit": {"plate": plate, "plate_clear": True, "orientation": orientation}, "entries": []}
+    return {"exit": {"plate": plate, "plate_clear": True, "orientation": orientation}}
 
 
 def process_gpt(plate="123ABC13", orientation="front"):
     with patch.object(identity, "request_verification", return_value=(answer(plate, orientation), "response-test")) as request:
         identity.process_once()
     assert request.call_count == 1
-    assert request.call_args.args[1] == []  # no candidate numbers or multiple images
+    assert len(request.call_args.args) == 1  # one saved frame, no candidate numbers
     return request
 
 
@@ -84,7 +77,7 @@ def test_gpt_entry_without_any_open_visit_creates_trip_and_memory():
 
 def test_real_cycles_finish_without_operator_or_a_frame_check_when_ocr_matches_the_open_visit():
     for number in ["123ABC13", "234BCD13", "345CDE13"]:
-        entry = event(number=number, orientation="front")
+        event(number=number, orientation="front")
         departure = event(number=number, orientation="rear", weight=8500, minutes=1)
         with patch.object(identity, "request_verification", return_value=(answer(number, "rear"), "response-test")) as request:
             identity.process_once()
@@ -111,7 +104,7 @@ def test_ocr_mismatch_falls_back_and_closes_exact_verified_plate():
 
 
 def test_exit_without_open_visit_uses_latest_real_tare_and_keeps_history():
-    entry = event(number="123ABC13", orientation="front", minutes=90)
+    event(number="123ABC13", orientation="front", minutes=90)
     identity.process_once()
     old_exit = event(number="123ABC13", orientation="rear", weight=8000, minutes=60)
     identity.process_once()
@@ -154,7 +147,7 @@ def test_new_front_weighing_refreshes_single_tare_reference():
 
 def test_latest_heavier_tare_never_replaced_by_older_lighter_one():
     first = event(number="123ABC13", orientation="front", weight=4000, minutes=40)
-    second = event(number="123ABC13", orientation="front", weight=9000, minutes=30)
+    event(number="123ABC13", orientation="front", weight=9000, minutes=30)
     identity.process_once()
     identity.process_once()
     first.refresh_from_db()
@@ -175,20 +168,9 @@ def test_no_saved_tare_still_calls_gpt_then_remains_explicit_exception():
     assert item.identity_check.reason == "saved_tare_missing"
 
 
-def test_legacy_reviewed_front_is_requeued_without_candidates():
-    item = event(orientation="front")
-    WeighingIdentityCheck.objects.create(weighing=item, status="review", reason="entry_evidence_pending", attempts=3)
-    process_gpt()
-    item.refresh_from_db()
-    assert item.status == "assigned"
-    assert item.identity_check.attempts == 4
-
-
 def test_known_identity_can_book_when_frame_delivery_failed():
     item = event(number="123ABC13", orientation="front", photo=False)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     item.refresh_from_db()
     assert item.status == "assigned" and item.wagon.gross_weight_kg == 4000
 
@@ -206,7 +188,7 @@ def test_operator_change_during_gpt_request_wins():
 
 
 def test_old_replayed_entry_cannot_overwrite_current_tare():
-    current = event(number="123ABC13", orientation="front", weight=4200, minutes=10)
+    event(number="123ABC13", orientation="front", weight=4200, minutes=10)
     identity.process_once()
     older = event(number="123ABC13", orientation="front", weight=3900, minutes=30)
     process_gpt("123ABC13", "front")
@@ -217,9 +199,9 @@ def test_old_replayed_entry_cannot_overwrite_current_tare():
 
 def test_delayed_entry_prevents_premature_historical_tare_reuse():
     # A previous completed visit provides a tempting but out-of-date tare.
-    old_entry = event(number="123ABC13", orientation="front", weight=3900, minutes=180)
+    event(number="123ABC13", orientation="front", weight=3900, minutes=180)
     identity.process_once()
-    old_exit = event(number="123ABC13", orientation="rear", weight=8000, minutes=150)
+    event(number="123ABC13", orientation="rear", weight=8000, minutes=150)
     identity.process_once()
     entry = event(orientation="front", weight=4200, minutes=30, photo=False)
     departure = event(number="123ABC13", orientation="rear", weight=8500, minutes=1)
@@ -227,12 +209,10 @@ def test_delayed_entry_prevents_premature_historical_tare_reuse():
         process_gpt("123ABC13", "rear")
     departure.refresh_from_db()
     assert departure.status == "open" and departure.identity_check.reason == "earlier_entry_pending"
-    entry.photo.save("recovered.jpg", ContentFile(b"\xff\xd8\xff\xe0" + b"a"*32))
+    entry.photo.save("recovered.jpg", ContentFile(JPEG))
     process_gpt("123ABC13", "front")
     WeighingIdentityCheck.objects.filter(weighing=departure).update(next_attempt_at=timezone.now()-timedelta(seconds=1))
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     departure.refresh_from_db()
     assert departure.wagon.gross_weight_kg == 4200 and departure.wagon.net_weight_kg == 4300
     assert not departure.wagon.weighings.filter(source="historical").exists()
@@ -244,12 +224,10 @@ def test_verified_exit_rechecks_late_tare_without_second_gpt_request():
     departure.refresh_from_db()
     assert departure.vehicle_number == "123ABC13" and departure.orientation == "rear"
     assert departure.identity_check.reason == "saved_tare_missing"
-    entry = event(number="123ABC13", orientation="front", weight=4200, minutes=30)
+    event(number="123ABC13", orientation="front", weight=4200, minutes=30)
     identity.process_once()
     WeighingIdentityCheck.objects.filter(weighing=departure).update(next_attempt_at=timezone.now()-timedelta(seconds=1))
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     departure.refresh_from_db()
     assert departure.wagon.net_weight_kg == 4300
     assert departure.identity_check.attempts == 1
@@ -263,11 +241,7 @@ def test_late_correction_keeps_physical_entry_time_and_newer_tare():
     WeighingRecord.objects.create(wagon=old, kind="gross", source="scale", orientation="rear", weight_kg=8000)
     correct_entry = event(number="123ABC13", orientation="front", weight=3900, minutes=240)
     # More recent genuine measurement from another completed visit.
-    newer = Wagon.objects.create(number="123ABC13", direction=Wagon.PASSAGE, workflow="simple", cargo_name="Test", status=st.COMPLETED)
-    measured = WeighingRecord.objects.create(wagon=newer, kind="gross", source="scale", orientation="front", weight_kg=4300)
-    WeighingRecord.objects.filter(pk=measured.pk).update(created_at=now-timedelta(hours=1))
-    measured.refresh_from_db()
-    historical_tare.remember(measured, newer.number)
+    measured = _remember_history("123ABC13", 4300, minutes=60).weighings.get()
     services.assign_unassigned_weighing(correct_entry, old, None)
     corrected = old.weighings.get(kind="gross")
     assert corrected.created_at == correct_entry.stable_weight_at
@@ -275,7 +249,7 @@ def test_late_correction_keeps_physical_entry_time_and_newer_tare():
 
 
 def test_rear_classifier_error_is_rechecked_even_with_known_tare():
-    old = event(number="123ABC13", orientation="front", weight=3900, minutes=180)
+    event(number="123ABC13", orientation="front", weight=3900, minutes=180)
     identity.process_once()
     event(number="123ABC13", orientation="rear", weight=8000, minutes=150)
     identity.process_once()
@@ -290,14 +264,24 @@ def test_rear_classifier_error_is_rechecked_even_with_known_tare():
 
 def test_one_character_collision_rechecks_front_ocr_with_both_plates_known():
     for number in ("123ABC13", "423ABC13"):
-        trip = Wagon.objects.create(number=number, direction=Wagon.PASSAGE, workflow="simple", cargo_name="Test", status=st.COMPLETED)
-        record = WeighingRecord.objects.create(wagon=trip, kind="gross", source="scale", orientation="front", weight_kg=3900)
-        historical_tare.remember(record, number)
+        _remember_history(number, 3900)
     entry = event(number="123ABC13", orientation="front", weight=4300, minutes=1)
     process_gpt("423ABC13", "front")
     entry.refresh_from_db()
     assert entry.wagon.number == "423ABC13"
     assert not Wagon.objects.filter(number="123ABC13", status=st.AT_SILO).exists()
+
+
+def test_a_lost_character_is_a_collision_too_and_rechecks_front_ocr():
+    # Routing takes 849AT13 and 849ATT13 for one plate (one edit), so OCR alone
+    # must not open a visit under either while the other is a known truck.
+    for number in ("849AT13", "849ATT13"):
+        _remember_history(number, 3900)
+    entry = event(number="849AT13", orientation="front", weight=4300, minutes=1)
+    process_gpt("849ATT13", "front")
+    entry.refresh_from_db()
+    assert entry.wagon.number == "849ATT13"
+    assert not Wagon.objects.filter(number="849AT13", status=st.AT_SILO).exists()
 
 
 def _open_visit(number, weight, minutes):
@@ -342,9 +326,7 @@ def test_reentry_long_after_entry_takes_the_single_unread_loaded_exit_as_the_mis
     unread.refresh_from_db()
     assert unread.identity_check.reason == "plate_unreadable"
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     first.refresh_from_db()
     unread.refresh_from_db()
@@ -363,17 +345,24 @@ def test_reentry_long_after_entry_takes_the_single_unread_loaded_exit_as_the_mis
     assert UnassignedWeighing.objects.filter(status="open").count() == 0
 
 
+def _reenter_expecting_missed_exit(first, weight=5320):
+    """The truck of ``first`` enters again while its visit is open: the entry waits, the visit stays."""
+    again = event(number=first.number, orientation="front", weight=weight, minutes=20)
+    process_gpt(first.number, "front")
+    again.refresh_from_db()
+    first.refresh_from_db()
+    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
+    assert first.status == st.AT_SILO and first.tare_weight_kg is None
+    return again
+
+
 def test_reentry_with_two_unread_loaded_exits_waits_for_the_operator():
     first = _open_visit("065CUA13", 5340, 130)
     for minutes in (90, 60):
         event(number="", orientation="rear", weight=10800, minutes=minutes)
         process_gpt("", "rear")
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.gross_weight_kg == 5340
+    _reenter_expecting_missed_exit(first)
+    assert first.gross_weight_kg == 5340
     assert UnassignedWeighing.objects.filter(orientation="rear", status="open").count() == 2
     assert Wagon.objects.filter(number="065CUA13").count() == 1
 
@@ -382,13 +371,8 @@ def test_unread_exit_lighter_than_entry_plus_load_is_not_the_missed_exit():
     first = _open_visit("065CUA13", 5340, 130)
     light = event(number="", orientation="rear", weight=6000, minutes=80)
     process_gpt("", "rear")
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
+    _reenter_expecting_missed_exit(first)
     light.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None
     assert light.status == "open"
 
 
@@ -398,22 +382,15 @@ def test_unread_exit_that_the_model_read_as_another_truck_is_not_the_missed_exit
     process_gpt("777XYZ01", "rear")
     other.refresh_from_db()
     assert other.status == "open" and other.vehicle_number == "777XYZ01"
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
+    _reenter_expecting_missed_exit(first)
     other.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None
     assert other.status == "open"
 
 
 def test_reentry_after_the_longest_trip_closes_the_stale_visit_without_an_exit():
     first = _open_visit("065CUA13", 5340, 13 * 60)
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     first.refresh_from_db()
     assert first.status == st.CANCELLED and first.tare_weight_kg is None
@@ -431,9 +408,7 @@ def test_unread_exit_later_than_the_longest_trip_is_not_taken_for_the_stale_visi
     late = event(number="", orientation="rear", weight=10860, minutes=90)  # 12.5 h after entry
     process_gpt("", "rear")
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     first.refresh_from_db()
     late.refresh_from_db()
@@ -448,23 +423,16 @@ def test_reentry_waits_while_the_unread_exit_has_no_verdict_yet():
     # the missed one nor gives up on the visit: it waits in the review queue.
     first = _open_visit("065CUA13", 5340, 130)
     unread = _pending_unread(10860, 80)
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None
+    again = _reenter_expecting_missed_exit(first)
     assert Wagon.objects.filter(number="065CUA13").count() == 1
     # The frame arrives and the model finds no plate: the exit is settled as unread.
-    unread.photo.save("late.jpg", ContentFile(b"\xff\xd8\xff\xe0" + b"a"*32))
+    unread.photo.save("late.jpg", ContentFile(JPEG))
     WeighingIdentityCheck.objects.filter(weighing=unread).update(next_attempt_at=timezone.now()-timedelta(seconds=1))
     process_gpt("", "rear")
     unread.refresh_from_db()
     assert unread.identity_check.status == "review" and unread.identity_check.reason == "plate_unreadable"
     WeighingIdentityCheck.objects.filter(weighing=again).update(next_attempt_at=timezone.now()-timedelta(seconds=1))
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     first.refresh_from_db()
     unread.refresh_from_db()
@@ -489,13 +457,9 @@ def test_short_reentry_with_an_unread_exit_still_being_checked_refreshes_the_sam
 def test_stale_visit_is_not_abandoned_while_an_unread_exit_in_its_window_has_no_verdict():
     first = _open_visit("065CUA13", 5340, 13 * 60)
     pending = _pending_unread(10860, 90)  # 11.5 h after entry, inside the visit's window
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
+    _reenter_expecting_missed_exit(first)
     pending.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.exit_note == ""
+    assert first.exit_note == ""
     assert pending.status == "open"
     assert Wagon.objects.filter(number="065CUA13").count() == 1
 
@@ -506,12 +470,8 @@ def test_two_unread_exits_in_the_window_of_a_stale_visit_wait_for_the_operator_i
     for minutes in (180, 120):
         event(number="", orientation="rear", weight=10800, minutes=minutes)
         process_gpt("", "rear")
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.exit_note == ""
+    _reenter_expecting_missed_exit(first)
+    assert first.exit_note == ""
     assert UnassignedWeighing.objects.filter(orientation="rear", status="open").count() == 2
     assert Wagon.objects.filter(number="065CUA13").count() == 1
 
@@ -540,9 +500,7 @@ def test_reentry_under_the_right_plate_closes_the_visit_opened_under_a_misread_o
     phantom = _open_visit("E065CUA", 5380, 130)
     departure = _misread_exit("T765CUA13", 10640, 80)
     again = event(number="065CUA13", orientation="front", weight=5340, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     phantom.refresh_from_db()
     departure.refresh_from_db()
@@ -557,9 +515,7 @@ def test_reentry_under_the_right_plate_closes_the_visit_opened_under_a_misread_o
 def test_reentry_under_the_right_plate_cancels_a_misread_visit_older_than_the_longest_trip():
     phantom = _open_visit("E065CUA", 5380, 13 * 60)
     again = event(number="065CUA13", orientation="front", weight=5340, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     phantom.refresh_from_db()
     assert phantom.status == st.CANCELLED and phantom.exit_note == "Выезд не зафиксирован: рейс закрыт автоматически при новом заезде"
@@ -572,9 +528,7 @@ def test_reentry_under_the_right_plate_cancels_a_misread_visit_older_than_the_lo
 def test_reentry_under_the_right_plate_still_opens_when_the_misread_visit_cannot_be_settled():
     phantom = _open_visit("E065CUA", 5380, 130)
     again = event(number="065CUA13", orientation="front", weight=5340, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     phantom.refresh_from_db()
     assert phantom.status == st.AT_SILO and phantom.tare_weight_kg is None
@@ -588,9 +542,7 @@ def test_reentry_does_not_close_the_misread_visit_with_an_exit_nobody_read():
     unread = event(number="", orientation="rear", weight=10640, minutes=80)
     process_gpt("", "rear")
     again = event(number="065CUA13", orientation="front", weight=5340, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     phantom.refresh_from_db()
     unread.refresh_from_db()
@@ -605,9 +557,7 @@ def test_reentry_weighing_unlike_the_misread_visits_entry_leaves_that_visit_alon
     phantom = _open_visit("E065CUA", 5380, 13 * 60)
     departure = _misread_exit("T765CUA13", 10640, 80)
     again = event(number="065CUA13", orientation="front", weight=6000, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     phantom.refresh_from_db()
     departure.refresh_from_db()
@@ -623,9 +573,7 @@ def test_reentry_of_a_neighbouring_plate_does_not_close_the_neighbours_visit_wit
     unread = event(number="", orientation="rear", weight=8860, minutes=80)
     process_gpt("", "rear")
     entry = event(number="261BBF13", orientation="front", weight=3940, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     entry.refresh_from_db()
     neighbour.refresh_from_db()
     unread.refresh_from_db()
@@ -674,12 +622,8 @@ def test_reentry_with_two_near_plate_exits_does_not_guess():
     for plate, minutes in (("165CUA17", 90), ("265CUA18", 60)):
         event(number="", orientation="rear", weight=10800, minutes=minutes)
         process_gpt(plate, "rear")
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None and first.gross_weight_kg == 5340
+    _reenter_expecting_missed_exit(first)
+    assert first.gross_weight_kg == 5340
     assert UnassignedWeighing.objects.filter(orientation="rear", status="open").count() == 2
     assert Wagon.objects.filter(number="065CUA13").count() == 1
 
@@ -698,9 +642,7 @@ def _remember_history(number, weight=3940, minutes=None):
 def test_exit_with_ocr_plate_of_a_truck_on_site_books_without_gpt():
     _open_visit("123ABC13", 4000, 60)
     departure = event(number="123ABC13", orientation="rear", weight=8500, minutes=1)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     departure.refresh_from_db()
     assert departure.status == "assigned" and departure.action == "exit"
     assert departure.wagon.status == st.COMPLETED and departure.wagon.net_weight_kg == 4500
@@ -892,9 +834,7 @@ def test_reentry_takes_the_exit_whose_weak_far_plate_the_frame_did_not_confirm()
     weak.refresh_from_db()
     assert weak.status == "open" and weak.vehicle_number == "402BJG13" and weak.identity_check.reason == "plate_unreadable"
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     first.refresh_from_db()
     weak.refresh_from_db()
@@ -909,13 +849,8 @@ def test_weak_rear_plate_the_frame_confirmed_still_names_another_truck():
     process_gpt("402BJG13", "rear")
     weak.refresh_from_db()
     assert weak.status == "open" and weak.identity_check.reason == "saved_tare_missing"
-    again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
+    _reenter_expecting_missed_exit(first)
     weak.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None
     assert weak.status == "open"
 
 
@@ -943,13 +878,8 @@ def test_reentry_waits_while_a_weak_far_plate_exit_is_still_being_checked():
         weighing=weak, status="retrying", reason="verification_unavailable",
         next_attempt_at=timezone.now() + timedelta(minutes=10),
     )
-    again = event(number="065CUA13", orientation="front", weight=5340, minutes=20)
-    process_gpt("065CUA13", "front")
-    again.refresh_from_db()
-    first.refresh_from_db()
+    _reenter_expecting_missed_exit(first, weight=5340)
     weak.refresh_from_db()
-    assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
-    assert first.status == st.AT_SILO and first.tare_weight_kg is None
     assert weak.status == "open"
 
 
@@ -959,9 +889,7 @@ def test_reentry_leaves_the_misread_visit_alone_while_its_candidate_exit_is_unch
     phantom = _open_visit("E065CUA", 5380, 13 * 60)
     pending = _pending_unread(10640, 12 * 60 + 30)  # half an hour after that entry, inside its trip window
     again = event(number="065CUA13", orientation="front", weight=5340, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     phantom.refresh_from_db()
     pending.refresh_from_db()
@@ -1019,9 +947,7 @@ def test_reconcile_cancels_a_visit_open_twice_the_longest_trip_without_any_exit(
     assert not Wagon.objects.filter(status__in=st.ON_SITE_STATUSES).exists()
     # The plate is free again: its next entry opens a new visit.
     again = event(number="065CUA13", orientation="front", weight=5320, minutes=20)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     again.refresh_from_db()
     assert again.wagon is not None and again.wagon.pk != first.pk and again.wagon.gross_weight_kg == 5320
 
@@ -1096,7 +1022,6 @@ def test_reconcile_goes_on_with_the_next_visit_when_one_fails(caplog):
 
 def test_process_once_reconciles_stale_visits_at_most_once_per_interval():
     calls = []
-    identity._next_reconcile_at = 0.0
     with patch.object(automatic_routing, "reconcile_stale_visits", side_effect=lambda: calls.append(1) or {}), \
             patch.object(identity, "time") as clock:
         clock.monotonic.return_value = 1000.0
@@ -1114,7 +1039,6 @@ def test_process_once_reconciles_stale_visits_at_most_once_per_interval():
 
 def test_process_once_keeps_booking_when_the_reconcile_fails():
     item = event(number="123ABC13", orientation="front")
-    identity._next_reconcile_at = 0.0
     with patch.object(automatic_routing, "reconcile_stale_visits", side_effect=ValueError("too_many_entry_records")):
         identity.process_once()
     item.refresh_from_db()
@@ -1131,9 +1055,7 @@ def _reentry_after_a_missed_exit(number, hours):
     again.refresh_from_db()
     assert again.status == "open" and again.identity_check.reason == "previous_exit_missing"
     departure = event(number=number, orientation="rear", weight=10380, minutes=9 * 60)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     departure.refresh_from_db()
     assert departure.status == "open" and departure.identity_check.reason == "earlier_entry_pending"
     return first, again, departure
@@ -1295,7 +1217,7 @@ def test_exit_with_a_plate_merges_the_orphan_visit_opened_under_a_misread_front_
     process_gpt("532OUB13", "rear")
     departure.refresh_from_db()
     phantom.refresh_from_db()
-    assert departure.wagon_id == phantom.pk and phantom.number == "532OUB13"
+    assert departure.wagon_id == phantom.pk and phantom.number == "532OUB13" and phantom.number_source == "camera"
     assert phantom.status == st.COMPLETED and phantom.gross_weight_kg == 5600 and phantom.net_weight_kg == 5860
     assert not phantom.weighings.filter(source="historical").exists()
     renamed = EventLog.objects.get(event_type="grain_number", payload__wagon_id=phantom.pk)

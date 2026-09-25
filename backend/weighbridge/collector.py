@@ -4,19 +4,12 @@ Run: python -m weighbridge.collector. Only the local SQLite volume is required.
 No database migrations, model imports, Redis locks or web server are involved.
 """
 
-import fcntl
 import math
 import os
 import re
-import signal
-import sqlite3
-import threading
 import time
-import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from uuid import uuid4
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.weighbridge_settings")
@@ -25,7 +18,8 @@ from django.conf import settings
 from rest_framework.exceptions import APIException
 from apps.grain import scale
 from apps.cameras import ai
-from .outbox import Lane, Outbox, is_busy
+from .outbox import Lane
+from .runtime import CollectorProcess, fetch_frame, run
 from .writer import OutboxWriter
 
 # A Camera-PC refusal (422 no_match, 503 camera_unavailable, ...) still says why:
@@ -38,7 +32,7 @@ DIAGNOSTIC_COUNTERS = ("fresh_frames_seen", "frames_scanned", "detected_frames",
 DIAGNOSTIC_FLOATS = (("best_detector_confidence", 1), ("confirmation_window_seconds", 1e6))
 READ_STRINGS = ("variant", "raw_text", "number")
 READ_FLOATS = (("confidence", 1), ("detector_confidence", 1), ("bbox_w", 100_000), ("bbox_h", 100_000))
-# The CRM keeps the same eight (vehicle_weight_capture.MAX_NO_MATCH_VOTES), so a
+# The CRM keeps the same eight (plate_recognition.MAX_NO_MATCH_VOTES), so a
 # competing number is never cut on import behind a lone plate's back.
 MAX_DIAGNOSTIC_VOTES = 8
 MAX_DIAGNOSTIC_READS = 8
@@ -112,7 +106,9 @@ def _recognition_error(payload):
     return code or "recognition_unavailable"
 
 
-class Collector:
+class Collector(CollectorProcess):
+    busy_message = "outbox_busy_retry_preserving_occupancy"
+
     def __init__(self, box):
         self.box = box
         self.lane = Lane(
@@ -126,31 +122,10 @@ class Collector:
         self.status = "starting"
         self.pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="evidence")
         self.futures = {}
-        self.last_queue_error = 0
-        self.writer = OutboxWriter(box)
-
-    @property
-    def pending_writes(self):
-        return self.writer.pending_writes
-
-    def enqueue_write(self, method, *args, **kwargs):
         # The event and evidence are immutable values owned by this capture.
         # Contention may delay persistence, never cause a replacement reading
         # or a delayed live camera request.
-        self.writer.enqueue(method, *args, **kwargs)
-
-    def start_writer(self):
-        self.writer.start()
-
-    def close(self):
-        self.pool.shutdown(wait=True)
-        # Each flush is bounded by SQLite's busy timeout; there is no infinite
-        # worker retry loop holding process shutdown. Normal shutdown drains all
-        # captured evidence before the writer exits.
-        drained = self.writer.drain(timeout=10)
-        self.writer.shutdown()
-        if not drained:
-            print("outbox_storage_unavailable_unflushed_evidence", flush=True)
+        self.writer = OutboxWriter(box)
 
     def same_episode(self, key):
         return self.current == key and time.monotonic() - self.last_good <= 5
@@ -165,19 +140,15 @@ class Collector:
             if not self.same_episode(key):
                 break
             try:
-                src = urllib.parse.urlencode({"src": event["camera"] + "main"})
-                request = urllib.request.Request(settings.GO2RTC_API_URL.rstrip("/") + "/api/frame.jpeg?" + src)
-                # An isolated video relay, never the web deployment's relay.
-                with scale._open_request(request, timeout=4) as response:
-                    value = response.read(4 * 1024 * 1024 + 1)
-                if self.same_episode(key) and len(value) <= 4 * 1024 * 1024 and value.startswith(b"\xff\xd8"):
+                value = fetch_frame(event["camera"])
+                if self.same_episode(key) and value is not None:
                     photo = value
                     break
                 error = "snapshot_invalid_or_late"
             except (OSError, ValueError):
                 error = "snapshot_unavailable"
-        self.enqueue_write("finish", key, "photo", photo=photo,
-                        updates={"photo_error": "" if photo else error})
+        self.writer.enqueue("finish", key, "photo", photo=photo,
+                            updates={"photo_error": "" if photo else error})
 
     def recognize(self, event):
         payload = None
@@ -208,7 +179,7 @@ class Collector:
                 diagnostics = _diagnostics(exc.payload)
         except (ai.AiUnavailable, ValueError):
             error = "recognition_unavailable"
-        self.enqueue_write("finish", event["id"], "ocr", updates={
+        self.writer.enqueue("finish", event["id"], "ocr", updates={
             "recognition": payload, "orientation": orientation, "recognition_error": error,
             "recognition_diagnostics": diagnostics, "recognition_frame_bound": frame_bound,
             "recognition_finished_at": datetime.now(timezone.utc).isoformat(),
@@ -225,24 +196,12 @@ class Collector:
             busy = photo_slots >= 2 if part == "photo" else key in self.futures
             if busy:
                 field = "photo_error" if part == "photo" else "recognition_error"
-                self.enqueue_write("finish", event["id"], part, updates={field: "evidence_worker_busy"})
+                self.writer.enqueue("finish", event["id"], part, updates={field: "evidence_worker_busy"})
             else:
                 self.futures[key] = self.pool.submit(worker, event)
 
-    def poll(self):
-        try:
-            self._poll()
-        except sqlite3.OperationalError as exc:
-            if not is_busy(exc):
-                raise
-            # Do not restart/re-arm a parked truck because the importer briefly
-            # owns a SQLite lock. The next tick retries with the same lane state.
-            if time.monotonic() - self.last_queue_error > 30:
-                print("outbox_busy_retry_preserving_occupancy", flush=True)
-                self.last_queue_error = time.monotonic()
-
     def _poll(self):
-        self.start_writer()
+        self.writer.start()
         self.futures = {part: f for part, f in self.futures.items() if not self._finished(f)}
         config = self.box.state("config") or {}
         self.lane.stable_seconds = max(2, min(30, int(config.get("stable_weight_seconds", 5))))
@@ -251,14 +210,14 @@ class Collector:
             self.current = None
             self.box.incident("observation_gap")
         try:
-            observation = scale.read_truck_scale_observation("truck")
+            observation = scale.read_truck_scale_observation(scale.TRUCK_SCALE_KEY)
             trigger = self.lane.observe(observation, now)
             if self.lane.rearmed_by_change:
                 # Trucks can queue through without an empty reading; keep a
                 # trace of every re-arm that did not wait for a clear scale.
                 self.box.incident(f"rearmed_by_weight_change:{self.lane.rearmed_by_change}")
                 self.lane.rearmed_by_change = None
-            if observation.state not in {"ready", "unstable"} or observation.weight_kg is None:
+            if observation.state not in scale.VALID_SCALE_STATES or observation.weight_kg is None:
                 # One failed read is not an outage. The status, its incident and
                 # the CRM's degraded badge only flip once the scale has given no
                 # usable reading for over 5 s; the lane itself restarts at once.
@@ -277,7 +236,7 @@ class Collector:
             if trigger and (self.box.directory / "enabled").is_file():
                 # A second strict reading at the edge, not a later cached value.
                 read_started = datetime.now(timezone.utc)
-                reading = scale.read_truck_scale("truck")
+                reading = scale.read_truck_scale(scale.TRUCK_SCALE_KEY)
                 if abs(float(reading.weight_kg) - float(self.lane.weight)) > self.lane.tolerance:
                     self.lane.since = None
                 else:
@@ -295,7 +254,7 @@ class Collector:
                     # the independent writer commits weight before evidence.
                     self.current = event["id"]
                     self.lane.captured()
-                    self.enqueue_write("put", event)
+                    self.writer.enqueue("put", event)
                     self.start_evidence(event)
         except scale.TruckScaleNotReady:
             # A vehicle can move between the preview and strict read. Let it
@@ -315,7 +274,7 @@ class Collector:
             self.status = new_status
         self.box.state("heartbeat", {"updated_at": time.time(), "status": self.status,
                                      "armed": self.lane.armed, "current": self.current,
-                                     "pending_writes": len(self.pending_writes),
+                                     "pending_writes": self.writer.pending(),
                                      "clear": self.lane.clear_count >= self.lane.clear_polls})
 
     @staticmethod
@@ -327,23 +286,7 @@ class Collector:
 
 
 def main():
-    directory = Path(os.environ.get("WEIGHBRIDGE_OUTBOX_DIR", "/var/lib/weighbridge"))
-    box = Outbox(directory)
-    lock = (directory / "collector.lock").open("a")
-    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    box.recover()
-    box.incident("collector_started_require_clear")
-    collector = Collector(box)
-    stopped = threading.Event()
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(signum, lambda *_: stopped.set())
-    try:
-        while not stopped.is_set():
-            started = time.monotonic()
-            collector.poll()
-            stopped.wait(max(0, 1 - (time.monotonic() - started)))
-    finally:
-        collector.close()
+    run(Collector, default_directory="/var/lib/weighbridge", started_incident="collector_started_require_clear")
 
 
 if __name__ == "__main__":

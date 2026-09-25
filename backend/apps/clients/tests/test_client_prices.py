@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from apps.catalog.models import ClientPrice, Product
+from apps.catalog.models import ClientPrice
 from apps.clients.models import Client
 from apps.clients.views import ClientViewSet
 from apps.sales.models import Department
@@ -15,18 +15,13 @@ def _client(**kwargs):
         first_name="Личный", last_name="Прайс", phone="1", **kwargs)
 
 
-def _product(name="Мука"):
-    return Product.objects.create(
-        name=name, color="Red", weight_kg="50", price="1000.00")
-
-
 def test_authorized_employee_can_attach_and_remove_client_prices(
-        auth_client, user_with_perms):
+        auth_client, user_with_perms, make_product):
     user = user_with_perms(
         "price-manager", codes=["clients.view", "clients.set_price"])
     client = _client()
-    first = _product()
-    second = _product("Отруби")
+    first = make_product()
+    second = make_product("Отруби")
 
     response = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
@@ -48,7 +43,6 @@ def test_authorized_employee_can_attach_and_remove_client_prices(
     assert by_key[(first.id, "KZT")]["price"] == "875.50"
     assert by_key[(first.id, "USD")]["price"] == "1.95"
     assert by_key[(second.id, "KZT")]["price"] == "920.00"
-    assert "base_price" not in by_key[(first.id, "KZT")]
 
     removed = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
@@ -63,10 +57,10 @@ def test_authorized_employee_can_attach_and_remove_client_prices(
 
 
 def test_employee_without_price_permission_cannot_change_prices(
-        auth_client, user_with_perms):
+        auth_client, user_with_perms, make_product):
     user = user_with_perms("viewer", codes=["clients.view"])
     client = _client()
-    product = _product()
+    product = make_product()
     response = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
         {"prices": [{"product": product.id, "price": "900"}]}, format="json",
@@ -75,20 +69,11 @@ def test_employee_without_price_permission_cannot_change_prices(
     assert not ClientPrice.objects.exists()
 
 
-def test_price_manager_can_reach_any_client(
-        auth_client, user_with_perms):
-    other = user_with_perms(
-        "other", codes=["clients.view", "clients.set_price"])
-    client = _client()
-    response = auth_client(other).get(f"/api/clients/{client.id}/prices/")
-    assert response.status_code == 200
-
-
 @pytest.mark.parametrize("price", ["0", "-1", "not-money"])
-def test_client_price_must_be_positive(auth_client, user_with_perms, price):
+def test_client_price_must_be_positive(auth_client, user_with_perms, price, make_product):
     user = user_with_perms("price-validator", codes=["clients.set_price"])
     client = _client()
-    product = _product()
+    product = make_product()
     response = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
         {"prices": [{"product": product.id, "price": price}]}, format="json",
@@ -97,10 +82,10 @@ def test_client_price_must_be_positive(auth_client, user_with_perms, price):
     assert not ClientPrice.objects.exists()
 
 
-def test_duplicate_product_in_price_list_is_rejected(auth_client, user_with_perms):
+def test_duplicate_product_in_price_list_is_rejected(auth_client, user_with_perms, make_product):
     user = user_with_perms("price-duplicate", codes=["clients.set_price"])
     client = _client()
-    product = _product()
+    product = make_product()
     response = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
         {"prices": [
@@ -111,10 +96,10 @@ def test_duplicate_product_in_price_list_is_rejected(auth_client, user_with_perm
     assert response.status_code == 400
 
 
-def test_same_product_in_two_currencies_is_allowed(auth_client, user_with_perms):
+def test_same_product_in_two_currencies_is_allowed(auth_client, user_with_perms, make_product):
     user = user_with_perms("price-bilingual", codes=["clients.set_price"])
     client = _client()
-    product = _product()
+    product = make_product()
 
     response = auth_client(user).put(
         f"/api/clients/{client.id}/prices/",
@@ -132,20 +117,20 @@ def test_stale_price_write_rechecks_department_after_client_lock(
     auth_client,
     user_with_perms,
     monkeypatch,
+    make_product,
 ):
     first = Department.objects.create(code="price-stale-a", name="Отдел A")
     second = Department.objects.create(code="price-stale-b", name="Отдел B")
     user = user_with_perms(
         "price-stale-writer",
         codes=["clients.view", "clients.set_price"],
+        department=first,
     )
-    user.employee.sales_department = first
-    user.employee.save(update_fields=["sales_department"])
     client = _client(department=first)
     stale_client = Client.objects.get(pk=client.pk)
     client.department = second
     client.save(update_fields=["department"])
-    product = _product("Прайс после переноса")
+    product = make_product("Прайс после переноса")
     monkeypatch.setattr(ClientViewSet, "get_object", lambda _view: stale_client)
 
     response = auth_client(user).put(

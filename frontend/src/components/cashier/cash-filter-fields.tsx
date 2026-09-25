@@ -12,6 +12,43 @@ const CURRENCY_OPTIONS: FilterOption[] = [
   { key: "USD", label: "USD" },
 ];
 
+const LABEL_CLASS = "text-[11px] font-medium text-[var(--muted-foreground)]";
+
+/** «С даты / По дату»: в панели фильтров и в окне «Свой период» отчёта на телефоне. */
+export function CashDateFields({
+  filters,
+  layout = "row",
+  onChange,
+}: {
+  filters: Pick<CashFilters, "dateFrom" | "dateTo">;
+  layout?: "row" | "stack";
+  onChange: (patch: Partial<CashFilters>) => void;
+}) {
+  const stack = layout === "stack";
+  return (
+    <div className={cn(stack ? "grid grid-cols-2 gap-3" : "contents")}>
+      <label className="flex flex-col gap-1.5">
+        <span className={LABEL_CLASS}>С даты</span>
+        <Input
+          type="date"
+          value={filters.dateFrom}
+          onChange={(e) => onChange({ dateFrom: e.target.value })}
+          className={stack ? "h-10" : "h-9 w-[158px]"}
+        />
+      </label>
+      <label className="flex flex-col gap-1.5">
+        <span className={LABEL_CLASS}>По дату</span>
+        <Input
+          type="date"
+          value={filters.dateTo}
+          onChange={(e) => onChange({ dateTo: e.target.value })}
+          className={stack ? "h-10" : "h-9 w-[158px]"}
+        />
+      </label>
+    </div>
+  );
+}
+
 /** Поля фильтров кассы. `row` — десктопная панель, `stack` — мобильная шторка (нативные select открывают системный пикер). */
 export function CashFilterFields({
   filters,
@@ -48,13 +85,12 @@ export function CashFilterFields({
   ];
   // Остаток долга не показан на этом экране — не считаем его ошибкой, даже если поля где-то заполнены.
   const errorText = filtersError(showRemaining ? filters : { ...filters, remainingMin: "", remainingMax: "" });
-  const labelClass = "text-[11px] font-medium text-[var(--muted-foreground)]";
 
   function choice(label: string, active: string, options: FilterOption[], pick: (key: string) => void) {
     if (!stack) return <FilterDropdown label={label} active={active} onChange={pick} options={options} />;
     return (
       <label className="flex flex-col gap-1.5">
-        <span className={labelClass}>{label}</span>
+        <span className={LABEL_CLASS}>{label}</span>
         <Select value={active} onChange={(event) => pick(event.target.value)}>
           {options.map((option) => (
             <option key={option.key} value={option.key}>
@@ -68,34 +104,13 @@ export function CashFilterFields({
 
   return (
     <div className={cn("flex gap-3", stack ? "flex-col" : "flex-wrap items-end")}>
-      {showDates && (
-        <div className={cn(stack ? "grid grid-cols-2 gap-3" : "contents")}>
-          <label className="flex flex-col gap-1.5">
-            <span className={labelClass}>С даты</span>
-            <Input
-              type="date"
-              value={filters.dateFrom}
-              onChange={(e) => onChange({ dateFrom: e.target.value })}
-              className={stack ? "h-10" : "h-9 w-[158px]"}
-            />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className={labelClass}>По дату</span>
-            <Input
-              type="date"
-              value={filters.dateTo}
-              onChange={(e) => onChange({ dateTo: e.target.value })}
-              className={stack ? "h-10" : "h-9 w-[158px]"}
-            />
-          </label>
-        </div>
-      )}
+      {showDates && <CashDateFields filters={filters} layout={layout} onChange={onChange} />}
       {showDepartment &&
         choice("Отдел", filters.department, departmentOptions, (department) => onChange({ department }))}
       {choice("Магазин", filters.store, storeOptions, (store) => onChange({ store }))}
       {showRemaining && (
         <div className="flex flex-col gap-1.5">
-          <span className={labelClass}>Остаток долга</span>
+          <span className={LABEL_CLASS}>Остаток долга</span>
           <div className={cn("flex items-center gap-1.5", stack && "flex-wrap")}>
             {stack ? (
               <Select

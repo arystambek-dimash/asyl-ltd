@@ -2,14 +2,6 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceRecorder } from "./voice-recorder";
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
 function audioStream() {
   const stop = vi.fn();
   const stream = {
@@ -70,7 +62,7 @@ afterEach(() => {
 
 describe("VoiceRecorder", () => {
   it("locks the start action while microphone permission is pending", async () => {
-    const permission = deferred<MediaStream>();
+    const permission = Promise.withResolvers<MediaStream>();
     const getUserMedia = vi.fn().mockReturnValue(permission.promise);
     const { stream, stop } = audioStream();
     installGetUserMedia(getUserMedia);
@@ -97,7 +89,7 @@ describe("VoiceRecorder", () => {
   });
 
   it("stops a stream that resolves after unmount without creating a recorder", async () => {
-    const permission = deferred<MediaStream>();
+    const permission = Promise.withResolvers<MediaStream>();
     const getUserMedia = vi.fn().mockReturnValue(permission.promise);
     const { stream, stop } = audioStream();
     installGetUserMedia(getUserMedia);

@@ -9,16 +9,12 @@ from apps.eventlog.models import EventLog
 pytestmark = pytest.mark.django_db
 
 
-def _product(name="Мука высший сорт"):
-    return Product.objects.create(name=name, color="Red", weight_kg="50")
-
-
 def _url(product, alias=None):
     return f"/api/products/{product.pk}/aliases/" + (f"{alias.pk}/" if alias else "")
 
 
-def test_manager_adds_a_report_code_to_a_product(auth_client, manager):
-    product = _product()
+def test_manager_adds_a_report_code_to_a_product(auth_client, manager, make_product):
+    product = make_product()
 
     response = auth_client(manager).post(_url(product), {"code": " д1с "}, format="json")
 
@@ -30,8 +26,8 @@ def test_manager_adds_a_report_code_to_a_product(auth_client, manager):
     assert EventLog.objects.filter(event_type="catalog", payload__code="Д1C", payload__product_id=product.pk).exists()
 
 
-def test_code_of_another_product_moves_only_on_request(auth_client, manager):
-    old, new = _product("Мука первый сорт"), _product()
+def test_code_of_another_product_moves_only_on_request(auth_client, manager, make_product):
+    old, new = make_product("Мука первый сорт"), make_product()
     ProductAlias.objects.create(code="Д1с", product=old)
     api = auth_client(manager)
 
@@ -46,8 +42,8 @@ def test_code_of_another_product_moves_only_on_request(auth_client, manager):
     assert ProductAlias.objects.get().product == new
 
 
-def test_code_of_an_archived_product_moves_without_asking(auth_client, manager):
-    old, new = _product("Мука первый сорт"), _product()
+def test_code_of_an_archived_product_moves_without_asking(auth_client, manager, make_product):
+    old, new = make_product("Мука первый сорт"), make_product()
     ProductAlias.objects.create(code="Д1с", product=old)
     Product.objects.filter(pk=old.pk).update(is_active=False)
 
@@ -57,8 +53,8 @@ def test_code_of_an_archived_product_moves_without_asking(auth_client, manager):
     assert ProductAlias.objects.get().product == new
 
 
-def test_same_code_again_is_idempotent(auth_client, manager):
-    product = _product()
+def test_same_code_again_is_idempotent(auth_client, manager, make_product):
+    product = make_product()
     api = auth_client(manager)
     api.post(_url(product), {"code": "Д1с"}, format="json")
 
@@ -66,8 +62,8 @@ def test_same_code_again_is_idempotent(auth_client, manager):
     assert ProductAlias.objects.count() == 1
 
 
-def test_manager_removes_a_code(auth_client, manager):
-    product = _product()
+def test_manager_removes_a_code(auth_client, manager, make_product):
+    product = make_product()
     alias = ProductAlias.objects.create(code="Д1с", product=product)
 
     response = auth_client(manager).delete(_url(product, alias))
@@ -77,24 +73,24 @@ def test_manager_removes_a_code(auth_client, manager):
     assert not ProductAlias.objects.exists()
 
 
-def test_code_of_another_product_cannot_be_removed_through_this_one(auth_client, manager):
-    product, other = _product(), _product("Другой")
+def test_code_of_another_product_cannot_be_removed_through_this_one(auth_client, manager, make_product):
+    product, other = make_product(), make_product("Другой")
     alias = ProductAlias.objects.create(code="Д1с", product=other)
 
     assert auth_client(manager).delete(_url(product, alias)).status_code == 404
     assert ProductAlias.objects.exists()
 
 
-def test_empty_code_is_an_input_error(auth_client, manager):
-    response = auth_client(manager).post(_url(_product()), {"code": " — "}, format="json")
+def test_empty_code_is_an_input_error(auth_client, manager, make_product):
+    response = auth_client(manager).post(_url(make_product()), {"code": " — "}, format="json")
 
     assert response.status_code == 400
     assert response.data["code"] == "alias_empty"
 
 
-def test_codes_need_catalog_edit(auth_client, user_with_perms):
+def test_codes_need_catalog_edit(auth_client, user_with_perms, make_product):
     viewer = user_with_perms("catalog-viewer", codes=["catalog.view"])
-    product = _product()
+    product = make_product()
     alias = ProductAlias.objects.create(code="Д1с", product=product)
     api = auth_client(viewer)
 
@@ -103,13 +99,13 @@ def test_codes_need_catalog_edit(auth_client, user_with_perms):
     assert api.get(f"/api/products/{product.pk}/").data["aliases"] == [{"id": alias.pk, "code": "Д1с"}]
 
 
-def test_product_list_loads_codes_without_n_plus_one(auth_client, manager, django_assert_max_num_queries):
+def test_product_list_loads_codes_without_n_plus_one(auth_client, manager, django_assert_max_num_queries, make_product):
     api = auth_client(manager)
-    ProductAlias.objects.create(code="А1", product=_product("А"))
+    ProductAlias.objects.create(code="А1", product=make_product("А"))
     with CaptureQueriesContext(connection) as small:
         api.get("/api/products/")
     for index in range(4):
-        product = _product(f"Товар {index}")
+        product = make_product(f"Товар {index}")
         ProductAlias.objects.create(code=f"Т{index}", product=product)
         ProductAlias.objects.create(code=f"Т{index}X", product=product)
 

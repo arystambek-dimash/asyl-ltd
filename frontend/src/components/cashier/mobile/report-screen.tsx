@@ -6,11 +6,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { DonutChart } from "@/components/ui/donut-chart";
-import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Tabs } from "@/components/ui/tabs";
+import { periodPresetOf, periodRange } from "@/lib/date-range";
+import { incomeDetailRows } from "@/lib/report-analytics";
 import { formatCurrency, formatIsoDate, pluralRu } from "@/lib/utils";
-import { filtersError, PERIOD_PRESETS, periodPresetOf, periodRange } from "../filters";
+import { CashDateFields } from "../cash-filter-fields";
+import { filtersError, PERIOD_PRESETS } from "../filters";
 import type { CashierModel } from "../use-cashier";
 import { reportSegments, type Breakdown } from "./report-segments";
 
@@ -29,11 +31,12 @@ export function ReportScreen({ model }: { model: CashierModel }) {
   const [breakdown, setBreakdown] = useState<Breakdown>("departments");
   const [customOpen, setCustomOpen] = useState(false);
   const filters = filtersByScreen.report;
-  const preset = periodPresetOf(filters);
+  const preset = periodPresetOf(filters, PERIOD_PRESETS);
   const rangeError = filtersError(filters);
   const { segments, counts } = reportSegments(summary.data, breakdown, income.currency);
   const positiveTotal = segments.reduce((sum, segment) => sum + Math.max(segment.value, 0), 0);
-  const money = (value: number, currency = income.currency) => formatCurrency(value, currency);
+  const money = (value: number) => formatCurrency(value, income.currency);
+  const detailRows = incomeReady ? incomeDetailRows(income) : [];
 
   return (
     <section className="flex flex-col gap-4">
@@ -105,26 +108,12 @@ export function ReportScreen({ model }: { model: CashierModel }) {
         </CardContent>
       </Card>
 
-      {incomeReady && (income.refunded > 0 || income.otherCurrencies.length > 0 || income.otherRefunds.length > 0) && (
+      {detailRows.length > 0 && (
         <Card>
           <CardContent className="flex flex-col gap-2 p-4">
-            {income.refunded > 0 && (
-              <>
-                <Row label="Поступило до возвратов" value={money(income.gross)} />
-                <Row label="Возвращено" value={money(income.refunded)} />
-              </>
-            )}
-            {income.otherCurrencies.map(([currency, value]) => (
-              <Row key={currency} label="Также чистыми" value={money(value, currency)} />
+            {detailRows.map((row, index) => (
+              <Row key={index} label={row.label} value={row.value} />
             ))}
-            {income.otherRefunds.flatMap(([currency, value]) => [
-              <Row
-                key={`${currency}-gross`}
-                label={`Поступило до возвратов, ${currency}`}
-                value={money(income.grossFor(currency), currency)}
-              />,
-              <Row key={`${currency}-refund`} label={`Возвращено, ${currency}`} value={money(value, currency)} />,
-            ])}
           </CardContent>
         </Card>
       )}
@@ -137,16 +126,7 @@ export function ReportScreen({ model }: { model: CashierModel }) {
         title="Свой период"
         footer={<Button onClick={() => setCustomOpen(false)}>Готово</Button>}
       >
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[11px] font-medium text-[var(--muted-foreground)]">С даты</span>
-            <Input type="date" value={filters.dateFrom} onChange={(e) => patchFilters({ dateFrom: e.target.value })} />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[11px] font-medium text-[var(--muted-foreground)]">По дату</span>
-            <Input type="date" value={filters.dateTo} onChange={(e) => patchFilters({ dateTo: e.target.value })} />
-          </label>
-        </div>
+        <CashDateFields filters={filters} layout="stack" onChange={patchFilters} />
         {rangeError && <p className="mt-3 text-xs font-medium text-[var(--destructive)]">{rangeError}</p>}
       </Modal>
     </section>

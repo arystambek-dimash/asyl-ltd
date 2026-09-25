@@ -1,17 +1,28 @@
 from decimal import Decimal
 
+from django.utils import timezone
+
 from apps.common.money import (
     money_string as _d,
     primary_currency,
     sum_by_currency,
 )
 from apps.notifications.services import notify
-from apps.orders.debt import debt_orders, financial_orders, order_remaining
+from apps.orders.debt import (
+    DEBT_STATUS,
+    debt_orders,
+    financial_orders,
+    order_remaining,
+    payment_counts_as_paid,
+)
+from apps.orders.labels import payment_method_label, payment_status_label
+from apps.orders.statuses import is_financial
 
 
 def client_history(client) -> dict:
     """Детализация клиента: продажи, погашения и долги — плоские строки для таблиц."""
     from apps.orders.models import Order, Payment
+    from apps.orders.services import reopen_confirmed_payment_error
 
     orders = list(
         Order.objects.filter(client=client)
@@ -21,13 +32,13 @@ def client_history(client) -> dict:
     financial = financial_orders(orders)
     debts = debt_orders(orders)
 
-    # Служебный метод "debt" деньгами не является — в погашения не входит.
+    # Служебный способ «в долг» (Payment.NON_MONEY_METHODS) в погашения не входит.
     # Обход через order__client не проходит через LiveOrderManager,
     # поэтому удалённые (корзина) заказы отсекаем явно.
     payments = list(
         Payment.objects
         .filter(order__client=client, order__deleted_at__isnull=True)
-        .exclude(method="debt")
+        .exclude(method__in=Payment.NON_MONEY_METHODS)
         .select_related("order", "recorded_by", "received_by", "confirmed_by", "apipay_invoice")
         .prefetch_related("payment_refunds")
         .order_by("-paid_at")
@@ -39,31 +50,34 @@ def client_history(client) -> dict:
             "id": o.id,
             "date": o.created_at.isoformat(),
             "status": o.status,
-            "payment_status": o.payment_status,
+            # Входит ли заказ в «Сумму продаж» (заявки, отказы и отмены — нет):
+            # итог по списку на странице складывает только такие строки.
+            "is_financial": is_financial(o.status),
             "settlement_intent": o.settlement_intent,
             "items": [{"label": i.product_label, "qty": i.quantity} for i in items],
-            "bags": sum(i.quantity for i in items),
+            "bags": o.ordered_bags,
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),
             "currency": o.currency,
         }
 
     def payment_row(p):
-        employee = p.confirmed_by or p.received_by or p.recorded_by
+        employee = p.author
         return {
             "id": p.id,
             "order_id": p.order_id,
-            "date": (p.confirmed_at or p.paid_at).isoformat(),
+            "date": p.recognized_at.isoformat(),
             "employee": employee.username if employee else None,
             "method": p.method,
+            "method_label": payment_method_label(p.method),
             "status": p.status,
+            "status_label": payment_status_label(p.status),
             "amount": _d(p.amount),
+            # Сколько платёж даёт в «Оплачено»: нетто подтверждённой оплаты
+            # финансового заказа, иначе ноль. Итог по списку — сумма этих полей.
+            "counted_amount": _d(p.net_amount if payment_counts_as_paid(p) else Decimal("0")),
             "currency": p.order.currency,
-            "can_reopen": (
-                p.status == "confirmed" and not hasattr(p, "apipay_invoice")
-                and p.refunded_amount == 0 and p.pending_refund_amount == 0
-                and not any(r.status in ("pending", "completed") for r in p.payment_refunds.all())
-            ),
+            "can_reopen": reopen_confirmed_payment_error(p) is None,
             "can_reject": p.status in Payment.IN_PROGRESS_STATUSES,
             "provider": hasattr(p, "apipay_invoice"),
             "refunded_amount": _d(p.refunded_amount),
@@ -73,7 +87,7 @@ def client_history(client) -> dict:
         return {
             "id": o.id,
             "date": o.created_at.isoformat(),
-            "bags": sum(i.quantity for i in o.items.all()),
+            "bags": o.ordered_bags,
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),
             "remaining": _d(order_remaining(o)),
@@ -116,28 +130,43 @@ def client_history(client) -> dict:
 
 def is_payment_window_open(store, on_date) -> bool:
     t = store.payment_schedule_type
-    if t == "none":
+    days = store.payment_days or []
+    if t == "none" or not isinstance(days, list):
+        # Дни не списком (старая запись в обход формы) не прочесть: такой
+        # график, как и неизвестный тип, оплату не блокирует и не роняет 500.
         return True
     if t == "monthly":
-        return on_date.day in (store.payment_days or [])
+        return on_date.day in days
     if t == "weekly":
-        return on_date.isoweekday() in (store.payment_days or [])
+        return on_date.isoweekday() in days
     return True
+
+
+def is_store_overdue(store, on_date) -> bool:
+    """Долг магазина просрочен: график оплат задан и ``on_date`` — день оплаты.
+
+    Без графика окно оплаты открыто всегда (:func:`is_payment_window_open`),
+    но просрочкой это не считается.
+    """
+    return store.payment_schedule_type != "none" and is_payment_window_open(store, on_date)
 
 
 def detect_overdue(store, on_date) -> int:
     """On a payment day, notify about the store's unpaid shipped orders."""
-    if not is_payment_window_open(store, on_date) or store.payment_schedule_type == "none":
+    if not is_store_overdue(store, on_date):
         return 0
     from apps.orders.models import Order
-    from apps.orders.debt import debt_orders
     # Просрочка — это непогашенный долг. Считаем по тому же правилу, что
     # Order.is_debt: денормализованный payment_status может отстать от факта.
     count = len(debt_orders(
-        Order.objects.filter(store=store, status="shipped")
+        Order.objects.filter(store=store, status=DEBT_STATUS)
         .prefetch_related("items", "payments")
     ))
-    if count:
-        notify(store.client,
-               f"Просрочка оплаты по магазину «{store.name}»: {count} заказ(ов)")
+    subject = f"Просрочка оплаты по магазину «{store.name}»:"
+    # «Проверить просрочки» можно нажимать сколько угодно раз — клиенту хватит
+    # одного напоминания по магазину в день.
+    if count and not store.client.notifications.filter(
+        text__startswith=subject, created_at__date=timezone.localdate(),
+    ).exists():
+        notify(store.client, f"{subject} {count} заказ(ов)")
     return count

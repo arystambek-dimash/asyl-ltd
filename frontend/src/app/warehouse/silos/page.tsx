@@ -9,22 +9,28 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { StatCard } from "@/components/ui/stat-card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LoadMore } from "@/components/ui/load-more";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
-import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { EmptyRow, Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { formatKg, GRAIN_MOVEMENT_LABELS } from "@/lib/grain";
+import {
+  DEFAULT_GRAIN_TYPE_COLOR,
+  formatKg,
+  GRAIN_MOVEMENT_LABELS,
+  SILO_ADJUST_MOVEMENTS,
+  siloAcceptsType,
+  siloOptionLabel,
+} from "@/lib/grain";
 import type { GrainMovement, GrainSilo, GrainSiloType } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
-import { cn, formatDateTime } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
-
-const DEFAULT_TYPE_COLOR = "#C58A35";
 
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, value));
@@ -34,44 +40,11 @@ function routeLabel(type: GrainSiloType) {
   return type.default_silo_name ? `Приход → ${type.default_silo_name}` : "Основной силос не назначен";
 }
 
-function SummaryMetric({
-  icon: Icon,
-  label,
-  value,
-  note,
-  tone = "steel",
-}: {
-  icon: typeof Warehouse;
-  label: string;
-  value: string;
-  note: string;
-  tone?: "steel" | "grain" | "green" | "blue";
-}) {
-  const tones = {
-    steel: "bg-slate-900 text-white",
-    grain: "bg-[#a66a20] text-white",
-    green: "bg-[#356f48] text-white",
-    blue: "bg-[#315d74] text-white",
-  };
-  return (
-    <div className="flex min-w-0 items-center gap-3 rounded-xl border bg-[var(--card)] p-3 sm:p-4">
-      <div className={cn("hidden size-10 shrink-0 items-center justify-center rounded-xl sm:flex", tones[tone])}>
-        <Icon className="size-5" />
-      </div>
-      <div className="min-w-0">
-        <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
-        <div className="mt-0.5 truncate text-xl font-semibold tabular-nums">{value}</div>
-        <div className="truncate text-xs text-[var(--muted-foreground)]">{note}</div>
-      </div>
-    </div>
-  );
-}
-
 function SiloTank({ silo }: { silo: GrainSilo }) {
   const clipId = useId().replace(/:/g, "");
   const fill = clampPercent(silo.fill_percent);
   const reserve = Math.min(100 - fill, clampPercent((silo.reserved_kg / Math.max(1, silo.total_capacity_kg)) * 100));
-  const color = silo.silo_type_color || DEFAULT_TYPE_COLOR;
+  const color = silo.silo_type_color || DEFAULT_GRAIN_TYPE_COLOR;
   return (
     <svg
       viewBox="0 0 120 170"
@@ -203,7 +176,7 @@ function SiloForm({ types, onDone, onCancel }: { types: GrainSiloType[]; onDone:
 
 function SiloTypeForm({ silos, onDone }: { silos: GrainSilo[]; onDone: () => void }) {
   const [name, setName] = useState("");
-  const [color, setColor] = useState(DEFAULT_TYPE_COLOR);
+  const [color, setColor] = useState(DEFAULT_GRAIN_TYPE_COLOR);
   const [description, setDescription] = useState("");
   const [defaultSilo, setDefaultSilo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -267,7 +240,7 @@ function SiloTypeForm({ silos, onDone }: { silos: GrainSilo[]; onDone: () => voi
               .filter((silo) => silo.silo_type == null)
               .map((silo) => (
                 <option key={silo.id} value={silo.id}>
-                  {silo.name} · свободно {formatKg(silo.free_capacity_kg)}
+                  {siloOptionLabel(silo)}
                 </option>
               ))}
           </Select>
@@ -296,7 +269,7 @@ function TypeRouteRow({ type, silos, onDone }: { type: GrainSiloType; silos: Gra
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const available = silos.filter((silo) => silo.silo_type == null || silo.silo_type === type.id);
+  const available = silos.filter((silo) => siloAcceptsType(silo, type.id));
   const changed = target !== (type.default_silo ? String(type.default_silo) : "");
 
   async function save() {
@@ -339,7 +312,7 @@ function TypeRouteRow({ type, silos, onDone }: { type: GrainSiloType; silos: Gra
             <option value="">Не назначен</option>
             {available.map((silo) => (
               <option key={silo.id} value={silo.id}>
-                {silo.name} · свободно {formatKg(silo.free_capacity_kg)}
+                {siloOptionLabel(silo)}
               </option>
             ))}
           </Select>
@@ -414,11 +387,17 @@ function AdjustForm({ silo, onDone, onCancel }: { silo: GrainSilo; onDone: () =>
   const [error, setError] = useState("");
 
   async function submit() {
+    const delta = Number(deltaKg);
+    // Кнопка не отправляет форму, поэтому браузерная проверка поля не срабатывает.
+    if (!Number.isInteger(delta)) {
+      setError("Изменение должно быть целым числом кг");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       await api.post(`/grain/silos/${silo.id}/adjust/`, {
-        delta_kg: Number(deltaKg),
+        delta_kg: delta,
         movement_type: movementType,
         note,
       });
@@ -438,11 +417,11 @@ function AdjustForm({ silo, onDone, onCancel }: { silo: GrainSilo; onDone: () =>
       <div className="flex flex-col gap-1.5">
         <Label>Тип операции</Label>
         <Select value={movementType} onChange={(e) => setMovementType(e.target.value)}>
-          <option value="adjustment">Корректировка</option>
-          <option value="inventory_correction">Инвентаризация</option>
-          <option value="expense">Расход</option>
-          <option value="transfer_in">Перемещение (в)</option>
-          <option value="transfer_out">Перемещение (из)</option>
+          {SILO_ADJUST_MOVEMENTS.map((type) => (
+            <option key={type} value={type}>
+              {GRAIN_MOVEMENT_LABELS[type]}
+            </option>
+          ))}
         </Select>
       </div>
       <div className="flex flex-col gap-1.5">
@@ -490,11 +469,7 @@ function MovementsModal({ silo, onClose }: { silo: GrainSilo; onClose: () => voi
         </THead>
         <TBody>
           {movements.items.length === 0 ? (
-            <TR>
-              <TD colSpan={5} className="py-8 text-center text-sm text-[var(--muted-foreground)]">
-                Движений пока нет.
-              </TD>
-            </TR>
+            <EmptyRow colSpan={5}>Движений пока нет.</EmptyRow>
           ) : (
             movements.items.map((movement) => (
               <TR key={movement.id}>
@@ -591,11 +566,6 @@ function SiloCard({
           )}
           <span>{silo.allow_mixing ? "Смешивание разрешено" : "Без смешивания зерна"}</span>
         </div>
-        {silo.sensor_difference_kg != null && Math.abs(silo.sensor_difference_kg) > 0 && (
-          <p className="mt-3 text-xs text-[var(--warning)]">
-            Расхождение с датчиком: {formatKg(silo.sensor_difference_kg)}
-          </p>
-        )}
         {silo.active_wagons.length > 0 && (
           <div className="mt-3 rounded-xl border border-[#315d74]/20 bg-[#315d74]/7 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-medium text-[#315d74]">
@@ -695,32 +665,29 @@ function SilosPageInner() {
 
       <section className="mb-5">
         <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-          <SummaryMetric
+          <StatCard
             icon={Warehouse}
             label="Общая ёмкость"
             value={formatKg(totalCapacity)}
-            note={`${siloRows.length} силосов`}
+            caption={`${siloRows.length} силосов`}
           />
-          <SummaryMetric
+          <StatCard
             icon={Sprout}
             label="В хранении"
             value={formatKg(totalBalance)}
-            note={`${totalCapacity ? Math.round((totalBalance / totalCapacity) * 100) : 0}% общей ёмкости`}
-            tone="grain"
+            caption={`${totalCapacity ? Math.round((totalBalance / totalCapacity) * 100) : 0}% общей ёмкости`}
           />
-          <SummaryMetric
+          <StatCard
             icon={Gauge}
             label="Свободно"
             value={formatKg(totalFree)}
-            note={`резерв ${formatKg(totalReserved)}`}
-            tone="green"
+            caption={`резерв ${formatKg(totalReserved)}`}
           />
-          <SummaryMetric
+          <StatCard
             icon={Route}
             label="Маршруты"
             value={`${configuredRoutes} / ${typeRows.length}`}
-            note="типов зерна с маршрутом"
-            tone="blue"
+            caption="типов зерна с маршрутом"
           />
         </div>
         <p className="mt-2.5 flex items-center gap-1.5 px-1 text-xs text-[var(--muted-foreground)]">

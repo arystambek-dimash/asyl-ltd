@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 from rest_framework.exceptions import ValidationError
-from rest_framework.test import APIClient
 
 from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
@@ -19,11 +18,11 @@ pytestmark = pytest.mark.django_db
 _seq = [0]
 
 
-def _product(price="100.00", bags=500):
+def _product(bags=500):
     from apps.warehouse.models import StockItem
     _seq[0] += 1
     p = Product.objects.create(
-        name=f"P{_seq[0]}", color="Red", weight_kg="50", price=price)
+        name=f"P{_seq[0]}", color="Red", weight_kg="50")
     if bags:
         StockItem.objects.create(product=p, bags=bags)
     return p
@@ -37,16 +36,10 @@ def _order(status="pending", unit_price="100.00"):
     return order
 
 
-def _api(user):
-    api = APIClient()
-    api.force_authenticate(user)
-    return api
-
-
-def test_edit_items_with_prices(manager):
+def test_edit_items_with_prices(manager, api_as):
     o = _order(status="pending")
     p2 = _product()
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "items": [{"product": p2.id, "quantity": 5}],
         "prices": {str(p2.id): "150.00"},
     }, format="json")
@@ -59,14 +52,45 @@ def test_edit_items_with_prices(manager):
     assert o.total_amount == Decimal("750.00")
 
 
-def test_edit_items_on_confirmed_requires_prices(manager):
+def test_edit_items_rejects_new_archived_product_but_keeps_historical(manager, api_as):
+    o = _order(status="pending")
+    kept = o.items.get().product
+    archived = _product()
+    Product.objects.filter(pk__in=[kept.pk, archived.pk]).update(is_active=False)
+
+    added = api_as(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": archived.id, "quantity": 1}],
+        "prices": {str(archived.id): "100.00"},
+    }, format="json")
+    assert added.status_code == 400
+    assert added.data["detail"]["items"] == ["Архивный товар нельзя добавлять в заказ"]
+
+    kept_response = api_as(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": kept.id, "quantity": 3}],
+        "prices": {str(kept.id): "100.00"},
+    }, format="json")
+    assert kept_response.status_code == 200
+
+
+def test_edit_items_rejects_duplicate_product_rows(manager, api_as):
+    o = _order(status="pending")
+    p2 = _product()
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": p2.id, "quantity": 1}, {"product": p2.id, "quantity": 2}],
+        "prices": {str(p2.id): "100.00"},
+    }, format="json")
+    assert r.status_code == 400
+    assert r.data["detail"]["items"] == ["Объедините повторяющиеся товары в одну строку"]
+
+
+def test_edit_items_on_confirmed_requires_prices(manager, api_as):
     o = _order(status="confirmed")
     p2 = _product()
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "items": [{"product": p2.id, "quantity": 3}],
     }, format="json")
     assert r.status_code == 400
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "items": [{"product": p2.id, "quantity": 3}],
         "prices": {str(p2.id): "110.00"},
     }, format="json")
@@ -75,11 +99,11 @@ def test_edit_items_on_confirmed_requires_prices(manager):
     assert o.total_amount == Decimal("330.00")
 
 
-def test_edit_items_allowed_while_awaiting_loading(manager):
+def test_edit_items_allowed_while_awaiting_loading(manager, api_as):
     """«Ожидает загрузки» (arrived): машина въехала, но состав ещё можно менять."""
     o = _order(status="arrived")
     p2 = _product()
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "items": [{"product": p2.id, "quantity": 4}],
         "prices": {str(p2.id): "130.00"},
     }, format="json")
@@ -88,11 +112,11 @@ def test_edit_items_allowed_while_awaiting_loading(manager):
     assert o.total_amount == Decimal("520.00")
 
 
-def test_edit_items_on_arrived_requires_prices(manager):
+def test_edit_items_on_arrived_requires_prices(manager, api_as):
     """Без цен зафиксированная договорная цена не должна слетать на базовую."""
     o = _order(status="arrived")
     p2 = _product()
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "items": [{"product": p2.id, "quantity": 3}],
     }, format="json")
     assert r.status_code == 400
@@ -101,26 +125,16 @@ def test_edit_items_on_arrived_requires_prices(manager):
     assert o.items.first().unit_price == Decimal("100.00")
 
 
-def test_edit_items_locked_after_loading_starts(manager):
-    o = _order(status="loading")
-    p2 = _product()
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
-        "items": [{"product": p2.id, "quantity": 1}],
-    }, format="json")
-    assert r.status_code == 400
-    assert "загрузки" in str(r.data.get("detail", ""))
-
-
-def test_edit_cannot_empty_items(manager):
+def test_edit_cannot_empty_items(manager, api_as):
     o = _order(status="pending")
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {"items": []}, format="json")
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {"items": []}, format="json")
     assert r.status_code == 400
 
 
-def test_edit_fields_without_items(manager):
+def test_edit_fields_without_items(manager, api_as):
     o = _order(status="confirmed")
     store = Store.objects.create(client=o.client, name="S1")
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "arrival_date": "2026-07-10", "store": store.id,
     }, format="json")
     assert r.status_code == 200
@@ -173,7 +187,7 @@ def test_stale_serializer_cannot_update_archived_order(manager):
     assert stale_order.notes == ""
 
 
-def test_generic_patch_cannot_change_status_or_camera(manager):
+def test_generic_patch_cannot_change_status_or_camera(manager, api_as):
     order = _order(status="loading")
     order.loading_camera = "cam2"
     order.save(update_fields=["loading_camera"])
@@ -184,7 +198,7 @@ def test_generic_patch_cannot_change_status_or_camera(manager):
         started_by=manager,
     )
 
-    response = _api(manager).patch(
+    response = api_as(manager).patch(
         f"/api/orders/{order.id}/",
         {"status": "shipped", "loading_camera": "cam3"},
         format="json",
@@ -196,7 +210,7 @@ def test_generic_patch_cannot_change_status_or_camera(manager):
     assert order.loading_camera == "cam2"
 
 
-def test_transport_type_change_rejects_open_ai_reservation(manager):
+def test_transport_type_change_rejects_open_ai_reservation(manager, api_as):
     order = _order(status="confirmed")
     AiCountingSession.objects.create(
         order=order,
@@ -205,7 +219,7 @@ def test_transport_type_change_rejects_open_ai_reservation(manager):
         started_by=manager,
     )
 
-    response = _api(manager).patch(
+    response = api_as(manager).patch(
         f"/api/orders/{order.id}/",
         {"transport_type": "train"},
         format="json",
@@ -217,7 +231,7 @@ def test_transport_type_change_rejects_open_ai_reservation(manager):
     assert order.transport_type == "truck"
 
 
-def test_department_change_rejects_open_ai_reservation(manager):
+def test_department_change_rejects_open_ai_reservation(manager, api_as):
     order = _order(status="confirmed")
     department = Department.objects.create(
         code="safe-scope",
@@ -232,7 +246,7 @@ def test_department_change_rejects_open_ai_reservation(manager):
         started_by=manager,
     )
 
-    response = _api(manager).patch(
+    response = api_as(manager).patch(
         f"/api/orders/{order.id}/",
         {"department": department.code},
         format="json",
@@ -244,91 +258,26 @@ def test_department_change_rejects_open_ai_reservation(manager):
     assert order.department != department.code
 
 
-def test_pending_settlement_intent_round_trips(manager):
-    o = _order(status="pending")
-    o.settlement_intent = "pending"
-    o.payment_method = "pending"
-    o.save(update_fields=["settlement_intent", "payment_method"])
+def test_patch_cannot_change_settlement_intent(manager, api_as):
+    """Способ расчёта меняют сервисы оплаты и долга, а не общий PATCH заказа."""
+    o = _order(status="confirmed")
 
-    response = _api(manager).patch(
-        f"/api/orders/{o.id}/",
-        {"settlement_intent": "pending"},
-        format="json",
-    )
-
-    assert response.status_code == 200
-    assert response.data["settlement_intent"] == "pending"
-    assert response.data["payment_method"] == "pending"
-    o.refresh_from_db()
-    assert o.settlement_intent == "pending"
-    assert o.payment_method == "pending"
-
-
-def test_stale_intent_patch_keeps_intent_and_method_consistent(manager):
-    stale_order = _order(status="confirmed")
-    stale_order.settlement_intent = "pending"
-    stale_order.payment_method = "pending"
-    stale_order.save(update_fields=["settlement_intent", "payment_method"])
-    Order.objects.filter(pk=stale_order.pk).update(
-        settlement_intent="instant",
-        payment_method="invoice",
-    )
-    serializer = OrderSerializer(
-        stale_order,
-        data={"settlement_intent": "pending"},
-        partial=True,
-        context={"request": SimpleNamespace(user=manager)},
-    )
-    assert serializer.is_valid(), serializer.errors
-
-    serializer.save()
-
-    stale_order.refresh_from_db()
-    assert stale_order.settlement_intent == "pending"
-    assert stale_order.payment_method == "pending"
-
-
-def test_shipped_order_rejects_actual_settlement_intent_change(manager):
-    order = _order(status="shipped")
-
-    response = _api(manager).patch(
-        f"/api/orders/{order.id}/",
-        {"settlement_intent": "instant"},
-        format="json",
-    )
-
-    assert response.status_code == 400
-    assert response.data["code"] == "settlement_intent_locked"
-    order.refresh_from_db()
-    assert order.settlement_intent == "debt"
-    assert order.payment_method == "debt"
-
-
-@pytest.mark.parametrize("payment_method", ["kaspi", "cash", "mixed"])
-def test_unchanged_instant_intent_preserves_payment_method(
-    manager,
-    payment_method,
-):
-    o = _order(status="shipped")
-    o.settlement_intent = "instant"
-    o.payment_method = payment_method
-    o.save(update_fields=["settlement_intent", "payment_method"])
-
-    response = _api(manager).patch(
+    response = api_as(manager).patch(
         f"/api/orders/{o.id}/",
         {"settlement_intent": "instant"},
         format="json",
     )
 
     assert response.status_code == 200
+    assert response.data["settlement_intent"] == "debt"
     o.refresh_from_db()
-    assert o.settlement_intent == "instant"
-    assert o.payment_method == payment_method
+    assert o.settlement_intent == "debt"
+    assert o.payment_method == "debt"
 
 
-def test_edit_order_note(manager):
+def test_edit_order_note(manager, api_as):
     o = _order(status="shipped")
-    r = _api(manager).patch(
+    r = api_as(manager).patch(
         f"/api/orders/{o.id}/", {"notes": "Доставить до 18:00"}, format="json")
     assert r.status_code == 200
     o.refresh_from_db()
@@ -336,28 +285,28 @@ def test_edit_order_note(manager):
     assert r.data["notes"] == "Доставить до 18:00"
 
 
-def test_edit_client_is_locked(manager):
+def test_edit_client_is_locked(manager, api_as):
     o = _order(status="pending")
     other = Client.objects.create_with_user(first_name="Z", last_name="Z", phone="z")
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {"client": other.id}, format="json")
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {"client": other.id}, format="json")
     assert r.status_code == 400
     o.refresh_from_db()
     assert o.client.user.first_name == "A"
 
 
-def test_foreign_store_rejected(manager):
+def test_foreign_store_rejected(manager, api_as):
     o = _order(status="pending")
     stranger = Client.objects.create_with_user(first_name="S", last_name="S", phone="s")
     foreign_store = Store.objects.create(client=stranger, name="Чужой")
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {"store": foreign_store.id}, format="json")
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {"store": foreign_store.id}, format="json")
     assert r.status_code == 400
 
 
-def test_order_requires_stock_on_create(manager):
+def test_order_requires_stock_on_create(manager, api_as):
     """Заказ принимается только на товар, имеющийся на складе."""
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     empty = _product(bags=0)  # складской карточки нет вовсе
-    r = _api(manager).post("/api/orders/", {
+    r = api_as(manager).post("/api/orders/", {
         "client": client.id,
         "items": [{"product": empty.id, "quantity": 1}],
         "prices": {str(empty.id): "100.00"},
@@ -366,12 +315,12 @@ def test_order_requires_stock_on_create(manager):
     assert "наличии" in str(r.data.get("detail", ""))
 
 
-def test_edit_requires_stock_for_new_items(manager):
+def test_edit_requires_stock_for_new_items(manager, api_as):
     o = _order(status="pending")
     from apps.warehouse.models import StockItem
     zero = _product(bags=0)
     StockItem.objects.create(product=zero, bags=0)  # карточка есть, остаток 0
-    r = _api(manager).patch(f"/api/orders/{o.id}/", {
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
         "items": [{"product": zero.id, "quantity": 1}],
         "prices": {str(zero.id): "100.00"},
     }, format="json")
@@ -379,8 +328,41 @@ def test_edit_requires_stock_for_new_items(manager):
     assert "наличии" in str(r.data.get("detail", ""))
 
 
-def test_edit_requires_orders_edit_perm(operator):
+def test_edit_requires_orders_edit_perm(operator, api_as):
     # У оператора нет orders.edit — редактирование запрещено.
     o = _order(status="pending")
-    r = _api(operator).patch(f"/api/orders/{o.id}/", {"arrival_date": "2026-07-10"}, format="json")
+    r = api_as(operator).patch(f"/api/orders/{o.id}/", {"arrival_date": "2026-07-10"}, format="json")
     assert r.status_code == 403
+
+
+def test_edit_rejects_prices_that_are_not_an_object(manager, api_as):
+    o = _order(status="pending")
+    product = o.items.get().product
+    r = api_as(manager).patch(f"/api/orders/{o.id}/", {
+        "items": [{"product": product.id, "quantity": 3}],
+        "prices": ["100.00"],
+    }, format="json")
+    assert r.status_code == 400
+    assert r.data["detail"]["prices"] == ["Ожидается объект цен по идентификаторам товаров"]
+
+
+def test_superuser_department_is_not_forced_on_new_order(manager, api_as):
+    """Суперюзер видит все отделы (sales.access): свой отдел ему не подставляется."""
+    own = Department.objects.create(code="own", name="Свой")
+    chosen = Department.objects.create(code="chosen", name="Выбранный")
+    manager.is_superuser = True
+    manager.save(update_fields=["is_superuser"])
+    manager.employee.sales_department = own
+    manager.employee.save(update_fields=["sales_department"])
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
+    product = _product()
+
+    r = api_as(manager).post("/api/orders/", {
+        "client": client.id,
+        "department": chosen.code,
+        "items": [{"product": product.id, "quantity": 1}],
+        "prices": {str(product.id): "100.00"},
+    }, format="json")
+
+    assert r.status_code == 201, r.data
+    assert Order.objects.get(pk=r.data["id"]).department == chosen.code

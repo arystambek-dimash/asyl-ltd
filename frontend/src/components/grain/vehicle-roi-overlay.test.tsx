@@ -1,16 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizeVehicleRoi, VehicleRoiOverlay, type VehicleRoiConfig } from "./vehicle-roi-overlay";
-
-const originalVideoWidth = Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoWidth");
-const originalVideoHeight = Object.getOwnPropertyDescriptor(HTMLVideoElement.prototype, "videoHeight");
-const originalClientWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
-const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-
-function restoreProperty(target: object, key: PropertyKey, descriptor: PropertyDescriptor | undefined) {
-  if (descriptor) Object.defineProperty(target, key, descriptor);
-  else Reflect.deleteProperty(target, key);
-}
+import type { VehicleRoiConfig } from "@/lib/types";
+import { installVideoGeometry, restoreVideoGeometry } from "@/test-utils/video-geometry";
+import { isValidRoiDraft, normalizeVehicleRoi, VehicleRoiOverlay } from "./vehicle-roi-overlay";
 
 function roi(overrides: Partial<VehicleRoiConfig> = {}): VehicleRoiConfig {
   return {
@@ -25,13 +17,6 @@ function roi(overrides: Partial<VehicleRoiConfig> = {}): VehicleRoiConfig {
     ],
     ...overrides,
   };
-}
-
-function setVideoDimensions() {
-  Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", { configurable: true, value: 1920 });
-  Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", { configurable: true, value: 1080 });
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 800 });
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, value: 600 });
 }
 
 describe("normalizeVehicleRoi", () => {
@@ -77,16 +62,42 @@ describe("normalizeVehicleRoi", () => {
   });
 });
 
-describe("VehicleRoiOverlay", () => {
-  afterEach(() => {
-    restoreProperty(HTMLVideoElement.prototype, "videoWidth", originalVideoWidth);
-    restoreProperty(HTMLVideoElement.prototype, "videoHeight", originalVideoHeight);
-    restoreProperty(HTMLElement.prototype, "clientWidth", originalClientWidth);
-    restoreProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+describe("isValidRoiDraft", () => {
+  it("accepts 3..12 points with a real area", () => {
+    expect(
+      isValidRoiDraft([
+        [0.1, 0.1],
+        [0.9, 0.1],
+        [0.5, 0.9],
+      ]),
+    ).toBe(true);
   });
 
+  it("rejects too few or too many points and a degenerate polygon", () => {
+    expect(
+      isValidRoiDraft([
+        [0.1, 0.1],
+        [0.9, 0.9],
+      ]),
+    ).toBe(false);
+    expect(isValidRoiDraft(Array.from({ length: 13 }, (_, index) => [index / 20, (index % 2) / 2] as const))).toBe(
+      false,
+    );
+    expect(
+      isValidRoiDraft([
+        [0.1, 0.1],
+        [0.5, 0.5],
+        [0.9, 0.9],
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("VehicleRoiOverlay", () => {
+  afterEach(restoreVideoGeometry);
+
   it("aligns normalized points to the cropped object-cover video box", () => {
-    setVideoDimensions();
+    installVideoGeometry();
     const { container } = render(
       <div style={{ position: "relative" }}>
         <video style={{ objectFit: "cover" }} />
@@ -124,7 +135,7 @@ describe("VehicleRoiOverlay", () => {
       "main",
     ],
   ])("does not draw a %s ROI", (_name, config, source) => {
-    setVideoDimensions();
+    installVideoGeometry();
     render(
       <div>
         <video style={{ objectFit: "cover" }} />
@@ -147,7 +158,7 @@ describe("VehicleRoiOverlay", () => {
   });
 
   it("exposes keyboard-accessible vertex controls only while editing", () => {
-    setVideoDimensions();
+    installVideoGeometry();
     const onPointsChange = vi.fn();
     render(
       <div>
@@ -173,7 +184,7 @@ describe("VehicleRoiOverlay", () => {
   });
 
   it("converts pointer movement inside the object-cover video box back to normalized coordinates", () => {
-    setVideoDimensions();
+    installVideoGeometry();
     const onPointsChange = vi.fn();
     render(
       <div>

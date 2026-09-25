@@ -4,10 +4,8 @@ import { formatTime } from "@/lib/utils";
 import {
   composeUrl,
   newSendKey,
-  phoneLabel,
   recipientLine,
   reportMark,
-  whatsappLink,
   withReportSent,
   type WagonReportSent,
 } from "./wagon-report";
@@ -18,14 +16,26 @@ const row = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder => ({
   transport_type: "train",
   truck_number: "12345678",
   currency: "USD",
-  arrival_date: null,
-  created_at: "2026-09-24T07:00:00+05:00",
+  planned_on: "2026-09-24",
   client_name: "ООО OSIYO NAV NIHOL",
   items: [],
   bags: 8160,
   total_kg: "408000.00",
   total_amount: "61200.00",
   shipped_at: "2026-09-24T07:30:00+05:00",
+  trailer_number: "",
+  transport_suggestions: [],
+  transport_locked: false,
+  client_country: "KZ",
+  payment_status: "unpaid",
+  remaining_amount: "61200.00",
+  can_rollback: true,
+  rail_station: "",
+  wagons: [],
+  report_sent_at: null,
+  report_sent_to: "",
+  report_status: "",
+  report_error: "",
   ...fields,
 });
 
@@ -40,17 +50,9 @@ describe("wagon report", () => {
     );
   });
 
-  it("ссылка WhatsApp — на номер или с выбором чата", () => {
-    expect(whatsappLink("77011234567", "Ст. 1 вагон\nД1с")).toBe(
-      "https://wa.me/77011234567?text=%D0%A1%D1%82.%201%20%D0%B2%D0%B0%D0%B3%D0%BE%D0%BD%0A%D0%941%D1%81",
-    );
-    expect(whatsappLink("", "a&b")).toBe("https://wa.me/?text=a%26b");
-  });
-
   it("кому: номер, группа бота или выбор чата", () => {
-    expect(phoneLabel("77011234567")).toMatch(/^\+7 .*701.*123.*45.*67$/);
     expect(recipientLine({ recipient: { ...recipient, phone: "77011234567" }, delivery: "link" })).toMatch(
-      /^Динаре · \+7 /,
+      /^Динаре · \+7 .*701.*123.*45.*67$/,
     );
     expect(recipientLine({ recipient: { ...recipient, chat_name: "Отгрузка вагонов" }, delivery: "bot" })).toBe(
       "Динаре · в группу «Отгрузка вагонов»",
@@ -76,7 +78,7 @@ describe("wagon report", () => {
     const [marked, other] = withReportSent([row(366), row(367)], sent);
 
     expect(marked).toMatchObject({ report_sent_at: SENT_AT, report_status: "link", report_sent_to: "Динаре" });
-    expect(other.report_sent_at).toBeUndefined();
+    expect(other.report_sent_at).toBeNull();
   });
 
   it("пометка на карточке: отправлено, в очереди или не отправлено", () => {

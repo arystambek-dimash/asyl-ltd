@@ -1,5 +1,7 @@
 from django.core import signing
 
+from .models import TaskAttachment
+
 SIGNING_SALT = "tasks.attachment.download"
 DOWNLOAD_MAX_AGE_SECONDS = 5 * 60
 
@@ -64,3 +66,15 @@ def attachment_id_from_token(token: str) -> int:
     if type(attachment_id) is not int or attachment_id <= 0:
         raise signing.BadSignature("Invalid attachment id")
     return attachment_id
+
+
+def delete_file_if_unreferenced(storage, name: str, using=None) -> None:
+    """Remove a stored attachment file once no row references it any more.
+
+    A legacy/imported row may intentionally share one physical object, so
+    removing either row must not break the remaining attachment.
+    """
+
+    if TaskAttachment.objects.using(using).filter(file=name).exists():
+        return
+    storage.delete(name)

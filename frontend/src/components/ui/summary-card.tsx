@@ -37,8 +37,8 @@ export function SummaryCard({
       </div>
       {extra}
       <div className="mt-4 flex flex-col gap-2 border-t border-[var(--border)] pt-3">
-        {rows.map((r) => (
-          <div key={r.label} className="flex items-baseline justify-between gap-3 text-[13px]">
+        {rows.map((r, index) => (
+          <div key={index} className="flex items-baseline justify-between gap-3 text-[13px]">
             <span className="text-[var(--muted-foreground)]">{r.label}</span>
             <span className={cn("tabular-nums", r.strong && "font-semibold")}>{r.value}</span>
           </div>

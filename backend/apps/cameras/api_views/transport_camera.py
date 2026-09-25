@@ -2,7 +2,6 @@
 
 from typing import ClassVar
 from http.client import HTTPException
-import math
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -20,6 +19,7 @@ from .. import ai, services, shipping_segment_identity as identity
 from ..models import MonoblockCameraSettings, ShippingTransportCamera
 from ..policies import assert_camera_has_no_active_work
 from ..sessions import lock_camera_binding
+from .responses import error_response
 
 
 class TransportCameraConflict(APIException):
@@ -30,6 +30,10 @@ class CameraInventoryUnavailable(APIException):
     status_code = 503
 
 
+def _is_camera_id(value) -> bool:
+    return isinstance(value, str) and len(value) <= 32 and ai.CAM_RE.fullmatch(value) is not None
+
+
 class TransportCameraSerializer(serializers.Serializer):
     number_camera = serializers.JSONField()
     recognition_model = serializers.ChoiceField(
@@ -38,30 +42,18 @@ class TransportCameraSerializer(serializers.Serializer):
     loading_zone = serializers.JSONField(required=False, allow_null=True)
 
     def validate_loading_zone(self, value):
-        if value is None:
-            return None
-        if (
-            not isinstance(value, list)
-            or len(value) != 4
-            or any(type(n) not in (int, float) or not math.isfinite(n) or not 0 <= n <= 1 for n in value)
-            or value[0] >= value[2]
-            or value[1] >= value[3]
-        ):
+        if value is not None and not identity.is_valid_loading_zone(value):
             raise ValidationError("Задайте прямоугольную зону внутри изображения")
         return value
 
     def validate_number_camera(self, value):
-        if (
-            not isinstance(value, str)
-            or len(value) > 32
-            or not ai.CAM_RE.fullmatch(value)
-        ):
+        if not _is_camera_id(value):
             raise ValidationError("Выберите камеру из списка")
         return value
 
 
 def _conveyor(camera: str) -> str:
-    if len(camera) > 32 or not ai.CAM_RE.fullmatch(camera):
+    if not _is_camera_id(camera):
         raise ValidationError({"detail": "Некорректная камера", "code": "bad_camera"})
     if camera not in MonoblockCameraSettings.shipping_sources():
         raise NotFound("Конвейер не включён в камеры отгрузки")
@@ -221,63 +213,40 @@ class ShippingTransportRecognizeView(APIView):
             if not frame:
                 raise ai.AiUnavailable("Shipping camera frame unavailable")
             frame = identity.recognition_frame(frame, binding.loading_zone)
-            number = None
-            if binding.recognition_model == "vehicle_number":
-                try:
-                    number = identity.primary_number(frame, binding.recognition_model)
-                except (ai.AiUnavailable, ai.AiError, HTTPException, OSError, ValueError, TypeError):
-                    pass  # The manual check follows the same saved-frame fallback.
+            # The manual check reproduces the worker on a saved frame: one
+            # camera-PC OCR attempt for trucks, then the same GPT fallback.
+            number = ""
+            if binding.recognition_model != "wagon_number":
+                number = identity.primary_number(frame, binding.recognition_model)
             if not number:
                 if not settings.OPENAI_API_KEY:
                     raise ai.AiError(503, "OpenAI is not configured")
-                number, model, _ = identity.gpt_number(
-                    frame, recognition_model=binding.recognition_model,
-                )
-                if model != binding.recognition_model:
-                    number = None
-            number = identity.valid_number(number, binding.recognition_model) or None
+                number, _, _ = identity.fallback_number(frame, binding.recognition_model)
+            number = number or None
         except identity.NumberRejected as exc:
             number = None
             identity_error = exc.code
         except identity.RecognitionFailure as exc:
-            return Response(
-                {
-                    "detail": "Сервис распознавания не смог завершить проверку",
-                    "code": exc.code,
-                },
-                status=(
-                    status.HTTP_503_SERVICE_UNAVAILABLE
-                    if exc.code == "openai_authentication_failed" or exc.retryable
-                    else status.HTTP_502_BAD_GATEWAY
-                ),
-            )
-        except ai.AiUnavailable:
-            return Response(
-                {
-                    "detail": "Не удалось получить кадр или результат распознавания. Повторите проверку",
-                    "code": "transport_recognition_unavailable",
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
+            return error_response(
+                "Сервис распознавания не смог завершить проверку",
+                exc.code,
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if exc.code == "openai_authentication_failed" or exc.retryable
+                else status.HTTP_502_BAD_GATEWAY,
             )
         except ai.AiError as exc:
-            return Response(
-                {
-                    "detail": "Сервис распознавания недоступен. Повторите проверку",
-                    "code": "transport_recognition_unavailable",
-                },
-                status=(
-                    status.HTTP_503_SERVICE_UNAVAILABLE
-                    if exc.status == 503
-                    else status.HTTP_502_BAD_GATEWAY
-                ),
+            return error_response(
+                "Сервис распознавания недоступен. Повторите проверку",
+                "transport_recognition_unavailable",
+                status.HTTP_503_SERVICE_UNAVAILABLE if exc.status == 503 else status.HTTP_502_BAD_GATEWAY,
             )
-        except (HTTPException, OSError, ValueError, TypeError, KeyError, Image.DecompressionBombError):
-            return Response(
-                {
-                    "detail": "Не удалось получить кадр или результат распознавания. Повторите проверку",
-                    "code": "transport_recognition_unavailable",
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
+        except (
+            ai.AiUnavailable, HTTPException, OSError, ValueError, TypeError, KeyError, Image.DecompressionBombError,
+        ):
+            return error_response(
+                "Не удалось получить кадр или результат распознавания. Повторите проверку",
+                "transport_recognition_unavailable",
+                status.HTTP_502_BAD_GATEWAY,
             )
         # Do not report a check against an old source/model after another
         # administrator changed or deleted this binding while inference ran.

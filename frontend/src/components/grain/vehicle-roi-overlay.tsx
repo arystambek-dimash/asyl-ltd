@@ -1,17 +1,11 @@
 "use client";
 
 import { useState, type KeyboardEvent, type PointerEvent } from "react";
-import { useVideoBox } from "@/lib/use-video-box";
+import type { AxiosError } from "axios";
+import { api, apiError } from "@/lib/api";
+import type { VehicleRoiConfig } from "@/lib/types";
+import { clampUnit, useVideoBox, videoBoxStyle } from "@/lib/use-video-box";
 import { cn } from "@/lib/utils";
-
-export type VehicleRoiConfig = {
-  configured: boolean;
-  enabled: boolean;
-  source: string;
-  coordinate_space: string;
-  points: unknown;
-  updated_at?: string | null;
-};
 
 export type NormalizedRoiPoint = readonly [number, number];
 
@@ -19,7 +13,7 @@ const KEYBOARD_STEP = 0.005;
 const KEYBOARD_LARGE_STEP = 0.02;
 
 function clampCoordinate(value: number) {
-  return Number(Math.min(1, Math.max(0, value)).toFixed(6));
+  return Number(clampUnit(value).toFixed(6));
 }
 
 /**
@@ -60,6 +54,121 @@ export function isDrawableVehicleRoi(roi: VehicleRoiConfig | null | undefined, e
     roi.coordinate_space === "normalized" &&
     normalizeVehicleRoi(roi.points).length,
   );
+}
+
+function polygonArea(points: readonly NormalizedRoiPoint[]) {
+  let doubledArea = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    doubledArea += current[0] * next[1] - next[0] * current[1];
+  }
+  return Math.abs(doubledArea) / 2;
+}
+
+/** Same rule as the backend (cameras/api_views/vehicle_runtime.py): 3..12 points and a non-degenerate area. */
+export function isValidRoiDraft(points: readonly NormalizedRoiPoint[]): boolean {
+  return points.length >= 3 && points.length <= 12 && polygonArea(points) >= 0.0001;
+}
+
+type RoiSaveNotice = { message: string; tone: "success" | "warning" };
+
+type SavedRoi = { roi: VehicleRoiConfig; appliedToMonitor: boolean };
+
+function readSavedRoi(value: unknown, responseKey: string, source: string): SavedRoi | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as Record<string, unknown>;
+  const roi = payload[responseKey] as VehicleRoiConfig | undefined;
+  if (
+    payload.saved !== true ||
+    typeof payload.applied_to_monitor !== "boolean" ||
+    !roi ||
+    !isDrawableVehicleRoi(roi, source) ||
+    !isValidRoiDraft(normalizeVehicleRoi(roi.points))
+  )
+    return null;
+  return { roi, appliedToMonitor: payload.applied_to_monitor };
+}
+
+/**
+ * Superuser ROI editor state shared by the camera panels: draft points, the
+ * PUT to the camera runtime and the notice about the live monitor refresh.
+ * `saveUrl` is null while saving is not allowed (no runtime or no rights).
+ */
+export function useRoiEditor({
+  saveUrl,
+  source,
+  responseKey,
+  defaultPoints,
+  onSaved,
+}: {
+  saveUrl: string | null;
+  source: string;
+  /** Field of the save response that carries the stored polygon. */
+  responseKey: "roi" | "zone";
+  defaultPoints: NormalizedRoiPoint[];
+  /** Applies the stored polygon to the page and returns the notice to show. */
+  onSaved: (roi: VehicleRoiConfig, appliedToMonitor: boolean) => RoiSaveNotice;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<NormalizedRoiPoint[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState<RoiSaveNotice | null>(null);
+  const canSave = isValidRoiDraft(draft) && !saving;
+
+  function start(serverPoints: unknown) {
+    const points = normalizeVehicleRoi(serverPoints);
+    setDraft(points.length ? points : defaultPoints);
+    setError("");
+    setNotice(null);
+    setEditing(true);
+  }
+
+  function cancel() {
+    setEditing(false);
+    setDraft([]);
+    setError("");
+  }
+
+  function accept(saved: SavedRoi) {
+    setNotice(onSaved(saved.roi, saved.appliedToMonitor));
+    setEditing(false);
+    setDraft([]);
+    setError("");
+  }
+
+  async function save() {
+    if (!saveUrl || !canSave) return;
+    setSaving(true);
+    setError("");
+    const body = { points: draft.map(([x, y]) => ({ x, y })), enabled: true, source };
+    try {
+      const response = await api.put<unknown>(saveUrl, body, { timeout: 12_000 });
+      const saved = readSavedRoi(response.data, responseKey, source);
+      if (!saved) throw new Error("Некорректный ответ сохранения зоны");
+      accept(saved);
+    } catch (cause) {
+      // A 503 may mean that the polygon was persisted while the live monitor
+      // refresh failed. Keep that authoritative value instead of rolling back.
+      const response = (cause as AxiosError<unknown>).response;
+      const partial = response?.status === 503 ? readSavedRoi(response.data, responseKey, source) : null;
+      if (partial) accept(partial);
+      else setError(apiError(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const draftRoi: VehicleRoiConfig = {
+    configured: true,
+    enabled: true,
+    source,
+    coordinate_space: "normalized",
+    points: draft.map(([x, y]) => ({ x, y })),
+  };
+
+  return { editing, draft, setDraft, draftRoi, saving, error, notice, canSave, start, cancel, save };
 }
 
 /**
@@ -132,23 +241,11 @@ export function VehicleRoiOverlay({
       aria-label={editable ? editorLabel : undefined}
       role={editable ? "group" : undefined}
       data-testid="vehicle-roi-layer"
-      data-roi-edit-layer={editable ? "true" : undefined}
       className={cn(
         "absolute inset-0 overflow-hidden",
         editable ? "pointer-events-auto z-[4] touch-none" : "pointer-events-none z-[1]",
       )}
-      style={
-        videoBox
-          ? {
-              left: videoBox.left,
-              top: videoBox.top,
-              width: videoBox.width,
-              height: videoBox.height,
-              right: "auto",
-              bottom: "auto",
-            }
-          : undefined
-      }
+      style={videoBoxStyle(videoBox)}
     >
       {drawable ? (
         <>

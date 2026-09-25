@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from decimal import Decimal
 from io import BytesIO
 
@@ -7,7 +9,12 @@ from openpyxl import load_workbook
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
+from apps.clients.reports.statements.data import build_statement_data, local_time
+from apps.clients.reports.statements.pdf import _clients, _debts, _Styles, render_statement_pdf
+from apps.clients.reports.statements.xlsx import render_statement_xlsx
+from apps.common.pdf import register_fonts
 from apps.eventlog.models import EventLog
+from apps.orders.labels import order_payment_method_label
 from apps.orders.models import Order, OrderItem, Payment, PaymentRefund
 from apps.sales.models import Department
 from apps.shipments.models import Shipment
@@ -15,8 +22,16 @@ from apps.shipments.models import Shipment
 pytestmark = pytest.mark.django_db
 
 
-def test_statement_is_real_xlsx_with_financial_sheets(auth_client, user_with_perms):
-    reporter = user_with_perms("statement", codes=["clients.view", "reports.export"])
+@pytest.fixture
+def reporter(user_with_perms):
+    return user_with_perms("statement", codes=["clients.view", "reports.export"])
+
+
+def _workbook(response, *, data_only=True):
+    return load_workbook(BytesIO(response.content), data_only=data_only)
+
+
+def test_statement_is_real_xlsx_with_financial_sheets(auth_client, reporter):
     client = Client.objects.create_with_user(first_name="New", last_name="City", phone="1")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     order = Order.objects.create(client=client, status="shipped", currency="USD")
@@ -32,7 +47,7 @@ def test_statement_is_real_xlsx_with_financial_sheets(auth_client, user_with_per
     assert response["Content-Type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     assert wb.sheetnames == ["Сводка", "Операции", "Заказы", "Позиции", "Платежи", "Долги"]
     # Лента: одна знаковая сумма и текущий остаток после каждой операции.
     assert wb["Операции"]["B9"].value == "Продажа / отгрузка"
@@ -49,10 +64,6 @@ def test_statement_is_real_xlsx_with_financial_sheets(auth_client, user_with_per
 def test_statement_renderers_use_the_prepared_snapshot_without_queries(
     django_assert_num_queries,
 ):
-    from apps.clients.reports.statements.data import build_statement_data
-    from apps.clients.reports.statements.pdf import render_client_statement_pdf
-    from apps.clients.reports.statements.xlsx import render_client_statement
-
     client = Client.objects.create_with_user(
         first_name="Один", last_name="Набор", phone="10")
     product = Product.objects.create(name="Мука", color="White", weight_kg="50")
@@ -73,9 +84,9 @@ def test_statement_renderers_use_the_prepared_snapshot_without_queries(
     data = build_statement_data(client=client)
 
     with django_assert_num_queries(0):
-        xlsx = render_client_statement(data)
+        xlsx = render_statement_xlsx(data)
     with django_assert_num_queries(0):
-        pdf = render_client_statement_pdf(data)
+        pdf = render_statement_pdf(data)
 
     assert xlsx.startswith(b"PK")
     assert pdf.startswith(b"%PDF")
@@ -89,10 +100,8 @@ def test_statement_requires_export_permission(auth_client, user_with_perms):
 
 
 def test_all_clients_statement_contains_detailed_cross_client_sheets(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
-    reporter = user_with_perms(
-        "all-statements", codes=["clients.view", "reports.export"])
     first = Client.objects.create_with_user(first_name="New", last_name="City", phone="11")
     second = Client.objects.create_with_user(first_name="Old", last_name="Town", phone="22")
     product = Product.objects.create(name="Крупа", color="Blue", weight_kg="25")
@@ -106,7 +115,7 @@ def test_all_clients_statement_contains_detailed_cross_client_sheets(
     response = auth_client(reporter).get("/api/clients/statement/")
 
     assert response.status_code == 200
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     assert wb.sheetnames == [
         "Сводка", "Клиенты", "Операции", "Заказы", "Позиции", "Платежи", "Долги",
     ]
@@ -124,10 +133,8 @@ def test_all_clients_statement_requires_export_permission(auth_client, user_with
 
 
 def test_all_clients_statement_neutralizes_spreadsheet_formulas(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
-    reporter = user_with_perms(
-        "formula-export", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(
         first_name='=HYPERLINK("https://example.invalid","open")',
         last_name="",
@@ -149,7 +156,7 @@ def test_all_clients_statement_neutralizes_spreadsheet_formulas(
     response = auth_client(reporter).get("/api/clients/statement/")
 
     assert response.status_code == 200
-    workbook = load_workbook(BytesIO(response.content), data_only=False)
+    workbook = _workbook(response, data_only=False)
     cells = [
         workbook["Клиенты"]["B4"],
         workbook["Клиенты"]["D4"],
@@ -160,18 +167,12 @@ def test_all_clients_statement_neutralizes_spreadsheet_formulas(
     assert [cell.value[0] for cell in cells] == ["'", "'", "'", "'"]
 
 
-def test_statement_period_matches_payment_recognition_day(auth_client, user_with_perms):
+def test_statement_period_matches_payment_recognition_day(auth_client, reporter):
     """Оплата попадает в период по дню подтверждения — тому же, что показан в строке.
 
     Раньше фильтр шёл по paid_at, а в выписке печатался confirmed_at: деньги,
     подтверждённые в периоде, в выписку не попадали.
     """
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-period", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Per", last_name="Iod", phone="9")
     product = Product.objects.create(name="Цемент", color="Grey", weight_kg="50")
     order = Order.objects.create(client=client, status="shipped")
@@ -192,15 +193,13 @@ def test_statement_period_matches_payment_recognition_day(auth_client, user_with
         f"/api/clients/{client.pk}/statement/?date_from={today}&date_to={today}")
 
     assert response.status_code == 200
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     paid_cell = wb["Сводка"]["D25"].value  # строка KZT: Заказов/Продажи/Оплачено
     assert paid_cell == 400, "оплата, подтверждённая сегодня, должна войти в период"
 
 
-def test_statement_money_cells_keep_kopecks(auth_client, user_with_perms):
+def test_statement_money_cells_keep_kopecks(auth_client, reporter):
     """Крупные суммы не теряют копейки: в ячейку пишется Decimal, а не float."""
-    reporter = user_with_perms(
-        "statement-money", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Big", last_name="Sum", phone="8")
     product = Product.objects.create(name="Щебень", color="Grey", weight_kg="50")
     order = Order.objects.create(client=client, status="shipped")
@@ -209,7 +208,7 @@ def test_statement_money_cells_keep_kopecks(auth_client, user_with_perms):
 
     response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
 
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     written = wb["Сводка"]["C25"].value
     # float(Decimal("99999999.99")) хранится как 99999999.98999999…, и Excel
     # показал бы копейку меньше. Decimal доезжает без потери.
@@ -218,10 +217,8 @@ def test_statement_money_cells_keep_kopecks(auth_client, user_with_perms):
 
 
 def test_statement_can_include_multiple_selected_departments(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
-    reporter = user_with_perms(
-        "statement-departments", codes=["clients.view", "reports.export"])
     north = Department.objects.create(code="north", name="Север", color="#315FD5")
     south = Department.objects.create(code="south", name="Юг", color="#1F9D6A")
     product = Product.objects.create(name="Мука", color="White", weight_kg="50")
@@ -244,7 +241,7 @@ def test_statement_can_include_multiple_selected_departments(
         "/api/clients/statement/?departments=north,south")
 
     assert response.status_code == 200
-    workbook = load_workbook(BytesIO(response.content), data_only=True)
+    workbook = _workbook(response)
     order_departments = {
         workbook["Заказы"].cell(row=row, column=7).value
         for row in range(4, workbook["Заказы"].max_row + 1)
@@ -258,7 +255,7 @@ def test_statement_can_include_multiple_selected_departments(
 
     only_north = auth_client(reporter).get(
         "/api/clients/statement/?departments=north")
-    north_workbook = load_workbook(BytesIO(only_north.content), data_only=True)
+    north_workbook = _workbook(only_north)
     assert north_workbook["Заказы"].max_row == 4
     assert north_workbook["Заказы"]["G4"].value == "Север"
     assert north_workbook["Клиенты"].max_row == 4
@@ -266,14 +263,8 @@ def test_statement_can_include_multiple_selected_departments(
 
 
 def test_statement_uses_creation_shipping_and_payment_dates_consistently(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-event-dates", codes=["clients.view", "reports.export"])
     department = Department.objects.create(
         code="date-dept", name="Отдел дат", color="#315FD5")
     client = Client.objects.create_with_user(first_name="Дата", last_name="Событий", phone="3")
@@ -305,7 +296,7 @@ def test_statement_uses_creation_shipping_and_payment_dates_consistently(
     )
 
     assert response.status_code == 200
-    workbook = load_workbook(BytesIO(response.content), data_only=True)
+    workbook = _workbook(response)
     # Информационный лист заказов — по дате создания.
     assert workbook["Заказы"].max_row == 4
     assert workbook["Заказы"]["A4"].value == created_today.id
@@ -324,10 +315,8 @@ def test_statement_uses_creation_shipping_and_payment_dates_consistently(
 
 
 def test_statement_rejects_empty_or_unknown_department_selection(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
-    reporter = user_with_perms(
-        "statement-bad-departments", codes=["clients.view", "reports.export"])
 
     empty = auth_client(reporter).get("/api/clients/statement/?departments=")
     unknown = auth_client(reporter).get(
@@ -345,8 +334,6 @@ def test_statement_rejects_empty_or_unknown_department_selection(
 
 
 def _shipped_order(client, product, *, quantity, price, shipped_at, **kwargs):
-    from apps.shipments.models import Shipment
-
     order = Order.objects.create(
         client=client, status="shipped", settlement_intent="debt", **kwargs)
     OrderItem.objects.create(
@@ -363,15 +350,9 @@ def _confirmed_payment(order, amount, confirmed_at):
 
 
 def test_filtered_all_clients_statement_keeps_opening_only_client(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
     """A client with only a carried balance must not disappear from the report."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-opening-client", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(
         first_name="Входящий", last_name="Остаток", phone="54")
     product = Product.objects.create(name="Рис", color="White", weight_kg="25")
@@ -392,22 +373,16 @@ def test_filtered_all_clients_statement_keeps_opening_only_client(
         f"/api/clients/statement/?date_from={date_from}&sections=clients")
 
     assert response.status_code == 200
-    workbook = load_workbook(BytesIO(response.content), data_only=True)
+    workbook = _workbook(response)
     assert workbook["Клиенты"]["B4"].value == client.name
 
 
-def test_statement_reconciliation_block_balances(auth_client, user_with_perms):
+def test_statement_reconciliation_block_balances(auth_client, reporter):
     """Вх. остаток + начислено − оплачено = исх. остаток, и лента сходится.
 
     Долг, возникший до периода, обязан переехать во входящий остаток, иначе
     выписка за месяц показывала бы клиента «с нуля» и расходилась с кассой.
     """
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-reconcile", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Свер", last_name="Ка", phone="55")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     now = timezone.now()
@@ -430,7 +405,7 @@ def test_statement_reconciliation_block_balances(auth_client, user_with_perms):
         f"?date_from={date_from}&date_to={date_to}")
 
     assert response.status_code == 200
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     summary = wb["Сводка"]
 
     opening, charged, paid, closing = (
@@ -457,19 +432,13 @@ def test_statement_reconciliation_block_balances(auth_client, user_with_perms):
 
 
 def test_statement_opening_balance_carries_overpayment_negative(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
     """Переплата до периода переезжает во входящий остаток минусом.
 
     Клампинг в ноль здесь был бы ошибкой: следующая отгрузка показала бы
     долг на всю сумму, хотя часть уже покрыта авансом.
     """
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-overpay", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Аван", last_name="С", phone="56")
     product = Product.objects.create(name="Крупа", color="Blue", weight_kg="25")
     now = timezone.now()
@@ -484,21 +453,15 @@ def test_statement_opening_balance_carries_overpayment_negative(
         f"/api/clients/{client.pk}/statement/?date_from={date_from}")
 
     assert response.status_code == 200
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     assert wb["Сводка"]["B13"].value == -500
     assert wb["Сводка"]["B16"].value == -500
 
 
 def test_statement_without_date_from_has_zero_opening_balance(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
     """Период открыт слева — вся история уже в ленте, входящий остаток нулевой."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-open-left", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Всё", last_name="Время", phone="57")
     product = Product.objects.create(name="Соль", color="White", weight_kg="10")
     now = timezone.now()
@@ -509,20 +472,14 @@ def test_statement_without_date_from_has_zero_opening_balance(
 
     response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
 
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     assert wb["Сводка"]["B13"].value == 0
     # Начислено 1000, оплачено 200 → исходящий остаток 800.
     assert wb["Сводка"]["B16"].value == 800
 
 
-def test_statement_never_mixes_currencies(auth_client, user_with_perms):
+def test_statement_never_mixes_currencies(auth_client, reporter):
     """KZT и USD считаются раздельно на всех уровнях выписки."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-currencies", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Мульти", last_name="Валюта", phone="58")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     now = timezone.now()
@@ -538,7 +495,7 @@ def test_statement_never_mixes_currencies(auth_client, user_with_perms):
 
     response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
 
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     summary = wb["Сводка"]
     # KZT: 1000 − 400 = 600. USD: 20 − 5 = 15. Ни одна ячейка не равна 615.
     assert summary["B16"].value == 600
@@ -556,15 +513,9 @@ def test_statement_never_mixes_currencies(auth_client, user_with_perms):
 
 
 def test_statement_pending_payment_never_reduces_balance(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
     """Неподтверждённая оплата не гасит долг: в ленту идут только confirmed."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-pending", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Ожи", last_name="Дание", phone="59")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     now = timezone.now()
@@ -576,7 +527,7 @@ def test_statement_pending_payment_never_reduces_balance(
 
     response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
 
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     assert wb["Сводка"]["B15"].value == 0, "неподтверждённая оплата не гасит долг"
     assert wb["Сводка"]["B16"].value == 1000
     # Платёж виден на своём листе со статусом, но в ленту не попал.
@@ -585,15 +536,9 @@ def test_statement_pending_payment_never_reduces_balance(
 
 
 def test_statement_refund_is_a_separate_ledger_event(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
     """Gross receipt and refund remain separate, dated ledger movements."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    reporter = user_with_perms(
-        "statement-refund", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Воз", last_name="Врат", phone="60")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     now = timezone.now()
@@ -614,7 +559,7 @@ def test_statement_refund_is_a_separate_ledger_event(
 
     response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
 
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     # Погашено 800 − 300 = 500, остаток 1000 − 500 = 500.
     assert wb["Сводка"]["B15"].value == -500
     assert wb["Сводка"]["B16"].value == 500
@@ -628,17 +573,9 @@ def test_statement_refund_is_a_separate_ledger_event(
 
 
 def test_statement_recognizes_refunds_in_their_completion_period(
-    auth_client, user_with_perms,
+    auth_client, reporter,
 ):
     """A later refund must not rewrite the original payment period."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
-    from apps.clients.reports.statements.data import build_statement_data
-
-    reporter = user_with_perms(
-        "statement-refund-period", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(
         first_name="Период", last_name="Возврата", phone="61")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
@@ -706,7 +643,7 @@ def test_statement_recognizes_refunds_in_their_completion_period(
         f"?date_from={date_from.isoformat()}&date_to={date_to.isoformat()}"
     )
     assert response.status_code == 200
-    wb = load_workbook(BytesIO(response.content), data_only=True)
+    wb = _workbook(response)
     # Opening is sale 1000 minus gross payment 800. Refunds then reopen 300.
     assert wb["Сводка"]["B13"].value == 200
     assert wb["Сводка"]["B15"].value == 300
@@ -718,10 +655,6 @@ def test_statement_recognizes_refunds_in_their_completion_period(
 
 
 def test_refund_only_statement_keeps_scope_and_soft_delete_rules():
-    from datetime import timedelta
-
-    from apps.clients.reports.statements.data import build_statement_data
-
     now = timezone.now()
     old = now - timedelta(days=40)
     date_from = (now - timedelta(days=30)).date()
@@ -731,7 +664,7 @@ def test_refund_only_statement_keeps_scope_and_soft_delete_rules():
         code="refund-south", name="Юг возвратов", color="#1F9D6A")
     product = Product.objects.create(name="Крупа", color="Blue", weight_kg="25")
 
-    def refund_for(first_name, department, *, deleted=False):
+    def refund_for(first_name, department, *, deleted_status=None):
         client = Client.objects.create_with_user(first_name=first_name)
         order = _shipped_order(
             client,
@@ -753,33 +686,37 @@ def test_refund_only_statement_keeps_scope_and_soft_delete_rules():
             completed_at=now - timedelta(days=1),
         )
         Payment.objects.filter(pk=payment.pk).update(refunded_amount="200")
-        if deleted:
-            Order.objects.filter(pk=order.pk).update(deleted_at=now)
+        if deleted_status:
+            Order.objects.filter(pk=order.pk).update(
+                deleted_at=now, status=deleted_status)
         return client, refund
 
     included_client, included_refund = refund_for("Видимый", north)
     refund_for("Другой отдел", south)
-    refund_for("В корзине", north, deleted=True)
+    # Отгруженный заказ из корзины остаётся в денежной ленте, отменённый — нет.
+    trashed_client, trashed_refund = refund_for(
+        "Отгружен в корзине", north, deleted_status="shipped")
+    refund_for("Отменён в корзине", north, deleted_status="cancelled")
 
     data = build_statement_data(
         date_from=date_from,
         date_to=now.date(),
         departments=[north.code],
     )
-
-    assert [client.id for client in data.clients] == [included_client.id]
-    assert [refund.id for refund in data.refunds] == [included_refund.id]
-    assert data.totals["KZT"]["payments"] == Decimal(-200)
+    assert [client.id for client in data.clients] == [
+        included_client.id, trashed_client.id,
+    ]
+    assert [refund.id for refund in data.refunds] == [
+        included_refund.id, trashed_refund.id,
+    ]
+    assert data.totals["KZT"]["payments"] == Decimal(-400)
     assert [(operation.kind, operation.amount) for operation in data.operations] == [
+        ("refund", Decimal(200)),
         ("refund", Decimal(200)),
     ]
 
 
 def test_statement_ignores_legacy_debt_payment_and_its_refund():
-    from datetime import timedelta
-
-    from apps.clients.reports.statements.data import build_statement_data
-
     now = timezone.now()
     old = now - timedelta(days=40)
     client = Client.objects.create_with_user(first_name="Служебный", last_name="Долг")
@@ -817,10 +754,8 @@ def test_statement_ignores_legacy_debt_payment_and_its_refund():
     assert data.operations == []
 
 
-def test_statement_sections_select_sheets(auth_client, user_with_perms):
+def test_statement_sections_select_sheets(auth_client, reporter):
     """Пользователь выбирает разделы; порядок листов остаётся каноническим."""
-    reporter = user_with_perms(
-        "statement-sections", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Раз", last_name="Дел", phone="61")
 
     both = auth_client(reporter).get(
@@ -828,15 +763,13 @@ def test_statement_sections_select_sheets(auth_client, user_with_perms):
     single = auth_client(reporter).get("/api/clients/statement/?sections=clients")
 
     assert both.status_code == 200
-    assert load_workbook(BytesIO(both.content)).sheetnames == ["Сводка", "Долги"]
+    assert _workbook(both).sheetnames == ["Сводка", "Долги"]
     assert single.status_code == 200
-    assert load_workbook(BytesIO(single.content)).sheetnames == ["Клиенты"]
+    assert _workbook(single).sheetnames == ["Клиенты"]
 
 
-def test_statement_rejects_empty_or_unknown_sections(auth_client, user_with_perms):
+def test_statement_rejects_empty_or_unknown_sections(auth_client, reporter):
     """Пустой и неизвестный раздел отбиваются: книга без листов не открывается."""
-    reporter = user_with_perms(
-        "statement-bad-sections", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Пло", last_name="Хой", phone="62")
 
     empty = auth_client(reporter).get(
@@ -860,9 +793,7 @@ def test_statement_rejects_empty_or_unknown_sections(auth_client, user_with_perm
 # A4: печать и отправка клиенту.
 
 
-def test_statement_can_be_downloaded_as_pdf(auth_client, user_with_perms):
-    reporter = user_with_perms(
-        "statement-pdf", codes=["clients.view", "reports.export"])
+def test_statement_can_be_downloaded_as_pdf(auth_client, reporter):
     client = Client.objects.create_with_user(first_name="Пи", last_name="ДиЭф", phone="70")
     product = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     order = Order.objects.create(client=client, status="shipped")
@@ -877,9 +808,7 @@ def test_statement_can_be_downloaded_as_pdf(auth_client, user_with_perms):
     assert response.content.startswith(b"%PDF")
 
 
-def test_all_clients_statement_pdf_renders(auth_client, user_with_perms):
-    reporter = user_with_perms(
-        "all-statement-pdf", codes=["clients.view", "reports.export"])
+def test_all_clients_statement_pdf_renders(auth_client, reporter):
     client = Client.objects.create_with_user(first_name="Об", last_name="Щий", phone="71")
     product = Product.objects.create(name="Крупа", color="Blue", weight_kg="25")
     order = Order.objects.create(client=client, status="shipped")
@@ -894,25 +823,8 @@ def test_all_clients_statement_pdf_renders(auth_client, user_with_perms):
     assert response.content.startswith(b"%PDF")
 
 
-def test_statement_defaults_to_excel_without_the_format_param(
-    auth_client, user_with_perms,
-):
-    """Старые ссылки без параметра продолжают отдавать Excel."""
-    reporter = user_with_perms(
-        "statement-default", codes=["clients.view", "reports.export"])
-    client = Client.objects.create_with_user(first_name="Дэ", last_name="Фолт", phone="72")
-
-    response = auth_client(reporter).get(f"/api/clients/{client.pk}/statement/")
-
-    assert response.status_code == 200
-    assert response["Content-Type"].startswith(
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-def test_pdf_statement_honours_the_selected_sections(auth_client, user_with_perms):
+def test_pdf_statement_honours_the_selected_sections(auth_client, reporter):
     """Разделы общие для обоих форматов — выбор один, файлов два."""
-    reporter = user_with_perms(
-        "statement-pdf-sections", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Раз", last_name="Дел", phone="73")
 
     full = auth_client(reporter).get(
@@ -925,9 +837,7 @@ def test_pdf_statement_honours_the_selected_sections(auth_client, user_with_perm
     assert len(single.content) < len(full.content)
 
 
-def test_statement_rejects_an_unknown_format(auth_client, user_with_perms):
-    reporter = user_with_perms(
-        "statement-bad-format", codes=["clients.view", "reports.export"])
+def test_statement_rejects_an_unknown_format(auth_client, reporter):
     client = Client.objects.create_with_user(first_name="Пло", last_name="Хой", phone="74")
 
     response = auth_client(reporter).get(
@@ -937,10 +847,8 @@ def test_statement_rejects_an_unknown_format(auth_client, user_with_perms):
     assert response.data["code"] == "bad_statement_format"
 
 
-def test_pdf_statement_rejects_an_unknown_section(auth_client, user_with_perms):
+def test_pdf_statement_rejects_an_unknown_section(auth_client, reporter):
     """Валидация разделов общая: PDF не должен обходить её стороной."""
-    reporter = user_with_perms(
-        "statement-pdf-bad", codes=["clients.view", "reports.export"])
     client = Client.objects.create_with_user(first_name="Не", last_name="Тот", phone="75")
 
     response = auth_client(reporter).get(
@@ -948,3 +856,61 @@ def test_pdf_statement_rejects_an_unknown_section(auth_client, user_with_perms):
 
     assert response.status_code == 400
     assert response.data["code"] == "bad_section"
+
+
+def test_all_clients_pdf_skips_client_currencies_without_movement():
+    """В листе «Клиенты» нет нулевых строк USD у клиентов, торгующих в тенге."""
+    active = Client.objects.create_with_user(first_name="Тен", last_name="Ге", phone="81")
+    Client.objects.create_with_user(first_name="Без", last_name="Движения", phone="82")
+    order = Order.objects.create(client=active, status="shipped", currency="KZT")
+    OrderItem.objects.create(order=order, quantity=1, unit_price="100")
+    data = build_statement_data()
+    assert "USD" in data.currencies
+
+    register_fonts()
+    story: list = []
+    _clients(story, _Styles(), data)
+
+    rows = story[-1]._cellvalues[1:]
+    assert [(row[0].text, row[2].text) for row in rows] == [(active.name, "KZT")]
+
+
+def test_order_payment_method_pending_has_a_label():
+    assert order_payment_method_label("pending") == "Способ не выбран"
+
+
+def test_debt_row_date_falls_back_to_order_creation_without_shipping_date():
+    """Строка долга датируется днём продажи, как и лента: Shipment без
+    ``shipped_at`` — дата создания заказа, а не пустая ячейка/«—»."""
+    client = Client.objects.create_with_user(first_name="Без", last_name="Даты", phone="83")
+    order = Order.objects.create(client=client, status="shipped", settlement_intent="debt")
+    created_at = datetime(2026, 5, 17, 8, tzinfo=dt_timezone.utc)
+    Order.objects.filter(pk=order.pk).update(created_at=created_at)
+    OrderItem.objects.create(order=order, quantity=1, unit_price="100")
+    Shipment.objects.create(order=order, shipped_at=None)
+    data = build_statement_data(client=client, sections=["ledger", "debts"])
+
+    workbook = load_workbook(BytesIO(render_statement_xlsx(data)))
+    assert workbook["Долги"]["B4"].value == local_time(created_at)
+    assert data.operations[0].occurred_at == created_at
+
+    register_fonts()
+    story: list = []
+    _debts(story, _Styles(), data)
+    assert story[-1]._cellvalues[1][1].text == f"{local_time(created_at):%d.%m.%Y %H:%M}"
+
+
+def test_statement_ledger_balance_is_prepared_by_the_data_layer():
+    """Остаток после операции считает ``data.py``: рендереры его только печатают."""
+    client = Client.objects.create_with_user(first_name="Лен", last_name="Та", phone="84")
+    order = Order.objects.create(client=client, status="shipped")
+    OrderItem.objects.create(order=order, quantity=2, unit_price="100")
+    Payment.objects.create(order=order, amount="50", method="cash", status="confirmed")
+
+    data = build_statement_data(client=client)
+
+    assert [operation.balance_after for operation in data.operations] == [
+        Decimal("200"), Decimal("150"),
+    ]
+    assert data.closing["KZT"] == Decimal("150")
+    assert data.closing["USD"] == 0

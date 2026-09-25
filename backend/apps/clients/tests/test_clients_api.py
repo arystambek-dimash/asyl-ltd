@@ -1,8 +1,10 @@
 import pytest
+from django.utils import timezone
 
 from apps.clients.models import Client
 from apps.clients.views import ClientViewSet
 from apps.eventlog.models import EventLog
+from apps.orders.models import Order
 from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
@@ -34,16 +36,6 @@ def test_manager_creates_client_without_optional_fields(auth_client, manager):
     assert resp.data["last_name"] == "Петров"
     assert resp.data["user"] == c.user_id
     assert resp.data["portal_access_enabled"] is False
-    assert resp.data["password_change_required"] is True
-
-
-def test_country_and_requisites_optional(auth_client, manager):
-    resp = auth_client(manager).post(
-        "/api/clients/",
-        {"first_name": "Эксп", "last_name": "Орт", "phone": "x",
-         "country": "Узбекистан"},
-    )
-    assert resp.status_code == 201
 
 
 def test_manager_assigns_and_returns_client_department(auth_client, manager):
@@ -234,9 +226,8 @@ def test_stale_update_rechecks_client_department_after_lock(
     editor = user_with_perms(
         "stale-client-editor",
         codes=["clients.view", "clients.edit"],
+        department=first,
     )
-    editor.employee.sales_department = first
-    editor.employee.save(update_fields=["sales_department"])
     client = Client.objects.create_with_user(
         first_name="Перенесённый",
         phone="stale-client-original",
@@ -313,6 +304,28 @@ def test_manager_updates_client_names_on_user(auth_client, manager):
     assert response.data["last_name"] == "Изменения"
 
 
+def test_client_name_update_collapses_spaces_like_create(auth_client, manager):
+    # Правка имени нормализуется так же, как создание: «Иван  Петров» с двойным
+    # пробелом не должен расходиться с тем же клиентом, заведённым заново.
+    created = auth_client(manager).post(
+        "/api/clients/",
+        {"first_name": "Анна  Мария", "last_name": "Ким", "phone": "+7"},
+        format="json",
+    )
+    assert created.data["first_name"] == "Анна Мария"
+
+    response = auth_client(manager).patch(
+        f"/api/clients/{created.data['id']}/",
+        {"last_name": "Ли  Ким"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    client = Client.objects.select_related("user").get(pk=created.data["id"])
+    assert client.user.first_name == "Анна Мария"
+    assert client.user.last_name == "Ли Ким"
+
+
 def test_manager_sets_temporary_client_password_without_logging_it(
     auth_client,
     manager,
@@ -347,13 +360,11 @@ def test_manager_sets_temporary_client_password_without_logging_it(
     detail = auth_client(manager).get(f"/api/clients/{client.pk}/")
     assert detail.status_code == 200
     assert detail.data["portal_access_enabled"] is False
-    assert detail.data["password_change_required"] is True
 
     client.user.must_change_password = False
     client.user.save(update_fields=["must_change_password"])
     ready = auth_client(manager).get(f"/api/clients/{client.pk}/")
     assert ready.data["portal_access_enabled"] is True
-    assert ready.data["password_change_required"] is False
 
 
 def test_temporary_password_rolls_back_if_security_audit_fails(
@@ -457,3 +468,22 @@ def test_deleting_client_deactivates_portal_user(auth_client, manager):
     assert response.status_code == 204
     user.refresh_from_db()
     assert user.is_active is False
+
+
+@pytest.mark.parametrize("in_trash", [False, True])
+def test_deleting_client_with_orders_is_conflict_not_500(auth_client, manager, in_trash):
+    client = Client.objects.create_with_user(first_name="С заказом", phone="+7-orders")
+    client.user.is_active = True
+    client.user.save(update_fields=["is_active"])
+    order = Order.objects.create(client=client)
+    if in_trash:
+        # Заказ в корзине тоже держит клиента (PROTECT видит all_objects).
+        Order.all_objects.filter(pk=order.pk).update(deleted_at=timezone.now())
+
+    response = auth_client(manager).delete(f"/api/clients/{client.pk}/")
+
+    assert response.status_code == 409
+    assert response.data["code"] == "client_has_orders"
+    assert Client.objects.filter(pk=client.pk).exists()
+    client.user.refresh_from_db()
+    assert client.user.is_active is True

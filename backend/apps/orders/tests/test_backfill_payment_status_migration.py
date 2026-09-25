@@ -6,7 +6,7 @@ from django.apps import apps as django_apps
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
-from apps.orders.services import _payment_status_for
+from apps.orders.debt import order_payment_status
 
 pytestmark = pytest.mark.django_db
 
@@ -23,7 +23,7 @@ def _order(client, product, qty, marked, paid=None, payment_status="confirmed", 
 
 
 def test_backfill_fixes_stale_statuses_in_one_pass():
-    product = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    product = Product.objects.create(name="P", color="Red", weight_kg="50")
     client = Client.objects.create_with_user(first_name="Дана", last_name="X", phone="1")
     # Долг, ошибочно помеченный погашенным, — именно его список должников потерял бы.
     hidden_debt = _order(client, product, 2, "settled", paid="50")
@@ -50,4 +50,4 @@ def test_backfill_fixes_stale_statuses_in_one_pass():
     assert actual == expected
     # Миграция и сервис оплат считают статус одинаково.
     for order in Order.objects.filter(pk__in=expected).prefetch_related("items__product", "payments"):
-        assert _payment_status_for(order) == order.payment_status
+        assert order_payment_status(order) == order.payment_status

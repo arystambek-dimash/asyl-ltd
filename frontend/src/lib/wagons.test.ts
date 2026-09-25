@@ -40,5 +40,7 @@ describe("wagons", () => {
   it("переводит вес вагона в тонны", () => {
     expect(wagonTons(wagon("1", "68000.00"))).toBe("68");
     expect(wagonTons(wagon("1", "67500.00"))).toBe("67,5");
+    // Точность та же, что у loadWeight в карточке грузчика: до 2 знаков.
+    expect(wagonTons(wagon("1", "67555.00"))).toBe("67,56");
   });
 });

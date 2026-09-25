@@ -6,47 +6,45 @@ from unittest.mock import patch
 import pytest
 from django.utils import timezone
 
-from apps.grain.scale import ScaleObservation
 from apps.grain import outbox_importer
 from apps.grain.models import AutomaticPassageCapture, UnassignedWeighing, WeighingPhotoDelivery
+from apps.grain.tests.factories import (
+    JPEG,
+    collector_event,
+    fake_time,
+    outbox_event,
+    process_without_gpt,
+    scale_observation,
+)
 from weighbridge.outbox import Outbox, Lane
 from weighbridge.collector import Collector
 
 
-def observation(weight, second, *, state="ready"):
-    return ScaleObservation(state, Decimal(weight), True, state=="ready", False, Decimal("0.1"), str(second))
-
-
 def test_stable_truck_after_moving_is_captured_once_then_next_after_clear():
     lane=Lane(stable_seconds=2)
-    for t in range(3): assert not lane.observe(observation(0,t),t)
-    assert not lane.observe(observation(2000,3,state="unstable"),3)
-    assert not lane.observe(observation(4000,4),4)
-    assert not lane.observe(observation(4000,5),5)
-    assert lane.observe(observation(4000,6),6)
+    for t in range(3): assert not lane.observe(scale_observation(0,t),t)
+    assert not lane.observe(scale_observation(2000,3,state="unstable"),3)
+    assert not lane.observe(scale_observation(4000,4),4)
+    assert not lane.observe(scale_observation(4000,5),5)
+    assert lane.observe(scale_observation(4000,6),6)
     lane.captured()
-    for t in range(7,20): assert not lane.observe(observation(4000,t),t)
-    for t in range(20,23): assert not lane.observe(observation(0,t),t)
-    assert not lane.observe(observation(4200,23),23)
-    assert lane.observe(observation(4200,25),25)
+    for t in range(7,20): assert not lane.observe(scale_observation(4000,t),t)
+    for t in range(20,23): assert not lane.observe(scale_observation(0,t),t)
+    assert not lane.observe(scale_observation(4200,23),23)
+    assert lane.observe(scale_observation(4200,25),25)
 
 
 def test_restart_gap_or_duplicate_reading_cannot_invent_a_new_occupancy():
     lane=Lane(stable_seconds=2)
-    for t in range(10): assert not lane.observe(observation(4000,t),t)
-    for t in range(10,13): lane.observe(observation(0,t),t)
-    for t in range(13,17): assert not lane.observe(observation(4000,13),t)
+    for t in range(10): assert not lane.observe(scale_observation(4000,t),t)
+    for t in range(10,13): lane.observe(scale_observation(0,t),t)
+    for t in range(13,17): assert not lane.observe(scale_observation(4000,13),t)
     lane.gap()
-    for t in range(17,25): assert not lane.observe(observation(4000,t),t)
-
-
-def event():
-    return {"id":str(uuid4()),"version":1,"weight_kg":4200,"camera":"cam1",
-            "stable_weight_at":timezone.now().isoformat(),"scale_age_seconds":"0.1","scale_updated_at":"sample"}
+    for t in range(17,25): assert not lane.observe(scale_observation(4000,t),t)
 
 
 def test_queue_restart_order_immutable_evidence_and_ack(tmp_path):
-    box=Outbox(tmp_path); a,b=event(),event()
+    box=Outbox(tmp_path); a,b=outbox_event(),outbox_event()
     box.put(a);box.put(b)
     box.finish(b["id"],"photo",photo=b"second");box.finish(b["id"],"ocr")
     assert box.next() is None  # cannot overtake an unfinished entry
@@ -61,7 +59,7 @@ def test_queue_restart_order_immutable_evidence_and_ack(tmp_path):
 
 def test_killed_writer_rolls_back_partial_write_without_losing_committed_event(tmp_path):
     import subprocess, sys
-    box=Outbox(tmp_path);value=event();box.put(value)
+    box=Outbox(tmp_path);value=outbox_event();box.put(value)
     script="""import sqlite3,sys,os
 db=sqlite3.connect(sys.argv[1]);db.execute('BEGIN IMMEDIATE')
 db.execute('UPDATE events SET body=?', ('corrupt unfinished value',))
@@ -75,10 +73,7 @@ os._exit(9)
 
 
 def test_late_camera_response_cannot_attach_to_next_truck(tmp_path):
-    box=Outbox(tmp_path);value=event();box.put(value)
-    collector=Collector(box)
-    import time
-    collector.current=value["id"];collector.last_good=time.monotonic()
+    collector,box,value=collector_event(tmp_path)
     def camera(*args, **kwargs):
         collector.current=str(uuid4())
         return {"vehicle_number":"123ABC13", "orientation":{"label":"rear","confidence":1}}
@@ -93,11 +88,8 @@ def test_late_camera_response_cannot_attach_to_next_truck(tmp_path):
 
 
 def test_camera_failure_cannot_lose_already_persisted_weight(tmp_path):
-    box=Outbox(tmp_path);value=event();box.put(value)
-    collector=Collector(box)
-    import time
-    collector.current=value["id"];collector.last_good=time.monotonic()
-    with patch("apps.grain.scale._open_request",side_effect=TimeoutError):
+    collector,box,value=collector_event(tmp_path)
+    with patch("apps.grain.scale.open_local_request",side_effect=TimeoutError):
         collector.snapshot(value)
     collector.close()
     box.finish(value["id"],"ocr")
@@ -113,7 +105,7 @@ def test_database_commit_before_ack_is_idempotent_after_crash(tmp_path, settings
     settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED=True
     settings.WEIGHING_AI_ENABLED=False
     monkeypatch.setenv("WEIGHBRIDGE_OUTBOX_DIR",str(tmp_path))
-    box=Outbox(tmp_path);value=event();box.put(value)
+    box=Outbox(tmp_path);value=outbox_event();box.put(value)
     box.finish(value["id"],"photo",photo=b"\xff\xd8image");box.finish(value["id"],"ocr")
     with patch.object(Outbox,"ack",side_effect=OSError("process died after commit")):
         with pytest.raises(OSError): outbox_importer.poll_once()
@@ -128,28 +120,71 @@ def test_database_commit_before_ack_is_idempotent_after_crash(tmp_path, settings
 
 @pytest.mark.django_db
 def test_database_failure_keeps_weight_and_photo_for_retry(tmp_path):
-    box=Outbox(tmp_path);value=event();box.put(value);box.finish(value["id"],"photo",photo=b"photo");box.finish(value["id"],"ocr")
+    box=Outbox(tmp_path);value=outbox_event();box.put(value);box.finish(value["id"],"photo",photo=b"photo");box.finish(value["id"],"ocr")
     with patch.object(AutomaticPassageCapture.objects,"get_or_create",side_effect=OSError("database offline")):
         with pytest.raises(OSError): outbox_importer.import_event(box.next())
     assert box.next()["photo"] == b"photo" and box.counts()["pending"] == 1
 
 
 @pytest.mark.django_db(transaction=True)
+def test_failed_apply_without_ai_parks_the_collector_weight_for_the_operator(tmp_path, settings):
+    """ИИ выключен, оформление отказало (4xx): вес сборщика уходит в «Неопознанные», а не теряется."""
+    from rest_framework.exceptions import ValidationError
+    from apps.grain import services
+    settings.MEDIA_ROOT = tmp_path / "media"
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    settings.WEIGHING_AI_ENABLED = False
+    value = outbox_event()
+    value["photo"] = b"\xff\xd8failed apply"
+    refusal = ValidationError({"detail": "Рейс уже закрыт.", "code": "passage_rejected"})
+    with patch.object(services, "apply_unidentified_passage_scale_sample", side_effect=refusal):
+        capture = outbox_importer.import_event(value)
+    assert capture.status == AutomaticPassageCapture.FAILED
+    capture.refresh_from_db()
+    assert capture.requires_acknowledgement is False  # оператор разбирает вес, а не подтверждает сбой
+    parked = UnassignedWeighing.objects.get(capture=capture)
+    assert parked.weight_kg == 4200 and parked.reason == capture.error_code
+    assert parked.photo_request_id == capture.idempotency_key
+    assert parked.photo.read() == value["photo"]
+
+
+@pytest.mark.django_db
+def test_acknowledging_a_failure_keeps_the_collector_runtime(tmp_path, settings, monkeypatch, user_with_perms):
+    """Подтверждение старого сбоя не затирает состояние сборщика в кэше до следующего опроса."""
+    from django.core.cache import cache
+    from apps.grain import passage_scale_automation as automation
+    from apps.grain.models import PassageScaleAutomationState
+    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
+    monkeypatch.setenv("WEIGHBRIDGE_OUTBOX_DIR", str(tmp_path))
+    (tmp_path / "enabled").write_text("1")
+    capture = AutomaticPassageCapture.objects.create(
+        idempotency_key=uuid4(), camera="cam1", status=AutomaticPassageCapture.FAILED,
+        stage=AutomaticPassageCapture.DONE, error_code="vehicle_recognition_unavailable", completed_at=timezone.now(),
+    )
+    PassageScaleAutomationState.objects.update_or_create(scale_number="truck", defaults={"current_capture": capture})
+    collector = {"total": 3, "pending": 0, "status": "running"}
+    cache.set(automation.RUNTIME_CACHE_KEY, {
+        "enabled": True, "state": "idle", "heartbeat_stale": False, "active": None,
+        "last_checked_at": timezone.now().isoformat(), "stable_weight_seconds": 3, "collector": collector,
+    })
+    runtime = automation.acknowledge_failure(capture.idempotency_key, user=user_with_perms("ack", codes=["grain.weigh"]))
+    assert runtime["collector"] == collector
+    assert cache.get(automation.RUNTIME_CACHE_KEY)["collector"] == collector
+
+
+@pytest.mark.django_db(transaction=True)
 def test_enabled_monitor_restart_replays_without_touching_hardware(tmp_path, settings, monkeypatch):
     from django.core.management import call_command
-    from apps.grain import passage_scale_automation, passage_monitor
     monkeypatch.setenv("WEIGHBRIDGE_OUTBOX_DIR", str(tmp_path))
     (tmp_path / "enabled").write_text("1")
     settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(tmp_path / "monitor.json")
     with (
-        patch.object(outbox_importer, "poll_once", return_value=passage_scale_automation.MonitorIteration(state="idle")) as replay,
-        patch.object(passage_scale_automation, "monitor_once") as legacy,
-        patch.object(passage_monitor, "prepare_start") as reset,
+        patch.object(outbox_importer, "poll_once", return_value="idle") as replay,
+        patch("apps.grain.scale.read_truck_scale_observation") as hardware,
     ):
         call_command("monitor_passage_scale", "--once")
     replay.assert_called_once()
-    legacy.assert_not_called()
-    reset.assert_not_called()
+    hardware.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -176,22 +211,12 @@ def test_collector_activation_requires_fresh_clear_then_survives_occupied_restar
 
 @pytest.mark.django_db(transaction=True)
 def test_recognized_entry_replays_original_photo_and_time_after_app_outage(tmp_path, settings):
-    from datetime import timedelta
     from apps.grain.models import Wagon
     settings.MEDIA_ROOT = tmp_path / "media"
     settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
-    settings.VEHICLE_PLATE_AUTO_EXPORT_ENABLED = False
     settings.WEIGHING_AI_ENABLED = False
-    value = event()
-    value["stable_weight_at"] = (timezone.now() - timedelta(minutes=15)).isoformat()
+    value = _recognized_event("123ABC02", weight=4200, minutes=15)
     value["photo"] = b"\xff\xd8original entry"
-    value["recognition"] = {
-        "vehicle_number": "123ABC02", "source": "main",
-        "recognized_at": value["stable_weight_at"],
-        "stable_weight_at": value["stable_weight_at"],
-        "orientation": {"label": "front", "confidence": 0.99},
-        "confirmation": {"votes": 3, "detector_confidence": 0.95, "ocr_confidence": 0.96},
-    }
     with patch("apps.grain.scale.read_truck_scale", side_effect=AssertionError("must not read next truck")):
         capture = outbox_importer.import_event(value)
         outbox_importer.import_event(value)
@@ -224,54 +249,54 @@ def test_independent_capture_cannot_be_duplicated_by_manual_hardware_button(tmp_
 
 def test_brief_network_timeout_restarts_stability_without_missing_armed_truck():
     lane = Lane(stable_seconds=3)
-    for t in range(3): lane.observe(observation(0, t), t)
-    assert not lane.observe(observation(4200, 3), 3)
+    for t in range(3): lane.observe(scale_observation(0, t), t)
+    assert not lane.observe(scale_observation(4200, 3), 3)
     lane.unavailable(4)
     assert lane.armed
-    for t in (5, 6, 7): assert not lane.observe(observation(4200, t), t)
-    assert lane.observe(observation(4200, 8), 8)
+    for t in (5, 6, 7): assert not lane.observe(scale_observation(4200, t), t)
+    assert lane.observe(scale_observation(4200, 8), 8)
     lane.captured()
     lane.unavailable(9)
-    for t in range(10, 15): assert not lane.observe(observation(4200, t), t)
+    for t in range(10, 15): assert not lane.observe(scale_observation(4200, t), t)
 
 
 def test_repeated_short_failures_cannot_hide_a_long_observation_gap():
     lane = Lane(stable_seconds=2)
-    for t in range(3): lane.observe(observation(0, t), t)
+    for t in range(3): lane.observe(scale_observation(0, t), t)
     for t in range(3, 9):
-        lane.observe(observation(0, t, state="unavailable"), t)
+        lane.observe(scale_observation(0, t, state="unavailable"), t)
     assert not lane.armed
-    for t in range(9, 15): assert not lane.observe(observation(4200, t), t)
-    for t in range(15, 18): lane.observe(observation(0, t), t)
-    assert not lane.observe(observation(4200, 18), 18)
-    assert lane.observe(observation(4200, 20), 20)
+    for t in range(9, 15): assert not lane.observe(scale_observation(4200, t), t)
+    for t in range(15, 18): lane.observe(scale_observation(0, t), t)
+    assert not lane.observe(scale_observation(4200, 18), 18)
+    assert lane.observe(scale_observation(4200, 20), 20)
 
 
 def captured_truck(lane, weight):
-    for t in range(3): lane.observe(observation(0, t), t)
-    for t in (3, 4): assert not lane.observe(observation(weight, t), t)
-    assert lane.observe(observation(weight, 5), 5)
+    for t in range(3): lane.observe(scale_observation(0, t), t)
+    for t in (3, 4): assert not lane.observe(scale_observation(weight, t), t)
+    assert lane.observe(scale_observation(weight, 5), 5)
     lane.captured()
 
 
 def test_next_truck_on_a_scale_that_never_emptied_is_captured_after_the_platform_changes():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 3760)
-    for t in range(6, 10): assert not lane.observe(observation(3760, t), t)
+    for t in range(6, 10): assert not lane.observe(scale_observation(3760, t), t)
     # The first truck drives off while the next one drives on: never empty.
     for t, weight in ((10, 1880), (11, 1700), (12, 3100)):
-        assert not lane.observe(observation(weight, t, state="unstable"), t)
-    for t in (13, 14): assert not lane.observe(observation(3680, t), t)
-    assert lane.observe(observation(3680, 15), 15)
+        assert not lane.observe(scale_observation(weight, t, state="unstable"), t)
+    for t in (13, 14): assert not lane.observe(scale_observation(3680, t), t)
+    assert lane.observe(scale_observation(3680, 15), 15)
 
 
 def test_two_trucks_on_the_platform_at_once_rearm_on_the_rise():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 3760)
     for t, weight in ((6, 5600), (7, 5560)):
-        assert not lane.observe(observation(weight, t, state="unstable"), t)
-    for t in (8, 9): assert not lane.observe(observation(3680, t), t)
-    assert lane.observe(observation(3680, 10), 10)
+        assert not lane.observe(scale_observation(weight, t, state="unstable"), t)
+    for t in (8, 9): assert not lane.observe(scale_observation(3680, t), t)
+    assert lane.observe(scale_observation(3680, 10), 10)
 
 
 def test_standing_truck_is_not_captured_again_by_changes_below_the_rearm_delta():
@@ -279,57 +304,56 @@ def test_standing_truck_is_not_captured_again_by_changes_below_the_rearm_delta()
     captured_truck(lane, 4000)
     # A driver stepping out or a wheel on the ramp edge is not a new vehicle.
     for t, weight in enumerate((4600, 3300, 4600, 4600, 4600, 4600), start=6):
-        assert not lane.observe(observation(weight, t, state="unstable" if weight == 3300 else "ready"), t)
+        assert not lane.observe(scale_observation(weight, t, state="unstable" if weight == 3300 else "ready"), t)
 
 
 def test_one_glitched_reading_cannot_rearm_a_standing_truck():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 4000)
-    assert not lane.observe(observation(0, 6), 6)
-    for t in range(7, 12): assert not lane.observe(observation(4000, t), t)
+    assert not lane.observe(scale_observation(0, 6), 6)
+    for t in range(7, 12): assert not lane.observe(scale_observation(4000, t), t)
 
 
 def test_truck_stopping_half_off_the_scale_is_not_captured_again():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 3760)
     # Waiting at a barrier with only the rear axle on the platform.
-    for t in range(6, 14): assert not lane.observe(observation(1880, t), t)
+    for t in range(6, 14): assert not lane.observe(scale_observation(1880, t), t)
 
 
 def test_short_scale_outage_after_a_capture_keeps_watching_for_the_next_queued_truck():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 3760)
-    for t in (6, 7): assert not lane.observe(observation(3760, t), t)
+    for t in (6, 7): assert not lane.observe(scale_observation(3760, t), t)
     # The scale link drops for seven seconds; the queue keeps moving meanwhile.
     lane.unavailable(14)
     assert not lane.armed
     for t, weight in ((15, 1880), (16, 1700), (17, 3100)):
-        assert not lane.observe(observation(weight, t, state="unstable"), t)
-    for t in (18, 19): assert not lane.observe(observation(3680, t), t)
-    assert lane.observe(observation(3680, 20), 20)
+        assert not lane.observe(scale_observation(weight, t, state="unstable"), t)
+    for t in (18, 19): assert not lane.observe(scale_observation(3680, t), t)
+    assert lane.observe(scale_observation(3680, 20), 20)
 
 
 def test_same_truck_standing_through_an_outage_is_not_captured_again():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 4000)
     lane.unavailable(14)
-    for t in range(15, 25): assert not lane.observe(observation(4000, t), t)
+    for t in range(15, 25): assert not lane.observe(scale_observation(4000, t), t)
     assert not lane.armed
 
 
 def test_outage_does_not_stitch_two_separate_glitches_into_a_rearm():
     lane = Lane(stable_seconds=2)
     captured_truck(lane, 4000)
-    assert not lane.observe(observation(5200, 6, state="unstable"), 6)
+    assert not lane.observe(scale_observation(5200, 6, state="unstable"), 6)
     lane.unavailable(14)
-    assert not lane.observe(observation(5200, 15, state="unstable"), 15)
-    for t in range(16, 22): assert not lane.observe(observation(4000, t), t)
+    assert not lane.observe(scale_observation(5200, 15, state="unstable"), 15)
+    for t in range(16, 22): assert not lane.observe(scale_observation(4000, t), t)
     assert not lane.armed
 
 
 def test_collector_captures_both_trucks_and_records_the_rearm(tmp_path):
     import sqlite3
-    import time as real_time
     from types import SimpleNamespace
     box = Outbox(tmp_path)
     box.state("config", {"stable_weight_seconds": 2})
@@ -338,11 +362,10 @@ def test_collector_captures_both_trucks_and_records_the_rearm(tmp_path):
     clock = {"now": 1000.0}
     plan = [(0, "ready")] * 3 + [(3760, "ready")] * 4 + [(1880, "unstable"), (1700, "unstable"), (3100, "unstable")] \
         + [(3680, "ready")] * 3
-    readings = iter(observation(weight, second, state=state) for second, (weight, state) in enumerate(plan))
-    fake_time = SimpleNamespace(monotonic=lambda: clock["now"], time=real_time.time, sleep=real_time.sleep)
+    readings = iter(scale_observation(weight, second, state=state) for second, (weight, state) in enumerate(plan))
     strict = lambda *_: SimpleNamespace(weight_kg=Decimal(int(collector.lane.weight)), age_seconds=Decimal("0.1"),
                                         updated_at="sample")
-    with patch("weighbridge.collector.time", fake_time), \
+    with patch("weighbridge.collector.time", fake_time(clock)), \
             patch("apps.grain.scale.read_truck_scale_observation", side_effect=lambda *_: next(readings)), \
             patch("apps.grain.scale.read_truck_scale", side_effect=strict), \
             patch.object(collector, "start_evidence"):
@@ -383,11 +406,11 @@ def test_importer_writes_collector_config_only_when_it_changes(tmp_path, setting
             return super().state(key, value)
 
     monkeypatch.setattr(outbox_importer, "Outbox", Spy)
-    assert outbox_importer.poll_once().state == "idle"
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
+    assert outbox_importer.poll_once() == "idle"
     assert writes == ["config"]
     values["stable_weight_seconds"] = 4
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
     assert writes == ["config", "config"]
     assert box.state("config") == {"stable_weight_seconds": 4}
 
@@ -396,51 +419,48 @@ def test_importer_writes_collector_config_only_when_it_changes(tmp_path, setting
 def test_importer_survives_a_locked_outbox_and_keeps_the_last_known_state(tmp_path, settings, monkeypatch, caplog):
     import logging
     _running_outbox(tmp_path, monkeypatch, settings)
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
     with patch.object(Outbox, "next", side_effect=sqlite3.OperationalError("database is locked")):
         with caplog.at_level(logging.WARNING):
-            assert outbox_importer.poll_once().state == "idle"
+            assert outbox_importer.poll_once() == "idle"
     assert "locked" in caplog.text
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
 
 
 @pytest.mark.django_db
 def test_importer_reports_unavailable_when_locked_before_any_heartbeat_was_read(tmp_path, settings, monkeypatch):
     _running_outbox(tmp_path, monkeypatch, settings)
     with patch.object(Outbox, "state", side_effect=sqlite3.OperationalError("database is locked")):
-        assert outbox_importer.poll_once().state == "unavailable"
+        assert outbox_importer.poll_once() == "unavailable"
 
 
 @pytest.mark.django_db
 def test_importer_reports_a_collector_outage_only_after_it_persists(tmp_path, settings, monkeypatch):
     import time
     box = _running_outbox(tmp_path, monkeypatch, settings)
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
     box.state("heartbeat", {"clear": True, "armed": True, "status": "hardware_unavailable", "updated_at": time.time()})
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
     box.state("heartbeat", {"clear": True, "armed": True, "status": "running", "updated_at": time.time()})
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
     box.state("heartbeat", {"clear": True, "armed": True, "status": "running", "updated_at": time.time() - 15})
-    assert outbox_importer.poll_once().state == "idle"
+    assert outbox_importer.poll_once() == "idle"
     with patch.object(outbox_importer.time, "monotonic", return_value=time.monotonic() + outbox_importer.UNAVAILABLE_GRACE_SECONDS):
-        assert outbox_importer.poll_once().state == "unavailable"
-    assert outbox_importer.poll_once().state == "unavailable"
+        assert outbox_importer.poll_once() == "unavailable"
+    assert outbox_importer.poll_once() == "unavailable"
     box.state("heartbeat", {"clear": False, "armed": True, "status": "running", "updated_at": time.time()})
-    assert outbox_importer.poll_once().state == "candidate"
+    assert outbox_importer.poll_once() == "candidate"
 
 
 def test_collector_reports_a_scale_outage_only_after_five_seconds_of_failed_reads(tmp_path):
     import sqlite3
-    import time as real_time
-    from types import SimpleNamespace
     box = Outbox(tmp_path)
     collector = Collector(box)
     clock = {"now": 1000.0}
     plan = [(0, "ready")] * 3 + [(0, "unavailable")] + [(0, "ready")] * 2 + [(0, "unavailable")] * 8 + [(0, "ready")]
-    readings = iter(observation(weight, second, state=state) for second, (weight, state) in enumerate(plan))
-    fake_time = SimpleNamespace(monotonic=lambda: clock["now"], time=real_time.time, sleep=real_time.sleep)
+    readings = iter(scale_observation(weight, second, state=state) for second, (weight, state) in enumerate(plan))
     statuses = []
-    with patch("weighbridge.collector.time", fake_time), \
+    with patch("weighbridge.collector.time", fake_time(clock)), \
             patch("apps.grain.scale.read_truck_scale_observation", side_effect=lambda *_: next(readings)):
         for _ in plan:
             collector.poll()
@@ -465,7 +485,7 @@ def test_outbox_writer_retains_fifo_order_across_a_busy_database(tmp_path):
         return original_put(value)
     box.put = flaky_put
     writer = OutboxWriter(box)
-    first, second = event(), event()
+    first, second = outbox_event(), outbox_event()
     writer.enqueue("put", first)
     writer.enqueue("put", second)
     writer.start()
@@ -496,15 +516,9 @@ def _no_match_payload(**overrides):
 
 
 def _collector_ocr(tmp_path, side_effect, *, photo=None, minutes=0, weight=4200):
-    import time
     from datetime import timedelta
-    box, value = Outbox(tmp_path), event()
-    value["weight_kg"] = weight
-    value["stable_weight_at"] = (timezone.now() - timedelta(minutes=minutes)).isoformat()
-    box.put(value)
-    collector = Collector(box)
-    collector.current = value["id"]
-    collector.last_good = time.monotonic()
+    stable_at = (timezone.now() - timedelta(minutes=minutes)).isoformat()
+    collector, box, value = collector_event(tmp_path, weight_kg=weight, stable_weight_at=stable_at)
     with patch("apps.cameras.ai.recognize_vehicle_from_camera", side_effect=side_effect):
         collector.recognize(value)
     collector.close()
@@ -536,10 +550,10 @@ def test_collector_keeps_no_match_diagnostics_without_frames(tmp_path):
 
 def test_collector_bounds_oversized_diagnostics(tmp_path):
     from apps.cameras import ai
-    from apps.grain import vehicle_weight_capture
+    from apps.grain import plate_recognition
     from weighbridge import collector
     # One vote ceiling on both sides: what the collector keeps, the CRM keeps whole.
-    assert collector.MAX_DIAGNOSTIC_VOTES == vehicle_weight_capture.MAX_NO_MATCH_VOTES == 8
+    assert collector.MAX_DIAGNOSTIC_VOTES == plate_recognition.MAX_NO_MATCH_VOTES == 8
     payload = _no_match_payload(
         votes={f"{n:03d}ABC13": 1 for n in range(15)},
         last_reads=[{"frame": n, "raw_text": "x" * 100, "confidence": 2.5, "bbox_w": -1} for n in range(12)],
@@ -569,12 +583,8 @@ def test_collector_reports_the_camera_status_as_the_recognition_error(tmp_path, 
 
 
 def test_collector_drops_a_refusal_that_arrives_after_the_truck_left(tmp_path):
-    import time
     from apps.cameras import ai
-    box, value = Outbox(tmp_path), event()
-    box.put(value)
-    collector = Collector(box)
-    collector.current, collector.last_good = value["id"], time.monotonic()
+    collector, box, value = collector_event(tmp_path)
 
     def late(*args, **kwargs):
         collector.current = str(uuid4())
@@ -597,19 +607,16 @@ def test_collector_outage_keeps_the_old_error_without_diagnostics(tmp_path):
     assert not stored.get("recognition_diagnostics")
 
 
-def _identity_settings(settings, tmp_path):
-    settings.MEDIA_ROOT = tmp_path / "media"
-    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
-    settings.WEIGHING_AI_ENABLED = True
-    settings.OPENAI_API_KEY = "test-key"
-    settings.WEIGHING_AI_MAX_DAILY_REQUESTS = 100
+@pytest.fixture
+def ai_import(identity_ai):
+    """Сборщик включён, номер без подтверждения сверяется по снимку через ИИ."""
+    identity_ai.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
 
 
-def _import_failure(tmp_path, settings, failure, *, minutes=1, weight=8500):
+def _import_failure(tmp_path, failure, *, minutes=1, weight=8500):
     """Import one collector event whose camera answer failed; also return the status recorded before apply."""
     from apps.grain import passage_scale_automation as automation
-    _identity_settings(settings, tmp_path)
-    stored = _collector_ocr(tmp_path / str(uuid4()), failure, photo=b"\xff\xd8\xff\xe0frame", minutes=minutes, weight=weight)
+    stored = _collector_ocr(tmp_path / str(uuid4()), failure, photo=JPEG, minutes=minutes, weight=weight)
     staged, apply = {}, automation._apply_recognized_capture
 
     def observed_apply(capture_id):
@@ -620,16 +627,16 @@ def _import_failure(tmp_path, settings, failure, *, minutes=1, weight=8500):
         return outbox_importer.import_event(stored), staged["response_status"]
 
 
-def _import_no_match(tmp_path, settings, *, minutes=1, weight=8500, **overrides):
+def _import_no_match(tmp_path, *, minutes=1, weight=8500, **overrides):
     from apps.cameras import ai
     failure = ai.AiError(422, "not confirmed", _no_match_payload(**overrides))
-    return _import_failure(tmp_path, settings, failure, minutes=minutes, weight=weight)
+    return _import_failure(tmp_path, failure, minutes=minutes, weight=weight)
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_no_match_keeps_diagnostics_and_the_single_weak_plate(tmp_path, settings):
+def test_import_of_no_match_keeps_diagnostics_and_the_single_weak_plate(tmp_path, ai_import):
     from apps.grain import services
-    capture, staged = _import_no_match(tmp_path, settings)
+    capture, staged = _import_no_match(tmp_path)
     assert capture.status == "completed" and capture.action == services.AUTO_ACTION_UNASSIGNED
     assert capture.plate_unresolved and capture.error_code == "collector_plate_unresolved"
     assert capture.error_detail == "Номер не подтверждён: 2 голоса за 402BJG13 (нужно 3)"
@@ -645,8 +652,8 @@ def test_import_of_no_match_keeps_diagnostics_and_the_single_weak_plate(tmp_path
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_no_match_with_competing_plates_keeps_no_number(tmp_path, settings):
-    capture, _ = _import_no_match(tmp_path, settings, votes={"402BJG13": 2, "402BJG18": 1})
+def test_import_of_no_match_with_competing_plates_keeps_no_number(tmp_path, ai_import):
+    capture, _ = _import_no_match(tmp_path, votes={"402BJG13": 2, "402BJG18": 1})
     assert capture.vehicle_number == "" and capture.confirmation_votes is None
     assert "weak_plate" not in capture.ai_payload_json
     assert capture.ai_payload_json["votes"] == {"402BJG13": 2, "402BJG18": 1}
@@ -655,19 +662,19 @@ def test_import_of_no_match_with_competing_plates_keeps_no_number(tmp_path, sett
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_no_match_with_a_single_vote_or_a_malformed_plate_keeps_no_number(tmp_path, settings):
-    capture, _ = _import_no_match(tmp_path, settings, votes={"402BJG13": 1})
+def test_import_of_no_match_with_a_single_vote_or_a_malformed_plate_keeps_no_number(tmp_path, ai_import):
+    capture, _ = _import_no_match(tmp_path, votes={"402BJG13": 1})
     assert capture.vehicle_number == "" and "weak_plate" not in capture.ai_payload_json
-    capture, _ = _import_no_match(tmp_path, settings, votes={"MERCEDES": 2})
+    capture, _ = _import_no_match(tmp_path, votes={"MERCEDES": 2})
     assert capture.vehicle_number == "" and "weak_plate" not in capture.ai_payload_json
     assert capture.error_detail == "Номер не подтверждён: 2 голоса за MERCEDES (нужно 3)"
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_no_match_with_an_impossible_vote_count_keeps_no_number(tmp_path, settings):
+def test_import_of_no_match_with_an_impossible_vote_count_keeps_no_number(tmp_path, ai_import):
     # 40 000 votes fit the JSON tally but not the capture's smallint column:
     # the event still imports, and the tally alone names nobody.
-    capture, staged = _import_no_match(tmp_path, settings, votes={"402BJG13": 40000})
+    capture, staged = _import_no_match(tmp_path, votes={"402BJG13": 40000})
     assert capture.status == "completed" and capture.error_code == "collector_plate_unresolved" and staged == 422
     assert capture.vehicle_number == "" and capture.confirmation_votes is None
     assert "weak_plate" not in capture.ai_payload_json
@@ -677,11 +684,10 @@ def test_import_of_no_match_with_an_impossible_vote_count_keeps_no_number(tmp_pa
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_does_not_trust_a_weak_plate_whose_competitor_was_trimmed(tmp_path, settings):
+def test_import_does_not_trust_a_weak_plate_whose_competitor_was_trimmed(tmp_path, ai_import):
     from apps.cameras import ai
-    _identity_settings(settings, tmp_path)
     stored = _collector_ocr(tmp_path / str(uuid4()), ai.AiError(422, "not confirmed", _no_match_payload()),
-                            photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+                            photo=JPEG, minutes=1, weight=8500)
     # A longer tally than the CRM keeps (an older collector, a chattier Camera-PC):
     # the competing number is the ninth entry and would be cut on import.
     stored["recognition_diagnostics"]["votes"] = {"402BJG13": 2, **{f"{n:03d}ABC13": 0 for n in range(7)}, "402BJG18": 1}
@@ -694,19 +700,18 @@ def test_import_does_not_trust_a_weak_plate_whose_competitor_was_trimmed(tmp_pat
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_no_match_without_a_detected_plate_explains_the_detector_miss(tmp_path, settings):
-    capture, staged = _import_no_match(tmp_path, settings, votes={}, last_reads=[], detected_frames=0, ocr_candidates=0)
+def test_import_of_no_match_without_a_detected_plate_explains_the_detector_miss(tmp_path, ai_import):
+    capture, staged = _import_no_match(tmp_path, votes={}, last_reads=[], detected_frames=0, ocr_candidates=0)
     assert capture.vehicle_number == "" and staged == 422
     assert capture.error_detail == "Камера не нашла табличку: 0 из 20 кадров"
     assert capture.ai_payload_json["detected_frames"] == 0 and "votes" not in capture.ai_payload_json
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_no_match_keeps_the_zoom_counters_and_says_the_zoom_found_nothing_either(tmp_path, settings):
+def test_import_of_no_match_keeps_the_zoom_counters_and_says_the_zoom_found_nothing_either(tmp_path, ai_import):
     from apps.cameras import ai
-    _identity_settings(settings, tmp_path)
     refusal = ai.AiError(422, "not confirmed", _no_match_payload(votes={}, last_reads=[], detected_frames=0, ocr_candidates=0))
-    stored = _collector_ocr(tmp_path / str(uuid4()), refusal, photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+    stored = _collector_ocr(tmp_path / str(uuid4()), refusal, photo=JPEG, minutes=1, weight=8500)
     # The Camera-PC also searched every frame in zoomed tiles and found no plate
     # there either; a collector that forwards those counters lets the CRM say so.
     stored["recognition_diagnostics"].update({"zoom_frames": 12, "zoom_detected_frames": 0, "zoom_tiles": 4})
@@ -716,7 +721,7 @@ def test_import_of_no_match_keeps_the_zoom_counters_and_says_the_zoom_found_noth
     assert capture.ai_payload_json["zoom_frames"] == 12 and capture.ai_payload_json["zoom_detected_frames"] == 0
     assert "zoom_tiles" not in capture.ai_payload_json  # only the two counters are kept, not an arbitrary key
     # A refusal that never zoomed keeps the plain wording.
-    stored = _collector_ocr(tmp_path / str(uuid4()), refusal, photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+    stored = _collector_ocr(tmp_path / str(uuid4()), refusal, photo=JPEG, minutes=1, weight=8500)
     stored["recognition_diagnostics"].update({"zoom_frames": 0, "zoom_detected_frames": -1})
     capture = outbox_importer.import_event(stored)
     assert capture.error_detail == "Камера не нашла табличку: 0 из 20 кадров"
@@ -724,31 +729,31 @@ def test_import_of_no_match_keeps_the_zoom_counters_and_says_the_zoom_found_noth
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_a_camera_failure_keeps_its_status_without_a_no_match_code(tmp_path, settings):
+def test_import_of_a_camera_failure_keeps_its_status_without_a_no_match_code(tmp_path, ai_import):
     from apps.cameras import ai
     payload = {"status": "camera_unavailable", "error": "rtsp offline", "orientation": {"label": "rear", "confidence": 0.9}}
-    capture, staged = _import_failure(tmp_path, settings, ai.AiError(503, "rtsp offline", payload))
+    capture, staged = _import_failure(tmp_path, ai.AiError(503, "rtsp offline", payload))
     assert capture.error_code == "collector_plate_unresolved" and capture.error_detail == "Камера: camera_unavailable"
     assert staged is None and capture.vehicle_number == "" and capture.orientation == "rear"
     assert capture.ai_payload_json == {"status": "camera_unavailable", "error": "rtsp offline"}
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_a_stale_trigger_names_the_status_not_a_detector_miss(tmp_path, settings):
+def test_import_of_a_stale_trigger_names_the_status_not_a_detector_miss(tmp_path, ai_import):
     from apps.cameras import ai
     # Zero detected frames on a refusal that never looked for a plate is not a detector miss.
     payload = {"status": "stale_weight_trigger", "error": "weight trigger is stale", "detected_frames": 0,
                "frames_scanned": 20, "orientation": {"label": "rear", "confidence": 0.9}}
-    capture, staged = _import_failure(tmp_path, settings, ai.AiError(409, "stale trigger", payload))
+    capture, staged = _import_failure(tmp_path, ai.AiError(409, "stale trigger", payload))
     assert capture.error_code == "collector_plate_unresolved" and capture.error_detail == "Камера: stale_weight_trigger"
     assert staged is None and capture.vehicle_number == ""
     assert capture.ai_payload_json["detected_frames"] == 0 and capture.ai_payload_json["frames_scanned"] == 20
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_an_old_event_without_diagnostics_is_unchanged(tmp_path, settings):
+def test_import_of_an_old_event_without_diagnostics_is_unchanged(tmp_path, ai_import):
     from apps.cameras import ai
-    capture, staged = _import_failure(tmp_path, settings, ai.AiUnavailable("timed out"))
+    capture, staged = _import_failure(tmp_path, ai.AiUnavailable("timed out"))
     assert capture.error_code == "collector_plate_unresolved"
     assert capture.error_detail == "Вес сохранён сборщиком; номер требует проверки."
     assert capture.ai_payload_json == {} and staged is None and capture.vehicle_number == ""
@@ -756,7 +761,7 @@ def test_import_of_an_old_event_without_diagnostics_is_unchanged(tmp_path, setti
 
 def _recognized_event(number, *, weight, minutes, orientation="front"):
     from datetime import timedelta
-    value = event()
+    value = outbox_event()
     value["weight_kg"] = weight
     value["stable_weight_at"] = (timezone.now() - timedelta(minutes=minutes)).isoformat()
     value["photo"] = b"\xff\xd8\xff\xe0front frame"
@@ -769,19 +774,16 @@ def _recognized_event(number, *, weight, minutes, orientation="front"):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_weak_rear_plate_of_a_truck_on_site_books_the_exit_without_gpt(tmp_path, settings):
+def test_weak_rear_plate_of_a_truck_on_site_books_the_exit_without_gpt(tmp_path, ai_import):
     from apps.grain import statuses as st, weighing_identity as identity
     from apps.grain.models import Wagon
-    _identity_settings(settings, tmp_path)
     entry = outbox_importer.import_event(_recognized_event("402BJG13", weight=4200, minutes=60))
     identity.process_once()
     visit = Wagon.objects.get(number="402BJG13")
     assert visit.status == st.AT_SILO and visit.gross_weight_kg == 4200
-    capture, _ = _import_no_match(tmp_path, settings)
+    capture, _ = _import_no_match(tmp_path)
     assert capture.vehicle_number == "402BJG13"
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    process_without_gpt()
     departure = UnassignedWeighing.objects.get(capture=capture)
     assert departure.status == "assigned" and departure.action == "exit" and departure.wagon_id == visit.pk
     assert departure.identity_check.status == "matched"
@@ -793,10 +795,10 @@ def test_weak_rear_plate_of_a_truck_on_site_books_the_exit_without_gpt(tmp_path,
 
 
 @pytest.mark.django_db(transaction=True)
-def test_weak_rear_plate_without_a_truck_on_site_still_reads_the_frame(tmp_path, settings):
+def test_weak_rear_plate_without_a_truck_on_site_still_reads_the_frame(tmp_path, ai_import):
     from apps.grain import weighing_identity as identity
-    capture, _ = _import_no_match(tmp_path, settings)
-    verdict = {"exit": {"plate": "", "plate_clear": False, "orientation": "rear"}, "entries": []}
+    capture, _ = _import_no_match(tmp_path)
+    verdict = {"exit": {"plate": "", "plate_clear": False, "orientation": "rear"}}
     with patch.object(identity, "request_verification", return_value=(verdict, "response-test")) as request:
         identity.process_once()
     assert request.call_count == 1
@@ -806,12 +808,12 @@ def test_weak_rear_plate_without_a_truck_on_site_still_reads_the_frame(tmp_path,
 
 
 @pytest.mark.django_db(transaction=True)
-def test_weak_front_plate_always_reads_the_frame_before_opening_a_visit(tmp_path, settings):
+def test_weak_front_plate_always_reads_the_frame_before_opening_a_visit(tmp_path, ai_import):
     from apps.grain import statuses as st, weighing_identity as identity
     from apps.grain.models import Wagon
-    capture, _ = _import_no_match(tmp_path, settings, weight=4200, orientation={"label": "front", "confidence": 0.95})
+    capture, _ = _import_no_match(tmp_path, weight=4200, orientation={"label": "front", "confidence": 0.95})
     assert capture.vehicle_number == "402BJG13" and capture.orientation == "front"
-    verdict = {"exit": {"plate": "402BJG13", "plate_clear": True, "orientation": "front"}, "entries": []}
+    verdict = {"exit": {"plate": "402BJG13", "plate_clear": True, "orientation": "front"}}
     with patch.object(identity, "request_verification", return_value=(verdict, "response-test")) as request:
         identity.process_once()
     assert request.call_count == 1
@@ -822,18 +824,15 @@ def test_weak_front_plate_always_reads_the_frame_before_opening_a_visit(tmp_path
 
 
 @pytest.mark.django_db(transaction=True)
-def test_weak_rear_plate_booking_is_flagged_in_the_journal(tmp_path, settings):
+def test_weak_rear_plate_booking_is_flagged_in_the_journal(tmp_path, ai_import):
     from apps.eventlog.models import EventLog
     from apps.grain import weighing_identity as identity
-    _identity_settings(settings, tmp_path)
     entry = outbox_importer.import_event(_recognized_event("402BJG13", weight=4200, minutes=60))
     identity.process_once()
     arrival = EventLog.objects.get(event_type="grain_identity_verified")
     assert arrival.payload["weak_plate"] is False
-    capture, _ = _import_no_match(tmp_path, settings)
-    with patch.object(identity, "request_verification") as request:
-        identity.process_once()
-    request.assert_not_called()
+    capture, _ = _import_no_match(tmp_path)
+    process_without_gpt()
     departure = UnassignedWeighing.objects.get(capture=capture)
     assert departure.status == "assigned" and departure.action == "exit"
     booked = EventLog.objects.get(event_type="grain_identity_verified", payload__check_id=departure.identity_check.pk)
@@ -844,12 +843,12 @@ def test_weak_rear_plate_booking_is_flagged_in_the_journal(tmp_path, settings):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_import_of_an_interrupted_search_names_its_status_and_trusts_no_weak_plate(tmp_path, settings):
+def test_import_of_an_interrupted_search_names_its_status_and_trusts_no_weak_plate(tmp_path, ai_import):
     from apps.cameras import ai
     # Two votes gathered before the search was cut short never saw the whole
     # window: the status leads, the tally is context, no plate is taken.
     payload = _no_match_payload(status="interrupted", error="shared inference timed out")
-    capture, staged = _import_failure(tmp_path, settings, ai.AiError(503, "shared inference timed out", payload))
+    capture, staged = _import_failure(tmp_path, ai.AiError(503, "shared inference timed out", payload))
     assert capture.error_code == "collector_plate_unresolved"
     assert capture.error_detail == "Камера: interrupted; голоса: 2 голоса за 402BJG13"
     assert staged is None and capture.vehicle_number == "" and capture.confirmation_votes is None
@@ -858,14 +857,13 @@ def test_import_of_an_interrupted_search_names_its_status_and_trusts_no_weak_pla
 
 
 @pytest.mark.django_db(transaction=True)
-def test_collector_marks_a_tally_it_had_to_cut_and_the_importer_trusts_no_weak_plate(tmp_path, settings):
+def test_collector_marks_a_tally_it_had_to_cut_and_the_importer_trusts_no_weak_plate(tmp_path, ai_import):
     from apps.cameras import ai
     from weighbridge import collector as collector_module
-    _identity_settings(settings, tmp_path)
     # Ten readings, the competitor last: the collector keeps eight but says so.
     votes = {"402BJG13": 2, **{f"{n:03d}ABC13": 0 for n in range(8)}, "402BJG18": 1}
     stored = _collector_ocr(tmp_path / str(uuid4()), ai.AiError(422, "not confirmed", _no_match_payload(votes=votes)),
-                            photo=b"\xff\xd8\xff\xe0frame", minutes=1, weight=8500)
+                            photo=JPEG, minutes=1, weight=8500)
     diagnostics = stored["recognition_diagnostics"]
     assert len(diagnostics["votes"]) == collector_module.MAX_DIAGNOSTIC_VOTES and diagnostics["votes_truncated"] is True
     capture = outbox_importer.import_event(stored)

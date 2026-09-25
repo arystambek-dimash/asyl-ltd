@@ -24,7 +24,6 @@ describe("payAfterCreate", () => {
     expect(postMock).toHaveBeenCalledWith("/orders/12/payments/", {
       amount: "500",
       method: "kaspi",
-      stage: "received",
     });
   });
 

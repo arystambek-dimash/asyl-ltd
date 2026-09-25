@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -20,7 +18,6 @@ from .models import (
     ContinuousCameraRole,
 )
 
-log = logging.getLogger(__name__)
 CLOSE_TIME = time(hour=19)
 RUN_GAP = timedelta(minutes=5)
 # A posted/empty shift is immutable: stock was received (or nothing was due).
@@ -50,6 +47,24 @@ def _iso(value: datetime | None) -> str | None:
     return _local(value).isoformat() if value is not None else None
 
 
+def local_date(value: datetime | None = None) -> date:
+    """Calendar date of ``value`` (default: now) in the plant timezone."""
+
+    return _local(value).date()
+
+
+def local_day_window(first: date, last: date | None = None) -> tuple[datetime, datetime]:
+    """[first 00:00, day after ``last`` 00:00) in the plant timezone."""
+
+    zone = _default_timezone()
+    return (
+        timezone.make_aware(datetime.combine(first, time.min), zone),
+        timezone.make_aware(
+            datetime.combine((last or first) + timedelta(days=1), time.min), zone
+        ),
+    )
+
+
 def business_day_for(value: datetime | None = None) -> date:
     """Return the production day whose shift closes at 19:00 Almaty time."""
 
@@ -72,213 +87,102 @@ def _normalize_color(value: object) -> str:
     return color
 
 
-def _positive_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    try:
-        result = int(value)
-    except (OverflowError, TypeError, ValueError):
-        return 0
-    return max(0, result)
-
-
 @transaction.atomic
-def record_color_deltas(
+def record_color_event(
     camera: str,
-    color_deltas: dict[str, int] | None,
+    color: str | None,
     observed_at: datetime,
-    total_delta: int,
-    *,
-    ordered_color_event: bool = False,
-) -> list[AlwaysOnProductionRun]:
-    """Append one counter delta to contiguous per-colour production runs.
+) -> AlwaysOnProductionRun:
+    """Append one counted bag to the camera's contiguous colour run.
 
-    Durable journal events arrive in an authoritative order and contain one
-    detected colour.  For those events, a different colour ends every other
-    open run before the new run is recorded.  Legacy aggregate snapshots can
-    contain deltas for several colours without preserving their order, so they
-    deliberately keep the previous per-colour fallback behaviour.
+    Journal events arrive in authoritative order with one colour each, so a
+    camera has at most one open run: a different colour ends it before the
+    new run starts.  A bag without a usable colour counts as "unclassified".
     """
 
     camera = ai.normalize(camera)
     observed_at = _aware(observed_at)
     business_day = business_day_for(observed_at)
-    normalized: dict[str, int] = defaultdict(int)
-    for raw_color, raw_bags in (color_deltas or {}).items():
-        bags = _positive_int(raw_bags)
-        if not bags:
-            continue
-        try:
-            color = _normalize_color(raw_color)
-        except ValidationError:
-            continue
-        normalized[color] += bags
+    try:
+        color = _normalize_color(color)
+    except ValidationError:
+        color = "unclassified"
 
-    total = _positive_int(total_delta)
-    classified_total = sum(normalized.values())
-    if classified_total > total:
-        # A malformed/reset worker reply must never add more stock than the
-        # authoritative total delta. Keep the largest colour deltas first and
-        # surface the mismatch in logs instead of silently over-receiving.
-        log.warning(
-            "AI 24/7 colour delta exceeds total camera=%s colors=%s total=%s",
-            camera,
-            classified_total,
-            total,
-        )
-        remaining = total
-        bounded: dict[str, int] = {}
-        for color, bags in sorted(
-            normalized.items(), key=lambda item: (-item[1], item[0])
-        ):
-            accepted = min(bags, remaining)
-            if accepted:
-                bounded[color] = accepted
-                remaining -= accepted
-            if remaining <= 0:
-                break
-        normalized = defaultdict(int, bounded)
-    unclassified = total - sum(normalized.values())
-    if unclassified > 0:
-        normalized["unclassified"] += unclassified
-    if not normalized:
-        return []
-
-    open_run_rows = list(
+    open_runs = list(
         AlwaysOnProductionRun.objects.select_for_update().filter(
             camera=camera,
             ended_at__isnull=True,
         )
     )
-    open_runs = {row.color: row for row in open_run_rows}
-    if ordered_color_event:
-        if len(normalized) != 1:
-            raise ValueError("ordered color event must resolve to exactly one color")
-        event_color = next(iter(normalized))
-
-        # A backend deployed over the legacy per-colour implementation may
-        # inherit several open rows.  Only the most recently counted row was
-        # the real current colour; an older row with the incoming colour must
-        # never be revived across an intervening colour.
-        current_row = max(
-            open_run_rows,
-            key=lambda row: (row.last_counted_at, row.pk),
-            default=None,
-        )
-        for row in open_run_rows:
-            if row == current_row:
-                continue
+    # Only the most recently counted run is the current colour; any other
+    # open row must never be revived across an intervening colour.
+    current = max(
+        open_runs, key=lambda row: (row.last_counted_at, row.pk), default=None
+    )
+    for row in open_runs:
+        if row is not current or row.color != color:
             row.ended_at = row.last_counted_at
             row.save(update_fields=["ended_at", "updated_at"])
-            open_runs.pop(row.color, None)
-        if current_row is not None and current_row.color != event_color:
-            current_row.ended_at = current_row.last_counted_at
-            current_row.save(update_fields=["ended_at", "updated_at"])
-            open_runs.pop(current_row.color, None)
+    row = current if current is not None and current.color == color else None
 
-    touched: list[AlwaysOnProductionRun] = []
-    for color in sorted(normalized):
-        bags = normalized[color]
-        row = open_runs.get(color)
-        if row is not None:
-            elapsed = observed_at - row.last_counted_at
-            must_reopen = (
-                row.business_day != business_day
-                # Warehouse shifts span midnight, but analytics bars do not.
-                # Split here so each run and its bag count belongs to exactly
-                # one local calendar day while both halves retain the same
-                # 19:00-based business day for stock posting.
-                or _local(row.last_counted_at).date() != _local(observed_at).date()
-                or elapsed > RUN_GAP
-            )
-            if must_reopen:
-                row.ended_at = row.last_counted_at
-                row.save(update_fields=["ended_at", "updated_at"])
-                row = None
-            elif elapsed < timedelta(0):
-                # A delayed duplicate must not move a run backwards, but its
-                # already-authoritative counter delta must still be retained.
-                observed_for_row = row.last_counted_at
-            else:
-                observed_for_row = observed_at
-        else:
-            observed_for_row = observed_at
+    observed_for_row = observed_at
+    if row is not None:
+        elapsed = observed_at - row.last_counted_at
+        must_reopen = (
+            row.business_day != business_day
+            # Warehouse shifts span midnight, but analytics bars do not.
+            # Split here so each run and its bag count belongs to exactly
+            # one local calendar day while both halves retain the same
+            # 19:00-based business day for stock posting.
+            or _local(row.last_counted_at).date() != _local(observed_at).date()
+            or elapsed > RUN_GAP
+        )
+        if must_reopen:
+            row.ended_at = row.last_counted_at
+            row.save(update_fields=["ended_at", "updated_at"])
+            row = None
+        elif elapsed < timedelta(0):
+            # A delayed duplicate must not move a run backwards, but its
+            # already-authoritative count must still be retained.
+            observed_for_row = row.last_counted_at
 
-        if row is None:
-            # The analytics cursor serializes normal calls for one camera.  The
-            # partial unique constraint is the final fence if an administrative
-            # or test caller invokes this service concurrently.
-            try:
-                with transaction.atomic():
-                    row = AlwaysOnProductionRun.objects.create(
-                        camera=camera,
-                        business_day=business_day,
-                        color=color,
-                        started_at=observed_at,
-                        last_counted_at=observed_at,
-                        model_bags=bags,
-                        is_approximate=color == "unclassified",
-                    )
-            except IntegrityError:
-                row = AlwaysOnProductionRun.objects.select_for_update().get(
-                    camera=camera,
-                    color=color,
-                    ended_at__isnull=True,
-                )
-                # The winner can only represent this same interval.  If it was
-                # closed across a boundary, retrying on the next poll is safer
-                # than ever merging two production days.
-                if row.business_day != business_day:
-                    raise
-                row.model_bags += bags
-                row.last_counted_at = max(row.last_counted_at, observed_at)
-                row.is_approximate = row.is_approximate or color == "unclassified"
-                row.save(
-                    update_fields=[
-                        "model_bags",
-                        "last_counted_at",
-                        "is_approximate",
-                        "updated_at",
-                    ]
-                )
-        else:
-            row.model_bags += bags
-            row.last_counted_at = observed_for_row
-            row.is_approximate = row.is_approximate or color == "unclassified"
-            row.save(
-                update_fields=[
-                    "model_bags",
-                    "last_counted_at",
-                    "is_approximate",
-                    "updated_at",
-                ]
-            )
-        touched.append(row)
-    return touched
+    if row is None:
+        # The caller owns the camera's AlwaysOnCounterCursor lock, which
+        # serializes these calls; the partial unique constraint on open
+        # runs is only the last fence and fails the whole page.
+        return AlwaysOnProductionRun.objects.create(
+            camera=camera,
+            business_day=business_day,
+            color=color,
+            started_at=observed_at,
+            last_counted_at=observed_at,
+            model_bags=1,
+            is_approximate=color == "unclassified",
+        )
+    row.model_bags += 1
+    row.last_counted_at = observed_for_row
+    row.is_approximate = row.is_approximate or color == "unclassified"
+    row.save(
+        update_fields=["model_bags", "last_counted_at", "is_approximate", "updated_at"]
+    )
+    return row
 
 
 @transaction.atomic
-def close_stale_runs(
-    now: datetime | None = None,
-    *,
-    reserved_ai247_only: bool = False,
-) -> int:
-    """Close runs after five quiet minutes and always at a shift boundary."""
+def close_stale_runs(now: datetime | None = None) -> int:
+    """Close AI 24/7 runs after five quiet minutes and at a shift boundary."""
 
     now = _aware(now)
     current_day = business_day_for(now)
     threshold = now - RUN_GAP
     rows_query = AlwaysOnProductionRun.objects.filter(
         ended_at__isnull=True,
+        camera__in=ContinuousCameraRole.objects.filter(
+            analytics_scope=ANALYTICS_SCOPE_AI247,
+        ).values("camera"),
     ).filter(~Q(business_day=current_day) | Q(last_counted_at__lt=threshold))
-    if reserved_ai247_only:
-        rows_query = rows_query.filter(
-            camera__in=ContinuousCameraRole.objects.filter(
-                analytics_scope=ANALYTICS_SCOPE_AI247,
-            ).values("camera")
-        )
-    # Never wait behind ingestion or invert its order when a legacy camera
-    # has several open colours. Busy rows are retried on the next worker tick.
+    # Never wait behind ingestion or invert its order. Busy rows are retried
+    # on the next worker tick.
     row_ids = list(
         rows_query.select_for_update(skip_locked=True).values_list("pk", flat=True)
     )
@@ -301,11 +205,8 @@ def _day_totals(camera: str, business_day: date) -> dict[str, dict]:
 
     ``detected`` is the camera's run ledger, ``resolved`` moves bags the camera
     left as ``unknown`` to the colour CRM resolved for them (neighbours, votes
-    or an operator), ``correction`` is the audited manual subtraction.
-    ``provisional`` is the part of ``resolved`` made by neighbour/vote
-    decisions, which can still change until posting: ``net - provisional`` is
-    what a correction may subtract without a later decision driving the
-    colour below zero.
+    or an operator), ``correction`` sums the historical audited manual
+    subtractions of the shift.
     """
 
     # color_resolution imports this module for shift boundaries.
@@ -347,7 +248,6 @@ def _day_totals(camera: str, business_day: date) -> dict[str, dict]:
         result[color] = {
             **counts,
             "net_bags": sum(counts.values()),
-            "provisional_bags": transfers.automatic.get(color, 0),
             "inferred": transfers.inferred.get(color, {}),
         }
     return result

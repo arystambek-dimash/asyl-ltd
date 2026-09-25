@@ -7,17 +7,19 @@ import { RequirePerm } from "@/components/require-perm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { DataGate } from "@/components/ui/data-state";
-import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { SearchInput } from "@/components/ui/search-input";
+import { DataGate, FormError } from "@/components/ui/data-state";
+import { StatCard } from "@/components/ui/stat-card";
+import { EmptyRow, Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { formatDateTime, currencySymbol } from "@/lib/utils";
 import type { ClientPriceSheet } from "@/lib/types";
-import { ArrowLeft, CheckCircle2, Save, Search, Tags } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Save, Tags } from "lucide-react";
 
 function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { data, loading, error: loadError, reload } = useApi<ClientPriceSheet>(`/clients/${id}/prices/`);
+  const { data, loading, error: loadError, reload, setData } = useApi<ClientPriceSheet>(`/clients/${id}/prices/`);
   const [values, setValues] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -82,15 +84,15 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
     setError("");
     setSaved(false);
     try {
-      await api.put(`/clients/${id}/prices/`, {
+      // Ответ PUT — лист целиком: применяем его, а не перечитываем.
+      const res = await api.put<ClientPriceSheet>(`/clients/${id}/prices/`, {
         prices: priceRows.map((row) => ({
           product: row.product,
           currency: row.currency,
           price: values[`${row.product}:${row.currency}`]?.trim() || null,
         })),
       });
-      await reload();
-      setDirty(false);
+      setData(res.data);
       setSaved(true);
     } catch (e) {
       setError(apiError(e));
@@ -124,26 +126,17 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:max-w-lg">
-        <Card className="p-4">
-          <div className="text-xs text-[var(--muted-foreground)]">Закреплено валютных цен</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums">{assigned}</div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-xs text-[var(--muted-foreground)]">Всего товаров</div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums">{productsTotal}</div>
-        </Card>
+        <StatCard label="Закреплено валютных цен" value={assigned} />
+        <StatCard label="Всего товаров" value={productsTotal} />
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="relative w-full sm:w-80">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input
-            className="pl-9"
-            placeholder="Найти товар"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
+        <SearchInput
+          wrapperClassName="w-full sm:w-80"
+          placeholder="Найти товар"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
         {saved && (
           <span className="flex items-center gap-1.5 text-sm text-[var(--success)]">
             <CheckCircle2 className="size-4" /> Прайс закреплён
@@ -151,11 +144,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
         )}
       </div>
 
-      {error && (
-        <p className="mb-4 rounded-lg border border-[var(--destructive)]/20 bg-[var(--destructive)]/8 p-3 text-sm text-[var(--destructive)]">
-          {error}
-        </p>
-      )}
+      <FormError message={error} className="mb-4" />
 
       <Card>
         <CardContent className="p-0">
@@ -203,13 +192,7 @@ function ClientPricesPageInner({ params }: { params: Promise<{ id: string }> }) 
                   </TR>
                 );
               })}
-              {filtered.length === 0 && (
-                <TR>
-                  <TD colSpan={3} className="py-12 text-center text-[var(--muted-foreground)]">
-                    Товары не найдены
-                  </TD>
-                </TR>
-              )}
+              {filtered.length === 0 && <EmptyRow colSpan={3}>Товары не найдены</EmptyRow>}
             </TBody>
           </Table>
         </CardContent>

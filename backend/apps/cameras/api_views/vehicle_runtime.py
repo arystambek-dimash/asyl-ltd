@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from numbers import Real
 from typing import ClassVar
 
@@ -12,10 +13,11 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import IsSuperUser, PermAPIViewMixin
-from apps.grain.passage_scale_automation import scale_automation_runtime
+from apps.common.permissions import SUPERUSER_ONLY, PermAPIViewMixin
+from apps.common.viewsets import NoStoreMixin
 
 from .. import ai
+from .responses import error_response
 
 _SOURCES = frozenset({"main", "sub"})
 _MONITOR_COUNTERS = (
@@ -24,15 +26,6 @@ _MONITOR_COUNTERS = (
     "stationary_admissions",
     "ocr_attempts",
     "confirmed_events",
-    "durable_duplicates",
-    "consecutive_errors",
-)
-_MONITOR_TIMINGS = ("inference_avg_ms", "ocr_avg_ms")
-_OPTIONAL_TEXT = (
-    "started_at",
-    "last_frame_at",
-    "last_inference_at",
-    "last_confirmed_at",
 )
 
 
@@ -72,33 +65,6 @@ def _non_negative_int(value, field: str) -> int:
     return value
 
 
-def _non_negative_number(value, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise VehicleRuntimeContractError(f"{field} must be a non-negative number")
-    number = float(value)
-    if not math.isfinite(number) or number < 0:
-        raise VehicleRuntimeContractError(
-            f"{field} must be a finite non-negative number"
-        )
-    return number
-
-
-def _project_stop_gate(value) -> dict:
-    gate = _mapping(value, "monitor.stop_gate")
-    return {
-        "dwell_seconds": _non_negative_number(
-            gate.get("dwell_seconds"), "stop_gate.dwell_seconds"
-        ),
-        "min_frames": _non_negative_int(gate.get("min_frames"), "stop_gate.min_frames"),
-        "max_movement_ratio": _non_negative_number(
-            gate.get("max_movement_ratio"), "stop_gate.max_movement_ratio"
-        ),
-        "exit_grace_seconds": _non_negative_number(
-            gate.get("exit_grace_seconds"), "stop_gate.exit_grace_seconds"
-        ),
-    }
-
-
 def _project_monitor(value, camera: str) -> dict:
     monitor = _mapping(value, "monitor")
     if monitor.get("cam") != camera:
@@ -115,18 +81,13 @@ def _project_monitor(value, camera: str) -> dict:
             monitor.get("consecutive_errors"), "monitor.consecutive_errors"
         )
         > 0,
-        "stop_gate": _project_stop_gate(monitor.get("stop_gate")),
     }
-    for field in _OPTIONAL_TEXT:
-        result[field] = _text_or_none(monitor.get(field), f"monitor.{field}")
     for field in _MONITOR_COUNTERS:
         result[field] = _non_negative_int(monitor.get(field), f"monitor.{field}")
-    for field in _MONITOR_TIMINGS:
-        result[field] = _non_negative_number(monitor.get(field), f"monitor.{field}")
     return result
 
 
-def _project_roi(value, camera: str) -> dict:
+def project_roi(value, camera: str) -> dict:
     roi = _mapping(value, "roi")
     if roi.get("cam") != camera:
         raise VehicleRuntimeContractError("roi.cam does not match the requested camera")
@@ -238,7 +199,7 @@ def project_vehicle_roi_save_response(
     applied = _boolean(payload.get("applied_to_monitor"), "applied_to_monitor")
     if not saved:
         raise VehicleRuntimeContractError("saved must be true")
-    roi = _project_roi(payload, camera)
+    roi = project_roi(payload, camera)
     if not roi["configured"]:
         raise VehicleRuntimeContractError("saved ROI must be configured")
     if roi["source"] != expected_source:
@@ -253,14 +214,8 @@ def project_vehicle_roi_save_response(
 
 
 def _project_on_demand(value) -> dict:
-    """Project the weight-triggered capability added by newer camera PCs.
+    """Project the weight-triggered plate recognition capability."""
 
-    Missing data is treated as disabled so a rolling deployment can show a
-    useful diagnostic while the camera PC is still on the previous release.
-    """
-
-    if value is None:
-        return {"enabled": False, "cameras": []}
     on_demand = _mapping(value, "on_demand")
     enabled = _boolean(on_demand.get("enabled"), "on_demand.enabled")
     cameras = on_demand.get("cameras")
@@ -272,6 +227,24 @@ def _project_on_demand(value) -> dict:
         "enabled": enabled,
         "cameras": list(cameras),
     }
+
+
+def weight_first_stream() -> tuple[str, str] | None:
+    """Камера и поток весового распознавания номеров; ``None`` — режим выключен.
+
+    Весовой режим включают ручной weight-first и автовесы вывоза. Тогда ROI этой
+    камеры, её поток в браузере и доступ к нему идут по
+    ``VEHICLE_PLATE_WEIGHT_FIRST_SOURCE``.
+    """
+    if not (
+        settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
+        or settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED
+    ):
+        return None
+    return (
+        settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA,
+        settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE,
+    )
 
 
 def _browser_stream(camera: str, source: str) -> str:
@@ -306,42 +279,13 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
     on_demand = _project_on_demand(runtime.get("on_demand"))
     on_demand_camera_configured = camera in on_demand["cameras"]
     weight_first_enabled = bool(settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED)
-    scale_automation = scale_automation_runtime()
-    on_demand_required = weight_first_enabled or scale_automation["enabled"]
-    projected_roi = _project_roi(roi, camera)
+    projected_roi = project_roi(roi, camera)
+    stream = weight_first_stream()
     source = (
-        _source(
-            settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE,
-            "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE",
-        )
-        if on_demand_required
+        _source(stream[1], "VEHICLE_PLATE_WEIGHT_FIRST_SOURCE")
+        if stream is not None and stream[0] == camera
         else automation_source
     )
-
-    if not enabled:
-        diagnostic = "model_disabled"
-    elif not ready:
-        diagnostic = "model_not_ready"
-    elif on_demand_required and not on_demand["enabled"]:
-        diagnostic = "on_demand_disabled"
-    elif on_demand_required and not on_demand_camera_configured:
-        diagnostic = "on_demand_camera_not_configured"
-    elif on_demand_required and (
-        not projected_roi["configured"] or not projected_roi["enabled"]
-    ):
-        diagnostic = "on_demand_roi_not_ready"
-    elif on_demand_required and projected_roi["source"] != source:
-        diagnostic = "on_demand_roi_source_mismatch"
-    elif on_demand_required:
-        diagnostic = "on_demand_ready"
-    elif not automation_enabled:
-        diagnostic = "automation_disabled"
-    elif not camera_configured:
-        diagnostic = "camera_not_configured"
-    elif monitor is None:
-        diagnostic = "monitor_missing"
-    else:
-        diagnostic = monitor["status"]
 
     return {
         "camera": camera,
@@ -350,55 +294,147 @@ def project_vehicle_runtime(camera: str, info, roi) -> dict:
         "automation_enabled": automation_enabled,
         "camera_configured": camera_configured,
         "weight_first_enabled": weight_first_enabled,
-        "scale_automation": scale_automation,
         "on_demand_enabled": on_demand["enabled"],
         "on_demand_camera_configured": on_demand_camera_configured,
         "source": source,
         "stream": _browser_stream(camera, source),
         "server_push_configured": server_push_configured,
-        "diagnostic": diagnostic,
         "monitor": monitor,
         "roi": projected_roi,
     }
 
 
-def _error_response(detail: str, code: str, response_status: int) -> Response:
-    response = Response({"detail": detail, "code": code}, status=response_status)
-    response["Cache-Control"] = "no-store"
-    return response
+@dataclass(frozen=True)
+class PolygonEditor:
+    """Ключ полигона в ответе и тексты одного редактора зоны на ПК камер."""
+
+    key: str
+    invalid: str
+    invalid_code: str
+    rejected: str
+    malformed: str
+    pending: str
+    pending_code: str
 
 
-class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
+VEHICLE_ROI_EDITOR = PolygonEditor(
+    key="roi",
+    invalid="Некорректная область распознавания",
+    invalid_code="invalid_vehicle_roi",
+    rejected="AI-сервис не сохранил область распознавания",
+    malformed="AI-сервис вернул некорректный результат сохранения ROI",
+    pending="ROI сохранён, но монитор пока не применил обновление",
+    pending_code="roi_saved_refresh_pending",
+)
+
+
+def _polygon_rejected(editor: PolygonEditor, upstream_status: int) -> Response:
+    response_status = (
+        upstream_status if upstream_status in (400, 404) else status.HTTP_502_BAD_GATEWAY
+    )
+    detail = {
+        400: editor.invalid,
+        404: "Камера не найдена в AI-сервисе",
+    }.get(response_status, editor.rejected)
+    return error_response(detail, "ai_error", response_status)
+
+
+def save_polygon(
+    cam: str,
+    body,
+    *,
+    editor: PolygonEditor,
+    save: Callable[[str, dict], tuple[int, dict]],
+    expected_source: Callable[[str], str],
+) -> Response:
+    """Суперпользовательский PUT полигона: проверить тело, сохранить на ПК камер.
+
+    200 и 503 с ``saved=true`` отдают сохранённый полигон: 503 значит, что
+    монитор ещё не применил обновление, а откатывать сохранённое нельзя.
+    """
+    if not ai.enabled():
+        return error_response(
+            "AI-сервис камер не настроен",
+            "ai_disabled",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    try:
+        camera = ai.camera_id(cam)
+        source = expected_source(camera)
+        update = project_vehicle_roi_update(body, expected_source=source)
+    except VehicleRuntimeContractError:
+        return error_response(
+            editor.invalid, editor.invalid_code, status.HTTP_400_BAD_REQUEST
+        )
+    except ai.AiError:
+        return error_response(
+            "Неизвестная камера", "ai_error", status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        upstream_status, upstream_payload = save(camera, update)
+    except ai.AiUnavailable:
+        return error_response(
+            "AI-сервис камер недоступен",
+            "ai_unavailable",
+            status.HTTP_502_BAD_GATEWAY,
+        )
+    except ai.AiError as exc:
+        # Тело ошибки ПК камер не JSON: решает только код ответа.
+        return _polygon_rejected(editor, exc.status)
+    if upstream_status not in (
+        status.HTTP_200_OK,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    ):
+        return _polygon_rejected(editor, upstream_status)
+    try:
+        saved = project_vehicle_roi_save_response(
+            camera,
+            upstream_payload,
+            expected_source=source,
+        )
+    except VehicleRuntimeContractError:
+        return error_response(
+            editor.malformed, "ai_invalid_response", status.HTTP_502_BAD_GATEWAY
+        )
+    payload = {
+        "saved": True,
+        "applied_to_monitor": saved["applied_to_monitor"],
+        editor.key: saved["roi"],
+    }
+    if upstream_status == status.HTTP_503_SERVICE_UNAVAILABLE:
+        payload.update({"detail": editor.pending, "code": editor.pending_code})
+    return Response(payload, status=upstream_status)
+
+
+def _vehicle_roi_source(camera: str) -> str:
+    stream = weight_first_stream()
+    return stream[1] if stream is not None and stream[0] == camera else "main"
+
+
+class VehiclePlateRuntimeView(NoStoreMixin, PermAPIViewMixin, APIView):
     """Live diagnostics plus a superuser-only canonical ROI update."""
 
-    required_perms: ClassVar[dict[str, str]] = {"get": "grain.view"}
+    required_perms: ClassVar[dict[str, str]] = {
+        "get": "grain.view",
+        "put": SUPERUSER_ONLY,
+    }
 
-    def get_permissions(self):
-        if self.request.method.lower() == "put":
-            return [IsSuperUser()]
-        return super().get_permissions()
-
-    def finalize_response(self, request, response, *args, **kwargs):
-        response = super().finalize_response(request, response, *args, **kwargs)
-        response["Cache-Control"] = "no-store"
-        return response
-
-    def get(self, request, cam: str | None = None):
+    def get(self, request):
         if not ai.enabled():
-            return _error_response(
+            return error_response(
                 "AI-сервис камер не настроен",
                 "ai_disabled",
                 status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         try:
-            camera = ai.camera_id(cam or settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA)
+            camera = ai.camera_id(settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA)
             payload = project_vehicle_runtime(
                 camera,
                 ai.vehicle_number_info(),
                 ai.vehicle_roi(camera),
             )
         except ai.AiUnavailable:
-            return _error_response(
+            return error_response(
                 "AI-сервис камер недоступен",
                 "ai_unavailable",
                 status.HTTP_502_BAD_GATEWAY,
@@ -414,99 +450,20 @@ class VehiclePlateRuntimeView(PermAPIViewMixin, APIView):
                 404: "Камера не найдена в AI-сервисе",
                 503: "Модель номеров временно недоступна",
             }.get(response_status, "AI-сервис вернул ошибку")
-            return _error_response(detail, "ai_error", response_status)
+            return error_response(detail, "ai_error", response_status)
         except VehicleRuntimeContractError:
-            return _error_response(
+            return error_response(
                 "AI-сервис вернул некорректный статус модели",
                 "ai_invalid_response",
                 status.HTTP_502_BAD_GATEWAY,
             )
-        response = Response(payload)
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(payload)
 
     def put(self, request, cam: str):
-        if not ai.enabled():
-            return _error_response(
-                "AI-сервис камер не настроен",
-                "ai_disabled",
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        try:
-            camera = ai.camera_id(cam)
-            expected_source = (
-                settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE
-                if (
-                    settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
-                    or settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED
-                )
-                and camera == settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA
-                else "main"
-            )
-            update = project_vehicle_roi_update(
-                request.data,
-                expected_source=expected_source,
-            )
-        except VehicleRuntimeContractError:
-            return _error_response(
-                "Некорректная область распознавания",
-                "invalid_vehicle_roi",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        except ai.AiError:
-            return _error_response(
-                "Неизвестная камера",
-                "ai_error",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            upstream_status, upstream_payload = ai.save_vehicle_roi(camera, update)
-            if upstream_status in (
-                status.HTTP_200_OK,
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-            ):
-                try:
-                    payload = project_vehicle_roi_save_response(
-                        camera,
-                        upstream_payload,
-                        expected_source=expected_source,
-                    )
-                except VehicleRuntimeContractError:
-                    return _error_response(
-                        "AI-сервис вернул некорректный результат сохранения ROI",
-                        "ai_invalid_response",
-                        status.HTTP_502_BAD_GATEWAY,
-                    )
-                if upstream_status == status.HTTP_503_SERVICE_UNAVAILABLE:
-                    payload.update(
-                        {
-                            "detail": "ROI сохранён, но монитор пока не применил обновление",
-                            "code": "roi_saved_refresh_pending",
-                        }
-                    )
-                return Response(payload, status=upstream_status)
-            response_status = (
-                upstream_status
-                if upstream_status in (400, 404)
-                else status.HTTP_502_BAD_GATEWAY
-            )
-            detail = {
-                400: "Некорректная область распознавания",
-                404: "Камера не найдена в AI-сервисе",
-            }.get(response_status, "AI-сервис не сохранил область распознавания")
-            return _error_response(detail, "ai_error", response_status)
-        except ai.AiUnavailable:
-            return _error_response(
-                "AI-сервис камер недоступен",
-                "ai_unavailable",
-                status.HTTP_502_BAD_GATEWAY,
-            )
-        except ai.AiError as exc:
-            response_status = (
-                exc.status if exc.status in (400, 404) else status.HTTP_502_BAD_GATEWAY
-            )
-            detail = {
-                400: "Неизвестная камера",
-                404: "Камера не найдена в AI-сервисе",
-            }.get(response_status, "AI-сервис не сохранил область распознавания")
-            return _error_response(detail, "ai_error", response_status)
+        return save_polygon(
+            cam,
+            request.data,
+            editor=VEHICLE_ROI_EDITOR,
+            save=ai.save_vehicle_roi,
+            expected_source=_vehicle_roi_source,
+        )

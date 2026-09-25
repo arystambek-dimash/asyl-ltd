@@ -13,25 +13,17 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem, Payment
-from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def departments():
-    return (
-        Department.objects.create(code="mill", name="Мельница"),
-        Department.objects.create(code="city", name="Нью-Сити"),
-    )
-
-
-@pytest.fixture
 def cashier(user_with_perms, departments):
-    user = user_with_perms("mill-cashier", codes=["payments.confirm", "payments.create"])
-    user.employee.sales_department = departments[0]
-    user.employee.save(update_fields=["sales_department"])
-    return user
+    return user_with_perms(
+        "mill-cashier",
+        codes=["payments.confirm", "payments.create"],
+        department=departments[0],
+    )
 
 
 def _client(department, name="Клиент"):

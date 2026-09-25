@@ -1,6 +1,5 @@
 import uuid
 from datetime import timedelta
-from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -8,15 +7,15 @@ from django.db import IntegrityError
 from django.utils import timezone
 
 from apps.cameras.models import VehiclePlateEvent
+from apps.cameras.tests.vehicle_plate_fakes import WEBHOOK_TOKEN, payload, post_event
 from apps.grain import statuses as st
 from apps.grain.models import AutomaticPassageCapture, Wagon
+from apps.grain.tests.factories import vehicle_plate_event
 
 pytestmark = pytest.mark.django_db
 
-CANDIDATES_URL = "/api/grain/wagons/vehicle-plate-candidates/"
-PASSAGE_URL = "/api/grain/wagons/passage/"
-WEBHOOK_URL = "/api/integrations/vehicle-plate-events"
-WEBHOOK_TOKEN = "grain-vehicle-plate-test-token-long-enough"
+CANDIDATES_URL = "/api/grain/passages/vehicle-plate-candidates/"
+PASSAGE_URL = "/api/grain/passages/"
 
 
 @pytest.fixture
@@ -25,53 +24,6 @@ def gate_operator(user_with_perms):
         "vehicle-plate-gate",
         codes=["grain.view", "grain.arrive"],
     )
-
-
-def create_event(
-    *,
-    detected_at=None,
-    received_at=None,
-    camera="cam1",
-    source="main",
-    processing_status=VehiclePlateEvent.RECEIVED,
-    vehicle_number="123ABC02",
-):
-    now = timezone.now()
-    event = VehiclePlateEvent.objects.create(
-        event_id=uuid.uuid4(),
-        vehicle_number=vehicle_number,
-        camera=camera,
-        source=source,
-        detected_at=detected_at or now - timedelta(seconds=30),
-        stationary_seconds=Decimal("3.400"),
-        confirmation_votes=3,
-        detector_confidence=Decimal("0.9100"),
-        ocr_confidence=Decimal("0.9600"),
-        payload_json={"models": {"detector": "metadata-only"}},
-        processing_status=processing_status,
-    )
-    if received_at is not None:
-        VehiclePlateEvent.objects.filter(pk=event.pk).update(received_at=received_at)
-        event.refresh_from_db()
-    return event
-
-
-def webhook_payload(*, event_id, detected_at):
-    return {
-        "schema_version": 1,
-        "event_id": str(event_id),
-        "event_type": "vehicle_plate_detected",
-        "detected_at": detected_at.isoformat(),
-        "vehicle_number": "123ABC02",
-        "camera": "cam1",
-        "source": "main",
-        "stationary_seconds": 3.4,
-        "confirmation": {
-            "votes": 3,
-            "detector_confidence": 0.91,
-            "ocr_confidence": 0.96,
-        },
-    }
 
 
 def test_candidates_require_only_grain_arrive_permission(
@@ -88,7 +40,7 @@ def test_candidates_require_only_grain_arrive_permission(
 
 
 def test_candidates_expose_only_minimal_fresh_metadata(auth_client, gate_operator):
-    event = create_event()
+    event = vehicle_plate_event()
 
     response = auth_client(gate_operator).get(CANDIDATES_URL)
 
@@ -118,37 +70,37 @@ def test_candidates_require_both_timestamps_fresh_and_fixed_lane(
     gate_operator,
 ):
     now = timezone.now()
-    fresh = create_event(
+    fresh = vehicle_plate_event(
         detected_at=now - timedelta(seconds=20),
         received_at=now - timedelta(seconds=10),
     )
-    create_event(
+    vehicle_plate_event(
         detected_at=now - timedelta(minutes=6),
         received_at=now - timedelta(seconds=10),
         vehicle_number="111AAA01",
     )
-    create_event(
+    vehicle_plate_event(
         detected_at=now - timedelta(seconds=20),
         received_at=now - timedelta(minutes=6),
         vehicle_number="222BBB02",
     )
-    create_event(
+    vehicle_plate_event(
         detected_at=now + timedelta(minutes=2),
         received_at=now - timedelta(seconds=10),
         vehicle_number="333CCC03",
     )
-    create_event(
+    vehicle_plate_event(
         detected_at=now - timedelta(seconds=20),
         received_at=now + timedelta(minutes=2),
         vehicle_number="444DDD04",
     )
-    create_event(camera="cam2", vehicle_number="555EEE05")
-    create_event(source="sub", vehicle_number="666FFF06")
-    create_event(
+    vehicle_plate_event(camera="cam2", vehicle_number="555EEE05")
+    vehicle_plate_event(source="sub", vehicle_number="666FFF06")
+    vehicle_plate_event(
         processing_status=VehiclePlateEvent.PROCESSED,
         vehicle_number="777GGG07",
     )
-    linked = create_event(vehicle_number="888HHH08")
+    linked = vehicle_plate_event(vehicle_number="888HHH08")
     Wagon.objects.create(
         number=linked.vehicle_number,
         direction=Wagon.PASSAGE,
@@ -166,7 +118,7 @@ def test_automatic_scale_event_is_not_visible_or_manually_claimable(
     auth_client,
     gate_operator,
 ):
-    event = create_event()
+    event = vehicle_plate_event()
     AutomaticPassageCapture.objects.create(
         idempotency_key=event.event_id,
         camera="cam1",
@@ -200,7 +152,7 @@ def test_candidates_are_newest_first_and_limited_to_five(
 ):
     now = timezone.now()
     events = [
-        create_event(
+        vehicle_plate_event(
             detected_at=now - timedelta(seconds=index + 1),
             received_at=now - timedelta(seconds=1),
             vehicle_number=f"{index:03d}ABC02",
@@ -227,14 +179,7 @@ def test_webhook_candidate_passage_and_list_share_server_derived_plate(
     event_id = uuid.uuid4()
     detected_at = timezone.now() - timedelta(seconds=10)
 
-    webhook = api_client.post(
-        WEBHOOK_URL,
-        webhook_payload(event_id=event_id, detected_at=detected_at),
-        format="json",
-        secure=True,
-        HTTP_AUTHORIZATION=f"Bearer {WEBHOOK_TOKEN}",
-        HTTP_IDEMPOTENCY_KEY=str(event_id),
-    )
+    webhook = post_event(api_client, payload(event_id=str(event_id), detected_at=detected_at.isoformat()))
     assert webhook.status_code == 201, webhook.data
 
     client = auth_client(gate_operator)
@@ -276,7 +221,7 @@ def test_passage_rejects_an_event_that_was_already_claimed(
     auth_client,
     gate_operator,
 ):
-    event = create_event()
+    event = vehicle_plate_event()
     client = auth_client(gate_operator)
     body = {
         "vehicle_plate_event_id": str(event.event_id),
@@ -296,7 +241,7 @@ def test_passage_turns_a_unique_claim_race_into_a_safe_rejection(
     auth_client,
     gate_operator,
 ):
-    event = create_event()
+    event = vehicle_plate_event()
 
     with patch.object(
         Wagon.objects,
@@ -319,7 +264,7 @@ def test_passage_turns_a_unique_claim_race_into_a_safe_rejection(
     assert not Wagon.objects.filter(vehicle_plate_event=event).exists()
 
 
-def test_manual_passage_stays_compatible_and_ignores_source_spoofing(
+def test_manual_passage_ignores_source_spoofing(
     auth_client,
     gate_operator,
 ):
@@ -348,7 +293,7 @@ def test_passage_rejects_a_stale_event_even_when_uuid_is_known(
     gate_operator,
 ):
     now = timezone.now()
-    event = create_event(
+    event = vehicle_plate_event(
         detected_at=now - timedelta(minutes=6),
         received_at=now - timedelta(seconds=10),
     )

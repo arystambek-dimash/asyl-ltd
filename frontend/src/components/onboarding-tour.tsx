@@ -2,20 +2,14 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { can } from "@/lib/can";
+import { canSeeStaffNav } from "@/components/layout/sidebar";
+import { focusedElement, restoreFocus, trapTab } from "@/lib/focus";
+import { readStoredChoice, storeChoice } from "@/lib/stored-choice";
 import { cn } from "@/lib/utils";
 import type { Me } from "@/lib/types";
 
 const TOUR_DONE_KEY = "asyl_tour_v1";
 export const TOUR_START_EVENT = "asyl:start-tour";
-const FOCUSABLE_SELECTOR = [
-  "button:not(:disabled)",
-  "a[href]",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  "textarea:not(:disabled)",
-  '[tabindex]:not([tabindex="-1"])',
-].join(",");
 
 interface TourStep {
   /** значение data-tour подсвечиваемого элемента; без него — карточка по центру */
@@ -24,7 +18,7 @@ interface TourStep {
   text: string;
 }
 
-// Шаги собираются под права пользователя — каждый видит только свои разделы.
+// Шаги собираются по видимым пунктам меню — каждый видит только свои разделы.
 function buildSteps(me: Me): TourStep[] {
   const steps: TourStep[] = [
     {
@@ -33,25 +27,25 @@ function buildSteps(me: Me): TourStep[] {
       text: "Слева — разделы системы. На телефоне меню открывается кнопкой ☰ в левом верхнем углу.",
     },
   ];
-  if (can(me, "orders.view"))
+  if (canSeeStaffNav(me, "/orders"))
     steps.push({
       target: "nav:/orders",
       title: "Заказы",
-      text: "Все заказы клиентов: создание, редактирование до начала загрузки, статусы и оплата. Карандаш в строке — быстрое изменение.",
+      text: "Все заказы клиентов: создание, редактирование до начала загрузки, статусы и оплата. Новые заявки клиентов — во вкладке «Заявки», действия с заказом — в меню «⋮» строки.",
     });
-  if (can(me, "payments.confirm") || can(me, "reports.view"))
+  if (canSeeStaffNav(me, "/accounting"))
     steps.push({
       target: "nav:/accounting",
       title: "Касса",
-      text: "Подтверждение заявок и оплат — деньги учитываются после ручной проверки. Вкладка «Долги»: кто и сколько должен, с окнами оплат по расписанию.",
+      text: "Вкладка «Оплаты» — подтверждение оплат: деньги учитываются после ручной проверки. «Долги» — кто и сколько должен, «Транзакции» — все платежи, возвраты и чеки.",
     });
-  if (can(me, "warehouse.view"))
+  if (canSeeStaffNav(me, "/warehouse"))
     steps.push({
       target: "nav:/warehouse",
       title: "Склад",
       text: "Остатки готовой продукции по сортам. Доступны приёмка и списание с предпросмотром «сейчас → станет».",
     });
-  if (can(me, "silos.view"))
+  if (canSeeStaffNav(me, "/warehouse/silos"))
     steps.push({
       target: "nav:/warehouse/silos",
       title: "Силосы",
@@ -60,7 +54,7 @@ function buildSteps(me: Me): TourStep[] {
   steps.push({
     target: "profile",
     title: "Профиль",
-    text: "Здесь смена темы и выход. Обучение можно пройти снова — кнопка «?» рядом с темой.",
+    text: "Здесь смена темы и выход. Обучение можно пройти снова — кнопка «?» рядом с профилем.",
   });
   return steps;
 }
@@ -88,13 +82,12 @@ export function OnboardingTour({ me }: { me: Me }) {
   const steps = useMemo(() => buildSteps(me), [me]);
   const overlayRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
 
   const finish = useCallback(() => {
     setActive(false);
-    localStorage.setItem(TOUR_DONE_KEY, "1");
+    storeChoice(TOUR_DONE_KEY, "1");
   }, []);
 
   // Автоматически — ровно один раз (первый вход): флаг ставится сразу при
@@ -104,19 +97,17 @@ export function OnboardingTour({ me }: { me: Me }) {
       setStep(0);
       setActive(true);
     };
-    if (!localStorage.getItem(TOUR_DONE_KEY)) {
-      const t = setTimeout(() => {
-        localStorage.setItem(TOUR_DONE_KEY, "1");
-        start();
-      }, 900);
-      window.addEventListener(TOUR_START_EVENT, start);
-      return () => {
-        clearTimeout(t);
-        window.removeEventListener(TOUR_START_EVENT, start);
-      };
-    }
+    const autoStart = readStoredChoice(TOUR_DONE_KEY)
+      ? undefined
+      : setTimeout(() => {
+          storeChoice(TOUR_DONE_KEY, "1");
+          start();
+        }, 900);
     window.addEventListener(TOUR_START_EVENT, start);
-    return () => window.removeEventListener(TOUR_START_EVENT, start);
+    return () => {
+      clearTimeout(autoStart);
+      window.removeEventListener(TOUR_START_EVENT, start);
+    };
   }, []);
 
   // Пересчёт позиции подсветки на каждом шаге, при ресайзе; Esc — выход.
@@ -145,7 +136,7 @@ export function OnboardingTour({ me }: { me: Me }) {
   useEffect(() => {
     if (!active) return;
 
-    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const restoreTarget = focusedElement();
     const overlay = overlayRef.current;
     const siblings = overlay
       ? Array.from(overlay.parentElement?.children ?? []).filter(
@@ -170,48 +161,23 @@ export function OnboardingTour({ me }: { me: Me }) {
         if (ariaHidden === null) element.removeAttribute("aria-hidden");
         else element.setAttribute("aria-hidden", ariaHidden);
       }
-
-      const restoreTarget = restoreFocusRef.current;
-      restoreFocusRef.current = null;
-      if (restoreTarget?.isConnected && !restoreTarget.matches(":disabled") && !restoreTarget.closest("[inert]")) {
-        restoreTarget.focus();
-      }
+      restoreFocus(restoreTarget);
     };
   }, [active]);
 
   function trapFocus(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const dialog = dialogRef.current;
-    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-      (element) => element.tabIndex >= 0 && !element.hidden && !element.closest("[inert]"),
-    );
-    if (focusable.length === 0) {
-      event.preventDefault();
-      dialog.focus();
-      return;
-    }
-
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const focused = document.activeElement;
-    if (event.shiftKey && (focused === first || focused === dialog || !dialog.contains(focused))) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && (focused === last || !dialog.contains(focused))) {
-      event.preventDefault();
-      first.focus();
-    }
+    if (dialogRef.current) trapTab(event, dialogRef.current);
   }
 
-  if (!active || steps.length === 0) return null;
+  if (!active) return null;
   const current = steps[step];
   const last = step === steps.length - 1;
 
   // Позиция карточки: снизу → сверху → справа от элемента; координаты всегда
   // зажимаются в видимую область, чтобы карточка не «улетала» за экран
   // (например, у сайдбара высота во весь экран — «снизу» не существует).
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
   const cardWidth = Math.min(340, vw - 24);
   const cardH = 220; // оценка высоты карточки для расчёта, ниже всё зажимается
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));

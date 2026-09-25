@@ -7,7 +7,15 @@ import { useSyncExternalStore } from "react";
  */
 const state = { url: "/", stack: ["/"], listeners: new Set<() => void>() };
 
-export const routerCalls = { push: [] as string[], replace: [] as string[], back: 0 };
+type NavigateOptions = { scroll?: boolean };
+
+/** Адреса push/replace по порядку; `options` — их вторые аргументы в том же порядке. */
+export const routerCalls = {
+  push: [] as string[],
+  replace: [] as string[],
+  options: [] as (NavigateOptions | undefined)[],
+  back: 0,
+};
 
 function notify() {
   state.listeners.forEach((listener) => listener());
@@ -23,6 +31,7 @@ export function resetNavigation(url = "/") {
   state.stack = [url];
   routerCalls.push = [];
   routerCalls.replace = [];
+  routerCalls.options = [];
   routerCalls.back = 0;
   notify();
 }
@@ -33,14 +42,16 @@ export function currentUrl() {
 
 export function useRouter() {
   return {
-    push: (url: string) => {
+    push: (url: string, options?: NavigateOptions) => {
       routerCalls.push.push(url);
+      routerCalls.options.push(options);
       state.stack.push(url);
       state.url = url;
       notify();
     },
-    replace: (url: string) => {
+    replace: (url: string, options?: NavigateOptions) => {
       routerCalls.replace.push(url);
+      routerCalls.options.push(options);
       state.stack[state.stack.length - 1] = url;
       state.url = url;
       notify();

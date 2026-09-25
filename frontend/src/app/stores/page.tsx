@@ -8,13 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PhoneInput } from "@/components/ui/phone-input";
 import { Modal } from "@/components/ui/modal";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { ErrorAlert, FormError } from "@/components/ui/data-state";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
+import { Select } from "@/components/ui/select";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
+import { useConfirmAction } from "@/lib/use-confirm-action";
 import { LoadMore } from "@/components/ui/load-more";
 import { api, apiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -24,22 +25,14 @@ import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Store } from "@/lib/types";
-import { formatPaymentSchedule, validatePaymentSchedule } from "./schedule-validation";
+import { WEEKDAY_NAMES } from "@/lib/calendar-month";
+import { formatPaymentSchedule, normalizedScheduleDays, validatePaymentSchedule } from "@/lib/payment-schedule";
 
 const SCHEDULE_LABELS: Record<string, string> = {
   none: "Без расписания",
   monthly: "По числам месяца",
   weekly: "По дням недели",
 };
-const WEEKDAYS = [
-  { v: 1, label: "Пн" },
-  { v: 2, label: "Вт" },
-  { v: 3, label: "Ср" },
-  { v: 4, label: "Чт" },
-  { v: 5, label: "Пт" },
-  { v: 6, label: "Сб" },
-  { v: 7, label: "Вс" },
-];
 
 interface ClientPickerItem {
   id: number;
@@ -63,9 +56,7 @@ function StoreForm({
   const [phone, setPhone] = useState(editing?.phone ?? "");
   const [scheduleType, setScheduleType] = useState(editing?.payment_schedule_type ?? "none");
   const [days, setDays] = useState<number[]>(
-    editing?.payment_schedule_type === "weekly"
-      ? (editing.payment_days ?? []).filter((day) => Number.isInteger(day) && day >= 1 && day <= 7)
-      : [],
+    editing?.payment_schedule_type === "weekly" ? normalizedScheduleDays(editing) : [],
   );
   const [monthlyInput, setMonthlyInput] = useState(
     editing?.payment_schedule_type === "monthly" ? (editing.payment_days ?? []).join(", ") : "",
@@ -115,17 +106,13 @@ function StoreForm({
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="store-client">Клиент-владелец</Label>
-          <Select value={client} onValueChange={setClient}>
-            <SelectTrigger id="store-client">
-              <SelectValue placeholder="Выберите клиента" />
-            </SelectTrigger>
-            <SelectContent>
-              {clients.map((c) => (
-                <SelectItem key={c.id} value={String(c.id)}>
-                  {c.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
+          <Select id="store-client" value={client} onChange={(e) => setClient(e.target.value)}>
+            <option value="">Выберите клиента</option>
+            {clients.map((c) => (
+              <option key={c.id} value={String(c.id)}>
+                {c.name}
+              </option>
+            ))}
           </Select>
         </div>
         <div className="flex flex-col gap-1.5">
@@ -160,22 +147,18 @@ function StoreForm({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="store-schedule">Тип</Label>
             <Select
+              id="store-schedule"
               value={scheduleType}
-              onValueChange={(v) => {
+              onChange={(e) => {
                 setError("");
-                setScheduleType(v as Store["payment_schedule_type"]);
+                setScheduleType(e.target.value as Store["payment_schedule_type"]);
               }}
             >
-              <SelectTrigger id="store-schedule">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(SCHEDULE_LABELS).map(([v, l]) => (
-                  <SelectItem key={v} value={v}>
-                    {l}
-                  </SelectItem>
-                ))}
-              </SelectContent>
+              {Object.entries(SCHEDULE_LABELS).map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
             </Select>
           </div>
 
@@ -204,22 +187,25 @@ function StoreForm({
                 aria-labelledby="store-weekdays-label"
                 aria-describedby={!scheduleValidation.ok ? "store-schedule-error" : undefined}
               >
-                {WEEKDAYS.map((w) => (
-                  <button
-                    key={w.v}
-                    type="button"
-                    onClick={() => toggleWeekday(w.v)}
-                    aria-pressed={days.includes(w.v)}
-                    className={cn(
-                      "rounded-md border px-3 py-1.5 text-sm transition-colors",
-                      days.includes(w.v)
-                        ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
-                        : "hover:bg-[var(--muted)]",
-                    )}
-                  >
-                    {w.label}
-                  </button>
-                ))}
+                {WEEKDAY_NAMES.map((label, index) => {
+                  const weekday = index + 1;
+                  return (
+                    <button
+                      key={weekday}
+                      type="button"
+                      onClick={() => toggleWeekday(weekday)}
+                      aria-pressed={days.includes(weekday)}
+                      className={cn(
+                        "rounded-md border px-3 py-1.5 text-sm transition-colors",
+                        days.includes(weekday)
+                          ? "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]"
+                          : "hover:bg-[var(--muted)]",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -238,14 +224,7 @@ function StoreForm({
         )}
       </div>
 
-      {error && (
-        <p
-          role="alert"
-          className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
-        >
-          {error}
-        </p>
-      )}
+      <FormError message={error} />
 
       <div className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-end">
         <Button type="button" variant="outline" className="w-full sm:w-auto sm:min-w-28" onClick={onCancel}>
@@ -267,32 +246,16 @@ function StoresPageInner() {
   const canDelete = can(me, "stores.delete");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Store | null>(null);
-  const [delItem, setDelItem] = useState<Store | null>(null);
-  const [delError, setDelError] = useState("");
-  const [delBusy, setDelBusy] = useState(false);
+  const del = useConfirmAction<Store>(async (store) => {
+    await api.delete(`/stores/${store.id}/`);
+    reload();
+  });
   const {
     data: clients,
     loading: clientsLoading,
     error: clientsError,
     reload: reloadClients,
   } = useApi<ClientPickerItem[]>(open ? "/clients/picker/" : null);
-
-  const list = stores;
-
-  async function confirmDelete() {
-    if (!delItem) return;
-    setDelBusy(true);
-    setDelError("");
-    try {
-      await api.delete(`/stores/${delItem.id}/`);
-      setDelItem(null);
-      reload();
-    } catch (e) {
-      setDelError(apiError(e));
-    } finally {
-      setDelBusy(false);
-    }
-  }
 
   return (
     <AppShell
@@ -315,10 +278,10 @@ function StoresPageInner() {
       }
     >
       <section className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard label="Всего магазинов" value={String(list.length)} />
+        <StatCard label="Всего магазинов" value={String(count)} />
       </section>
 
-      {error && !stores && (
+      {error && (
         <div className="mb-4">
           <ErrorAlert message={error} onRetry={reload} />
         </div>
@@ -336,7 +299,7 @@ function StoresPageInner() {
               </TR>
             </THead>
             <TBody>
-              {list.map((s) => (
+              {stores.map((s) => (
                 <TR key={s.id}>
                   <TD className="font-medium">
                     {s.name}
@@ -371,10 +334,7 @@ function StoresPageInner() {
                           size="sm"
                           variant="ghost"
                           className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                          onClick={() => {
-                            setDelError("");
-                            setDelItem(s);
-                          }}
+                          onClick={() => del.open(s)}
                           title="Удалить"
                         >
                           <Trash2 className="size-4" />
@@ -384,16 +344,10 @@ function StoresPageInner() {
                   </TD>
                 </TR>
               ))}
-              {list.length === 0 && (
-                <TR>
-                  <TD colSpan={4} className="py-4 text-center text-[var(--muted-foreground)]">
-                    Магазинов пока нет.
-                  </TD>
-                </TR>
-              )}
+              {stores.length === 0 && <EmptyRow colSpan={4}>Магазинов пока нет.</EmptyRow>}
             </TBody>
           </Table>
-          <LoadMore shown={list.length} total={count} hasMore={hasMore} loading={loadingMore} onClick={loadMore} />
+          <LoadMore shown={stores.length} total={count} hasMore={hasMore} loading={loadingMore} onClick={loadMore} />
         </CardContent>
       </Card>
 
@@ -423,13 +377,9 @@ function StoresPageInner() {
       </Modal>
 
       <ConfirmDialog
-        open={!!delItem}
-        onClose={() => setDelItem(null)}
+        {...del.dialog}
         title="Удалить магазин?"
-        description={delItem ? `«${delItem.name}» будет удалён. Действие необратимо.` : ""}
-        busy={delBusy}
-        error={delError}
-        onConfirm={confirmDelete}
+        description={del.item ? `«${del.item.name}» будет удалён. Действие необратимо.` : ""}
       />
     </AppShell>
   );

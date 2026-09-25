@@ -1,20 +1,6 @@
-from pathlib import Path
-
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _service_block(compose: str, service: str) -> str:
-    marker = f"  {service}:\n"
-    start = compose.index(marker)
-    lines = compose[start:].splitlines(keepends=True)
-    end = len(lines)
-    for index, line in enumerate(lines[1:], start=1):
-        if line.startswith("  ") and not line.startswith("    "):
-            end = index
-            break
-    return "".join(lines[:end])
+from config.tests.compose_files import read_compose, service_block
 
 
 @pytest.mark.parametrize(
@@ -28,8 +14,8 @@ def test_passage_scale_monitor_is_a_single_health_checked_backend_process(
     compose_file: str,
     local_profile: bool,
 ) -> None:
-    compose = (REPO_ROOT / compose_file).read_text(encoding="utf-8")
-    monitor = _service_block(compose, "passage-scale-monitor")
+    compose = read_compose(compose_file)
+    monitor = service_block(compose, "passage-scale-monitor")
 
     assert compose.count("\n  passage-scale-monitor:\n") == 1
     assert "APP_SERVICE: passage-scale-monitor" in monitor
@@ -42,21 +28,23 @@ def test_passage_scale_monitor_is_a_single_health_checked_backend_process(
     )
     assert "/app/passage_scale_monitor_healthcheck.py" in monitor
     assert "restart: unless-stopped" in monitor
+    assert "ports:" not in monitor
     assert ('profiles: ["hardware"]' in monitor) is local_profile
+    if not local_profile:
+        assert "backend:\n        condition: service_healthy" in monitor
+        assert "logging: *default-logging" in monitor
 
 
 @pytest.mark.parametrize(
     "compose_file", ["docker-compose.yml", "docker-compose.prod.yml"]
 )
 def test_passage_scale_monitor_environment_is_default_off(compose_file: str) -> None:
-    compose = (REPO_ROOT / compose_file).read_text(encoding="utf-8")
+    compose = read_compose(compose_file)
 
     assert "VEHICLE_PLATE_AUTO_SCALE_ENABLED" in compose
     assert "${VEHICLE_PLATE_AUTO_SCALE_ENABLED:-0}" in compose
     assert "${VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS:-1}" in compose
     assert "${VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:-500}" in compose
-    assert "${VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS:-2}" in compose
     assert "${VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:-3}" in compose
     assert "${VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG:-50}" in compose
-    assert "${VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS:-3}" in compose
     assert "${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS:-60}" in compose

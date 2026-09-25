@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { api, apiError } from "@/lib/api";
+import { api, apiError, apiErrorCode } from "@/lib/api";
 import { can } from "@/lib/can";
 import { useAuth } from "@/store/auth";
 import type { GrainWagon } from "@/lib/types";
@@ -35,7 +35,14 @@ function captureStorageKey(userId: number, wagonId: number, path: PassageCapture
   return `asyl:passage-weight-capture:v1:${userId}:${wagonId}:${path}`;
 }
 
-function readStoredCaptureKey(key: string) {
+/**
+ * Ключ идемпотентности живёт в памяти страницы и в sessionStorage, чтобы
+ * пережить перезагрузку. Хранилище может быть недоступно (приватный режим) —
+ * тогда страницу защищает только память.
+ */
+function readCaptureKey(keys: Map<string, string>, key: string) {
+  const inMemory = keys.get(key);
+  if (inMemory) return inMemory;
   try {
     return sessionStorage.getItem(key);
   } catch {
@@ -43,15 +50,17 @@ function readStoredCaptureKey(key: string) {
   }
 }
 
-function writeStoredCaptureKey(key: string, value: string) {
+function storeCaptureKey(keys: Map<string, string>, key: string, requestId: string) {
+  keys.set(key, requestId);
   try {
-    sessionStorage.setItem(key, value);
+    sessionStorage.setItem(key, requestId);
   } catch {
-    // The in-memory fallback in StageAction still protects this page instance.
+    // The in-memory captureKeys map still protects this page instance.
   }
 }
 
-function removeStoredCaptureKey(key: string) {
+function forgetCaptureKey(keys: Map<string, string>, key: string) {
+  keys.delete(key);
   try {
     sessionStorage.removeItem(key);
   } catch {
@@ -62,12 +71,12 @@ function removeStoredCaptureKey(key: string) {
 function ScaleCaptureButton({
   busy,
   label,
-  busyLabel = "Получаю вес с весов…",
+  busyLabel,
   onClick,
 }: {
   busy: boolean;
   label: string;
-  busyLabel?: string;
+  busyLabel: string;
   onClick: () => void;
 }) {
   return (
@@ -111,16 +120,12 @@ export function PassageStageAction({
 
   function clearCaptureKey(path: PassageCapturePath) {
     if (!meId) return;
-    const key = captureStorageKey(meId, wagon.id, path);
-    captureKeys.current.delete(key);
-    removeStoredCaptureKey(key);
+    forgetCaptureKey(captureKeys.current, captureStorageKey(meId, wagon.id, path));
   }
 
   function rememberCaptureKey(path: PassageCapturePath, requestId: string) {
     if (!meId) return;
-    const key = captureStorageKey(meId, wagon.id, path);
-    captureKeys.current.set(key, requestId);
-    writeStoredCaptureKey(key, requestId);
+    storeCaptureKey(captureKeys.current, captureStorageKey(meId, wagon.id, path), requestId);
   }
 
   function getOrCreateCaptureKey(path: PassageCapturePath) {
@@ -132,13 +137,12 @@ export function PassageStageAction({
     }
 
     const key = captureStorageKey(meId, wagon.id, path);
-    const existing = captureKeys.current.get(key) || readStoredCaptureKey(key);
+    const existing = readCaptureKey(captureKeys.current, key);
     if (isCanonicalUuid(existing)) {
       captureKeys.current.set(key, existing);
       return existing;
     }
-    captureKeys.current.delete(key);
-    removeStoredCaptureKey(key);
+    forgetCaptureKey(captureKeys.current, key);
     const requestId = crypto.randomUUID();
     rememberCaptureKey(path, requestId);
     return requestId;
@@ -151,11 +155,7 @@ export function PassageStageAction({
     }
 
     for (const path of ["entry-weight", "exit-weight"] as const) {
-      if (path !== activeCapturePath) {
-        const key = captureStorageKey(meId, wagon.id, path);
-        captureKeys.current.delete(key);
-        removeStoredCaptureKey(key);
-      }
+      if (path !== activeCapturePath) forgetCaptureKey(captureKeys.current, captureStorageKey(meId, wagon.id, path));
     }
     if (!activeCapturePath) {
       setCaptureUncertain(false);
@@ -164,16 +164,14 @@ export function PassageStageAction({
 
     const key = captureStorageKey(meId, wagon.id, activeCapturePath);
     if (serverCaptureRequestId && serverCaptureStatus === "processing") {
-      captureKeys.current.set(key, serverCaptureRequestId);
-      writeStoredCaptureKey(key, serverCaptureRequestId);
+      storeCaptureKey(captureKeys.current, key, serverCaptureRequestId);
       setCaptureUncertain(true);
       return;
     }
 
-    const stored = captureKeys.current.get(key) || readStoredCaptureKey(key);
+    const stored = readCaptureKey(captureKeys.current, key);
     if (serverCaptureRequestId === stored && serverCaptureStatus && serverCaptureStatus !== "processing") {
-      captureKeys.current.delete(key);
-      removeStoredCaptureKey(key);
+      forgetCaptureKey(captureKeys.current, key);
       setCaptureUncertain(false);
       return;
     }
@@ -182,28 +180,19 @@ export function PassageStageAction({
       setCaptureUncertain(true);
       return;
     }
-    captureKeys.current.delete(key);
-    removeStoredCaptureKey(key);
+    forgetCaptureKey(captureKeys.current, key);
     setCaptureUncertain(false);
   }, [activeCapturePath, meId, passage, serverCaptureRequestId, serverCaptureStatus, wagon.id]);
 
   async function act(path: PassageCapturePath) {
-    const body = {};
-    const capturePath =
-      passage && (path === "entry-weight" || path === "exit-weight") ? (path as PassageCapturePath) : null;
-    const idempotencyKey = capturePath ? getOrCreateCaptureKey(capturePath) : null;
+    const idempotencyKey = getOrCreateCaptureKey(path);
+    if (!idempotencyKey) return;
     setBusy(true);
     onBusyChange(true);
     setError("");
     try {
-      if (capturePath && idempotencyKey) {
-        await api.post(`/grain/passages/${wagon.id}/${path}/`, body, {
-          headers: { "Idempotency-Key": idempotencyKey },
-        });
-        clearCaptureKey(capturePath);
-      } else {
-        await api.post(`/grain/passages/${wagon.id}/${path}/`, body);
-      }
+      await api.post(`/grain/passages/${wagon.id}/${path}/`, {}, { headers: { "Idempotency-Key": idempotencyKey } });
+      clearCaptureKey(path);
       setCaptureUncertain(false);
       onChanged();
     } catch (e) {
@@ -212,7 +201,6 @@ export function PassageStageAction({
           response?: {
             status?: number;
             data?: {
-              code?: unknown;
               request_id?: unknown;
               retryable?: unknown;
             };
@@ -220,7 +208,7 @@ export function PassageStageAction({
         }
       ).response;
       const responseRequestId = isCanonicalUuid(response?.data?.request_id) ? response.data.request_id : null;
-      const responseCode = typeof response?.data?.code === "string" ? response.data.code : "";
+      const responseCode = apiErrorCode(e);
       const retryable = response?.data?.retryable;
       const responseStatus = response?.status;
       const transientResponse =
@@ -231,16 +219,11 @@ export function PassageStageAction({
         responseStatus === 429 ||
         responseStatus >= 500;
       const resumeResponse = Boolean(responseRequestId && CAPTURE_RESUME_CODES.has(responseCode));
-      const retainCaptureKey = Boolean(
-        capturePath &&
-        idempotencyKey &&
-        (retryable === true || (retryable !== false && (transientResponse || resumeResponse))),
-      );
-      const retainedRequestId = responseRequestId || idempotencyKey;
-      if (capturePath && retainCaptureKey && retainedRequestId) {
-        rememberCaptureKey(capturePath, retainedRequestId);
-      } else if (capturePath) {
-        clearCaptureKey(capturePath);
+      const retainCaptureKey = retryable === true || (retryable !== false && (transientResponse || resumeResponse));
+      if (retainCaptureKey) {
+        rememberCaptureKey(path, responseRequestId || idempotencyKey);
+      } else {
+        clearCaptureKey(path);
       }
       setCaptureUncertain(retainCaptureKey);
       setError(apiError(e));

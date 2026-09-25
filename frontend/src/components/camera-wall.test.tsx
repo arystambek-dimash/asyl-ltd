@@ -1,11 +1,18 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Me } from "@/lib/types";
+import type { PlayableCamera } from "@/lib/shipping-cameras";
+import { makeMe } from "@/test-utils/factories";
 import { useAuth } from "@/store/auth";
-import { CameraTile, CameraWall, type CameraFeed } from "./camera-wall";
+import { CameraTile, CameraWall } from "./camera-wall";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), patch: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
+  put: vi.fn(),
+  patch: vi.fn(),
+  ensureCameraStreamToken: vi.fn(),
+  streamOnline: [] as ((online: boolean) => void)[],
+}));
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -13,11 +20,21 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 }));
 
 vi.mock("@/components/camera-stream", () => ({
-  CameraStream: () => null,
-  ensureCameraStreamToken: vi.fn(),
+  CameraStream: ({ onStateChange }: { onStateChange?: (online: boolean) => void }) => {
+    if (onStateChange) mocks.streamOnline.push(onStateChange);
+    return null;
+  },
 }));
 
-const camera: CameraFeed & { src: string } = {
+vi.mock("@/lib/camera-stream-auth", () => ({ ensureCameraStreamToken: mocks.ensureCameraStreamToken }));
+
+beforeEach(() => {
+  mocks.ensureCameraStreamToken.mockReset();
+  mocks.ensureCameraStreamToken.mockResolvedValue(undefined);
+  mocks.streamOnline.length = 0;
+});
+
+const camera: PlayableCamera = {
   id: "direct-aa:bb",
   name: "cam1",
   zone: "Главные ворота",
@@ -31,7 +48,7 @@ describe("CameraTile", () => {
     const user = userEvent.setup();
     const onClick = vi.fn();
 
-    render(<CameraTile cam={camera} ready={false} onOnline={vi.fn()} onClick={onClick} />);
+    render(<CameraTile cam={camera} onOnline={vi.fn()} onClick={onClick} />);
 
     const open = screen.getByRole("button", { name: "Открыть камеру «Главные ворота»" });
     await user.tab();
@@ -50,7 +67,6 @@ describe("CameraTile", () => {
     render(
       <CameraTile
         cam={camera}
-        ready={false}
         onOnline={vi.fn()}
         onClick={onClick}
         onRename={onRename}
@@ -110,7 +126,7 @@ describe("CameraWall line editor", () => {
   beforeEach(() => {
     mocks.get.mockReset();
     mocks.put.mockReset();
-    useAuth.setState({ me: { is_superuser: true, permissions: [] } as unknown as Me });
+    useAuth.setState({ me: makeMe({ is_superuser: true }) });
   });
 
   afterEach(() => {
@@ -223,6 +239,41 @@ describe("CameraWall line editor", () => {
     }
   });
 
+  it("finishes a slow first load even when the background sync fires meanwhile", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let finishFirstLoad: (value: { data: typeof LINE_CONFIG }) => void = () => undefined;
+      let lineRequests = 0;
+      mocks.get.mockImplementation(async (url: string) => {
+        if (url === "/cameras/") return { data: [{ ...WALL_CAMERA, line_config: LINE_CONFIG }] };
+        if (url === "/cameras/cam3/counting-line") {
+          lineRequests += 1;
+          if (lineRequests === 1) return new Promise((resolve) => (finishFirstLoad = resolve));
+          return { data: LINE_CONFIG };
+        }
+        return new Promise(() => undefined);
+      });
+      render(<CameraWall />);
+      fireEvent.click(await screen.findByRole("button", { name: "Настроить линию подсчёта" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(within(dialog).getByText("Загружаем сохранённую линию…")).toBeInTheDocument();
+
+      // The sync poll answers first with the same saved lines.
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+      });
+      await waitFor(() => expect(lineRequests).toBe(2));
+      await act(async () => {
+        finishFirstLoad({ data: LINE_CONFIG });
+      });
+
+      await waitFor(() => expect(within(dialog).queryByText("Загружаем сохранённую линию…")).not.toBeInTheDocument());
+      expect(within(dialog).getByRole("button", { name: "Сохранить линии" })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves AI-side lines untouched when the AI service cannot store them", async () => {
     serve({ ...LINE_CONFIG, verification_lines: [], verification_lines_supported: false });
     mocks.put.mockResolvedValue({ data: { ok: true, saved: true, applied_to_processor: true, ...LINE_CONFIG } });
@@ -236,5 +287,72 @@ describe("CameraWall line editor", () => {
 
     await waitFor(() => expect(mocks.put).toHaveBeenCalledTimes(1));
     expect(mocks.put.mock.calls[0][1]).toEqual({ line: COUNT, direction: "any" });
+  });
+});
+
+describe("CameraWall stream access", () => {
+  beforeEach(() => {
+    mocks.get.mockReset();
+    useAuth.setState({ me: makeMe() });
+    serve();
+  });
+
+  afterEach(() => {
+    useAuth.setState({ me: null });
+  });
+
+  it("mounts streams without waiting for the cookie and offers a retry when access fails", async () => {
+    mocks.ensureCameraStreamToken.mockRejectedValueOnce({ response: { status: 500, data: { detail: "Нет доступа" } } });
+    render(<CameraWall />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Нет доступа");
+    // CameraStream itself waits for and renews the go2rtc cookie.
+    expect(mocks.streamOnline).not.toHaveLength(0);
+
+    fireEvent.click(within(alert).getByRole("button", { name: "Повторить" }));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(mocks.ensureCameraStreamToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the access banner once a stream connects", async () => {
+    mocks.ensureCameraStreamToken.mockRejectedValueOnce({ response: { status: 500, data: { detail: "Нет доступа" } } });
+    render(<CameraWall />);
+    await screen.findByRole("alert");
+
+    act(() => mocks.streamOnline.at(-1)?.(true));
+
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.getByText("1 из 1 онлайн")).toBeInTheDocument();
+  });
+});
+
+describe("CameraWall rename", () => {
+  beforeEach(() => {
+    mocks.get.mockReset();
+    mocks.patch.mockReset();
+    useAuth.setState({ me: makeMe({ permissions: ["sys_permissions.manage"] }) });
+    serve();
+  });
+
+  afterEach(() => {
+    useAuth.setState({ me: null });
+  });
+
+  it("renames the camera and applies the server name to the tile", async () => {
+    mocks.patch.mockResolvedValue({ data: { camera: "cam3", name: "Вагонная арка" } });
+    render(<CameraWall />);
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить название камеры" }));
+    const dialog = await screen.findByRole("dialog");
+    const input = within(dialog).getByDisplayValue("Конвейер вагон");
+
+    fireEvent.change(input, { target: { value: "Вагонная арка" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mocks.patch).toHaveBeenCalledWith("/cameras/", { camera: "cam3", name: "Вагонная арка" });
+    expect(screen.getByText("Вагонная арка")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Настроить линию подсчёта" })).not.toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PassageNumberEditor } from "./passage-number-editor";
 import type { GrainWagon } from "@/lib/types";
 
@@ -16,8 +16,6 @@ function wagon(overrides: Partial<GrainWagon> = {}): GrainWagon {
 }
 
 describe("PassageNumberEditor", () => {
-  beforeEach(() => patchMock.mockClear());
-
   it("flags a passage without a plate and lets an operator type it in uppercase", async () => {
     patchMock.mockResolvedValue({ data: {} });
     const onChanged = vi.fn();

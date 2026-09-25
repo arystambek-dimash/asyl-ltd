@@ -14,14 +14,26 @@ from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.sales.access import assigned_department_id
 from apps.sales.models import Department
+from apps.shipments.services import ROLLBACK_TARGET_STATUSES, assert_no_open_ai_session, has_open_ai_session
 
+from .debt import (
+    available_to_pay,
+    confirmed_and_reserved,
+    order_payment_status,
+    order_remaining,
+)
+from .fixation import assert_can_fixate, fixate_order
 from .models import Order, OrderItem, Payment, StatusChangeRequest
 from .statuses import (
+    AWAITING_SHIPMENT_STATUSES,
     CLOSED_STATUSES,
+    ENTERED_POST_STATUSES,
+    ON_POST_STATUSES,
     PUBLIC_MANUAL_STATUSES,
     PUBLIC_STATUS_LABELS,
     REVIEWABLE_STATUSES,
     is_financial,
+    is_payment_method_allowed,
     is_payment_open,
     payment_open_method,
     public_status_label,
@@ -133,14 +145,13 @@ def _status_message(prefix: str, old: str, new: str) -> str:
             else f"{prefix}: {old_label} → {new_label}")
 
 
-def assert_payment_status_open(order: Order, *, method: str | None, by_client=False) -> None:
-    """Статус заказа допускает деньги этим способом (:func:`statuses.is_payment_open`).
+def payment_status_open_error(order: Order, *, method: str | None, by_client=False) -> dict | None:
+    """Почему статус заказа не допускает деньги этим способом (None — допускает).
 
-    Общая проверка для всего, что вводит деньги в работу: новая оплата,
-    восстановление отклонённой и новый счёт провайдеру для уже созданной.
+    Правило — :func:`statuses.is_payment_open`; ошибка в форме ValidationError.
     """
     if is_payment_open(order.status, method=method, by_client=by_client):
-        return
+        return None
     # Окно оплаты показывает эту причину — она должна совпадать со статусом.
     if by_client:
         detail = "Оплата доступна только после отгрузки"
@@ -150,7 +161,17 @@ def assert_payment_status_open(order: Order, *, method: str | None, by_client=Fa
         detail = "Оплата доступна после подтверждения заказа"
     else:
         detail = "До отгрузки принимаются только наличные, Kaspi-терминал и удалённая оплата"
-    raise ValidationError({"detail": detail, "code": "payment_not_open"})
+    return {"detail": detail, "code": "payment_not_open"}
+
+
+def assert_payment_status_open(order: Order, *, method: str | None, by_client=False) -> None:
+    """Статус заказа допускает деньги этим способом (:func:`statuses.is_payment_open`).
+
+    Общая проверка для всего, что вводит деньги в работу: новая оплата,
+    восстановление отклонённой и новый счёт провайдеру для уже созданной.
+    """
+    if error := payment_status_open_error(order, method=method, by_client=by_client):
+        raise ValidationError(error)
 
 
 def _validate_payment_open(order: Order, *, method: str | None, by_client=False) -> None:
@@ -209,12 +230,30 @@ def assert_money_allows_status(order: Order, to_status: str) -> None:
 
 
 # Строчные формы для фразы журнала: «Оплата 100 KZT принята». Это не копия
-# labels.PAYMENT_STATUS_LABELS — там подпись колонки («Получена»), здесь
+# labels.PAYMENT_STATUS_LABELS — там подпись статуса («В кассе»), здесь
 # сказуемое внутри предложения, поэтому наборы намеренно разные.
 PAYMENT_STAGE_LABELS = {
     "requested": "запрошена", "received": "принята",
     "confirmed": "подтверждена бухгалтером", "rejected": "отклонена",
 }
+
+
+def _log_payment(payment: Payment, message: str, user, *, stage: str, **extra) -> None:
+    """Событие журнала по оплате: сумма, валюта, способ и шаг цепочки."""
+    log_event(
+        "payment",
+        message,
+        user=user,
+        order=payment.order,
+        payload={
+            "payment_id": payment.id,
+            "amount": str(payment.amount),
+            "currency": payment.order.currency,
+            "method": payment.method,
+            "payment_stage": stage,
+            **extra,
+        },
+    )
 
 
 def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
@@ -231,13 +270,11 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
         setattr(payment, at_field, timezone.now())
         fields += [by_field, at_field]
     payment.save(update_fields=fields)
-    log_event(
-        "payment",
+    _log_payment(
+        payment,
         f"Оплата {payment.amount} {payment.order.currency} {PAYMENT_STAGE_LABELS[status]}",
-              user=user, order=payment.order,
-              payload={"payment_id": payment.id, "amount": str(payment.amount),
-                       "currency": payment.order.currency,
-                       "payment_stage": status},
+        user,
+        stage=status,
     )
     return payment
 
@@ -248,6 +285,11 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
     order = _locked_payment_order(order, user)
     _validate_payment_open(order, method=payment_open_method(method, stage))
+    if not is_payment_method_allowed(order.currency, method):
+        raise ValidationError({
+            "detail": "Kaspi и удалённая оплата принимаются только в тенге",
+            "code": "payment_kzt_only",
+        })
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
     amount = _positive_money(
@@ -258,17 +300,7 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
     if method not in Payment.CASHIER_METHODS:
         raise ValidationError(
             {"detail": "Недопустимый способ оплаты", "code": "bad_method"})
-    confirmed = sum(
-        (payment.net_amount for payment in order.payments.all()
-         if payment.status == "confirmed"),
-        Decimal("0"),
-    )
-    reserved = sum(
-        (payment.amount for payment in order.payments.all()
-         if payment.status in Payment.IN_PROGRESS_STATUSES),
-        Decimal("0"),
-    )
-    available = max(Decimal("0"), order.total_amount - confirmed - reserved)
+    available = available_to_pay(order)
     if amount > available:
         raise ValidationError({
             "detail": f"Доступно к оплате: {available} {order.currency}",
@@ -279,113 +311,13 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
         recorded_by=user,
         **({"received_by": user, "received_at": timezone.now()}
            if stage == "received" else {}))
-    log_event(
-        "payment",
+    _log_payment(
+        payment,
         f"Оплата {amount} {order.currency} ({method}) {PAYMENT_STAGE_LABELS[stage]}",
-              user=user, order=order,
-              payload={"payment_id": payment.id, "amount": str(amount),
-                       "currency": order.currency, "method": method,
-                       "payment_stage": stage},
+        user,
+        stage=stage,
     )
     return payment
-
-
-@transaction.atomic
-def add_mixed_payments(order: Order, parts, user, note="") -> list[Payment]:
-    """Record a split payment as one all-or-nothing cashier operation.
-
-    A client may settle one order with several cashier methods (for example,
-    part cash and part Kaspi).  Existing unconfirmed payments reserve their
-    amount as well, so a second cashier cannot allocate more than the actual
-    outstanding balance.
-    """
-    locked = lock_live_order(order, user)
-    locked = (
-        Order.objects.prefetch_related("items", "payments").get(pk=locked.pk)
-    )
-    if not isinstance(parts, list) or not parts:
-        raise ValidationError({"detail": "Добавьте хотя бы один способ оплаты",
-                               "code": "empty_payment_parts"})
-    if len(parts) > len(Payment.CASHIER_METHODS):
-        raise ValidationError({"detail": "Слишком много способов оплаты",
-                               "code": "too_many_payment_parts"})
-
-    normalized: list[tuple[str, Decimal]] = []
-    seen: set[str] = set()
-    for part in parts:
-        if not isinstance(part, dict):
-            raise ValidationError({"detail": "Некорректная часть оплаты",
-                                   "code": "bad_payment_part"})
-        method = part.get("method") or ""
-        if method not in Payment.CASHIER_METHODS:
-            raise ValidationError({"detail": "Недопустимый способ оплаты",
-                                   "code": "bad_method"})
-        if method in seen:
-            raise ValidationError({"detail": "Каждый способ оплаты укажите один раз",
-                                   "code": "duplicate_payment_method"})
-        seen.add(method)
-        amount = _positive_money(
-            part.get("amount"),
-            detail="Сумма каждой части должна быть положительным денежным значением",
-            code="invalid_amount",
-        )
-        normalized.append((method, amount))
-    # Каждая часть проверяется своим способом: до отгрузки счёт в смеси закрыт.
-    for method, _amount in normalized:
-        _validate_payment_open(locked, method=method)
-
-    confirmed = sum(
-        (payment.net_amount for payment in locked.payments.all()
-         if payment.status == "confirmed"), Decimal("0"))
-    reserved = sum(
-        (payment.amount for payment in locked.payments.all()
-         if payment.status in Payment.IN_PROGRESS_STATUSES), Decimal("0"))
-    available = max(Decimal("0"), locked.total_amount - confirmed - reserved)
-    requested = sum((amount for _, amount in normalized), Decimal("0"))
-    if requested > available:
-        raise ValidationError({
-            "detail": f"Доступно к распределению: {available} {locked.currency}",
-            "code": "payment_exceeds_remaining",
-        })
-    if locked.currency != "KZT" and any(
-        method in ("kaspi", "invoice") for method, _amount in normalized
-    ):
-        raise ValidationError({
-            "detail": "QR и счёт на оплату доступны только для заказов в тенге.",
-            "code": "online_payment_kzt_only",
-        })
-
-    created = [
-        add_payment(
-            locked,
-            amount,
-            user,
-            method=method,
-            # A bill is only a request for money.  Cash and a Kaspi payment
-            # entered at the till describe funds that the employee has already
-            # received, while an invoice must stay open until money arrives.
-            stage="requested" if method == "invoice" else "received",
-            note=note,
-        )
-        for method, amount in normalized
-    ]
-    log_event(
-        "payment",
-        f"Смешанная оплата {requested} {locked.currency}: {len(created)} частей",
-        user=user,
-        order=locked,
-        payload={
-            "action": "mixed_payment_created",
-            "payment_ids": [payment.id for payment in created],
-            "amount": str(requested),
-            "currency": locked.currency,
-            "parts": [
-                {"method": payment.method, "amount": str(payment.amount)}
-                for payment in created
-            ],
-        },
-    )
-    return created
 
 
 @transaction.atomic
@@ -394,7 +326,7 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
         raise ValidationError({"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     order = _locked_payment_order(order, user)
     _validate_payment_open(order, method=method, by_client=True)
-    remaining = order.total_amount - order.paid_total
+    remaining = order_remaining(order)
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
     open_payments = list(
@@ -478,50 +410,70 @@ def create_client_payment(order: Order, method: str, user, amount=None) -> Payme
     order.debt_requested = False
     order.save(update_fields=["payment_method", "settlement_intent", "debt_requested"])
     action = "инициировал" if created else "обновил"
-    log_event(
-        "payment", f"Клиент {action} оплату {requested_amount} {order.currency} ({method})",
-              user=user, order=order,
-              payload={"payment_id": payment.id, "amount": str(requested_amount), "method": method,
-                       "currency": order.currency, "payment_stage": stage},
+    _log_payment(
+        payment,
+        f"Клиент {action} оплату {requested_amount} {order.currency} ({method})",
+        user,
+        stage=stage,
     )
     return payment
+
+
+def client_release_invoice_error(invoice) -> dict | None:
+    """Почему счёт ApiPay не даёт клиенту освободить заявку (None — даёт).
+
+    Одно правило для :func:`release_client_payment`, портала (до отмены счёта
+    по номеру) и флага ``can_release``: полученные деньги и ещё не сверенное
+    создание QR сумму не отпускают.
+    """
+    from .apipay import MONEY_RECEIVED_INVOICE_STATUSES
+
+    if invoice is None:
+        return None
+    if invoice.status in MONEY_RECEIVED_INVOICE_STATUSES:
+        return {
+            "detail": "Платёж уже получен и обрабатывается. Обновите страницу.",
+            "code": "payment_already_paid",
+        }
+    if (
+        invoice.channel == "qr"
+        and invoice.invoice_id is None
+        and invoice.status == "creating"
+    ):
+        return {
+            "detail": (
+                "Создание QR ещё сверяется с платёжным сервисом. "
+                "Нельзя освобождать сумму до завершения сверки."
+            ),
+            "code": "qr_issue_recovery_pending",
+        }
+    return None
 
 
 @transaction.atomic
 def release_client_payment(payment: Payment, user) -> Payment:
     """Освободить зарезервированную часть, не скрывая возможную позднюю оплату."""
+    from .apipay import CLOSED_INVOICE_STATUSES
+
     payment, order = _locked_payment_with_order(payment, user)
     invoice = getattr(payment, "apipay_invoice", None)
     if payment.status not in Payment.IN_PROGRESS_STATUSES:
         if (
             payment.status == "rejected"
             and invoice is not None
-            and invoice.status in {
-                "cancelled", "expired", "error", "superseded",
-            }
+            and invoice.status in CLOSED_INVOICE_STATUSES
         ):
             # A synchronous provider cancellation already rejected the
             # Payment through the shared status engine. Treat the following
             # release call as the successful, idempotent completion of that
             # same user action; never extend this to paid/confirmed money.
-            return _sync_payment_instance(payment, payment)
+            return payment
         raise ValidationError({
             "detail": "Эта заявка уже завершена.",
             "code": "payment_not_in_progress",
         })
-    if (
-        invoice is not None
-        and invoice.channel == "qr"
-        and invoice.invoice_id is None
-        and invoice.status == "creating"
-    ):
-        raise ValidationError({
-            "detail": (
-                "Создание QR ещё сверяется с платёжным сервисом. "
-                "Нельзя освобождать сумму до завершения сверки."
-            ),
-            "code": "qr_issue_recovery_pending",
-        })
+    if error := client_release_invoice_error(invoice):
+        raise ValidationError(error)
     payment.status = "rejected"
     payment.save(update_fields=["status"])
     if hasattr(payment, "apipay_invoice"):
@@ -539,7 +491,7 @@ def release_client_payment(payment: Payment, user) -> Payment:
             "provider_invoice_may_still_be_payable": hasattr(payment, "apipay_invoice"),
         },
     )
-    return _sync_payment_instance(payment, payment)
+    return payment
 
 
 def _lock_shipped_order_for_debt(order: Order, user, *, in_progress_detail: str) -> Order:
@@ -636,16 +588,8 @@ def accountant_confirm_payment(payment: Payment, user, *, any_department=False) 
             ),
             "code": "provider_payment_auto_confirmation",
         })
-    confirmed_total = sum(
-        (
-            row.net_amount
-            for row in order.payments.select_for_update().filter(
-                status="confirmed"
-            )
-        ),
-        Decimal("0"),
-    )
-    available = max(Decimal("0"), order.total_amount - confirmed_total)
+    # Строка заказа уже заблокирована: все изменения оплат берут её первой.
+    available = order_remaining(order)
     if payment.amount > available:
         raise ValidationError({
             "detail": (
@@ -666,7 +610,6 @@ def record_staff_payment(
     user,
     *,
     method="cash",
-    stage="received",
     note="",
 ) -> Payment:
     """Record money from the CRM and settle funds already received by staff.
@@ -685,56 +628,16 @@ def record_staff_payment(
         amount,
         user,
         method=method,
-        # The public CRM action is source-authoritative: choosing cash/Kaspi
-        # means the employee is recording money already received at the till.
-        # Do not let a stale/hand-crafted frontend payload recreate the old
-        # manual queue.  Invoices are the inverse: issuing one never proves
-        # that the client paid, regardless of the submitted stage.
-        stage=(
-            "requested" if method == "invoice"
-            else "received" if method in Payment.SETTLED_ON_RECORD
-            else stage
-        ),
+        # The CRM action is source-authoritative: choosing cash/Kaspi means
+        # the employee is recording money already received at the till.
+        # Invoices are the inverse: issuing one never proves that the client paid.
+        stage="requested" if method == "invoice" else "received",
         note=note,
     )
     if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
+        # Подтверждение перечитывает этот же экземпляр после блокировки.
         accountant_confirm_payment(payment, user)
-        payment.refresh_from_db()
     return payment
-
-
-@transaction.atomic
-def record_staff_mixed_payments(
-    order: Order,
-    parts,
-    user,
-    *,
-    note="",
-    settle_received=True,
-) -> list[Payment]:
-    """Record a CRM split payment and normally settle received parts at once.
-
-    ``settle_received=False`` is used while the view issues an external
-    provider invoice.  It keeps every part reversible until that provider
-    operation succeeds; the same received parts are then finalized together
-    with :func:`confirm_received_staff_payments`.
-    """
-    payments = add_mixed_payments(order, parts, user, note=note)
-    if settle_received:
-        confirm_received_staff_payments(payments, user)
-    return payments
-
-
-@transaction.atomic
-def confirm_received_staff_payments(
-    payments: list[Payment], user,
-) -> list[Payment]:
-    """Finalize all providerless money received in one CRM operation."""
-    for payment in payments:
-        if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
-            accountant_confirm_payment(payment, user)
-            payment.refresh_from_db()
-    return payments
 
 
 @transaction.atomic
@@ -745,7 +648,6 @@ def receive_and_confirm_payment(payment: Payment, user, *, any_department=False)
     must remain ``requested`` instead of getting stranded at ``received`` and
     requiring an unexplained second action.
     """
-    original = payment
     if hasattr(payment, "apipay_invoice"):
         raise ValidationError({
             "detail": (
@@ -754,10 +656,40 @@ def receive_and_confirm_payment(payment: Payment, user, *, any_department=False)
             ),
             "code": "provider_payment_auto_confirmation",
         })
+    # Оба шага перечитывают переданный экземпляр после блокировки.
     receive_payment(payment, user, any_department=any_department)
-    accountant_confirm_payment(payment, user, any_department=any_department)
-    original.refresh_from_db()
-    return original
+    return accountant_confirm_payment(payment, user, any_department=any_department)
+
+
+def reopen_confirmed_payment_error(payment: Payment) -> dict | None:
+    """Почему подтверждённую оплату нельзя вернуть на проверку (None — можно).
+
+    Одно правило для :func:`reopen_confirmed_payment` и флагов ``can_reopen``
+    в API: онлайн-оплату и оплату с возвратом так не откатывают — приход и
+    возврат остаются в истории. Возвраты читаются через ``.all()``, чтобы
+    списки брали их из prefetch.
+    """
+    if payment.status != "confirmed":
+        return {
+            "detail": "Вернуть можно только подтверждённую оплату",
+            "code": "invalid_payment_stage",
+        }
+    if hasattr(payment, "apipay_invoice"):
+        return {
+            "detail": (
+                "Онлайн-оплату нельзя вернуть в очередь без возврата денег. "
+                "Используйте действие «Оформить возврат»."
+            ),
+            "code": "provider_payment_requires_refund",
+        }
+    if (payment.refunded_amount > 0 or payment.pending_refund_amount > 0
+            or any(refund.status in ("pending", "completed")
+                   for refund in payment.payment_refunds.all())):
+        return {
+            "detail": "Оплату с возвратом нельзя вернуть на подтверждение: приход и возврат должны остаться в истории.",
+            "code": "payment_has_refunds",
+        }
+    return None
 
 
 @transaction.atomic
@@ -769,48 +701,24 @@ def reopen_confirmed_payment(payment: Payment, user) -> Payment:
     """
     original = payment
     payment, order = _locked_payment_with_order(payment, user)
-    if payment.status != "confirmed":
-        raise ValidationError({
-            "detail": "Вернуть можно только подтверждённую оплату",
-            "code": "invalid_payment_stage",
-        })
-    if hasattr(payment, "apipay_invoice"):
-        raise ValidationError({
-            "detail": (
-                "Онлайн-оплату нельзя вернуть в очередь без возврата денег. "
-                "Используйте действие «Оформить возврат»."
-            ),
-            "code": "provider_payment_requires_refund",
-        })
-    if (payment.refunded_amount > 0 or payment.pending_refund_amount > 0
-            or payment.payment_refunds.filter(status__in=("pending", "completed")).exists()):
-        raise ValidationError({
-            "detail": "Оплату с возвратом нельзя вернуть на подтверждение: приход и возврат должны остаться в истории.",
-            "code": "payment_has_refunds",
-        })
+    if error := reopen_confirmed_payment_error(payment):
+        raise ValidationError(error)
     previous_confirmed_by = payment.confirmed_by_id
     previous_confirmed_at = payment.confirmed_at
     payment.status = "received"
     payment.confirmed_by = None
     payment.confirmed_at = None
     payment.save(update_fields=["status", "confirmed_by", "confirmed_at"])
-    log_event(
-        "payment",
+    _log_payment(
+        payment,
         f"Оплата {payment.amount} {payment.order.currency} возвращена на подтверждение",
-        user=user,
-        order=payment.order,
-        payload={
-            "payment_id": payment.id,
-            "amount": str(payment.amount),
-            "currency": payment.order.currency,
-            "method": payment.method,
-            "payment_stage": "received",
-            "action": "reopened",
-            "previous_confirmed_by": previous_confirmed_by,
-            "previous_confirmed_at": (
-                previous_confirmed_at.isoformat() if previous_confirmed_at else None
-            ),
-        },
+        user,
+        stage="received",
+        action="reopened",
+        previous_confirmed_by=previous_confirmed_by,
+        previous_confirmed_at=(
+            previous_confirmed_at.isoformat() if previous_confirmed_at else None
+        ),
     )
     _apply_payment_status(order, user)
     return _sync_payment_instance(original, payment)
@@ -826,22 +734,75 @@ def reject_payment(payment: Payment, user, *, any_department=False) -> Payment:
     previous_stage = payment.status
     payment.status = "rejected"
     payment.save(update_fields=["status"])
-    log_event(
-        "payment",
+    _log_payment(
+        payment,
         f"Оплата {payment.amount} {payment.order.currency} отклонена",
-        user=user,
-        order=payment.order,
-        payload={
-            "payment_id": payment.id,
-            "amount": str(payment.amount),
-            "currency": payment.order.currency,
-            "method": payment.method,
-            "payment_stage": "rejected",
-            "previous_payment_stage": previous_stage,
-            "action": "rejected",
-        },
+        user,
+        stage="rejected",
+        previous_payment_stage=previous_stage,
+        action="rejected",
     )
     return _sync_payment_instance(original, payment)
+
+
+def _restored_stage(payment: Payment) -> str:
+    return "received" if payment.received_at else "requested"
+
+
+def restore_rejected_payment_error(payment: Payment, *, payments=None) -> dict | None:
+    """Почему отклонённую оплату нельзя восстановить (None — можно).
+
+    Одно правило для :func:`restore_rejected_payment` и флагов ``can_restore``
+    в API. ``payments`` — оплаты заказа для свободного остатка: сервис передаёт
+    их под блокировкой, списки берут ``order.payments.all()`` из prefetch.
+    """
+    from .apipay import CLOSED_INVOICE_STATUSES
+
+    order = payment.order
+    if payment.status != "rejected":
+        return {
+            "detail": "Восстановить можно только отклонённую оплату",
+            "code": "invalid_payment_stage",
+        }
+    # Восстановленная оплата снова в работе — правило то же, что для новой:
+    # иначе отклонённый счёт вернулся бы деньгами на отменённый заказ или
+    # выдал бы Kaspi QR / счёт на телефон до отгрузки.
+    if error := payment_status_open_error(
+        order, method=payment_open_method(payment.method, _restored_stage(payment))
+    ):
+        return error
+    invoice = getattr(payment, "apipay_invoice", None)
+    if (
+        invoice
+        and invoice.invoice_id is None
+        and invoice.status != "creating"
+    ):
+        return {
+            "detail": (
+                "Прежний ключ счёта закрыт. Создайте новую платёжную "
+                "операцию с новым ключом."
+            ),
+            "code": "provider_issue_key_retired",
+        }
+    if (
+        invoice
+        and invoice.invoice_id is not None
+        and invoice.status in CLOSED_INVOICE_STATUSES
+    ):
+        return {
+            "detail": "Отменённый счёт восстановить нельзя — создайте новый счёт на оплату.",
+            "code": "provider_invoice_closed",
+        }
+    available = available_to_pay(order, payments)
+    if payment.amount > available:
+        return {
+            "detail": (
+                f"Восстановить нельзя: свободный остаток заказа "
+                f"{available} {order.currency}."
+            ),
+            "code": "payment_exceeds_remaining",
+        }
+    return None
 
 
 @transaction.atomic
@@ -849,92 +810,22 @@ def restore_rejected_payment(payment: Payment, user) -> Payment:
     """Вернуть ошибочно отклонённую кассовую оплату в рабочую очередь."""
     original = payment
     payment, order = _locked_payment_with_order(payment, user)
-    if payment.status != "rejected":
-        raise ValidationError({
-            "detail": "Восстановить можно только отклонённую оплату",
-            "code": "invalid_payment_stage",
-        })
-    restored_stage = "received" if payment.received_at else "requested"
-    # Восстановленная оплата снова в работе — правило то же, что для новой:
-    # иначе отклонённый счёт вернулся бы деньгами на отменённый заказ или
-    # выдал бы Kaspi QR / счёт на телефон до отгрузки.
-    assert_payment_status_open(
-        order, method=payment_open_method(payment.method, restored_stage)
-    )
-    invoice = getattr(payment, "apipay_invoice", None)
-    if (
-        invoice
-        and invoice.invoice_id is None
-        and invoice.status != "creating"
+    if error := restore_rejected_payment_error(
+        payment, payments=order.payments.select_for_update()
     ):
-        raise ValidationError({
-            "detail": (
-                "Прежний ключ счёта закрыт. Создайте новую платёжную "
-                "операцию с новым ключом."
-            ),
-            "code": "provider_issue_key_retired",
-        })
-    if (
-        invoice
-        and invoice.invoice_id is not None
-        and invoice.status in ("cancelled", "expired", "error", "superseded")
-    ):
-        raise ValidationError({
-            "detail": "Отменённый счёт восстановить нельзя — создайте новый счёт на оплату.",
-            "code": "provider_invoice_closed",
-        })
-    confirmed = sum(
-        (
-            row.net_amount
-            for row in order.payments.select_for_update().filter(status="confirmed")
-        ),
-        Decimal("0"),
-    )
-    reserved = sum(
-        (
-            row.amount
-            for row in order.payments.select_for_update().filter(
-                status__in=Payment.IN_PROGRESS_STATUSES
-            )
-        ),
-        Decimal("0"),
-    )
-    available = max(Decimal("0"), order.total_amount - confirmed - reserved)
-    if payment.amount > available:
-        raise ValidationError({
-            "detail": (
-                f"Восстановить нельзя: свободный остаток заказа "
-                f"{available} {order.currency}."
-            ),
-            "code": "payment_exceeds_remaining",
-        })
+        raise ValidationError(error)
+    restored_stage = _restored_stage(payment)
     payment.status = restored_stage
     payment.save(update_fields=["status"])
-    log_event(
-        "payment",
+    _log_payment(
+        payment,
         f"Оплата {payment.amount} {order.currency} восстановлена",
-        user=user,
-        order=order,
-        payload={
-            "payment_id": payment.id,
-            "amount": str(payment.amount),
-            "currency": order.currency,
-            "method": payment.method,
-            "payment_stage": restored_stage,
-            "previous_payment_stage": "rejected",
-            "action": "restored",
-        },
+        user,
+        stage=restored_stage,
+        previous_payment_stage="rejected",
+        action="restored",
     )
     return _sync_payment_instance(original, payment)
-
-
-def _payment_status_for(order: Order) -> str:
-    paid = order.paid_total
-    if paid <= 0:
-        return "unpaid"
-    if paid >= order.total_amount and order.total_amount > 0:
-        return "settled"
-    return "partial"
 
 
 def sync_payment_status(order: Order) -> str:
@@ -943,7 +834,7 @@ def sync_payment_status(order: Order) -> str:
     Без пользователя — используется и при оплате, и для бэкфилла легаси-данных.
     """
     order.refresh_from_db()
-    new = _payment_status_for(order)
+    new = order_payment_status(order)
     if new != order.payment_status:
         order.payment_status = new
         order.save(update_fields=["payment_status"])
@@ -958,36 +849,23 @@ def _apply_payment_status(order: Order, user) -> None:
                   payload={"payment_status": new})
 
 
-# Логистика: подтверждение → въезд → загрузка → отгрузка. Оплата — отдельно
-# (statuses.is_payment_open): после shipped или предоплатой, логистику не блокирует.
-ALLOWED_TRANSITIONS = {
-    "draft": {"pending", "confirmed", "cancelled"},
-    "pending": {"confirmed", "rejected", "cancelled"},
-    "confirmed": {"arrived", "cancelled"},
-    "arrived": {"loading", "cancelled"},
-    "loading": {"loaded", "cancelled"},
-    "loaded": {"shipped", "cancelled"},
-}
+def _apply_status(order: Order, to_status: str, user, message: str, *, payload=None) -> Order:
+    """Записать итог заявки (подтверждение или отказ) и событие в журнал.
 
-
-@transaction.atomic
-def transition(
-    order: Order, to_status: str, user, message: str | None = None, *, payload=None,
-    any_department=False,
-) -> Order:
-    order = lock_live_order(order, user, any_department=any_department)
-    _assert_no_open_ai_session(order)
-    allowed = ALLOWED_TRANSITIONS.get(order.status, set())
-    if to_status not in allowed:
-        raise ValidationError(
-            {"detail": _status_message("Недопустимый переход", order.status, to_status),
-             "code": "invalid_transition"})
+    Исходный статус под блокировкой уже проверил вызывающий сервис
+    (``confirm_order``/``reject_order``); дальше заказ ведут отгрузка
+    (shipments.services) и административная смена статуса. Заявка — общая
+    очередь, поэтому отдел сотрудника здесь не ограничивает. Повторное чтение
+    под блокировкой возвращает заказ со всеми правками подтверждения.
+    """
+    order = lock_live_order(order, user, any_department=True)
+    assert_no_open_ai_session(order)
     old = order.status
     order.status = to_status
     order.save(update_fields=["status"])
     log_event(
         "status",
-        message or _status_message("Статус", old, to_status),
+        message,
         user=user,
         order=order,
         payload={**(payload or {}), "from": old, "to": to_status},
@@ -1001,6 +879,21 @@ CONFIRM_CHANGES_SHOWN = 3
 MESSAGE_MAX_LENGTH = 500
 
 
+def order_items_error(items, historical_ids=frozenset()) -> str | None:
+    """Общая проверка позиций заказа для сотрудников и портала.
+
+    Архивный товар в заказ не добавляют (остаётся только уже бывший в заказе —
+    ``historical_ids``), а один товар занимает одну строку.
+    """
+    if any(not item["product"].is_active and item["product"].pk not in historical_ids
+           for item in items):
+        return "Архивный товар нельзя добавлять в заказ"
+    product_ids = [item["product"].pk for item in items]
+    if len(product_ids) != len(set(product_ids)):
+        return "Объедините повторяющиеся товары в одну строку"
+    return None
+
+
 def confirm_stock_context(order: Order) -> dict[str, dict[str, int]]:
     """Окно подтверждения: остаток товара на складе заказа и сколько его уже ждут.
 
@@ -1008,12 +901,12 @@ def confirm_stock_context(order: Order) -> dict[str, dict[str, int]]:
     других заказах этого склада, ждущих отгрузки}}``. Остаток видит каждый,
     кто подтверждает заявки, — отдельное право на склад не нужно.
     """
-    from apps.warehouse.services import resolve_warehouse, stock_balances
+    from apps.warehouse.services import stock_balances
 
     from .querysets import awaiting_shipment_bags
 
     items = list(order.items.all())
-    warehouse = resolve_warehouse(order.warehouse, require_active=False)
+    warehouse = order.warehouse
     product_ids = {item.product_id for item in items if item.product_id is not None}
     on_hand = stock_balances(warehouse, product_ids)
     awaiting = awaiting_shipment_bags(warehouse, product_ids, exclude_order_id=order.pk)
@@ -1100,7 +993,7 @@ def confirm_order(
     # Заявка — общая очередь кассы: подтверждает сотрудник любого отдела, а
     # заказ всё равно учитывается в отделе клиента (проверка ниже).
     order = lock_live_order(order, user, any_department=True)
-    if order.status not in ("draft", "pending"):
+    if order.status not in REVIEWABLE_STATUSES:
         raise ValidationError(
             {"detail": "Подтвердить можно только новый заказ", "code": "invalid_status"})
     client = Client.objects.select_for_update().get(pk=order.client_id)
@@ -1135,13 +1028,8 @@ def confirm_order(
         set_order_department(order, department, user, any_department=True)
     if not order.department:
         raise ValidationError({"department": "Перед подтверждением выберите отдел продаж"})
-    if order.warehouse_id is None:
-        from apps.warehouse.services import resolve_warehouse
-
-        order.warehouse = resolve_warehouse()
-        order.save(update_fields=["warehouse"])
     changes = _apply_confirmed_quantities(order, quantities or {})
-    _apply_prices(order, prices or {}, user)
+    apply_item_prices(order, prices or {}, user)
     if truck is not None or trailer is not None:
         from .transport import set_order_transport
 
@@ -1150,14 +1038,14 @@ def confirm_order(
             order, user, truck=truck, trailer=trailer, notify_client=False, any_department=True)
     message, payload = "Заказ подтверждён", None
     if changes:
-        confirmed_bags = sum(item.quantity for item in order.items.all())
+        confirmed_bags = order.ordered_bags
         requested_bags = confirmed_bags + sum(c["requested"] - c["confirmed"] for c in changes)
         message = (
             f"Заказ подтверждён: {confirmed_bags} из {requested_bags} меш. "
             f"({_describe_quantity_changes(changes)})"
         )[:MESSAGE_MAX_LENGTH]
         payload = {"quantity_changes": changes}
-    confirmed = transition(order, "confirmed", user, message, payload=payload, any_department=True)
+    confirmed = _apply_status(order, "confirmed", user, message, payload=payload)
     if changes:
         notify(
             order.client,
@@ -1169,90 +1057,14 @@ def confirm_order(
     return confirmed
 
 
-@transaction.atomic
-def repeat_order(source: Order, user) -> Order:
-    """Создать независимый заказ из старого документа с сегодняшней датой."""
-    from apps.warehouse.services import ensure_products_available, resolve_warehouse
-
-    source = lock_live_order(source, user)
-    source = (
-        Order.objects.select_related("client__user", "store", "warehouse")
-        .prefetch_related("items__product")
-        .get(pk=source.pk)
-    )
-    items = list(source.items.all())
-    if not items:
-        raise ValidationError({
-            "detail": "В исходном заказе нет позиций",
-            "code": "repeat_empty_order",
-        })
-    unavailable = [item.product_label for item in items
-                   if item.product_id is None or not item.product.is_active]
-    if unavailable:
-        raise ValidationError({
-            "detail": "Нельзя повторить заказ: товар удалён или находится в архиве — "
-                      + ", ".join(unavailable),
-            "code": "repeat_product_unavailable",
-        })
-    warehouse = resolve_warehouse(source.warehouse)
-    ensure_products_available(
-        (item.product for item in items),
-        warehouse=warehouse,
-    )
-
-    has_complete_prices = all(
-        item.unit_price is not None and item.unit_price > 0 for item in items
-    )
-    # A repeat is a new sale; the original order keeps its historical department.
-    client = Client.objects.select_for_update().get(pk=source.client_id)
-    repeated = Order.objects.create(
-        client=client,
-        currency=source.currency,
-        department=client.department.code if client.department_id else source.department,
-        transport_type=source.transport_type,
-        store=source.store,
-        warehouse=warehouse,
-        settlement_intent=source.settlement_intent,
-        payment_method=source.payment_method,
-        truck_number=source.truck_number,
-        trailer_number=source.trailer_number,
-        truck_number_set_by=user if source.truck_number or source.trailer_number else None,
-        arrival_date=timezone.localdate(),
-        notes=source.notes,
-        status="pending" if has_complete_prices else "draft",
-        created_by=user,
-        repeated_from=source,
-    )
-    copies = [
-        OrderItem.objects.create(
-            order=repeated,
-            product=item.product,
-            quantity=item.quantity,
-            unit_price=item.unit_price,
-        )
-        for item in items
-    ]
-    # Цены — исторический снимок шаблона. Если сотрудник может подтверждать,
-    # новый заказ сразу попадает в «Ожидает погрузки», иначе остаётся заявкой.
-    if has_complete_prices and user.has_perm_code("orders.confirm"):
-        prices = {item.pk: item.unit_price for item in copies}
-        confirm_order(repeated, user, prices=prices)
-    log_event(
-        "order_repeat",
-        f"Создан повтор заказа #{source.pk} → #{repeated.pk}",
-        user=user,
-        order=repeated,
-        payload={"source_order_id": source.pk, "new_order_id": repeated.pk},
-    )
-    return repeated
-
-
-def _apply_prices(order: Order, prices: dict, user) -> None:
+def apply_item_prices(order: Order, prices: dict, user) -> None:
     """Зафиксировать договорную цену по каждой позиции и запомнить её для клиента.
 
     prices: {order_item_id: цена за мешок}. Позиция без новой цены сохраняет уже
     зафиксированную unit_price (заявки Отдела 2 приходят с ценами менеджера) —
-    цена обязана быть > 0 из того или иного источника.
+    цена обязана быть > 0 из того или иного источника. Статус заказа не меняет:
+    подтверждение и правка позиций зовут её сами, а заявку с ценами менеджера
+    Отдела 2 подтверждает бухгалтер на своём табло.
     """
     from apps.catalog.models import ClientPrice
     items = list(order.items.select_related("product").all())
@@ -1274,15 +1086,6 @@ def _apply_prices(order: Order, prices: dict, user) -> None:
                 client=order.client, product=item.product,
                 currency=order.currency,
                 defaults={"price": price, "updated_by": user})
-
-
-def apply_item_prices(order: Order, prices: dict, user) -> None:
-    """Публичная обёртка: зафиксировать цены заявки без смены статуса.
-
-    Используется, когда заявку с ценами создаёт менеджер Отдела 2 —
-    подтверждает её бухгалтер на своём табло.
-    """
-    _apply_prices(order, prices, user)
 
 
 @transaction.atomic
@@ -1452,18 +1255,8 @@ def _validate_payment_exposure(order: Order, new_total: Decimal) -> dict:
     resolved first when their reservation would overpay the corrected order.
     Shared by item edits and ``correct_order_prices``.
     """
-    payments = list(
+    confirmed, reserved = confirmed_and_reserved(
         Payment.objects.select_for_update().filter(order=order)
-    )
-    confirmed = sum(
-        (payment.net_amount for payment in payments
-         if payment.status == "confirmed"),
-        Decimal("0"),
-    )
-    reserved = sum(
-        (payment.amount for payment in payments
-         if payment.status in Payment.IN_PROGRESS_STATUSES),
-        Decimal("0"),
     )
     if reserved > 0 and confirmed + reserved > new_total:
         raise ValidationError({
@@ -1474,6 +1267,123 @@ def _validate_payment_exposure(order: Order, new_total: Decimal) -> dict:
             "code": "active_payments_exceed_total",
         })
     return {"confirmed": confirmed, "reserved": reserved}
+
+
+def _bags_by_product(items) -> Counter:
+    """Мешки позиций по товару; позиции удалённого товара склад не сверяет."""
+    bags = Counter()
+    for item in items:
+        if item.product_id is not None:
+            bags[item.product_id] += item.quantity
+    return bags
+
+
+def _create_items(order: Order, items_data: list, prices: dict | None) -> tuple[list[OrderItem], dict]:
+    """Создать позиции и разложить цены по товару ({product_id: цена}) на id позиций."""
+    created = [OrderItem.objects.create(order=order, **item) for item in items_data]
+    prices = prices or {}
+    return created, {item.id: prices.get(str(item.product_id)) for item in created}
+
+
+@transaction.atomic
+def create_staff_order(
+    user,
+    data: dict,
+    items_data: list,
+    *,
+    prices: dict | None = None,
+    template_order: Order | None = None,
+    backdate: dict | None = None,
+) -> Order:
+    """Новый заказ сотрудника: склад, остаток, позиции, цены и подтверждение.
+
+    ``data`` — поля заказа из формы. ``prices`` — {product_id: цена за мешок}:
+    заказ с ценами подтверждается сразу, если у сотрудника есть право и у заказа
+    есть отдел, иначе цены лишь фиксируются в позициях. ``template_order`` —
+    заказ, по которому создан этот («Повторить»). ``backdate`` — параметры
+    :func:`fixation.fixate_order` для заказа задним числом.
+    """
+    from apps.warehouse.services import ensure_products_available, resolve_warehouse
+
+    if backdate is not None:
+        # Права проверяем до записи: отказ откатывает всю транзакцию.
+        assert_can_fixate(user, paid=backdate.get("paid", False))
+    warehouse = resolve_warehouse(data.get("warehouse"))
+    # Исторический заказ склад не списывает, поэтому и остаток на сегодня
+    # для него не важен — товара могло уже не остаться.
+    if backdate is None:
+        ensure_products_available(
+            (item["product"] for item in items_data),
+            warehouse=warehouse,
+        )
+    fields = {**data, "warehouse": warehouse, "created_by": user}
+    if fields.get("truck_number") or fields.get("trailer_number"):
+        fields["truck_number_set_by"] = user
+    fields.setdefault("currency", fields["client"].currency)
+    if template_order is not None:
+        fields["repeated_from"] = template_order
+    if prices:
+        fields["status"] = "pending"
+    order = Order.objects.create(**fields)
+    _, prices_by_item = _create_items(order, items_data, prices)
+    if prices:
+        if user.has_perm_code("orders.confirm") and order.department:
+            confirm_order(order, user, prices=prices_by_item)
+        else:
+            apply_item_prices(order, prices_by_item, user)
+        order.refresh_from_db()
+    if template_order is not None:
+        log_event(
+            "order_repeat",
+            f"Создан заказ #{order.pk} по шаблону заказа #{template_order.pk}",
+            user=user,
+            order=order,
+            payload={
+                "source_order_id": template_order.pk,
+                "new_order_id": order.pk,
+                "mode": "reviewed_template",
+            },
+        )
+    if backdate is not None:
+        order = fixate_order(order, user, set_created=True, **backdate)
+    return order
+
+
+@transaction.atomic
+def set_order_warehouse(order: Order, warehouse, user, *, check_items: bool = True) -> Order:
+    """Сменить склад отгрузки — только до подтверждения заказа.
+
+    Отключённый склад, уже закреплённый за заказом, остаётся читаемым и
+    сравнимым, но новый склад обязан быть действующим. ``check_items=False`` —
+    позиции заменяются следом, и остаток на новом складе проверит ``replace_items``.
+    """
+    from apps.warehouse.services import ensure_products_available, resolve_warehouse
+
+    caller_order = order
+    order = lock_live_order(order, user)
+    requested = resolve_warehouse(warehouse, require_active=False)
+    if requested.pk == order.warehouse_id:
+        return order
+    if order.status in (*AWAITING_SHIPMENT_STATUSES, "shipped"):
+        raise ValidationError({
+            "detail": "Склад отгрузки нельзя изменить после подтверждения заказа",
+            "code": "warehouse_locked",
+        })
+    order.warehouse = caller_order.warehouse = resolve_warehouse(requested)
+    order.save(update_fields=["warehouse"])
+    if check_items:
+        current_items = list(order.items.select_related("product"))
+        deleted = [item.product_label for item in current_items if item.product_id is None]
+        if deleted:
+            raise ValidationError({
+                "detail": "Нельзя сменить склад: удалены товары — " + ", ".join(deleted),
+                "code": "product_deleted",
+            })
+        ensure_products_available(
+            (item.product for item in current_items),
+            warehouse=order.warehouse,
+        )
+    return order
 
 
 @transaction.atomic
@@ -1497,11 +1407,7 @@ def replace_items(
     # An open camera session owns the order's loading workflow. The parent
     # Order row is the shared serialization fence with counting.start, so item
     # edits cannot race the transition while camera-PC calls are in flight.
-    from apps.cameras.models import AiCountingSession
-    if AiCountingSession.objects.filter(
-        order=order,
-        status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists():
+    if has_open_ai_session(order):
         raise ValidationError({
             "detail": "Состав заказа уже закреплён за AI-погрузкой",
             "code": "ai_session_active",
@@ -1518,12 +1424,7 @@ def replace_items(
 
     is_shipped = order.status == "shipped"
     reason = _shipped_edit_reason(edit_reason) if is_shipped else ""
-    from apps.warehouse.services import resolve_warehouse
-
-    warehouse = resolve_warehouse(order.warehouse, require_active=False)
-    if order.warehouse_id is None:
-        order.warehouse = warehouse
-        order.save(update_fields=["warehouse"])
+    warehouse = order.warehouse
     old_items = list(
         # ``product`` is nullable for historical rows. Lock only OrderItem;
         # PostgreSQL cannot apply FOR UPDATE to the nullable side of the outer
@@ -1554,34 +1455,15 @@ def replace_items(
             require_active=False,
         )
 
-    old_total = sum(
-        (
-            item.quantity
-            * (item.unit_price if item.unit_price is not None else Decimal("0"))
-            for item in old_items
-        ),
-        Decimal("0"),
-    )
+    old_total = order.total_amount
     old_payload = [_edit_item_payload(item) for item in old_items]
-    old_quantities = Counter({
-        product_id: sum(
-            item.quantity for item in old_items
-            if item.product_id == product_id
-        )
-        for product_id in {item.product_id for item in old_items}
-        if product_id is not None
-    })
+    old_quantities = _bags_by_product(old_items)
 
     OrderItem.objects.filter(order=order).delete()
-    created = [OrderItem.objects.create(order=order, **item) for item in items_data]
-    prices = prices or {}
-    prices_by_item = {
-        it.id: prices.get(str(it.product_id), prices.get(it.product_id))
-        for it in created
-    }
+    created, prices_by_item = _create_items(order, items_data, prices)
     if (any(v is not None for v in prices_by_item.values())
             or order.status in ITEMS_REQUIRE_PRICES_STATUSES):
-        _apply_prices(order, prices_by_item, user)
+        apply_item_prices(order, prices_by_item, user)
 
     new_total = order.total_amount
     payment_exposure = {"confirmed": Decimal("0"), "reserved": Decimal("0")}
@@ -1591,9 +1473,7 @@ def replace_items(
         # Payment mutations take the Order lock first, so this cannot deadlock
         # with a concurrent cashier action.
         payment_exposure = _validate_payment_exposure(order, new_total)
-        new_quantities = Counter()
-        for item in created:
-            new_quantities[item.product_id] += item.quantity
+        new_quantities = _bags_by_product(created)
         product_ids = set(old_quantities) | set(new_quantities)
         stock_deltas = {
             product_id: old_quantities[product_id] - new_quantities[product_id]
@@ -1608,7 +1488,6 @@ def replace_items(
             user=user,
             reason=reason,
             warehouse=warehouse,
-            require_active=False,
         )
 
     # Сумма могла измениться — сохранённый статус оплаты приводим к факту.
@@ -1664,13 +1543,12 @@ def reject_order(order: Order, user, *, reason: str) -> Order:
     assert_order_has_no_money(order)
     order.rejection_reason = reason.strip()
     order.save(update_fields=["rejection_reason"])
-    rejected = transition(
+    rejected = _apply_status(
         order,
         "rejected",
         user,
         f"Заявка отклонена: {order.rejection_reason}",
         payload={"reason": order.rejection_reason, "action": "order_rejected"},
-        any_department=True,
     )
     caller_order.rejection_reason = order.rejection_reason
     caller_order.status = rejected.status
@@ -1693,19 +1571,11 @@ def can_set_truck_number(order: Order, user) -> bool:
     return not user.is_client
 
 
-def set_truck_number(order: Order, value: str, user) -> Order:
-    """Совместимость: сменить номер машины (вагона), прицеп не трогая."""
-    from .transport import set_order_transport
-
-    order, _ = set_order_transport(order, user, truck=value)
-    return order
-
-
 def _can_edit_status(user) -> bool:
     return bool(user) and not getattr(user, "is_client", False) and user.has_perm_code("orders.edit")
 
 
-def _validate_manual_status(to_status: str, user) -> None:
+def _validate_manual_status(to_status: str) -> None:
     if to_status not in Order.STATUSES:
         raise ValidationError({"detail": "Неизвестный статус", "code": "bad_status"})
     # Внутренние физические этапы нельзя ставить сырым status override даже
@@ -1721,31 +1591,8 @@ def _validate_manual_status(to_status: str, user) -> None:
         })
 
 
-def _assert_no_open_ai_session(order: Order) -> None:
-    """Do not hide or mutate an order while its camera slot is owned."""
-    from apps.cameras.models import AiCountingSession
-
-    if AiCountingSession.objects.filter(
-        order_id=order.pk,
-        status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists():
-        raise ValidationError({
-            "detail": "Сначала завершите AI-подсчёт на Моноблоке",
-            "code": "ai_session_active",
-        })
-
-
-def _has_open_ai_session(order: Order) -> bool:
-    from apps.cameras.models import AiCountingSession
-
-    return AiCountingSession.objects.filter(
-        order_id=order.pk,
-        status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists()
-
-
 def _assert_not_active_loading(order: Order) -> None:
-    if order.status in ("arrived", "loading", "loaded"):
+    if order.status in ON_POST_STATUSES:
         raise ValidationError({
             "detail": "Сначала завершите или верните текущую погрузку",
             "code": "active_loading",
@@ -1764,8 +1611,8 @@ def set_transport_type(order: Order, value: str, user) -> Order:
     order = lock_live_order(order, user)
     if value == order.transport_type:
         return order
-    _assert_no_open_ai_session(order)
-    if order.status in ("arrived", "loading", "loaded", "shipped"):
+    assert_no_open_ai_session(order)
+    if order.status in ENTERED_POST_STATUSES:
         raise ValidationError({
             "detail": "Вид транспорта нельзя изменить после начала погрузки",
             "code": "transport_type_locked",
@@ -1793,7 +1640,7 @@ def set_order_department(order: Order, value: str, user, *, any_department=False
     """Keep an active camera order inside the scope that can stop it."""
     caller_order = order
     order = lock_live_order(order, user, any_department=any_department)
-    if not value and order.status not in ("draft", "pending"):
+    if not value and order.status not in REVIEWABLE_STATUSES:
         raise ValidationError({"department": "У подтверждённого заказа должен быть отдел продаж"})
     if value == order.department:
         return order
@@ -1807,8 +1654,8 @@ def set_order_department(order: Order, value: str, user, *, any_department=False
     client = Client.objects.select_for_update().get(pk=order.client_id)
     if client.department_id and value != client.department.code:
         raise ValidationError({"department": "Выберите отдел, к которому закреплён клиент"})
-    _assert_no_open_ai_session(order)
-    if order.status in ("arrived", "loading", "loaded", "shipped"):
+    assert_no_open_ai_session(order)
+    if order.status in ENTERED_POST_STATUSES:
         raise ValidationError({
             "detail": "Отдел нельзя изменить после начала погрузки",
             "code": "department_locked",
@@ -1843,17 +1690,17 @@ def _assert_not_shipped(order: Order) -> None:
 @transaction.atomic
 def _force_set_status(order: Order, to_status: str, user,
                       bags_loaded: int | None = None) -> Order:
-    _validate_manual_status(to_status, user)
+    _validate_manual_status(to_status)
     # AI start takes the same row lock before reserving a camera. Holding it
     # through the check+transition closes confirmed→cancelled/pending races.
     order = lock_live_order(order, user)
     old = order.status
     _assert_not_shipped(order)
 
-    _assert_no_open_ai_session(order)
+    assert_no_open_ai_session(order)
     assert_money_allows_status(order, to_status)
 
-    if old in ("draft", "pending") and to_status in ("confirmed", "shipped"):
+    if old in REVIEWABLE_STATUSES and to_status in ("confirmed", "shipped"):
         raise ValidationError({
             "detail": "Сначала выберите отдел и подтвердите заказ в его карточке",
             "code": "order_confirmation_required",
@@ -1866,9 +1713,7 @@ def _force_set_status(order: Order, to_status: str, user,
 
     # Внутренние стадии могут содержать Shipment, счёт и камеру. Сбрасываем их
     # одной доменной операцией; голая смена status оставила бы занятый слот.
-    if old in ("arrived", "loading", "loaded") and to_status in (
-        "pending", "confirmed", "cancelled",
-    ):
+    if old in ON_POST_STATUSES and to_status in ROLLBACK_TARGET_STATUSES:
         from apps.shipments.services import rewind_loading
         return rewind_loading(order, user, target_status=to_status)
 
@@ -1896,7 +1741,7 @@ def request_status_change(order: Order, to_status: str, user,
     # Establish the canonical Order -> StatusChangeRequest lock order before
     # either applying the transition or inserting an approval request.
     order = lock_live_order(order, user)
-    _validate_manual_status(to_status, user)
+    _validate_manual_status(to_status)
     if to_status == order.status:
         raise ValidationError({"detail": "Статус уже такой", "code": "no_change"})
     if _can_edit_status(user):
@@ -1961,29 +1806,33 @@ def reject_status_change(req: StatusChangeRequest, user) -> StatusChangeRequest:
     return req
 
 
-@transaction.atomic
-def soft_delete_order(order: Order, user) -> Order:
-    """Мягкое удаление: заказ уезжает в «Корзину». Из всех отчётов и списков
-    исчезает (default-manager его не видит), но данные сохраняются и заказ
-    можно восстановить."""
+def _lock_any_order(order: Order, *, purged_detail: str) -> Order:
+    """Заблокировать заказ вместе с корзиной (all_objects); стёртый — ошибка."""
     try:
-        order = Order.all_objects.select_for_update().get(pk=order.pk)
+        locked = Order.all_objects.select_for_update().get(pk=order.pk)
     except Order.DoesNotExist as exc:
         raise ValidationError(
             {"detail": "Заказ не найден", "code": "not_found"}
         ) from exc
-    if order.purged_at is not None:
-        raise ValidationError({
-            "detail": "Заказ удалён безвозвратно",
-            "code": "already_purged",
-        })
+    if locked.purged_at is not None:
+        raise ValidationError({"detail": purged_detail, "code": "already_purged"})
+    return locked
+
+
+@transaction.atomic
+def soft_delete_order(order: Order, user) -> Order:
+    """Мягкое удаление: заказ уезжает в «Корзину». Из списков и аналитики
+    исчезает (default-manager его не видит), но данные сохраняются и заказ
+    можно восстановить. Деньги отгруженного заказа остаются в журнале кассы
+    и выписках (:func:`models.money_ledger_q`)."""
+    order = _lock_any_order(order, purged_detail="Заказ удалён безвозвратно")
     if order.deleted_at is not None:
         raise ValidationError({"detail": "Заказ уже в корзине", "code": "already_deleted"})
     assert_order_user_scope(order, user)
-    _assert_no_open_ai_session(order)
+    assert_no_open_ai_session(order)
     _assert_not_active_loading(order)
-    # Отгруженный заказ — законченная продажа, его деньги учтены отгрузкой.
-    # У неотгруженного деньги из корзины пропали бы из кассы и выписок.
+    # Отгруженный заказ — состоявшаяся продажа: его деньги остаются в денежной
+    # ленте и из корзины. У неотгруженного они пропали бы из кассы и выписок.
     if order.status != "shipped":
         assert_order_has_no_money(order)
     order.deleted_at = timezone.now()
@@ -1997,17 +1846,9 @@ def soft_delete_order(order: Order, user) -> Order:
 @transaction.atomic
 def restore_order(order: Order, user) -> Order:
     """Восстановить заказ из корзины — снова участвует в отчётах и списках."""
-    try:
-        order = Order.all_objects.select_for_update().get(pk=order.pk)
-    except Order.DoesNotExist as exc:
-        raise ValidationError(
-            {"detail": "Заказ не найден", "code": "not_found"}
-        ) from exc
-    if order.purged_at is not None:
-        raise ValidationError({
-            "detail": "Заказ удалён безвозвратно и не может быть восстановлен",
-            "code": "already_purged",
-        })
+    order = _lock_any_order(
+        order, purged_detail="Заказ удалён безвозвратно и не может быть восстановлен",
+    )
     if order.deleted_at is None:
         raise ValidationError({"detail": "Заказ не в корзине", "code": "not_deleted"})
     assert_order_user_scope(order, user)
@@ -2030,22 +1871,12 @@ def purge_order(order: Order, user) -> None:
     ``Order.all_objects``. The row lock serializes purge with restore/delete so
     a stale view object cannot delete a live or already-purged row.
     """
-    try:
-        order = Order.all_objects.select_for_update().get(pk=order.pk)
-    except Order.DoesNotExist as exc:
-        raise ValidationError(
-            {"detail": "Заказ не найден", "code": "not_found"}
-        ) from exc
-    if order.purged_at is not None:
-        raise ValidationError({
-            "detail": "Заказ уже удалён безвозвратно",
-            "code": "already_purged",
-        })
+    order = _lock_any_order(order, purged_detail="Заказ уже удалён безвозвратно")
     if order.deleted_at is None:
         raise ValidationError(
             {"detail": "Сначала переместите заказ в корзину", "code": "not_deleted"})
     assert_order_user_scope(order, user)
-    _assert_no_open_ai_session(order)
+    assert_no_open_ai_session(order)
     _assert_not_active_loading(order)
     must_retain_history = (
         order.status != "draft"

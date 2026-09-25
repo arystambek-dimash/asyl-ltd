@@ -2,17 +2,19 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Building2, Check, Download, FileDown, Layers, Minus } from "lucide-react";
-import { api, apiError } from "@/lib/api";
+import { api, blobApiError } from "@/lib/api";
+import { periodRange, type PeriodOption } from "@/lib/date-range";
 import { downloadBlob } from "@/lib/download";
-import { monthStartLocalIsoDate, todayLocalIsoDate } from "@/lib/utils";
+import { monthStartLocalIsoDate, todayLocalIsoDate, toggledSet } from "@/lib/utils";
 import { useApi } from "@/lib/use-api";
 import type { Department } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { ErrorAlert, FormError } from "@/components/ui/data-state";
 
 /** Раздел выписки. Ключ совпадает с backend (`CLIENT_SECTIONS`). */
-export type StatementSection = {
+type StatementSection = {
   key: string;
   name: string;
   hint: string;
@@ -24,7 +26,7 @@ const FORMATS = [
 ];
 
 /** Разделы выписки по одному клиенту. Порядок — как листы в книге. */
-export const CLIENT_STATEMENT_SECTIONS: StatementSection[] = [
+const CLIENT_STATEMENT_SECTIONS: StatementSection[] = [
   { key: "summary", name: "Сводка", hint: "Реквизиты и блок сверки остатков" },
   { key: "ledger", name: "Операции", hint: "Лента отгрузок и оплат с остатком" },
   { key: "orders", name: "Заказы", hint: "Заказы периода по дате создания" },
@@ -40,11 +42,18 @@ export const ALL_CLIENTS_STATEMENT_SECTIONS: StatementSection[] = [
   ...CLIENT_STATEMENT_SECTIONS.slice(1),
 ];
 
+const STATEMENT_PERIODS: PeriodOption<"all" | "month" | "today">[] = [
+  { key: "all", label: "Всё время" },
+  { key: "month", label: "Этот месяц" },
+  { key: "today", label: "Сегодня" },
+];
+
 type Props = {
   open: boolean;
   onClose: () => void;
   endpoint: string;
-  filename: string;
+  /** Имя файла без расширения: к нему добавятся период и .xlsx/.pdf. */
+  filenameStem: string;
   title: string;
   description: string;
   scopeLabel: string;
@@ -57,7 +66,7 @@ export function StatementExportModal({
   open,
   onClose,
   endpoint,
-  filename,
+  filenameStem,
   title,
   description,
   scopeLabel,
@@ -82,28 +91,22 @@ export function StatementExportModal({
     error: departmentsError,
     reload: reloadDepartments,
   } = useApi<Department[]>(open ? "/departments/?all=1" : null);
-  const departmentKey = departments?.map((department) => department.code).join("|") ?? "";
-  const sectionKey = sections.map((section) => section.key).join("|");
 
+  // При каждом открытии — период по умолчанию и все разделы. Набор разделов
+  // экраны передают константой, так что лишних сбросов он не вызывает.
   useEffect(() => {
     if (!open) return;
     setDateFrom(initialFrom || monthStartLocalIsoDate());
     setDateTo(initialTo || todayLocalIsoDate());
+    setSelectedSections(new Set(sections.map((section) => section.key)));
     setError("");
-  }, [open, initialFrom, initialTo]);
+  }, [open, initialFrom, initialTo, sections]);
 
+  // Отделы приходят асинхронно — выбираем все, когда список загрузился.
   useEffect(() => {
     if (!open || !departments) return;
     setSelectedDepartments(new Set(departments.map((department) => department.code)));
-  }, [open, departments, departmentKey]);
-
-  // Список разделов зависит от экрана (карточка клиента / общая выписка):
-  // при смене набора выбор сбрасывается, иначе в запрос уехал бы ключ,
-  // которого нет в этом эндпоинте, и бэкенд ответил бы 400.
-  useEffect(() => {
-    if (!open) return;
-    setSelectedSections(new Set(sections.map((section) => section.key)));
-  }, [open, sectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, departments]);
 
   const selectedRows = useMemo(
     () => departments?.filter((department) => selectedDepartments.has(department.code)) ?? [],
@@ -111,32 +114,21 @@ export function StatementExportModal({
   );
 
   function toggleDepartment(code: string) {
-    setSelectedDepartments((current) => {
-      const next = new Set(current);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
-      return next;
-    });
+    setSelectedDepartments((current) => toggledSet(current, code));
     setError("");
   }
 
   function toggleSection(key: string) {
-    setSelectedSections((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+    setSelectedSections((current) => toggledSet(current, key));
     setError("");
   }
 
   function datedFilename() {
-    const stem = filename.replace(/\.(xlsx|pdf)$/i, "");
     const period =
       dateFrom || dateTo
         ? `${dateFrom || "start"}_${dateTo || todayLocalIsoDate()}`
         : `all-time_${todayLocalIsoDate()}`;
-    return `${stem}_${period}.${format}`;
+    return `${filenameStem}_${period}.${format}`;
   }
 
   const allSectionsChosen = selectedSections.size === sections.length;
@@ -177,36 +169,11 @@ export function StatementExportModal({
       downloadBlob(response.data, datedFilename());
       onClose();
     } catch (cause) {
-      setError(apiError(cause));
+      setError(await blobApiError(cause));
     } finally {
       setBusy(false);
     }
   }
-
-  const periodPresets: { label: string; apply: () => void }[] = [
-    {
-      label: "Всё время",
-      apply: () => {
-        setDateFrom("");
-        setDateTo("");
-      },
-    },
-    {
-      label: "Этот месяц",
-      apply: () => {
-        setDateFrom(monthStartLocalIsoDate());
-        setDateTo(todayLocalIsoDate());
-      },
-    },
-    {
-      label: "Сегодня",
-      apply: () => {
-        const value = todayLocalIsoDate();
-        setDateFrom(value);
-        setDateTo(value);
-      },
-    },
-  ];
 
   return (
     <Modal
@@ -305,14 +272,7 @@ export function StatementExportModal({
           {departmentsLoading && !departments && (
             <p className="text-sm text-[var(--muted-foreground)]">Загружаем список отделов…</p>
           )}
-          {departmentsError && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2.5 text-sm text-[var(--destructive)]">
-              <span>{departmentsError}</span>
-              <Button type="button" size="sm" variant="outline" onClick={() => void reloadDepartments()}>
-                Повторить
-              </Button>
-            </div>
-          )}
+          {departmentsError && <ErrorAlert message={departmentsError} onRetry={() => void reloadDepartments()} />}
           {!!departments?.length && (
             <div className="grid gap-1.5 sm:grid-cols-2">
               {departments.map((department) => (
@@ -340,14 +300,18 @@ export function StatementExportModal({
           note="Продажи — по дате отгрузки, оплаты — по дате подтверждения кассой."
         >
           <div className="mb-3 flex flex-wrap gap-1.5">
-            {periodPresets.map((preset) => (
+            {STATEMENT_PERIODS.map(({ key, label }) => (
               <button
-                key={preset.label}
+                key={key}
                 type="button"
-                onClick={preset.apply}
+                onClick={() => {
+                  const range = periodRange(key);
+                  setDateFrom(range.dateFrom);
+                  setDateTo(range.dateTo);
+                }}
                 className="rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--foreground)] transition hover:bg-[var(--muted)]"
               >
-                {preset.label}
+                {label}
               </button>
             ))}
           </div>
@@ -377,11 +341,7 @@ export function StatementExportModal({
           </p>
         </Section>
 
-        {error && (
-          <p className="rounded-lg border border-[var(--destructive)]/25 bg-[var(--destructive)]/5 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]">
-            {error}
-          </p>
-        )}
+        <FormError message={error} />
       </div>
     </Modal>
   );

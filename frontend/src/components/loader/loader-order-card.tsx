@@ -1,82 +1,33 @@
 "use client";
-import { ChevronRight, TrainFront, Wallet } from "lucide-react";
-import { PlatePair } from "@/components/ui/transport-number";
+import { ChevronRight, Wallet } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
+import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { loadWeight, type LoaderOrder } from "@/lib/loader";
-import { cn, formatCurrency, formatTime, pluralRu } from "@/lib/utils";
-import { wagonsHeadline } from "@/lib/wagons";
+import { bagsWord, cn, formatCurrency, formatTime } from "@/lib/utils";
 
-export const bagsWord = (count: number) => pluralRu(count, ["мешок", "мешка", "мешков"]);
-
-/** Оплата заказа одной плашкой: «Оплачен» или сколько ещё должен клиент. */
+/**
+ * Оплата заказа одной плашкой: статус с сервера и остаток долга. «Не оплачен»
+ * здесь серый, а не красный: в долг возят почти всё, красным в очереди — просрочка.
+ */
 export function PaymentMark({ order, className }: { order: LoaderOrder; className?: string }) {
-  if (order.payment_status === undefined) return null;
-  const remaining = Number(order.remaining_amount ?? 0);
-  const paid = order.payment_status === "settled" || remaining <= 0;
-  const partial = !paid && Number(order.paid_total ?? 0) > 0;
+  const status = order.payment_status;
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold",
-        paid
-          ? "bg-[var(--success)]/15 text-[var(--success)]"
-          : partial
-            ? "bg-[var(--warning)]/20 text-[var(--warning)]"
-            : "bg-[var(--muted)] text-[var(--muted-foreground)]",
-        className,
-      )}
+    <Badge
+      tone={status === "unpaid" ? "muted" : (PAYMENT_STATUS_TONE[status] ?? "muted")}
+      className={cn("h-auto rounded-lg py-1 font-semibold", className)}
     >
-      {paid ? (
-        <>
-          <Wallet className="size-3.5" /> Оплачен
-        </>
-      ) : (
-        <>
-          <Wallet className="size-3.5" />
-          {partial ? "Частично" : "Не оплачен"} · {formatCurrency(String(remaining), order.currency)}
-        </>
-      )}
-    </span>
+      <Wallet className="size-3.5" />
+      {PAYMENT_STATUS_LABELS[status] ?? status}
+      {status !== "settled" && ` · ${formatCurrency(order.remaining_amount, order.currency)}`}
+    </Badge>
   );
 }
 
 /** Что грузить: товары заказа одной строкой. */
 export function itemsSummary(order: LoaderOrder): string {
   return order.items.map((item) => item.label).join(" · ") || "состав не указан";
-}
-
-/**
- * Номер транспорта крупно: у фуры — тягач и прицеп, как на самих машинах; у
- * отгрузки по отчёту — «12 вагонов · ст. Раустан» (номера — в карточке).
- */
-export function TransportNumber({ order, size = "md" }: { order: LoaderOrder; size?: "md" | "lg" }) {
-  if (order.transport_type === "train") {
-    const wagons = order.wagons?.length ?? 0;
-    return (
-      <span
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-md border-2 border-neutral-800 bg-white px-2 py-1 font-bold tabular-nums text-neutral-900",
-          size === "lg" ? "text-xl" : "text-sm",
-        )}
-      >
-        <TrainFront className={size === "lg" ? "size-5" : "size-4"} />
-        {wagons ? wagonsHeadline(wagons, order.rail_station) : order.truck_number || "без номера"}
-      </span>
-    );
-  }
-  if (!order.truck_number) {
-    return (
-      <span
-        className={cn(
-          "inline-flex items-center rounded-md border-2 border-dashed border-[var(--border)] px-2 py-1 font-semibold text-[var(--muted-foreground)]",
-          size === "lg" ? "text-lg" : "text-sm",
-        )}
-      >
-        Без номера
-      </span>
-    );
-  }
-  return <PlatePair truck={order.truck_number} trailer={order.trailer_number} size={size} />;
 }
 
 /** Карточка очереди: номер машины или вагона, сколько грузить (у вагона — в тоннах), что и кому. */
@@ -93,7 +44,7 @@ export function LoaderOrderCard({
     <>
       <div className="flex items-start justify-between gap-3">
         <span className="min-w-0 truncate">
-          <TransportNumber order={order} />
+          <OrderTransportBadge order={order} />
         </span>
         {order.shipped_at ? (
           <span className="shrink-0 text-sm font-semibold tabular-nums">{formatTime(order.shipped_at)}</span>
@@ -115,7 +66,7 @@ export function LoaderOrderCard({
         <PaymentMark order={order} />
       </div>
       {/* Номера вагонов отгрузки по отчёту; заголовок «12 вагонов» — в табличке сверху. */}
-      <WagonList wagons={order.wagons ?? []} headline={false} className="mt-2.5" />
+      <WagonList wagons={order.wagons} headline={false} className="mt-2.5" />
     </>
   );
   const className = cn(

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import MonoblockPage from "./page";
 import type { AlwaysOnDailyAnalytics, ShippingCameraDayHistory } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 
 const mocks = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
@@ -19,51 +20,34 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/store/auth", () => ({
   useAuth: () => ({
-    me: {
-      id: 1,
-      username: "loader",
-      is_client: false,
-      is_superuser: mocks.isSuperuser,
-
-      permissions: mocks.permissions,
-      position: null,
-      client_id: null,
-      sales_department: null,
-    },
+    me: makeMe({ username: "loader", is_superuser: mocks.isSuperuser, permissions: mocks.permissions }),
     loading: false,
   }),
 }));
 
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("@/components/monoblock/shipping-transport-camera", () => ({
   ShippingTransportCamera: ({ conveyorCamera }: { conveyorCamera: string }) => (
     <div data-testid="transport-camera">{conveyorCamera}</div>
   ),
 }));
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 
 vi.mock("@/components/camera-stream", () => ({
   CameraStream: ({ onStateChange }: { onStateChange?: (online: boolean) => void }) => (
     <button type="button" aria-label="Подключить тестовый поток" onClick={() => onStateChange?.(true)} />
   ),
-  ensureCameraStreamToken: vi.fn(),
 }));
 
 vi.mock("@/components/detection-overlay", () => ({
-  DetectionOverlay: ({ detections }: { detections?: Array<{ label?: string }> }) => (
+  DetectionOverlay: ({ detections }: { detections?: Array<{ class_name?: string }> }) => (
     <div data-testid="detection-layer">
       {(detections ?? []).map((detection, index) => (
-        <span key={`${detection.label}-${index}`}>{detection.label}</span>
+        <span key={`${detection.class_name}-${index}`}>{detection.class_name}</span>
       ))}
     </div>
   ),
-}));
-
-vi.mock("@/lib/use-visible-polling", () => ({
-  useVisiblePolling: () => undefined,
 }));
 
 vi.mock("@/lib/use-api", () => ({
@@ -114,7 +98,8 @@ const processor = {
   source: "sub",
   recording: false,
   total: 17,
-  detections: [{ x: 0.1, y: 0.2, w: 0.3, h: 0.4, label: "Red_50", confidence: 0.91, counted: false }],
+  detections: [{ bbox: [64, 72, 256, 216], class_name: "Red_50", confidence: 0.91 }],
+  detection_frame: { width: 640, height: 360 },
 };
 
 const alwaysOnSettings = {
@@ -134,11 +119,6 @@ const analytics = {
   day: "2026-08-24",
   total: 17,
   all_time_total: 17,
-  model_all_time_total: 17,
-  adjustment: 0,
-  history: [],
-  colors: [],
-  dominant_color: null,
   cameras: [],
 };
 
@@ -202,13 +182,8 @@ function shippingDayHistory(day = "2026-08-24"): ShippingCameraDayHistory {
     ],
     run_smoothing: {
       n_min: 10,
-      changed: true,
-      raw_run_count: 3,
-      algorithm_run_count: 1,
       raw_model_total: 12,
       algorithm_model_total: 12,
-      raw_model_per_color: { red: 9, blue: 3 },
-      algorithm_model_per_color: { red: 12 },
       raw_colors: [
         { color: "red", total: 9, percent: 75 },
         { color: "blue", total: 3, percent: 25 },
@@ -227,12 +202,10 @@ function setupShippingHistory(
     day,
     model_total: 12,
     model_per_color: { red: 9, blue: 3 },
-    model_per_brand: {},
     colors: [
       { color: "red", total: 9, percent: 75 },
       { color: "blue", total: 3, percent: 25 },
     ],
-    brands: [],
     adjustment: 0,
     total: 12,
     updated_at: null,
@@ -247,17 +220,12 @@ function setupShippingHistory(
     analytics_sync: sync,
     total: 12,
     all_time_total: 24,
-    model_all_time_total: 24,
-    history,
-    colors: historyPoint.colors,
     cameras: [
       {
         camera: "cam2",
         ...historyPoint,
         all_time_total: 24,
         history,
-        dominant_color: "red",
-        dominant_brand: null,
         analytics_sync: sync,
       },
     ],
@@ -265,14 +233,6 @@ function setupShippingHistory(
   mocks.responses.set("/cameras/monoblock-settings/", {
     camera_sources: ["cam2"],
     blocked_camera_sources: [],
-    continuous_camera_sources: ["cam2"],
-    continuous_source: "sub",
-    continuous_sync_status: "synced",
-    continuous_detail: "",
-    camera_readiness: { cam2: { status: "synced", detail: "" } },
-    locked: false,
-    device_id: null,
-    device_name: null,
     updated_at: null,
   });
   mocks.responses.set("/cameras/shipping-continuous-settings/", shippingSettings);
@@ -308,6 +268,59 @@ function selectedDayPanel(day: string) {
   return panel;
 }
 
+/** Общая часть ответа /cameras/always-on-production/ для cam2 на основном складе. */
+const productionBase = {
+  camera: "cam2",
+  warehouse: 1,
+  warehouse_name: "Основной склад",
+  warehouses: [{ id: 1, code: "main", name: "Основной склад", is_active: true, is_default: true }],
+  timezone: "Asia/Almaty",
+  close_time: "19:00",
+  current_business_day: "2026-08-24",
+  next_run_at: "2026-08-24T13:00:00Z",
+  selected_day: null,
+  day_runs: [],
+};
+
+const redFlour = {
+  id: 1,
+  label: "Красная мука · 50 кг",
+  color: "Red",
+  color_label: "Красный",
+  weight_kg: "50.00",
+  warehouse_ids: [1],
+};
+
+/**
+ * GET-ответы AI 24/7: детекции (по умолчанию не приходят), настройки и
+ * аналитика; `extra` отвечает на прочие адреса, остальное — ошибка теста.
+ */
+function mockAlwaysOnApi({
+  detections = new Promise<never>(() => undefined),
+  settings = alwaysOnSettings,
+  analytics: analyticsData = analytics,
+  extra = {},
+}: {
+  detections?: Promise<unknown>;
+  settings?: unknown;
+  analytics?: unknown;
+  extra?: Record<string, () => Promise<unknown>>;
+} = {}) {
+  mocks.apiGet.mockImplementation((url: unknown) => {
+    if (url === "/cameras/always-on-detections/") return detections;
+    if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: settings });
+    if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analyticsData });
+    const route = typeof url === "string" ? extra[url] : undefined;
+    return route ? route() : Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+  });
+}
+
+/** Вкладка AI 24/7 → окно камеры «Робот Кука». */
+async function openAlwaysOnCamera(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
+  await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+}
+
 beforeEach(() => {
   mocks.requestedUrls = [];
   mocks.permissions = ["monoblock.view"];
@@ -330,10 +343,7 @@ beforeEach(() => {
       ],
     ],
     ["/cameras/ai/sessions/", []],
-    [
-      "/cameras/monoblock-settings/",
-      { camera_sources: [], locked: false, device_id: null, device_name: null, updated_at: null },
-    ],
+    ["/cameras/monoblock-settings/", { camera_sources: [], updated_at: null }],
     ["/cameras/always-on-settings/", alwaysOnSettings],
     ["/cameras/always-on-analytics/", analytics],
   ]);
@@ -342,12 +352,7 @@ beforeEach(() => {
     mocks.resolveDetections = resolve;
     mocks.rejectDetections = reject;
   });
-  mocks.apiGet.mockImplementation((url: unknown) => {
-    if (url === "/cameras/always-on-detections/") return detections;
-    if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
-    if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
-    return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
-  });
+  mockAlwaysOnApi({ detections });
 });
 
 describe("AI 24/7 live detections", () => {
@@ -382,16 +387,10 @@ describe("AI 24/7 live detections", () => {
       camera_readiness: { cam2: { status: "pending", detail: "Процессор ещё не подтверждён" } },
     };
     mocks.responses.set("/cameras/always-on-settings/", unavailableSettings);
-    mocks.apiGet.mockImplementation((url: unknown) => {
-      if (url === "/cameras/always-on-detections/") return new Promise(() => undefined);
-      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: unavailableSettings });
-      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
-      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
-    });
+    mockAlwaysOnApi({ settings: unavailableSettings });
 
     render(<MonoblockPage />);
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
 
     const label = screen.getByText("Текущий цикл");
     expect(label.parentElement).toHaveTextContent("Текущий цикл—");
@@ -402,8 +401,7 @@ describe("AI 24/7 live detections", () => {
     const user = userEvent.setup();
 
     render(<MonoblockPage />);
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
 
     const label = screen.getByText("Текущий цикл");
     expect(label.parentElement).toHaveTextContent("Текущий цикл17");
@@ -469,7 +467,6 @@ describe("AI 24/7 live detections", () => {
           segments: [],
         },
       ],
-      next_cursor: null,
       truncated: false,
     });
     render(<MonoblockPage />);
@@ -704,89 +701,49 @@ describe("AI 24/7 live detections", () => {
     await waitFor(() => expect(screen.getByText("Мешки в кадре: есть")).toBeInTheDocument());
   });
 
-  it("не показывает независимую бренд-разбивку в активной аналитике", async () => {
+  it("не показывает бренд-разбивку в активной аналитике", async () => {
     const user = userEvent.setup();
     mocks.isSuperuser = true;
-    const brandedAnalytics = {
+    const syncedCameraAnalytics = {
       ...analytics,
-      total: 29,
-      all_time_total: 29,
-      model_all_time_total: 29,
-      model_per_brand: { future_brand: 12, korol: 9, dikhan_baba: 5, unknown: 2, unclassified: 1 },
-      brands: [
-        { brand: "future_brand", total: 12, percent: 41.4 },
-        { brand: "korol", total: 9, percent: 31 },
-        { brand: "dikhan_baba", total: 5, percent: 17.2 },
-        { brand: "unknown", total: 2, percent: 6.9 },
-        { brand: "unclassified", total: 1, percent: 3.5 },
-      ],
-      dominant_brand: "korol",
+      total: 14,
+      all_time_total: 14,
       cameras: [
         {
           camera: "cam2",
           day: "2026-08-24",
-          model_total: 29,
+          model_total: 14,
           model_per_color: {},
-          model_per_brand: { future_brand: 12, korol: 9, dikhan_baba: 5, unknown: 2, unclassified: 1 },
           adjustment: 0,
-          total: 29,
-          all_time_total: 29,
+          total: 14,
+          all_time_total: 14,
           history: [],
           colors: [],
-          brands: [
-            { brand: "future_brand", total: 12, percent: 41.4 },
-            { brand: "korol", total: 9, percent: 31 },
-            { brand: "dikhan_baba", total: 5, percent: 17.2 },
-            { brand: "unknown", total: 2, percent: 6.9 },
-            { brand: "unclassified", total: 1, percent: 3.5 },
-          ],
-          dominant_color: null,
-          dominant_brand: "korol",
           analytics_sync: { available: true, status: "synced", detail: "" },
           updated_at: null,
         },
       ],
     };
-    mocks.responses.set("/cameras/always-on-analytics/", brandedAnalytics);
-    mocks.apiGet.mockImplementation((url: unknown) => {
-      if (url === "/cameras/always-on-detections/") {
-        return Promise.resolve({ data: { processors: [processor] } });
-      }
-      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
-      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: brandedAnalytics });
-      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    mocks.responses.set("/cameras/always-on-analytics/", syncedCameraAnalytics);
+    mockAlwaysOnApi({
+      detections: Promise.resolve({ data: { processors: [processor] } }),
+      analytics: syncedCameraAnalytics,
     });
 
     render(<MonoblockPage />);
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
 
+    expect(screen.getByText("Продукция")).toBeInTheDocument();
     expect(screen.queryByText("Основной бренд")).not.toBeInTheDocument();
     expect(screen.queryByText("Бренды")).not.toBeInTheDocument();
-    expect(screen.queryByText("Korol")).not.toBeInTheDocument();
-    expect(screen.queryByText("Future Brand")).not.toBeInTheDocument();
-    expect(screen.queryByText("Дихан Баба")).not.toBeInTheDocument();
-    expect(screen.getByText("Продукция")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Уменьшить/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Сдать в архив/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Архив" })).not.toBeInTheDocument();
   });
 
   it("не позволяет запоздавшему GET перезаписать сохранённые привязки", async () => {
     const user = userEvent.setup();
     mocks.isSuperuser = true;
     const initialProduction = {
-      camera: "cam2",
-      warehouse: 1,
-      warehouse_name: "Основной склад",
-      warehouses: [{ id: 1, code: "main", name: "Основной склад", is_active: true, is_default: true }],
-      timezone: "Asia/Almaty",
-      close_time: "19:00",
-      current_business_day: "2026-08-24",
-      next_run_at: "2026-08-24T13:00:00Z",
-      selected_day: null,
-      day_runs: [],
+      ...productionBase,
       fully_configured: false,
       available_colors: ["red", "blue"],
       mappings: [
@@ -794,25 +751,18 @@ describe("AI 24/7 live detections", () => {
         { color: "blue", product: null, product_label: null },
       ],
       products: [
-        {
-          id: 1,
-          label: "Красная мука · 50 кг",
-          color: "Red",
-          color_label: "Красный",
-          weight_kg: "50.00",
-          warehouse: 1,
-        },
+        redFlour,
         {
           id: 2,
           label: "Синяя мука · 50 кг",
           color: "Blue",
           color_label: "Синий",
           weight_kg: "50.00",
-          warehouse: 1,
+          warehouse_ids: [1],
         },
       ],
-      runs: [],
       preview: [],
+      unresolved: { business_day: "2026-08-24", bags: 0 },
       batches: [],
     };
     const savedProduction = {
@@ -825,23 +775,23 @@ describe("AI 24/7 live detections", () => {
       resolveStale = resolve;
     });
     let productionGets = 0;
-    mocks.apiGet.mockImplementation((url: unknown) => {
-      if (url === "/cameras/always-on-detections/") return new Promise(() => undefined);
-      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
-      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
-      if (url === "/cameras/always-on-production/?camera=cam2") {
-        productionGets += 1;
-        return productionGets === 1 ? Promise.resolve({ data: initialProduction }) : staleResponse;
-      }
-      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    mockAlwaysOnApi({
+      extra: {
+        "/cameras/always-on-production/?camera=cam2": () =>
+          ++productionGets === 1 ? Promise.resolve({ data: initialProduction }) : staleResponse,
+      },
     });
     mocks.apiPut.mockResolvedValue({ data: savedProduction });
 
     render(<MonoblockPage />);
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
     await user.click(screen.getByRole("tab", { name: "Выпуск и склад" }));
     await screen.findByLabelText("Товар для цвета Синий");
+    const productionTab = screen.getByRole("tab", { name: "Выпуск и склад" });
+    expect(screen.getByRole("tabpanel", { name: "Выпуск и склад" })).toHaveAttribute(
+      "id",
+      productionTab.getAttribute("aria-controls"),
+    );
 
     await user.click(screen.getByRole("tab", { name: "Прямой эфир" }));
     await user.click(screen.getByRole("tab", { name: "Выпуск и склад" }));
@@ -862,30 +812,11 @@ describe("AI 24/7 live detections", () => {
     const user = userEvent.setup();
     mocks.isSuperuser = true;
     const production = {
-      camera: "cam2",
-      warehouse: 1,
-      warehouse_name: "Основной склад",
-      warehouses: [{ id: 1, code: "main", name: "Основной склад", is_active: true, is_default: true }],
-      timezone: "Asia/Almaty",
-      close_time: "19:00",
-      current_business_day: "2026-08-24",
-      next_run_at: "2026-08-24T13:00:00Z",
-      selected_day: null,
-      day_runs: [],
+      ...productionBase,
       fully_configured: true,
       available_colors: ["red"],
       mappings: [{ color: "red", product: 1, product_label: "Красная мука · 50 кг" }],
-      products: [
-        {
-          id: 1,
-          label: "Красная мука · 50 кг",
-          color: "Red",
-          color_label: "Красный",
-          weight_kg: "50.00",
-          warehouse: 1,
-        },
-      ],
-      runs: [],
+      products: [redFlour],
       preview: [
         {
           color: "red",
@@ -906,19 +837,14 @@ describe("AI 24/7 live detections", () => {
       preview: [{ ...production.preview[0], resolved_bags: 2, net_bags: 12, inferred: { manual: 2 } }],
       unresolved: { business_day: "2026-08-24", bags: 0 },
     };
-    mocks.apiGet.mockImplementation((url: unknown) => {
-      if (url === "/cameras/always-on-detections/") return new Promise(() => undefined);
-      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
-      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: analytics });
-      if (url === "/cameras/always-on-production/?camera=cam2") return Promise.resolve({ data: production });
-      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    mockAlwaysOnApi({
+      extra: { "/cameras/always-on-production/?camera=cam2": () => Promise.resolve({ data: production }) },
     });
     mocks.apiPost.mockRejectedValueOnce(new Error("Без цвета осталось только 1 меш."));
     mocks.apiPost.mockResolvedValueOnce({ data: assigned });
 
     render(<MonoblockPage />);
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
     await user.click(screen.getByRole("tab", { name: "Выпуск и склад" }));
     await screen.findByText("Цвет не определён: 2 мешка");
 
@@ -948,30 +874,13 @@ describe("AI 24/7 live detections", () => {
       day,
       model_total: 158,
       model_per_color: { red: 150, green: 5, blue: 3 },
-      model_per_brand: { korol: 158 },
       colors: [
         { color: "red", total: 150, percent: 94.9 },
         { color: "green", total: 5, percent: 3.2 },
         { color: "blue", total: 3, percent: 1.9 },
       ],
-      brands: [{ brand: "korol", total: 158, percent: 100 }],
       adjustment: -5,
       total: 153,
-      updated_at: null,
-    };
-    const legacyDay = "2026-08-23";
-    const legacyHistoryPoint = {
-      day: legacyDay,
-      model_total: 12,
-      model_per_color: { red: 10, blue: 2 },
-      model_per_brand: {},
-      colors: [
-        { color: "red", total: 10, percent: 83.3 },
-        { color: "blue", total: 2, percent: 16.7 },
-      ],
-      brands: [],
-      adjustment: 0,
-      total: 12,
       updated_at: null,
     };
     const archivedDay = "2026-08-22";
@@ -979,9 +888,7 @@ describe("AI 24/7 live detections", () => {
       day: archivedDay,
       model_total: 40,
       model_per_color: { blue: 40 },
-      model_per_brand: {},
       colors: [{ color: "blue", total: 40, percent: 100 }],
-      brands: [],
       adjustment: 0,
       total: 40,
       updated_at: null,
@@ -990,9 +897,7 @@ describe("AI 24/7 live detections", () => {
       day: "2026-08-21",
       model_total: 200,
       model_per_color: { red: 200 },
-      model_per_brand: {},
       colors: [{ color: "red", total: 200, percent: 100 }],
-      brands: [],
       adjustment: -20,
       total: 180,
       updated_at: null,
@@ -1001,28 +906,17 @@ describe("AI 24/7 live detections", () => {
       ...analytics,
       total: 153,
       all_time_total: 385,
-      model_all_time_total: 410,
-      history: [peakHistoryPoint, archivedHistoryPoint, legacyHistoryPoint, historyPoint],
-      colors: historyPoint.colors,
-      model_per_brand: historyPoint.model_per_brand,
-      brands: historyPoint.brands,
-      dominant_color: "red",
-      dominant_brand: "korol",
       cameras: [
         {
           camera: "cam2",
           day,
           model_total: 158,
           model_per_color: historyPoint.model_per_color,
-          model_per_brand: historyPoint.model_per_brand,
           adjustment: -5,
           total: 153,
           all_time_total: 385,
-          history: [peakHistoryPoint, archivedHistoryPoint, legacyHistoryPoint, historyPoint],
+          history: [peakHistoryPoint, archivedHistoryPoint, historyPoint],
           colors: historyPoint.colors,
-          brands: historyPoint.brands,
-          dominant_color: "red",
-          dominant_brand: "korol",
           analytics_sync: { available: true, status: "synced", detail: "" },
           updated_at: null,
         },
@@ -1099,7 +993,7 @@ describe("AI 24/7 live detections", () => {
           color: "Red",
           color_label: "Красный",
           weight_kg: "50.00",
-          warehouse: 2,
+          warehouse_ids: [2],
         },
         {
           id: 3,
@@ -1107,7 +1001,7 @@ describe("AI 24/7 live detections", () => {
           color: "Blue",
           color_label: "Синий",
           weight_kg: "50.00",
-          warehouse: 2,
+          warehouse_ids: [2],
         },
       ],
       dominant_brand_by_color: {
@@ -1124,13 +1018,8 @@ describe("AI 24/7 live detections", () => {
       algorithm_day_runs: algorithmRuns,
       run_smoothing: {
         n_min: 10,
-        changed: true,
-        raw_run_count: 4,
-        algorithm_run_count: 2,
         raw_model_total: 158,
         algorithm_model_total: 158,
-        raw_model_per_color: { red: 150, green: 5, blue: 3 },
-        algorithm_model_per_color: { red: 153, green: 5 },
         raw_colors: historyPoint.colors,
         algorithm_colors: [
           { color: "red", total: 153, percent: 96.8 },
@@ -1140,32 +1029,7 @@ describe("AI 24/7 live detections", () => {
     };
     const productionUrl = `/cameras/always-on-production/?camera=cam2&day=${day}`;
     const currentProductionUrl = "/cameras/always-on-production/?camera=cam2";
-    const legacyProductionUrl = `/cameras/always-on-production/?camera=cam2&day=${legacyDay}`;
     const archivedProductionUrl = `/cameras/always-on-production/?camera=cam2&day=${archivedDay}`;
-    const legacyProductionDay = {
-      selected_day: legacyDay,
-      timezone: "UTC",
-      day_runs: [
-        {
-          ...rawRuns[1],
-          id: 11,
-          business_day: legacyDay,
-          started_at: "2026-08-23T07:00:00Z",
-          last_counted_at: "2026-08-23T08:00:00Z",
-          ended_at: "2026-08-23T08:00:00Z",
-          model_bags: 10,
-        },
-        {
-          ...rawRuns[2],
-          id: 12,
-          business_day: legacyDay,
-          started_at: "2026-08-23T08:01:00Z",
-          last_counted_at: "2026-08-23T08:02:00Z",
-          ended_at: "2026-08-23T08:02:00Z",
-          model_bags: 2,
-        },
-      ],
-    };
     const archivedRawRuns = [
       {
         ...rawRuns[1],
@@ -1193,13 +1057,8 @@ describe("AI 24/7 live detections", () => {
       algorithm_day_runs: archivedRawRuns,
       run_smoothing: {
         n_min: 10,
-        changed: false,
-        raw_run_count: 2,
-        algorithm_run_count: 2,
         raw_model_total: 140,
         algorithm_model_total: 140,
-        raw_model_per_color: { red: 100, blue: 40 },
-        algorithm_model_per_color: { red: 100, blue: 40 },
         raw_colors: [
           { color: "red", total: 100, percent: 71.4 },
           { color: "blue", total: 40, percent: 28.6 },
@@ -1212,22 +1071,18 @@ describe("AI 24/7 live detections", () => {
     };
 
     mocks.responses.set("/cameras/always-on-analytics/", detailedAnalytics);
-    mocks.apiGet.mockImplementation((url: unknown) => {
-      if (url === "/cameras/always-on-detections/") {
-        return Promise.resolve({ data: { processors: [processor] } });
-      }
-      if (url === "/cameras/always-on-settings/") return Promise.resolve({ data: alwaysOnSettings });
-      if (url === "/cameras/always-on-analytics/") return Promise.resolve({ data: detailedAnalytics });
-      if (url === currentProductionUrl) return Promise.resolve({ data: { ...productionDay, selected_day: null } });
-      if (url === productionUrl) return Promise.resolve({ data: productionDay });
-      if (url === legacyProductionUrl) return Promise.resolve({ data: legacyProductionDay });
-      if (url === archivedProductionUrl) return Promise.resolve({ data: archivedProductionDay });
-      return Promise.reject(new Error(`Unexpected GET ${String(url)}`));
+    mockAlwaysOnApi({
+      detections: Promise.resolve({ data: { processors: [processor] } }),
+      analytics: detailedAnalytics,
+      extra: {
+        [currentProductionUrl]: () => Promise.resolve({ data: { ...productionDay, selected_day: null } }),
+        [productionUrl]: () => Promise.resolve({ data: productionDay }),
+        [archivedProductionUrl]: () => Promise.resolve({ data: archivedProductionDay }),
+      },
     });
 
     render(<MonoblockPage />);
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
     await user.click(screen.getByRole("button", { name: "30 дней" }));
     await waitFor(() =>
@@ -1316,41 +1171,9 @@ describe("AI 24/7 live detections", () => {
     expect(within(dayPanel).getAllByText("меш.")).toHaveLength(4);
     expect(within(dayPanel).queryByText("Korol")).not.toBeInTheDocument();
 
-    // Предыдущий API не знает об algorithm_day_runs/run_smoothing: оба
-    // режима должны без ошибки показать исходный дневной срез.
-    await user.click(screen.getByRole("button", { name: "Аналитика за 23.08.2026: 12 мешков" }));
-    await waitFor(() =>
-      expect(mocks.apiGet).toHaveBeenCalledWith(legacyProductionUrl, { signal: expect.any(AbortSignal) }),
-    );
-    const legacyHeading = screen.getByRole("heading", { name: "23.08.2026" });
-    const legacyDayPanel = legacyHeading.closest('[data-testid="always-on-panel"]');
-    if (!(legacyDayPanel instanceof HTMLElement)) throw new Error("Карточка legacy-дня не найдена");
-    await waitFor(() =>
-      expect(within(legacyDayPanel).getByRole("button", { name: "Алгоритм" })).toHaveAttribute("aria-pressed", "true"),
-    );
-    expect(
-      within(legacyDayPanel).getByRole("group", { name: "ДБН 1с 50кг · Красный 50 кг: 10 мешков" }),
-    ).toBeInTheDocument();
-    expect(
-      within(legacyDayPanel).getByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 2 мешков" }),
-    ).toBeInTheDocument();
-    expect(within(legacyDayPanel).getAllByText("ДБН 1с 50кг · Красный 50 кг")).toHaveLength(2);
-    expect(within(legacyDayPanel).getAllByText("ДБН вс 50кг · Синий 50 кг")).toHaveLength(2);
-    expect(within(legacyDayPanel).getAllByText(/Бренд недоступен$/)).toHaveLength(2);
-    expect(within(legacyDayPanel).queryByText("Сопоставление недоступно")).not.toBeInTheDocument();
-    expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
     expect(allTimeColorsPanel.querySelector('[data-receipt-binding="bound"]')).toHaveTextContent(
       "Склад готовой продукции",
     );
-
-    await user.click(within(legacyDayPanel).getByRole("button", { name: "Сырые данные" }));
-    expect(
-      within(legacyDayPanel).getByRole("group", { name: "ДБН 1с 50кг · Красный 50 кг: 10 мешков" }),
-    ).toBeInTheDocument();
-    expect(
-      within(legacyDayPanel).getByRole("group", { name: "ДБН вс 50кг · Синий 50 кг: 2 мешков" }),
-    ).toBeInTheDocument();
-    expect(within(legacyDayPanel).getAllByText("меш.")).toHaveLength(2);
 
     // Append-only production runs include the part already moved to an
     // archive. Never mix that full ledger (140) with the active slice (40).
@@ -1369,21 +1192,86 @@ describe("AI 24/7 live detections", () => {
       "журнал не совпадает с итогом выбранного дня",
     );
     expect(within(archivedDayPanel).queryByText("меш.")).not.toBeInTheDocument();
+    // Как у отгрузки: при несовпадении журнала оба режима одинаковы, переключать нечего.
+    expect(within(archivedDayPanel).getByRole("button", { name: "Алгоритм" })).toBeDisabled();
+    expect(within(archivedDayPanel).getByRole("button", { name: "Сырые данные" })).toBeDisabled();
+  });
+
+  it("считает рамки на кнопке по быстрому опросу, а не по снимку настроек", async () => {
+    const user = userEvent.setup();
+    render(<MonoblockPage />);
+
+    await openAlwaysOnCamera(user);
+    await user.click(screen.getByRole("button", { name: "Подключить тестовый поток" }));
+    const toggle = screen.getByRole("button", { name: /Рамки и линия/ });
+    expect(toggle).toHaveTextContent("· 1");
+
+    const box = { bbox: [320, 72, 448, 144], confidence: 0.9 };
+    await act(async () => {
+      mocks.resolveDetections?.({
+        data: {
+          processors: [
+            {
+              ...processor,
+              last_frame_at: "2026-08-24T10:00:00+05:00",
+              detections: [
+                { ...box, class_name: "Blue_50" },
+                { ...box, class_name: "Green_50" },
+              ],
+            },
+          ],
+        },
+      });
+    });
+
+    expect(await screen.findByText("Blue_50")).toBeInTheDocument();
+    expect(toggle).toHaveTextContent("· 2");
+  });
+
+  it("оставляет в открытом окне пояснение готовности своей камеры после обновления", async () => {
+    const user = userEvent.setup();
+    const pendingSettings = {
+      ...alwaysOnSettings,
+      detail: "",
+      camera_readiness: { cam2: { status: "pending", detail: "Процессор ещё не подтверждён" } },
+    };
+    // Журнал доступен, иначе окно показывает вместо пояснения ошибку аналитики.
+    const syncedAnalytics = {
+      ...analytics,
+      cameras: [
+        {
+          ...analytics,
+          camera: "cam2",
+          analytics_sync: { available: true, status: "synced", detail: "" },
+          updated_at: null,
+        },
+      ],
+    };
+    mocks.responses.set("/cameras/always-on-settings/", pendingSettings);
+    mocks.responses.set("/cameras/always-on-analytics/", syncedAnalytics);
+    mockAlwaysOnApi({ settings: pendingSettings, analytics: syncedAnalytics });
+
+    render(<MonoblockPage />);
+    await openAlwaysOnCamera(user);
+    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith("/cameras/always-on-settings/", expect.anything()));
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveTextContent("Процессор ещё не подтверждён"));
   });
 
   it("clears the last snapshot when the authoritative poll no longer contains this processor", async () => {
     const user = userEvent.setup();
     render(<MonoblockPage />);
 
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
     await user.click(screen.getByRole("button", { name: "Подключить тестовый поток" }));
     expect(screen.getByText("Red_50")).toBeInTheDocument();
 
     await act(async () => {
       mocks.resolveDetections?.({ data: { processors: [] } });
     });
-    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith("/cameras/always-on-detections/"));
+    await waitFor(() =>
+      expect(mocks.apiGet).toHaveBeenCalledWith("/cameras/always-on-detections/", { signal: expect.any(AbortSignal) }),
+    );
 
     // An empty successful response is authoritative. Falling back to the
     // initial settings snapshot gives the old box a fresh timestamp on every
@@ -1395,15 +1283,16 @@ describe("AI 24/7 live detections", () => {
     const user = userEvent.setup();
     render(<MonoblockPage />);
 
-    await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await openAlwaysOnCamera(user);
     await user.click(screen.getByRole("button", { name: "Подключить тестовый поток" }));
     expect(screen.getByText("Red_50")).toBeInTheDocument();
 
     await act(async () => {
       mocks.rejectDetections?.(new Error("camera PC unavailable"));
     });
-    await waitFor(() => expect(mocks.apiGet).toHaveBeenCalledWith("/cameras/always-on-detections/"));
+    await waitFor(() =>
+      expect(mocks.apiGet).toHaveBeenCalledWith("/cameras/always-on-detections/", { signal: expect.any(AbortSignal) }),
+    );
 
     expect(screen.queryByText("Red_50")).not.toBeInTheDocument();
   });
@@ -1437,8 +1326,7 @@ it("requests today by default and replaces the analytics period without acceptin
     return Promise.reject(new Error("Нет данных выпуска"));
   });
   render(<MonoblockPage />);
-  await user.click(screen.getByRole("tab", { name: /AI 24\/7/ }));
-  await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+  await openAlwaysOnCamera(user);
   await user.click(screen.getByRole("tab", { name: "Аналитика" }));
   expect(screen.getByLabelText("Аналитика с даты")).toHaveValue("2026-08-24");
   expect(mocks.requestedUrls).toContain(

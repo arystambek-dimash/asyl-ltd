@@ -26,7 +26,7 @@ with open(os.environ['COMMAND_LOG'],'a') as f:f.write(' '.join(args)+'\\n')
 if args[:2]==['ps','-q']:print('collector-current')
 if args[:2]==['exec','-i']:
  script=sys.stdin.read()
- if 'HTTPConnection' in script:
+ if 'fetch_frame' in script:
   with open(os.environ['COMMAND_LOG'],'a') as f:f.write('video-probe\\n')
   if os.environ['VIDEO_FAILURE']=='1':
    print('Weighbridge video unavailable: collector upgrade is degraded', file=sys.stderr)

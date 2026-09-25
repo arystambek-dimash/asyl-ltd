@@ -1,18 +1,15 @@
 """Manual/legacy runner for the shared ApiPay reconciliation iteration."""
 
 import logging
-import os
 import time
 
 from django.core.management.base import BaseCommand, CommandError
 
+from apps.common.heartbeat import write_heartbeat
 from apps.orders.reconciliation import reconcile_apipay_invoices
 from apps.orders.reconciliation_runner import (
-    DEFAULT_HEARTBEAT_FILE,
     ApiPayReconciliationOptions,
-    _backoff_delay,
-    _env_int,
-    _write_heartbeat,
+    backoff_delay,
     run_apipay_reconciliation_iteration,
 )
 from apps.orders.refund_reconciliation import reconcile_apipay_refunds
@@ -28,6 +25,9 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser):
+        # Умолчания — те же переменные окружения и ограничения, что у задачи
+        # Celery: ApiPayReconciliationOptions.from_environment().
+        defaults = ApiPayReconciliationOptions.from_environment()
         parser.add_argument(
             "--once",
             action="store_true",
@@ -36,39 +36,37 @@ class Command(BaseCommand):
         parser.add_argument(
             "--interval",
             type=int,
-            default=_env_int("APIPAY_RECONCILE_INTERVAL_SECONDS", 30),
+            default=defaults.interval_seconds,
             help="Seconds between reconciliation starts",
         )
         parser.add_argument(
             "--stale-seconds",
             type=int,
-            default=_env_int("APIPAY_RECONCILE_STALE_SECONDS", 30),
+            default=defaults.stale_seconds,
             help="Minimum age of the last local observation before polling",
         )
         parser.add_argument(
             "--lookback-hours",
             type=int,
-            default=_env_int("APIPAY_RECONCILE_LOOKBACK_HOURS", 72),
+            default=defaults.lookback_hours,
             help="How far back to reconsider non-final and late-paid invoices",
         )
         parser.add_argument(
             "--batch-size",
             type=int,
-            default=_env_int("APIPAY_RECONCILE_BATCH_SIZE", 100),
+            default=defaults.batch_size,
             help="Maximum invoice IDs per provider request (1-500)",
         )
         parser.add_argument(
             "--refund-limit",
             type=int,
-            default=_env_int("APIPAY_REFUND_RECONCILE_LIMIT", 25),
+            default=defaults.refund_limit,
             help="Maximum provider refund snapshots per iteration (1-500)",
         )
         parser.add_argument(
             "--refund-orphan-grace-seconds",
             type=int,
-            default=_env_int(
-                "APIPAY_REFUND_ORPHAN_GRACE_SECONDS", 15 * 60
-            ),
+            default=defaults.refund_orphan_grace_seconds,
             help=(
                 "Minimum age before a complete empty provider snapshot can "
                 "release an ambiguous local refund reservation"
@@ -77,9 +75,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--refund-sweep-stale-seconds",
             type=int,
-            default=_env_int(
-                "APIPAY_REFUND_SWEEP_STALE_SECONDS", 15 * 60
-            ),
+            default=defaults.refund_sweep_stale_seconds,
             help=(
                 "Minimum age before rechecking a paid invoice for refunds "
                 "created directly at the provider"
@@ -88,9 +84,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--request-budget-per-minute",
             type=int,
-            default=_env_int(
-                "APIPAY_MONITOR_REQUEST_BUDGET_PER_MINUTE", 80
-            ),
+            default=defaults.requests_per_minute,
             help=(
                 "Shared monitor request budget per minute (10-100; ApiPay's "
                 "remaining documented capacity is reserved for live traffic)"
@@ -99,9 +93,10 @@ class Command(BaseCommand):
         parser.add_argument(
             "--max-backoff-seconds",
             type=int,
-            default=_env_int("APIPAY_MONITOR_MAX_BACKOFF_SECONDS", 300),
+            default=defaults.max_backoff_seconds,
             help="Maximum retry delay after failed reconciliation iterations",
         )
+        parser.set_defaults(heartbeat_file=defaults.heartbeat_file)
 
     def handle(self, *args, **options):
         config = ApiPayReconciliationOptions.build(
@@ -118,10 +113,7 @@ class Command(BaseCommand):
             ],
             requests_per_minute=options["request_budget_per_minute"],
             max_backoff_seconds=options["max_backoff_seconds"],
-            heartbeat_file=os.environ.get(
-                "APIPAY_MONITOR_HEARTBEAT_FILE",
-                DEFAULT_HEARTBEAT_FILE,
-            ),
+            heartbeat_file=options["heartbeat_file"],
         )
         failure_streak = 0
 
@@ -134,7 +126,7 @@ class Command(BaseCommand):
                     invoice_reconciler=reconcile_apipay_invoices,
                     refund_reconciler=reconcile_apipay_refunds,
                     webhook_replayer=replay_pending_apipay_webhooks,
-                    heartbeat_writer=_write_heartbeat,
+                    heartbeat_writer=write_heartbeat,
                 )
                 self.stdout.write(result.summary())
                 if result.retryable_failures:
@@ -165,7 +157,7 @@ class Command(BaseCommand):
                 return
 
             elapsed = time.monotonic() - started
-            delay = _backoff_delay(
+            delay = backoff_delay(
                 interval_seconds=config.interval_seconds,
                 max_backoff_seconds=config.max_backoff_seconds,
                 failure_streak=failure_streak,

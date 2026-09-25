@@ -1,13 +1,25 @@
 "use client";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, RefreshCw } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 /** Красный баннер ошибки с кнопкой «Повторить» — единый вид для всех страниц. */
-export function ErrorAlert({ message, onRetry }: { message: string; onRetry?: () => void }) {
+export function ErrorAlert({
+  message,
+  onRetry,
+  className,
+}: {
+  message: string;
+  onRetry?: () => void;
+  className?: string;
+}) {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center gap-3 rounded-md border border-[var(--destructive)]/25 bg-[var(--destructive)]/10 px-4 py-3"
+      className={cn(
+        "flex flex-wrap items-center gap-3 rounded-md border border-[var(--destructive)]/25 bg-[var(--destructive)]/10 px-4 py-3",
+        className,
+      )}
     >
       <AlertTriangle className="size-4 shrink-0 text-[var(--destructive)]" />
       <span className="text-sm text-[var(--destructive)]">{message}</span>
@@ -17,6 +29,22 @@ export function ErrorAlert({ message, onRetry }: { message: string; onRetry?: ()
         </Button>
       )}
     </div>
+  );
+}
+
+/** Ошибка отправки формы или действия в окне: без иконки и «Повторить», пустое сообщение не рисуется. */
+export function FormError({ message, className }: { message?: string | null; className?: string }) {
+  if (!message) return null;
+  return (
+    <p
+      role="alert"
+      className={cn(
+        "rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]",
+        className,
+      )}
+    >
+      {message}
+    </p>
   );
 }
 

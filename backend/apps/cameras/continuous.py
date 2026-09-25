@@ -4,21 +4,18 @@ import logging
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
 from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db import DatabaseError, close_old_connections, connection, connections
-from django.db.models import Q
+from django.db import close_old_connections, connections
 from django.utils import timezone
 
+from apps.common.locks import advisory_lock
 from apps.grain import services as grain_services
 
-from . import ai, analytics, event_sync
+from . import ai, event_sync
 from .models import (
-    ANALYTICS_SCOPE_AI247,
-    ANALYTICS_SCOPE_SHIPPING,
     AlwaysOnCounterCursor,
     MonoblockCameraSettings,
 )
@@ -28,46 +25,11 @@ log = logging.getLogger(__name__)
 _ALWAYS_ON_LOCAL_MUTEX = threading.RLock()
 _ALWAYS_ON_ADVISORY_NAMESPACE = 0x4149  # "AI"
 _ALWAYS_ON_ADVISORY_KEY = 0x323437  # "247"
-
-
-@contextmanager
-def _always_on_policy_mutex():
-    """Serialize camera-PC policy writes across threads and web workers."""
-
-    with _ALWAYS_ON_LOCAL_MUTEX:
-        if connection.vendor != "postgresql":
-            yield
-            return
-
-        acquired = False
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_advisory_lock(%s, %s)",
-                    [_ALWAYS_ON_ADVISORY_NAMESPACE, _ALWAYS_ON_ADVISORY_KEY],
-                )
-            acquired = True
-            yield
-        finally:
-            if acquired:
-                try:
-                    with connection.cursor() as cursor:
-                        cursor.execute(
-                            "SELECT pg_advisory_unlock(%s, %s)",
-                            [_ALWAYS_ON_ADVISORY_NAMESPACE, _ALWAYS_ON_ADVISORY_KEY],
-                        )
-                        released = cursor.fetchone()
-                    if released != (True,):
-                        log.error("PostgreSQL always-on policy lock was not owned")
-                except DatabaseError:
-                    log.exception("Could not release PostgreSQL always-on policy lock")
-                    connection.close()
+_AI_NOT_CONFIGURED = "AI-сервис не настроен"
 
 
 def _live_sources(current: dict) -> list[str] | None:
-    live_sources = current.get("cameras")
-    if not isinstance(live_sources, list):
-        live_sources = current.get("camera_sources")
+    live_sources = current.get("camera_sources")
     if not isinstance(live_sources, list) or any(
         not isinstance(source, str) for source in live_sources
     ):
@@ -75,11 +37,26 @@ def _live_sources(current: dict) -> list[str] | None:
     return live_sources
 
 
+def _normalized_live_sources(current: dict) -> set[str] | None:
+    """Cameras the camera PC reports as applied; ``None`` — state unknown."""
+
+    live_sources = _live_sources(current)
+    if live_sources is None:
+        return None
+    normalized: set[str] = set()
+    for source in live_sources:
+        try:
+            normalized.add(ai.normalize(source))
+        except ai.AiError:
+            continue
+    return normalized
+
+
 def _processor_readiness(
     current: dict,
     camera: str,
     *,
-    analytics_scope: str | None,
+    analytics_scope: str,
 ) -> tuple[str, str]:
     live_sources = _live_sources(current)
     if live_sources is None or camera not in live_sources:
@@ -87,10 +64,9 @@ def _processor_readiness(
     if current.get("source") != "sub":
         return "pending", f"Камера {camera} ещё не перешла на источник sub"
 
-    if analytics_scope is not None:
-        scopes = current.get("analytics_scopes")
-        if not isinstance(scopes, dict) or scopes.get(camera) != analytics_scope:
-            return "pending", f"AI-сервис не подтвердил роль камеры {camera}"
+    scopes = current.get("analytics_scopes")
+    if not isinstance(scopes, dict) or scopes.get(camera) != analytics_scope:
+        return "pending", f"AI-сервис не подтвердил роль камеры {camera}"
 
     for item in current.get("pending") or []:
         if not isinstance(item, dict) or item.get("cam") != camera:
@@ -116,10 +92,7 @@ def _processor_readiness(
         return "pending", f"Ожидается запуск процессора {camera}"
     if processor.get("source") != "sub":
         return "pending", f"Процессор {camera} ещё не перешёл на источник sub"
-    if (
-        analytics_scope is not None
-        and processor.get("analytics_scope") != analytics_scope
-    ):
+    if processor.get("analytics_scope") != analytics_scope:
         return "pending", f"Процессор {camera} не подтвердил свою роль"
     mode = processor.get("mode")
     if mode not in {"always_on", "session"}:
@@ -184,79 +157,29 @@ def contour_sync_state(
     return ("pending", "; ".join(pending)) if pending else ("synced", "")
 
 
-def policy_sync_state(
-    current: dict,
+def contour_state(
     desired: list[str],
-    analytics_scopes: dict[str, str],
-) -> tuple[str, str]:
-    """Validate the complete role-aware camera-PC control-plane reply."""
+    analytics_scope: str,
+) -> tuple[dict | None, str, str]:
+    """Cached camera-PC status of one contour: ``(live, sync_status, detail)``.
 
-    live_sources = _live_sources(current)
-    if live_sources is None:
-        return "pending", "AI-сервис не подтвердил список непрерывных камер"
-    if sorted(live_sources) != sorted(desired) or current.get("source") != "sub":
-        return "pending", "Настройка непрерывных камер ожидает синхронизации"
-    if current.get("analytics_scopes") != analytics_scopes:
-        return "pending", "AI-сервис не подтвердил роли непрерывных камер"
-    for camera in desired:
-        state, detail = _processor_readiness(
-            current,
-            camera,
-            analytics_scope=analytics_scopes[camera],
-        )
-        if state != "synced":
-            return state, detail
-    return "synced", ""
+    ``live`` is ``None`` when the AI service is off or unreachable.
+    """
+
+    if not ai.enabled():
+        return None, "pending", _AI_NOT_CONFIGURED
+    try:
+        live = ai.always_on_status_cached()
+    except (ai.AiUnavailable, ai.AiError) as exc:
+        return None, "pending", str(exc)
+    return (live, *contour_sync_state(live, desired, analytics_scope))
 
 
-def always_on_sync_state(current: dict, desired: list[str]) -> tuple[str, str]:
-    """Backward-compatible exact readiness check without role inference."""
+def _record_counts(cameras: list[str]) -> None:
+    """Import the durable count journal of every listed camera."""
 
-    live_sources = _live_sources(current)
-    if live_sources is None:
-        return "pending", "AI-сервис не подтвердил список камер AI 24/7"
-    if sorted(live_sources) != sorted(desired) or current.get("source") != "sub":
-        return "pending", "Настройка AI 24/7 ожидает синхронизации"
-    for camera in desired:
-        state, detail = _processor_readiness(
-            current,
-            camera,
-            analytics_scope=None,
-        )
-        if state != "synced":
-            return state, detail
-    return "synced", ""
-
-
-def _draining_event_sources() -> set[str]:
-    return set(
-        AlwaysOnCounterCursor.objects.exclude(event_sync_supported=False)
-        .filter(
-            Q(event_drain_required_at__isnull=False)
-            | Q(event_stop_drain_requested_at__isnull=False)
-            | ~Q(event_sync_error="")
-            | Q(
-                last_event_id__isnull=False,
-                event_caught_up_at__isnull=True,
-            )
-        )
-        .values_list("camera", flat=True)
-    )
-
-
-def _record_counts(
-    current: dict,
-    desired: list[str],
-    analytics_scopes: dict[str, str],
-) -> None:
-    """Use durable events when supported and snapshots only for explicit 404s."""
-
-    legacy_snapshot_cameras: set[str] = set()
-    for camera, result in _camera_event_results(desired):
+    for camera, result in _camera_event_results(cameras):
         if result is None:
-            continue
-        if not result.supported:
-            legacy_snapshot_cameras.add(camera)
             continue
         if result.processed or result.ignored or not result.caught_up:
             log.info(
@@ -270,13 +193,6 @@ def _record_counts(
                 result.caught_up,
             )
 
-    if legacy_snapshot_cameras:
-        analytics.record_snapshot(
-            current,
-            cameras=legacy_snapshot_cameras,
-            analytics_scopes=analytics_scopes,
-        )
-
 
 def _sync_camera_events(
     camera: str, *, threaded: bool = False
@@ -287,8 +203,8 @@ def _sync_camera_events(
         try:
             return event_sync.sync_camera(camera)
         except (ai.AiUnavailable, ai.AiError, event_sync.EventSyncError) as exc:
-            # An uncertain journal is never permission to use the aggregate
-            # snapshot: the next successful page would then count it twice.
+            # An uncertain journal is a recorded failure; the next poll
+            # resumes from the committed cursor.
             log.warning("Camera event sync failed camera=%s: %s", camera, exc)
             event_sync.mark_sync_failure(camera, exc)
             return None
@@ -334,65 +250,6 @@ def _camera_event_results(
             raise failures[0]
 
 
-def _observed_analytics_scopes(
-    current: dict,
-    desired_scopes: dict[str, str],
-    *,
-    fallback_to_desired: bool = True,
-) -> dict[str, str]:
-    """Prefer the role attached to the processor that produced a snapshot."""
-
-    result = dict(desired_scopes) if fallback_to_desired else {}
-    live_scopes = current.get("analytics_scopes")
-    if isinstance(live_scopes, dict):
-        for camera, scope in live_scopes.items():
-            if isinstance(camera, str) and scope in {
-                ANALYTICS_SCOPE_SHIPPING,
-                ANALYTICS_SCOPE_AI247,
-            }:
-                result[camera] = scope
-    return result
-
-
-def _confirmed_shipping_sources(
-    current: dict,
-    desired_sources: set[str],
-) -> list[str]:
-    """Return desired live cameras whose role CV explicitly acknowledged."""
-
-    live_sources = _live_sources(current)
-    scopes = current.get("analytics_scopes")
-    if live_sources is None or not isinstance(scopes, dict):
-        return []
-    normalized_live = set()
-    for source in live_sources:
-        try:
-            normalized_live.add(ai.normalize(source))
-        except ai.AiError:
-            continue
-    return sorted(
-        camera
-        for camera in desired_sources & normalized_live
-        if scopes.get(camera) == ANALYTICS_SCOPE_SHIPPING
-        and _processor_readiness(
-            current,
-            camera,
-            analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-        )[0]
-        == "synced"
-    )
-
-
-def _confirm_shipping_bootstraps(cameras: list[str]) -> None:
-    for camera in cameras:
-        analytics.confirm_shipping_bootstrap_scope(camera)
-
-
-def _complete_shipping_bootstraps(cameras: list[str]) -> None:
-    for camera in cameras:
-        analytics.complete_shipping_bootstrap(camera)
-
-
 def sync_always_on_policy(
     *,
     previous_sources: list[str] | tuple[str, ...] | None = None,
@@ -405,7 +262,10 @@ def sync_always_on_policy(
     camera PC may already have accepted the request.
     """
 
-    with _always_on_policy_mutex():
+    # Serialize camera-PC policy writes across threads and web workers.
+    with _ALWAYS_ON_LOCAL_MUTEX, advisory_lock(
+        _ALWAYS_ON_ADVISORY_NAMESPACE, _ALWAYS_ON_ADVISORY_KEY
+    ):
         # Read the durable policy only after acquiring the cross-worker mutex.
         # Requests that reached the camera PC out of HTTP order therefore all
         # apply the newest committed PostgreSQL state, never a stale snapshot.
@@ -426,14 +286,34 @@ def sync_always_on_policy(
         return current
 
 
+def apply_always_on_policy(
+    previous_sources: list[str],
+    analytics_scope: str,
+) -> tuple[dict | None, str, str]:
+    """Best-effort immediate apply; PostgreSQL remains the durable authority.
+
+    Returns ``(live, sync_status, detail)`` of one contour like
+    :func:`contour_state`; the monitor reconciles anything left pending.
+    """
+
+    if not ai.enabled():
+        return None, "pending", _AI_NOT_CONFIGURED
+    try:
+        live = sync_always_on_policy(previous_sources=previous_sources)
+    except (ai.AiUnavailable, ai.AiError) as exc:
+        return None, "pending", str(exc)
+    desired = MonoblockCameraSettings.contour_sources(analytics_scope)
+    return (live, *contour_sync_state(live, desired, analytics_scope))
+
+
 def reconcile() -> dict:
     """Make the camera-PC durable state match PostgreSQL's desired state."""
     desired = MonoblockCameraSettings.continuous_sources()
     analytics_scopes = MonoblockCameraSettings.continuous_roles()
     current = ai.always_on_status()
-    current_sources = current.get("cameras")
+    normalized_current_sources = _normalized_live_sources(current)
     current_source = current.get("source", "sub")
-    if not isinstance(current_sources, list):
+    if normalized_current_sources is None:
         # Ответ без разборного списка камер — это «состояние неизвестно», а не
         # «камер нет». Раньше он приводился к [] и, если в PostgreSQL тоже было
         # пусто, расхождения не возникало — зато при непустом выборе монитор
@@ -443,20 +323,12 @@ def reconcile() -> dict:
         log.warning(
             "Камера-ПК вернул always-on без списка камер (%r) — "
             "состояние неизвестно, синхронизация отложена",
-            current_sources,
+            current.get("camera_sources"),
         )
         _record_counts(
-            current,
-            sorted(set(desired) | _draining_event_sources()),
-            _observed_analytics_scopes(current, analytics_scopes),
+            sorted(set(desired) | AlwaysOnCounterCursor.draining_cameras())
         )
         return current
-    normalized_current_sources: set[str] = set()
-    for source in current_sources:
-        try:
-            normalized_current_sources.add(ai.normalize(source))
-        except ai.AiError:
-            continue
     desired_sources = set(desired)
     removed_sources = normalized_current_sources - desired_sources
     current_scopes = current.get("analytics_scopes")
@@ -474,59 +346,32 @@ def reconcile() -> dict:
             # A broken new mapping must not starve the event journal of an
             # already healthy processor. Import the observed live set first,
             # then let the monitor report/retry the policy failure.
-            confirmed_shipping = _confirmed_shipping_sources(
-                current,
-                desired_sources,
-            )
-            _confirm_shipping_bootstraps(confirmed_shipping)
             _record_counts(
-                current,
                 sorted(
                     normalized_current_sources
                     | desired_sources
-                    | _draining_event_sources()
-                ),
-                _observed_analytics_scopes(
-                    current,
-                    analytics_scopes,
-                    fallback_to_desired=False,
-                ),
+                    | AlwaysOnCounterCursor.draining_cameras()
+                )
             )
-            _complete_shipping_bootstraps(confirmed_shipping)
             raise
         desired_sources = set(MonoblockCameraSettings.continuous_sources())
-        analytics_scopes = MonoblockCameraSettings.continuous_roles()
-        configured_sources = current.get("cameras")
-        if not isinstance(configured_sources, list):
-            configured_sources = current.get("camera_sources")
-        normalized_current_sources = set()
-        for source in configured_sources or []:
-            try:
-                normalized_current_sources.add(ai.normalize(source))
-            except ai.AiError:
-                continue
+        normalized_current_sources = _normalized_live_sources(current) or set()
+    unconfirmed_stop_sources = set(
+        AlwaysOnCounterCursor.objects.filter(
+            event_stop_drain_requested_at__isnull=False,
+            event_stop_confirmed_at__isnull=True,
+        ).values_list("camera", flat=True)
+    )
     stopped_pending_sources = (
-        set(
-            AlwaysOnCounterCursor.objects.filter(
-                event_stop_drain_requested_at__isnull=False,
-                event_stop_confirmed_at__isnull=True,
-            ).values_list("camera", flat=True)
-        )
-        - normalized_current_sources
-        - desired_sources
+        unconfirmed_stop_sources - normalized_current_sources - desired_sources
     )
     for camera in stopped_pending_sources:
         # Recovery after a process crash between the remote stop response and
         # its second durable barrier: the live configuration itself confirms
         # that this camera is now stopped.
         event_sync.confirm_stop_drain(camera)
-    active_desired_sources = normalized_current_sources & desired_sources
-    dangling_reactivations = set(
-        AlwaysOnCounterCursor.objects.filter(
-            camera__in=active_desired_sources,
-            event_stop_drain_requested_at__isnull=False,
-            event_stop_confirmed_at__isnull=True,
-        ).values_list("camera", flat=True)
+    dangling_reactivations = (
+        unconfirmed_stop_sources & normalized_current_sources & desired_sources
     )
     if dangling_reactivations:
         reactivation_fence = timezone.now()
@@ -535,41 +380,8 @@ def reconcile() -> dict:
                 camera,
                 required_at=reactivation_fence,
             )
-    confirmed_shipping = _confirmed_shipping_sources(current, desired_sources)
-    _confirm_shipping_bootstraps(confirmed_shipping)
-    draining_sources = _draining_event_sources()
-    _record_counts(
-        current,
-        sorted(desired_sources | removed_sources | draining_sources),
-        _observed_analytics_scopes(current, analytics_scopes),
-    )
-    _complete_shipping_bootstraps(confirmed_shipping)
-    return current
-
-
-def reconcile_wagon_number() -> dict:
-    """Keep the durable wagon-number camera role in sync after restarts."""
-    desired = MonoblockCameraSettings.wagon_number_source() or None
-    try:
-        current = ai.wagon_number_status()
-    except ai.AiError as exc:
-        if exc.status != 404:
-            raise
-        # Older camera-PC runtimes expose the on-demand wagon detector but
-        # not the optional role-assignment API.  The CRM-owned assignment is
-        # still effective for poll_wagon_plate(), so keep using it locally
-        # without attempting an unsupported PUT.  Network/auth/server errors
-        # remain hard failures and are retried by the monitor loop.
-        return {
-            "camera": desired,
-            "source": "main",
-            "stream": desired,
-            "assigned": desired is not None,
-            "mode": "wagon_number_24_7",
-            "role_api_supported": False,
-        }
-    if current.get("camera") != desired or current.get("source") != "main":
-        current = ai.configure_wagon_number(desired, "main")
+    draining_sources = AlwaysOnCounterCursor.draining_cameras()
+    _record_counts(sorted(desired_sources | removed_sources | draining_sources))
     return current
 
 

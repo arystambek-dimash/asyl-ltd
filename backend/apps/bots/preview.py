@@ -14,7 +14,7 @@ from apps.orders.models import Order
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
 from apps.sales.access import scope_by_client_department
 
-from .parsing import RailReport, ReportIssue, wagon_number_status
+from .parsing import RailReport, decimal_string, wagon_number_status
 from .rail import (
     CLIENT_OTHER_DEPARTMENT,
     MANUAL_ORDER_DUPLICATE,
@@ -33,23 +33,8 @@ CLIENT_ISSUES = ("client_unknown", "client_ambiguous")
 PRODUCT_ISSUES = ("product_unknown", "product_archived")
 
 
-def _decimal(value: Decimal) -> str:
-    """«68», «67.5» — без хвостовых нулей и без экспоненты («680», а не «6.8E+2»)."""
-    return format(value.normalize(), "f")
-
-
 def _money(value: Decimal | None) -> str | None:
     return None if value is None else money_string(value)
-
-
-def _issue(issue: ReportIssue) -> dict:
-    return {
-        "code": issue.code,
-        "message": issue.message,
-        "line": issue.line,
-        "subject": issue.subject,
-        "order_id": issue.order_id,
-    }
 
 
 def _shippable_duplicates(resolved: ResolvedReport) -> list[int]:
@@ -92,7 +77,7 @@ def report_preview(resolved: ResolvedReport, user, *, order=None) -> dict:
             "code": line.code,
             "product_id": product.pk if product is not None else None,
             "product_label": str(product) if product is not None else "",
-            "tons": _decimal(line.tons),
+            "tons": decimal_string(line.tons),
             "bags": bags,
             "unit_price": _money(price),
             "amount": _money(price * bags if price is not None and bags is not None else None),
@@ -135,13 +120,13 @@ def report_preview(resolved: ResolvedReport, user, *, order=None) -> dict:
         "items": items,
         "totals": {
             "wagons": len(report.wagons),
-            "tons": _decimal(report.total_tons),
+            "tons": decimal_string(report.total_tons),
             "bags": resolved.total_bags,
             "amount": _money(sum(amounts, Decimal("0"))) if priced else None,
             "currency": resolved.currency,
         },
-        "issues": [_issue(issue) for issue in resolved.issues],
-        "warnings": [_issue(issue) for issue in resolved.warnings],
+        "issues": [issue.as_dict() for issue in resolved.issues],
+        "warnings": [issue.as_dict() for issue in resolved.warnings],
         "unresolved": {
             "client": report.client_name if codes & set(CLIENT_ISSUES) else "",
             "products": [issue.subject for issue in resolved.issues if issue.code in PRODUCT_ISSUES],
@@ -159,16 +144,15 @@ def report_preview(resolved: ResolvedReport, user, *, order=None) -> dict:
     }
 
 
-def preview_report(report: RailReport, user, *, order=None, **options) -> dict:
+def preview_report(report: RailReport, user, *, order=None) -> dict:
     """Предпросмотр для ``user``: новый отчёт или «Отгрузить по отчёту» заказ ``order``.
 
-    ``options`` — окно дублей (±дней от даты отчёта) и допуск цены; окно без
-    ``options`` — тоже из настроек бота (:func:`configured_duplicate_window_days`).
+    Окно дублей и допуск цены — из настроек бота, как при проведении.
     """
     if order is not None:
-        resolved = resolve_order_report(report, order, duplicate_window_days=options.get("duplicate_window_days"))
+        resolved = resolve_order_report(report, order)
     else:
-        resolved = resolve_report(report, user=user, **options)
+        resolved = resolve_report(report, user=user)
     return report_preview(resolved, user, order=order)
 
 

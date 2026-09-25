@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 
 export function ShipmentRollbackModal({
   order,
@@ -19,7 +20,7 @@ export function ShipmentRollbackModal({
   order: Order | null;
   initialTarget?: "pending" | "confirmed" | "cancelled";
   onClose: () => void;
-  onChanged: (order: Order) => void | Promise<void>;
+  onChanged: () => unknown;
 }) {
   const [target, setTarget] = useState(initialTarget);
   const [reason, setReason] = useState("");
@@ -39,11 +40,8 @@ export function ShipmentRollbackModal({
     setBusy(true);
     setError("");
     try {
-      const response = await api.post<{ order: Order }>(`/orders/${order!.id}/rollback-shipment/`, {
-        status: target,
-        reason: reason.trim(),
-      });
-      await onChanged(response.data.order);
+      await api.post(`/orders/${order!.id}/rollback-shipment/`, { status: target, reason: reason.trim() });
+      await onChanged();
       onClose();
     } catch (cause) {
       setError(apiError(cause));
@@ -80,7 +78,7 @@ export function ShipmentRollbackModal({
           </div>
           <div className="flex gap-2">
             <VideoOff className="mt-0.5 size-4 shrink-0" />
-            <span>Видео удалится сразу; если ПК камер недоступен — по локальному сроку хранения.</span>
+            <span>Видео удалится с ПК камер по сроку хранения записей.</span>
           </div>
         </div>
         <div className="grid gap-1.5">
@@ -99,14 +97,14 @@ export function ShipmentRollbackModal({
         </div>
         <div className="grid gap-1.5">
           <Label htmlFor="rollback-reason">Причина отката</Label>
-          <textarea
+          <Textarea
             id="rollback-reason"
             autoFocus
             maxLength={500}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="Например: ошибочно завершили не тот заказ"
-            className="min-h-24 w-full resize-y rounded-xl border bg-[var(--background)] px-3 py-2 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15"
+            className="min-h-24"
           />
           <span className="text-xs text-[var(--muted-foreground)]">Обязательно, минимум 5 символов.</span>
         </div>

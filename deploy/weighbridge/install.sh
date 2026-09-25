@@ -13,10 +13,14 @@ import time
 from weighbridge.outbox import Outbox
 box = Outbox('/var/lib/weighbridge')
 heartbeat = box.state('heartbeat') or {}
-assert time.time() - heartbeat.get('updated_at', 0) <= 2, 'Collector heartbeat is stale'
-assert heartbeat.get('clear') and heartbeat.get('armed'), 'Scale is occupied: upgrade deferred'
-assert not heartbeat.get('pending_writes', 0), 'Collector storage writes are pending: upgrade deferred'
-assert box.counts()['pending'] == 0, 'Evidence delivery is pending: upgrade deferred'
+if time.time() - heartbeat.get('updated_at', 0) > 2:
+    raise SystemExit('Collector heartbeat is stale')
+if not (heartbeat.get('clear') and heartbeat.get('armed')):
+    raise SystemExit('Scale is occupied: upgrade deferred')
+if heartbeat.get('pending_writes', 0):
+    raise SystemExit('Collector storage writes are pending: upgrade deferred')
+if box.counts()['pending']:
+    raise SystemExit('Evidence delivery is pending: upgrade deferred')
 PY
 }
 
@@ -29,12 +33,15 @@ import time
 from weighbridge.outbox import Outbox
 box = Outbox('/var/lib/weighbridge-wagon')
 heartbeat = box.state('heartbeat') or {}
-assert time.time() - heartbeat.get('updated_at', 0) <= 2, 'Wagon collector heartbeat is stale'
+if time.time() - heartbeat.get('updated_at', 0) > 2:
+    raise SystemExit('Wagon collector heartbeat is stale')
 # Replacing the container mid-unloading is safe (the restarted collector
 # re-adopts the stop) but the blind interval is recorded as a motion gap,
 # so an upgrade waits for the arch to be empty instead.
-assert heartbeat.get('standing') is None, 'Wagon stands under the arch: upgrade deferred'
-assert not heartbeat.get('pending_writes', 0), 'Wagon collector storage writes are pending: upgrade deferred'
+if heartbeat.get('standing') is not None:
+    raise SystemExit('Wagon stands under the arch: upgrade deferred')
+if heartbeat.get('pending_writes', 0):
+    raise SystemExit('Wagon collector storage writes are pending: upgrade deferred')
 # Pending EVENTS are deliberately not checked: wagon rows stay unacknowledged
 # until the CRM importer is switched on (WAGON_ARCH_AUTOMATION_ENABLED).
 PY
@@ -64,8 +71,6 @@ else
   # Manual activation has no deployment-shell image variables. Use the already
   # running, verified backend image for the one-off volume-permission helper.
   export BACKEND_IMAGE_REF="$WEIGHBRIDGE_IMAGE_REF"
-  # Persist the pinned reference; subsequent application image updates do not change it.
-  printf '%s\n' "$WEIGHBRIDGE_IMAGE_REF" > "$install_dir/image-ref"
   docker compose -f docker-compose.prod.yml run --rm --no-deps --user root --entrypoint sh passage-scale-monitor -c 'chown app:app /var/lib/weighbridge /var/lib/weighbridge-wagon'
   # Preparing the pinned image/volume can take time. A truck may have arrived
   # since the first guard, so check again immediately before replacement.
@@ -80,9 +85,10 @@ if [ "${1:-}" = "upgrade" ]; then
   # Scale-loop health does not prove that a restarted RTSP relay has decoded
   # its first frame. Verify actual JPEG delivery without printing image data.
   docker exec -i "$collector_id" python - <<'PY'
-import http.client
 import signal
 import time
+from django.conf import settings
+from weighbridge.runtime import fetch_frame
 
 def expired(*_):
     raise SystemExit('Weighbridge video unavailable: collector upgrade is degraded')
@@ -91,18 +97,13 @@ signal.signal(signal.SIGALRM, expired)
 signal.alarm(15)
 try:
     for attempt in range(3):
-        connection = http.client.HTTPConnection('video', 1984, timeout=4)
         try:
-            connection.request('GET', '/api/frame.jpeg?src=cam1main')
-            response = connection.getresponse()
-            frame = response.read(4 * 1024 * 1024 + 1)
-            if response.status == 200 and len(frame) <= 4 * 1024 * 1024 and frame.startswith(b'\xff\xd8\xff'):
-                print('Weighbridge video frame verified.')
-                break
-        except (OSError, http.client.HTTPException):
-            pass
-        finally:
-            connection.close()
+            frame = fetch_frame(settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA)
+        except Exception:
+            frame = None
+        if frame is not None:
+            print('Weighbridge video frame verified.')
+            break
         if attempt < 2:
             time.sleep(1)
     else:

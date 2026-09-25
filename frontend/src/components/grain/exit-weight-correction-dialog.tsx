@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, apiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import { can } from "@/lib/can";
-import { formatKg } from "@/lib/grain";
+import { MANUAL_REASON_MAX_LENGTH, formatKg, isManualReasonValid, passageNetKg } from "@/lib/grain";
 import type { GrainWagon } from "@/lib/types";
 import { useAuth } from "@/store/auth";
+import { useWeighingDialog } from "./use-weighing-dialog";
 
 export function ExitWeightCorrectionDialog({
   wagon,
@@ -23,12 +24,10 @@ export function ExitWeightCorrectionDialog({
   disabled?: boolean;
 }) {
   const { me } = useAuth();
-  const [open, setOpen] = useState(false);
+  const dialog = useWeighingDialog(onBusyChange);
   const [weight, setWeight] = useState("");
   const [expectedWeight, setExpectedWeight] = useState<number | null>(null);
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const allowed = can(me, "grain.correct_weighing");
   const kg = Number(weight);
   const valid =
@@ -36,25 +35,18 @@ export function ExitWeightCorrectionDialog({
     Number.isSafeInteger(kg) &&
     kg > (wagon.entry_weight_kg ?? 0) &&
     kg !== expectedWeight &&
-    reason.trim().length >= 5;
-  async function save() {
-    if (!allowed || !valid || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.post(`/grain/passages/${wagon.id}/correct-exit-weight/`, {
-        exit_weight_kg: kg,
-        expected_exit_weight_kg: expectedWeight,
-        reason: reason.trim(),
-      });
-      setOpen(false);
-      onBusyChange?.(false);
-      onChanged();
-    } catch (cause) {
-      setError(apiError(cause));
-    } finally {
-      setBusy(false);
-    }
+    isManualReasonValid(reason);
+  function save() {
+    if (!valid) return;
+    void dialog.submit(
+      () =>
+        api.post(`/grain/passages/${wagon.id}/correct-exit-weight/`, {
+          exit_weight_kg: kg,
+          expected_exit_weight_kg: expectedWeight,
+          reason: reason.trim(),
+        }),
+      onChanged,
+    );
   }
   if (
     !allowed ||
@@ -73,29 +65,22 @@ export function ExitWeightCorrectionDialog({
           setExpectedWeight(wagon.exit_weight_kg ?? null);
           setWeight(String(wagon.exit_weight_kg ?? ""));
           setReason("");
-          setError("");
-          setOpen(true);
-          onBusyChange?.(true);
+          dialog.show();
         }}
       >
         {wagon.exit_weight_kg == null ? "Внести выездной вес вручную" : "Изменить выездной вес"}
       </Button>
       <ConfirmDialog
-        open={open}
+        open={dialog.open}
         title="Выездной вес"
         description={`Машина ${wagon.number}. Начальный вес: ${formatKg(wagon.entry_weight_kg)}.`}
         confirmLabel={expectedWeight == null ? "Записать вес и завершить рейс" : "Сохранить исправление"}
         confirmVariant="default"
-        busy={busy}
-        error={error}
-        confirmDisabled={!allowed || !valid}
-        onConfirm={() => void save()}
-        onClose={() => {
-          if (!busy) {
-            setOpen(false);
-            onBusyChange?.(false);
-          }
-        }}
+        busy={dialog.busy}
+        error={dialog.error}
+        confirmDisabled={!valid}
+        onConfirm={save}
+        onClose={dialog.close}
       >
         <p className="text-sm">Текущий выездной вес: {formatKg(expectedWeight)}</p>
         <div>
@@ -104,20 +89,20 @@ export function ExitWeightCorrectionDialog({
             id="correct-exit-weight"
             value={weight}
             inputMode="numeric"
-            disabled={busy}
+            disabled={dialog.busy}
             onChange={(e) => setWeight(e.target.value)}
           />
         </div>
         {valid && (
-          <p className="font-semibold">Нетто после исправления: {formatKg(kg - (wagon.entry_weight_kg ?? 0))}</p>
+          <p className="font-semibold">Нетто после исправления: {formatKg(passageNetKg(kg, wagon.entry_weight_kg))}</p>
         )}
         <div>
           <Label htmlFor="correct-exit-reason">Причина исправления веса</Label>
           <Input
             id="correct-exit-reason"
             value={reason}
-            maxLength={300}
-            disabled={busy}
+            maxLength={MANUAL_REASON_MAX_LENGTH}
+            disabled={dialog.busy}
             onChange={(e) => setReason(e.target.value)}
           />
         </div>

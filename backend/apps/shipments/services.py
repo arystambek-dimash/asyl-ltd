@@ -11,13 +11,15 @@ from apps.catalog.models import Product
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.orders.backdate import backdate_events, backdate_moment
-from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
-from apps.warehouse.services import deduct_stock, resolve_warehouse
+from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES, CAMERA_BINDING_STATUSES, ON_POST_STATUSES
+from apps.warehouse.services import deduct_stock, lock_stock_items
 
 from .access import assert_can_ship
 from .models import Shipment, ShipmentWagon
 
 LOADING_CAMERA_CONSTRAINT = "orders_one_active_order_per_loading_camera"
+# Куда возвращают незавершённую или отменённую отгрузку.
+ROLLBACK_TARGET_STATUSES = ("pending", "confirmed", "cancelled")
 
 
 def _is_loading_camera_conflict(exc: IntegrityError) -> bool:
@@ -48,13 +50,13 @@ def _validate_loading_camera_available(order, camera: str) -> None:
     conflict = (
         # Do not lock the conflicting Order here: two different camera starts
         # may each already own their own parent/session and attempt a swap,
-        # which would create an O_A -> O_B / O_B -> O_A deadlock. Manual
-        # changes use the shared camera mutex; AI starts are session-serialized,
-        # and the named partial UNIQUE constraint remains the final arbiter.
+        # which would create an O_A -> O_B / O_B -> O_A deadlock. AI starts
+        # are session-serialized under the shared camera mutex, and the named
+        # partial UNIQUE constraint remains the final arbiter.
         type(order).objects
         .filter(
             loading_camera=camera,
-            status__in=("confirmed", "arrived", "loading"),
+            status__in=CAMERA_BINDING_STATUSES,
             deleted_at__isnull=True,
         )
         .exclude(pk=order.pk)
@@ -69,49 +71,11 @@ def _validate_loading_camera_available(order, camera: str) -> None:
         })
 
 
-@transaction.atomic
-def _set_loading_camera_locked(order, camera: str, user=None):
-    # Share the same camera-ownership mutex with AI start.
-    # Taking it before the Order row also prevents A -> B / B -> A camera
-    # swaps from acquiring conflicting order locks in opposite directions.
-    from apps.cameras.sessions import lock_camera_binding
-
-    lock_camera_binding()
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-
-    if camera and order.status not in ("arrived", "loading"):
-        raise ValidationError({
-            "detail": "Камеру можно закрепить только после въезда и до завершения погрузки",
-            "code": "invalid_status",
-        })
-    if camera != order.loading_camera:
-        _assert_no_open_ai_session(order)
-    if camera:
-        from apps.cameras.models import AiCountingSession
-
-        if AiCountingSession.objects.filter(
-            camera=camera,
-            status__in=AiCountingSession.OPEN_STATUSES,
-        ).exclude(order_id=order.pk).exists():
-            raise ValidationError({
-                "detail": "Камера уже зарезервирована AI-погрузкой",
-                "code": "camera_busy",
-            })
-    _validate_loading_camera_available(order, camera)
-    order.loading_camera = camera
-    order.save(update_fields=["loading_camera"])
-    return order
-
-
-def set_loading_camera(order, camera: str, user=None):
-    """Assign or release an order camera while serializing changes to the order."""
-    try:
-        return _set_loading_camera_locked(order, camera, user)
-    except IntegrityError as exc:
-        if not _is_loading_camera_conflict(exc):
-            raise
-        raise _camera_busy_error(exc) from exc
+def can_start_loading(order, camera: str) -> bool:
+    """Загрузку начинают у подтверждённого или прибывшего заказа; идущую
+    погрузку на той же камере можно восстановить повторным стартом."""
+    restoring_same_binding = order.status == "loading" and order.loading_camera == camera
+    return order.status in ("confirmed", "arrived") or restoring_same_binding
 
 
 def _require_shipment(order):
@@ -139,28 +103,23 @@ def estimated_load_kg(order) -> Decimal:
     )
 
 
-def _lock_stock_rows(
-    items,
-    warehouse=None,
-    *,
-    require_active=True,
-) -> None:
-    """Acquire stock locks in one global product order.
+def _lock_order_stock(order, *, refusal: str):
+    """Позиции заказа и его склад с остатками под блокировкой — для отгрузки и отката.
 
-    Without a deterministic order, two mixed-product shipments containing
-    A/B and B/A can deadlock while each waits for the other's StockItem.
-    Creating a zero row here also makes the existing allow-negative behavior
-    deterministic when a product has no stock row yet.
+    Склад выбран, пока заказ ещё правился: его могут потом выключить, но
+    отгрузка и её откат идут по этому закреплённому складу. Удалённый товар
+    не списать и не вернуть — ``refusal`` начинает текст отказа.
     """
-    from apps.warehouse.services import lock_stock_item
-
-    products = {item.product_id: item.product for item in items}
-    for product_id in sorted(products):
-        lock_stock_item(
-            products[product_id],
-            warehouse=warehouse,
-            require_active=require_active,
-        )
+    items = list(order.items.select_related("product").order_by("product_id", "id"))
+    deleted = [item.product_label for item in items if item.product_id is None]
+    if deleted:
+        raise ValidationError({
+            "detail": f"{refusal}: удалены товары — " + ", ".join(deleted),
+            "code": "product_deleted",
+        })
+    warehouse = order.warehouse
+    lock_stock_items((item.product for item in items), warehouse)
+    return items, warehouse
 
 
 @transaction.atomic
@@ -177,10 +136,7 @@ def begin_camera_loading(
     заказу; ограничение продублировано частичным UNIQUE-индексом в PostgreSQL.
     """
     order = _locked(order, user)
-    restoring_same_binding = (
-        order.status == "loading" and order.loading_camera == camera
-    )
-    if order.status not in ("confirmed", "arrived") and not restoring_same_binding:
+    if not can_start_loading(order, camera):
         raise ValidationError({
             "detail": "Загрузку можно начать только для подтверждённого или прибывшего заказа",
             "code": "invalid_status",
@@ -224,97 +180,24 @@ def begin_camera_loading(
     return order
 
 
-@transaction.atomic
-def record_arrival(order, weigh_in_kg, user):
-    """Зафиксировать прибытие машины и её входной вес."""
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-    _require_transport(order, "truck")
-    if order.status != "confirmed":
-        raise ValidationError(
-            {"detail": "Машину можно принять только для подтверждённого заказа",
-             "code": "invalid_status"}
-        )
-    if weigh_in_kg is None:
-        weigh_in_kg = estimated_load_kg(order)
-        weight_source = "estimated"
-    else:
-        weight_source = "manual"
-    truck = order.truck_number
-    order.status = "arrived"
-    order.save(update_fields=["status"])
-    shipment, _ = Shipment.objects.get_or_create(
-        order=order, defaults={"truck_number": truck}
-    )
-    shipment.truck_number = truck
-    shipment.weigh_in_kg = weigh_in_kg
-    shipment.arrived_at = timezone.now()
-    shipment.save()
-    log_event("arrival", f"Машина {truck} прибыла", user=user, order=order,
-              payload={
-                  "weigh_in_kg": str(weigh_in_kg),
-                  "source": weight_source,
-              })
-    return shipment
-
-
-@transaction.atomic
-def record_count(order, bags, user):
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-
-    if order.status in ("arrived", "loading"):
-        shipment = _require_shipment(order)
-    else:
-        raise ValidationError(
-            {"detail": "Подсчёт мешков возможен только во время загрузки",
-             "code": "invalid_status"}
-        )
-
-    if order.status == "arrived":
-        order.status = "loading"
-        order.save(update_fields=["status"])
-        log_event("loading_start", "Начата загрузка", user=user, order=order)
-    shipment.bags_loaded = bags
-    shipment.save(update_fields=["bags_loaded"])
-    log_event("loading", f"Посчитано {bags} мешков", user=user, order=order,
-              payload={"bags": bags})
-    return shipment
-
-
-def _assert_no_open_ai_session(order) -> None:
-    """Manual completion must not bypass an open AI counting session."""
+def has_open_ai_session(order) -> bool:
+    """Идёт ли по заказу AI-подсчёт: открытая сессия держит заказ и камеру."""
     # Local import avoids a shipments -> cameras -> shipments import cycle.
     from apps.cameras.models import AiCountingSession
 
-    if AiCountingSession.objects.filter(
+    return AiCountingSession.objects.filter(
         order_id=order.pk,
         status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists():
+    ).exists()
+
+
+def assert_no_open_ai_session(order) -> None:
+    """Открытый AI-подсчёт закрывает только отгрузка: заказ до неё не трогаем."""
+    if has_open_ai_session(order):
         raise ValidationError({
             "detail": "По заказу идёт AI-подсчёт — отгрузите его на странице «Грузчик»",
             "code": "ai_session_active",
         })
-
-
-@transaction.atomic
-def finish_loading(order, user):
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-
-    _require_transport(order, "truck")
-    if order.status != "loading":
-        raise ValidationError(
-            {"detail": "Завершить можно только идущую загрузку", "code": "invalid_status"}
-        )
-    _assert_no_open_ai_session(order)
-    shipment = _require_shipment(order)
-    log_event("loading_done", "Загрузка завершена", user=user, order=order,
-              payload={"bags": shipment.bags_loaded})
-    order.status = "loaded"
-    order.loading_camera = ""
-    order.save(update_fields=["status", "loading_camera"])
-    return shipment
 
 
 def _valid_ai_total(bags) -> bool:
@@ -323,14 +206,7 @@ def _valid_ai_total(bags) -> bool:
 
 
 @transaction.atomic
-def finish_ai_counting(
-    order,
-    bags: int,
-    user,
-    *,
-    automatic_session_id: int | None = None,
-    completion_guard: dict | None = None,
-):
+def finish_ai_counting(order, bags: int, user):
     """Сохранить финальный AI-счёт и завершить загрузку.
 
     Воркер на ПК цеха — сторонний процесс, и его ответ может прийти пустым
@@ -339,30 +215,7 @@ def finish_ai_counting(
     ручное завершение, и откат.
     Поэтому негодное число не блокирует завершение подсчёта: за факт берётся
     заказанное количество, а расхождение попадает в журнал.
-    Системное автозавершение требует точный финал активной автоматической
-    сессии и никогда не подставляет заказанное количество вместо счёта.
     """
-    automatic = automatic_session_id is not None
-    automatic_session = None
-    if automatic:
-        from apps.cameras.models import AiCountingSession
-
-        if user is not None or type(automatic_session_id) is not int:
-            raise ValidationError("Автозавершение выполняется только системой")
-        automatic_session = (
-            AiCountingSession.objects.select_for_update()
-            .filter(
-                pk=automatic_session_id,
-                order_id=order.pk,
-                automatically_started=True,
-                status=AiCountingSession.ACTIVE,
-            )
-            .first()
-        )
-        if automatic_session is None:
-            raise ValidationError("Активная автоматическая погрузка не найдена")
-        if not _valid_ai_total(bags) or bags > 2_147_483_647:
-            raise ValidationError("Для автозавершения нужен точный финальный счёт")
     order = _locked(order, user)
 
     if order.status != "loading":
@@ -371,12 +224,10 @@ def finish_ai_counting(
             "code": "invalid_status",
         })
     shipment = _require_shipment(order)
-    if automatic_session is not None and order.loading_camera != automatic_session.camera:
-        raise ValidationError("Камера автоматической погрузки изменилась")
 
-    source = "ai_final_automatic" if automatic else "ai_final"
+    source = "ai_final"
     if not _valid_ai_total(bags):
-        rejected, bags = bags, sum(item.quantity for item in order.items.all())
+        rejected, bags = bags, order.ordered_bags
         source = "ai_final_fallback"
         log_event(
             "loading",
@@ -390,13 +241,6 @@ def finish_ai_counting(
     shipment.bags_loaded = bags
     shipment.save(update_fields=["bags_loaded"])
     audit = {"bags": bags, "source": source}
-    if automatic:
-        audit.update(
-            automatic=True,
-            session_id=automatic_session_id,
-            reason="transport_absent_conveyor_idle",
-            completion_guard=completion_guard or {},
-        )
     log_event(
         "loading",
         f"AI-подсчёт зафиксирован: {bags} мешков",
@@ -406,8 +250,7 @@ def finish_ai_counting(
     )
     log_event(
         "loading_done",
-        "Загрузка завершена автоматически: транспорт не обнаружен, конвейер свободен"
-        if automatic else "Загрузка завершена по финальному AI-подсчёту",
+        "Загрузка завершена по финальному AI-подсчёту",
         user=user,
         order=order,
         payload=audit,
@@ -426,8 +269,7 @@ def manual_complete_order(order, bags: int | None, user):
     смены ``status`` он создаёт полноценную Shipment, фиксирует количество,
     списывает склад и освобождает возможную старую привязку камеры. Отсутствие
     ``bags`` означает «без ручного подсчёта»: используем количество из заказа.
-    Работающую AI-сессию намеренно не обрываем из этого endpoint — сначала её
-    должен остановить владелец или администратор на посту.
+    Работающую AI-сессию отсюда не обрываем: её закрывает «Отгружено» у грузчика.
     """
     order = _locked(order, user)
     if order.status not in AWAITING_SHIPMENT_STATUSES:
@@ -436,18 +278,18 @@ def manual_complete_order(order, bags: int | None, user):
             "code": "invalid_status",
         })
 
-    _assert_no_open_ai_session(order)
+    assert_no_open_ai_session(order)
 
     existing_shipment = Shipment.objects.filter(order=order).first()
     if bags is None:
-        if existing_shipment is not None and order.status in ("arrived", "loading", "loaded"):
+        if existing_shipment is not None and order.status in ON_POST_STATUSES:
             bags = existing_shipment.bags_loaded
             count_source = "current"
         else:
-            bags = sum(item.quantity for item in order.items.all())
+            bags = order.ordered_bags
             count_source = "ordered"
     else:
-        if isinstance(bags, bool) or not isinstance(bags, int) or bags < 0:
+        if not _valid_ai_total(bags):
             raise ValidationError({
                 "detail": "Количество мешков должно быть целым числом от 0",
                 "code": "invalid_bags",
@@ -455,14 +297,8 @@ def manual_complete_order(order, bags: int | None, user):
         count_source = "manual"
 
     now = timezone.now()
-    shipment = existing_shipment
-    if shipment is None:
-        shipment = Shipment.objects.create(
-            order=order,
-            truck_number=order.truck_number if order.transport_type == "truck" else "",
-        )
+    shipment = existing_shipment or Shipment.objects.create(order=order)
     if order.transport_type == "truck":
-        shipment.truck_number = order.truck_number
         if shipment.weigh_in_kg is None:
             shipment.weigh_in_kg = estimated_load_kg(order)
         shipment.arrived_at = shipment.arrived_at or now
@@ -479,7 +315,7 @@ def manual_complete_order(order, bags: int | None, user):
     label = (
         "Вагон: отгрузка завершена вручную"
         if order.transport_type == "train"
-        else f"Машина {shipment.truck_number}: отгрузка завершена вручную"
+        else f"Машина {order.truck_number}: отгрузка завершена вручную"
     )
     return _do_ship(order, shipment, user, label)
 
@@ -490,33 +326,22 @@ def rewind_loading(order, user, target_status="confirmed"):
 
     Это отдельная бизнес-операция, а не голая ручная смена статуса: очищаем
     незавершённую отгрузку и освобождаем назначенную камеру. Работающую
-    AI-сессию сначала обязан остановить её автор или администратор.
+    AI-сессию откат не обрывает: её закрывает «Отгружено» у грузчика.
     """
     order = _locked(order, user)
 
-    if target_status not in ("pending", "confirmed", "cancelled"):
+    if target_status not in ROLLBACK_TARGET_STATUSES:
         raise ValidationError({
             "detail": "Недопустимый целевой статус возврата",
             "code": "bad_status",
         })
-    if order.status not in ("arrived", "loading", "loaded"):
+    if order.status not in ON_POST_STATUSES:
         raise ValidationError({
             "detail": "Вернуть можно только незавершённую отгрузку",
             "code": "invalid_status",
         })
 
-    # Импорт локальный: cameras зависит от orders, а доменная операция не
-    # должна создавать циклический импорт при старте Django.
-    from apps.cameras.models import AiCountingSession
-    has_open_ai = AiCountingSession.objects.filter(
-        order=order,
-        status__in=AiCountingSession.OPEN_STATUSES,
-    ).exists()
-    if has_open_ai:
-        raise ValidationError({
-            "detail": "Сначала остановите AI-подсчёт. Это может сделать начавший отгрузку или администратор",
-            "code": "ai_session_active",
-        })
+    assert_no_open_ai_session(order)
     from apps.orders.services import assert_money_allows_status
 
     # Возврат в ожидание сохраняет деньги предоплатой; в заявку или отмену — без денег.
@@ -581,11 +406,12 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     """Controlled reversal of a completed shipment.
 
     The operation is deliberately separate from generic status editing: it
-    restores stock, clears shipment state, removes local camera recordings and
-    writes an immutable audit entry with the author and required reason.
+    restores stock, clears shipment state and writes an immutable audit entry
+    with the author and required reason. Camera recordings are left to the
+    camera PC's MediaMTX retention (``recordings.VIDEO_RETENTION_DAYS``).
     """
     order = _locked(order, user)
-    if target_status not in ("pending", "confirmed", "cancelled"):
+    if target_status not in ROLLBACK_TARGET_STATUSES:
         raise ValidationError({
             "detail": "Вернуть отгруженный заказ можно на рассмотрение, в ожидание или в отменённые",
             "code": "bad_status",
@@ -603,53 +429,22 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             "detail": "Откат доступен только для отгруженного заказа",
             "code": "invalid_status",
         })
-    from apps.orders.services import _payment_status_for, assert_money_allows_status
+    from apps.orders.debt import order_payment_status
+    from apps.orders.services import assert_money_allows_status
 
     # Возврат в ожидание сохраняет деньги предоплатой; в заявку или отмену — без денег.
     assert_money_allows_status(order, target_status)
 
-    items = list(
-        order.items.select_related("product").order_by("product_id", "id")
-    )
-    deleted_products = [item.product_label for item in items if item.product_id is None]
-    if deleted_products:
-        raise ValidationError({
-            "detail": "Нельзя восстановить склад: удалены товары — " + ", ".join(deleted_products),
-            "code": "product_deleted",
-        })
+    items, warehouse = _lock_order_stock(order, refusal="Нельзя восстановить склад")
 
-    # The warehouse was selected while the order was still editable. It may be
-    # deactivated later, but historical fulfillment and rollback must continue
-    # against that immutable pin. Lock stock before deleting external video so
-    # a warehouse-domain error cannot leave media deleted while the DB rolls
-    # back unchanged.
-    warehouse = resolve_warehouse(order.warehouse, require_active=False)
-    _lock_stock_rows(items, warehouse, require_active=False)
-    if order.warehouse_id is None:
-        order.warehouse = warehouse
-        order.save(update_fields=["warehouse"])
-
-    # Удаление локального видео — сопутствующая очистка, а не часть складской
-    # транзакции. Недоступный ПК камер не должен блокировать контролируемый
-    # откат: запись всё равно исчезнет по локальной политике хранения, а сбой
-    # очистки сохраняется в журнале для администратора.
-    from apps.cameras import recordings
+    # Видео отгрузки не удаляем: у ПК камер нет API удаления записей, а сетевые
+    # вызовы внутри складской транзакции держали бы блокировку. Запись исчезнет
+    # по сроку хранения MediaMTX на ПК камер.
     from apps.cameras.models import AiCountingSession
-    sessions = list(AiCountingSession.objects.select_for_update().filter(order=order))
+    session_ids = list(
+        AiCountingSession.objects.filter(order=order).values_list("pk", flat=True)
+    )
     shipment = Shipment.objects.select_for_update().filter(order=order).first()
-    deleted_segments = 0
-    cleaned_session_ids = []
-    cleanup_pending_session_ids = []
-    for session in sessions:
-        if not session.recording_stream:
-            continue
-        end = session.ended_at or (shipment.shipped_at if shipment else None) or timezone.now()
-        try:
-            deleted_segments += recordings.delete_session_segments(
-                session.recording_stream, session.started_at, end)
-            cleaned_session_ids.append(session.pk)
-        except recordings.RecordingUnavailable:
-            cleanup_pending_session_ids.append(session.pk)
 
     from apps.warehouse.services import adjust_stock
 
@@ -668,20 +463,15 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     previous_bags = shipment.bags_loaded if shipment else 0
     if shipment:
         shipment.delete()
-    AiCountingSession.objects.filter(pk__in=cleaned_session_ids).update(
+    AiCountingSession.objects.filter(pk__in=session_ids).exclude(
         recording_stream="",
-        error="Видео удалено при откате отгрузки",
-    )
-    AiCountingSession.objects.filter(pk__in=cleanup_pending_session_ids).update(
-        error=(
-            "Отгрузка отменена; видео не удалось удалить сразу. "
-            "Оно будет удалено по локальному сроку хранения"
-        ),
+    ).update(
+        error="Отгрузка отменена; видео будет удалено по сроку хранения ПК камер",
     )
     order.status = target_status
     order.loading_camera = ""
     # Деньги остаются предоплатой: статус оплаты — по факту, а не «не оплачен».
-    order.payment_status = _payment_status_for(order)
+    order.payment_status = order_payment_status(order)
     order.save(update_fields=["status", "payment_status", "loading_camera"])
     log_event(
         "shipment_rollback",
@@ -691,12 +481,40 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
         payload={
             "from": "shipped", "to": target_status, "reason": reason,
             "restored_bags": restored, "previous_bags_loaded": previous_bags,
-            "recording_segments_deleted": deleted_segments,
-            "recording_session_ids": [session.pk for session in sessions],
-            "recording_cleanup_pending_session_ids": cleanup_pending_session_ids,
+            "recording_session_ids": session_ids,
         },
     )
     return order
+
+
+def mark_order_shipped(order, user):
+    """Перевести заказ в «Отгружено» и записать долг по неоплаченному остатку.
+
+    Возвращает событие «долг» (или None), чтобы отгрузку задним числом можно
+    было перенести на её день вместе с ним.
+    """
+    from apps.orders.debt import order_payment_status, order_remaining
+
+    order.status = "shipped"
+    order.loading_camera = ""
+    # Предоплата переживает отгрузку: статус оплаты — по факту денег.
+    order.payment_status = order_payment_status(order)
+    order.save(update_fields=["status", "payment_status", "loading_camera"])
+    # Неоплаченный остаток отгруженного заказа — долг клиента (orders/debt.py),
+    # как бы он ни собирался платить. Предоплаченная часть долгом не становится.
+    remaining = order_remaining(order)
+    if remaining <= 0:
+        return None
+    return log_event(
+        "debt",
+        f"Заказ отгружен в долг: {remaining}",
+        user=user,
+        order=order,
+        payload={
+            "amount": str(remaining),
+            "intent": order.settlement_intent,
+        },
+    )
 
 
 def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None):
@@ -708,54 +526,18 @@ def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None
     """
     from apps.orders.transport import client_transport_phrase
 
-    items = list(
-        order.items.select_related("product").order_by("product_id", "id")
-    )
-    for item in items:
-        if item.product_id is None:
-            raise ValidationError({
-                "detail": f"Товар «{item.product_label}» удалён. Обновите состав заказа.",
-                "code": "product_deleted",
-            })
-    warehouse = resolve_warehouse(order.warehouse, require_active=False)
-    _lock_stock_rows(items, warehouse, require_active=False)
-    if order.warehouse_id is None:
-        order.warehouse = warehouse
-        order.save(update_fields=["warehouse"])
+    items, warehouse = _lock_order_stock(order, refusal="Нельзя отгрузить")
     for item in items:
         deduct_stock(
             item.product,
             item.quantity,
             user,
-            allow_negative=True,
             warehouse=warehouse,
             require_active=False,
         )
-    from apps.orders.debt import order_remaining
-    from apps.orders.services import _payment_status_for
-
     shipment.shipped_at = shipped_at or timezone.now()
     shipment.save()
-    order.status = "shipped"
-    order.loading_camera = ""
-    # Предоплата переживает отгрузку: статус оплаты — по факту денег.
-    order.payment_status = _payment_status_for(order)
-    order.save(update_fields=["status", "payment_status", "loading_camera"])
-    # Неоплаченный остаток отгруженного заказа — долг клиента (orders/debt.py),
-    # как бы он ни собирался платить. Предоплаченная часть долгом не становится.
-    remaining = order_remaining(order)
-    debt_event = None
-    if remaining > 0:
-        debt_event = log_event(
-            "debt",
-            f"Заказ отгружен в долг: {remaining}",
-            user=user,
-            order=order,
-            payload={
-                "amount": str(remaining),
-                "intent": order.settlement_intent,
-            },
-        )
+    debt_event = mark_order_shipped(order, user)
     bag_estimate = estimated_load_kg(order)
     shipment_event = log_event(
         "shipment", label, user=user, order=order,
@@ -777,32 +559,11 @@ def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None
 
 
 @transaction.atomic
-def record_shipment(order, user):
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-    if order.status != "loaded":
-        raise ValidationError(
-            {"detail": "Выезд возможен только после завершения загрузки",
-             "code": "invalid_status"}
-        )
-    _assert_no_open_ai_session(order)
-    shipment = _require_shipment(order)
-    if order.transport_type == "truck":
-        shipment.truck_number = order.truck_number
-    label = (
-        "Вагон отгружен"
-        if order.transport_type == "train"
-        else f"Машина {order.truck_number} выехала"
-    )
-    return _do_ship(order, shipment, user, label)
-
-
-@transaction.atomic
 def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str | None = None):
     """Грузчик: одна кнопка — заказ отгружен на заказанное количество.
 
-    Без въезда, счёта мешков и камер: списание со склада, долг и журнал — те же,
-    что у выезда с поста (``_do_ship``). Номер накладной — номер заказа.
+    Без въезда, счёта мешков и камер: списание со склада, долг и журнал — общие
+    с отгрузкой по отчёту и ручным завершением (``_do_ship``). Номер накладной — номер заказа.
     Пустой номер тягача — «не менять». Прицеп: ``None`` — «не менять», пустая
     строка — «стереть», как в форме заказа и «Фурах» (экран грузчика шлёт
     только исправленные номера, устаревший экран чужой прицеп не сотрёт).
@@ -816,7 +577,7 @@ def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str |
             "detail": "Отгрузить можно только подтверждённый заказ, который ещё не выехал",
             "code": "invalid_status",
         })
-    _assert_no_open_ai_session(order)
+    assert_no_open_ai_session(order)
     truck_number = (truck_number or "").strip() or None
     trailer_number = None if trailer_number is None else trailer_number.strip()
     if truck_number is not None or trailer_number is not None:
@@ -824,9 +585,7 @@ def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str |
         set_order_transport(order, user, truck=truck_number, trailer=trailer_number, notify_client=False)
     shipment, _ = Shipment.objects.get_or_create(order=order)
     if not shipment.bags_loaded:
-        shipment.bags_loaded = sum(item.quantity for item in order.items.all())
-    if order.transport_type == "truck":
-        shipment.truck_number = order.truck_number
+        shipment.bags_loaded = order.ordered_bags
     label = (
         f"Вагон отгружен по накладной №{order.pk}"
         if order.transport_type == "train"
@@ -917,7 +676,7 @@ def ship_rail_report(order, wagons, user, *, station: str, shipped_day: date):
     today = timezone.localdate()
     if shipped_day > today:
         raise ValidationError({"detail": "Дата отчёта ещё не наступила", "code": "rail_future_day"})
-    _assert_no_open_ai_session(order)
+    assert_no_open_ai_session(order)
     mismatch = rail_bags_mismatch(order, wagons)
     if mismatch:
         raise ValidationError({
@@ -946,44 +705,3 @@ def ship_rail_report(order, wagons, user, *, station: str, shipped_day: date):
         order, shipment, user, label,
         shipped_at=backdate_moment(shipped_day) if shipped_day < today else None,
     )
-
-
-@transaction.atomic
-def start_train_loading(order, user):
-    """Вагон: старт сессии загрузки (без въезда и взвешивания)."""
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-    _require_transport(order, "train")
-    if order.status != "confirmed":
-        raise ValidationError(
-            {"detail": "Загрузку вагона можно начать только для подтверждённого заказа",
-             "code": "invalid_status"}
-        )
-    shipment, _ = Shipment.objects.get_or_create(order=order)
-    shipment.loading_started_at = timezone.now()
-    shipment.save()
-    order.status = "loading"
-    order.save(update_fields=["status"])
-    log_event("loading_start", "Вагон: начата загрузка", user=user, order=order)
-    return shipment
-
-
-@transaction.atomic
-def finish_train_loading(order, user):
-    """Вагон: завершить загрузку и подготовить к отгрузке."""
-    order = _locked(order, user)
-    assert_can_ship(user, order)
-    _require_transport(order, "train")
-    if order.status != "loading":
-        raise ValidationError(
-            {"detail": "Завершить можно только идущую загрузку вагона",
-             "code": "invalid_status"}
-        )
-    _assert_no_open_ai_session(order)
-    shipment = _require_shipment(order)
-    log_event("loading_done", "Вагон: загрузка завершена", user=user, order=order,
-              payload={"bags": shipment.bags_loaded})
-    order.status = "loaded"
-    order.loading_camera = ""
-    order.save(update_fields=["status", "loading_camera"])
-    return shipment

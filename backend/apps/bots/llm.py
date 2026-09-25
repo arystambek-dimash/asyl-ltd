@@ -1,27 +1,25 @@
 """ИИ-черновик отчёта о вагонах, когда сообщение не разобралось по формату.
 
-Тонкий клиент OpenAI Responses API только для бота (распознавание номеров в
-камерах и зерне живёт отдельно и здесь не используется). Включается флагом
+Запрос идёт через общий клиент OpenAI (:mod:`apps.common.openai_responses`),
+здесь — только промпт и схема черновика. Включается флагом
 ``WHATSAPP_BOT_LLM_ENABLED`` (по умолчанию выключен). Результат — текст в
 формате владельца для человека на разборе: бот по нему никогда не проводит.
 """
 from __future__ import annotations
 
-import json
 import logging
-import urllib.error
-import urllib.request
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 
+from apps.common import openai_responses
+from apps.common.openai_responses import OpenAIResponseError
+
 from .parsing import format_rail_report
 
 log = logging.getLogger(__name__)
 
-_URL = "https://api.openai.com/v1/responses"
-_TIMEOUT_SECONDS = 45
 _MAX_RESPONSE_BYTES = 256 * 1024
 _INSTRUCTIONS = (
     "Ты разбираешь сообщение из WhatsApp об отгрузке вагонов с мукой. Верни дату отгрузки "
@@ -62,20 +60,8 @@ def _request(text: str) -> object:
         "max_output_tokens": 4000,
         "text": {"format": {"type": "json_schema", "name": "rail_report", "strict": True, "schema": _SCHEMA}},
     }
-    request = urllib.request.Request(_URL, data=json.dumps(body).encode(), method="POST", headers={
-        "Authorization": "Bearer " + settings.OPENAI_API_KEY, "Content-Type": "application/json",
-    })
-    with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-        raw = response.read(_MAX_RESPONSE_BYTES + 1)
-    if len(raw) > _MAX_RESPONSE_BYTES:
-        raise ValueError("ответ ИИ слишком большой")
-    payload = json.loads(raw)
-    for output in payload.get("output") or []:
-        parts = output.get("content") if isinstance(output, dict) else None
-        for part in parts if isinstance(parts, list) else []:
-            if isinstance(part, dict) and part.get("type") == "output_text":
-                return json.loads(part.get("text") or "")
-    raise ValueError("в ответе ИИ нет текста")
+    data, _ = openai_responses.request_json(body, max_response_bytes=_MAX_RESPONSE_BYTES)
+    return data
 
 
 def _day(value: str, fallback: date) -> date:
@@ -105,8 +91,8 @@ def draft_report(text: str, *, sent_on: date) -> str:
         return ""
     try:
         data = _request(text)
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError, AttributeError) as exc:
-        log.warning("WhatsApp bot LLM draft failed: %s", type(exc).__name__)
+    except OpenAIResponseError as exc:
+        log.warning("WhatsApp bot LLM draft failed: %s", exc.code)
         return ""
     if not isinstance(data, dict):
         return ""

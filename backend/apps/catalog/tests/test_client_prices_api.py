@@ -13,7 +13,7 @@ def test_client_prices_are_available_for_order_creation(auth_client, manager):
     foreign = Client.objects.create_with_user(
         first_name="Other", last_name="Client", phone="2")
     product = Product.objects.create(
-        name="Scoped", color="Red", weight_kg="50", price="100.00")
+        name="Scoped", color="Red", weight_kg="50")
     ClientPrice.objects.create(client=mine, product=product, price="90.00")
     ClientPrice.objects.create(
         client=mine, product=product, currency="USD", price="0.20")
@@ -47,9 +47,8 @@ def test_client_price_api_rejects_clients_from_another_employee_department(
     employee = user_with_perms(
         "scoped-order-price-reader",
         codes=["orders.create"],
+        department=first,
     )
-    employee.employee.sales_department = first
-    employee.employee.save(update_fields=["sales_department"])
     owned = Client.objects.create_with_user(
         first_name="Свой",
         phone="1",
@@ -64,7 +63,6 @@ def test_client_price_api_rejects_clients_from_another_employee_department(
         name="Scoped price",
         color="Red",
         weight_kg="50",
-        price="100.00",
     )
     ClientPrice.objects.create(client=owned, product=product, price="90.00")
     ClientPrice.objects.create(client=foreign, product=product, price="80.00")

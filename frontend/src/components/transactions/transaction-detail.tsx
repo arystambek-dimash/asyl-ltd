@@ -1,5 +1,6 @@
+import { invoiceStatusLabel } from "@/lib/apipay-invoice";
 import type { Payment } from "@/lib/types";
-import { cn, currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime } from "@/lib/utils";
 
 const STATUS_HELP: Record<string, { meaning: string; money: string; next: string }> = {
   requested: {
@@ -109,12 +110,12 @@ export function TransactionDetail({ payment }: { payment: Payment }) {
           {payment.client_name} · заказ #{payment.order}
         </div>
         <div className="mt-1 text-2xl font-semibold tabular-nums">
-          {formatMoney(payment.amount)} {currencySymbol(payment.currency)}
+          {formatCurrency(payment.amount, payment.currency)}
         </div>
         <div className="mt-2 space-y-0.5 text-xs text-[var(--muted-foreground)]">
           {payment.provider && (
             <div>
-              Состояние счёта: {payment.provider.status}
+              Состояние счёта: {invoiceStatusLabel(payment.provider.status)}
               {payment.provider.phone_number ? ` · ${payment.provider.phone_number}` : ""}
             </div>
           )}
@@ -122,9 +123,7 @@ export function TransactionDetail({ payment }: { payment: Payment }) {
         </div>
       </div>
       <StatusExplanation status={payment.effective_status ?? payment.status} />
-      {/* Журнал операции — для любого способа, включая наличные: раньше
-          историю имели только онлайн-счета, и наличная транзакция
-          выглядела безымянной. */}
+      {/* Журнал операции — для любого способа оплаты, включая наличные. */}
       <div>
         <div className="mb-2 text-sm font-medium">Журнал операции</div>
         <div className="space-y-1.5">
@@ -152,9 +151,7 @@ export function TransactionDetail({ payment }: { payment: Payment }) {
             {payment.refunds!.map((refund) => (
               <div key={refund.id} className="rounded-lg border px-3 py-2 text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium">
-                    {formatMoney(refund.amount)} {currencySymbol(payment.currency)}
-                  </span>
+                  <span className="font-medium">{formatCurrency(refund.amount, payment.currency)}</span>
                   <span className="text-xs text-[var(--muted-foreground)]">
                     {refund.status === "completed"
                       ? "Завершён"

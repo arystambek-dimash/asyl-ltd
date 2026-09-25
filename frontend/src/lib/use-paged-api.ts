@@ -3,11 +3,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
 
 /** Стандартный конверт DRF-пагинации (включается параметром ?page=). */
-export interface PagedResponse<T> {
+interface PagedResponse<T> {
   count: number;
   next: string | null;
   previous: string | null;
   results: T[];
+}
+
+function pageUrl(baseUrl: string, page: number, pageSize: number): string {
+  const separator = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${separator}page=${page}&page_size=${pageSize}`;
 }
 
 /**
@@ -56,9 +61,7 @@ export function usePagedApi<T>(baseUrl: string | null, pageSize = 50) {
       if (append) setLoadingMore(true);
       else setLoading(true);
       try {
-        const separator = baseUrl.includes("?") ? "&" : "?";
-        const url = `${baseUrl}${separator}page=${page}&page_size=${pageSize}`;
-        const res = await api.get<PagedResponse<T>>(url, { signal: controller.signal });
+        const res = await api.get<PagedResponse<T>>(pageUrl(baseUrl, page, pageSize), { signal: controller.signal });
         if (requestId !== latestRequest.current) return;
         pageRef.current = page;
         setCount(res.data.count);
@@ -96,13 +99,10 @@ export function usePagedApi<T>(baseUrl: string | null, pageSize = 50) {
     const controller = new AbortController();
     activeController.current = controller;
     const requestId = ++latestRequest.current;
-    const separator = baseUrl.includes("?") ? "&" : "?";
     try {
       const pages: PagedResponse<T>[] = [];
       for (let page = 1; page <= pageRef.current; page += 1) {
-        const res = await api.get<PagedResponse<T>>(`${baseUrl}${separator}page=${page}&page_size=${pageSize}`, {
-          signal: controller.signal,
-        });
+        const res = await api.get<PagedResponse<T>>(pageUrl(baseUrl, page, pageSize), { signal: controller.signal });
         if (requestId !== latestRequest.current) return;
         pages.push(res.data);
         if (!res.data.next) break;

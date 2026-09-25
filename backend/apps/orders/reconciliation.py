@@ -17,10 +17,12 @@ from django.utils import timezone
 
 from .apipay import (
     ApiPayConfigurationError,
+    CLOSED_INVOICE_STATUSES,
     ApiPayCredentials,
     apply_invoice_status,
     check_invoice_statuses,
     credentials_for_department_code,
+    positive_provider_id,
     recover_invoice_issue_mapping,
 )
 from .models import ApiPayInvoice
@@ -35,16 +37,6 @@ ACTIVE_INVOICE_STATUSES = (
     "processing",
     "pending",
     "cancelling",
-)
-LATE_PAYMENT_INVOICE_STATUSES = (
-    "cancelled",
-    "expired",
-    "error",
-    "superseded",
-)
-POLLABLE_INVOICE_STATUSES = (
-    *ACTIVE_INVOICE_STATUSES,
-    *LATE_PAYMENT_INVOICE_STATUSES,
 )
 
 
@@ -86,8 +78,8 @@ def _payloads_by_id(
     malformed = 0
     for payload in payloads:
         try:
-            invoice_id = int(payload["id"])
-        except (KeyError, TypeError, ValueError):
+            invoice_id = positive_provider_id(payload.get("id"))
+        except ValueError:
             malformed += 1
             log.error("ApiPay reconciliation ignored invoice without a valid id")
             continue
@@ -140,33 +132,25 @@ def _department_batches(
 
 def reconcile_apipay_invoices(
     *,
+    request_budget: int,
     batch_size: int = 100,
-    limit: int | None = None,
-    request_budget: int | None = None,
     stale_after: timedelta = timedelta(seconds=30),
     lookback: timedelta = timedelta(hours=72),
     now=None,
 ) -> ReconciliationStats:
     """Poll and transactionally apply authoritative provider invoice states.
 
-    The candidate list is snapshotted before making network calls so one bad
-    batch cannot create a tight retry loop. ``updated_at`` is only a polling
-    throttle: ``apply_invoice_status`` updates it for returned invoices, and
-    omitted IDs are touched explicitly. Ambiguous QR release age is based on
-    immutable ``created_at`` inside ``recover_qr_invoice_mapping``.
+    ``request_budget`` is a hard cap on provider requests for this call; the
+    runner (:mod:`.reconciliation_runner`) already normalizes it together with
+    ``batch_size``, staleness and lookback. The candidate list is snapshotted
+    before making network calls so one bad batch cannot create a tight retry
+    loop. ``updated_at`` is only a polling throttle: ``apply_invoice_status``
+    updates it for returned invoices, and omitted IDs are touched explicitly.
+    Ambiguous QR release age is based on immutable ``created_at`` inside
+    ``recover_invoice_issue_mapping``.
     """
 
-    batch_size = max(1, min(int(batch_size), 500))
-    if limit is not None:
-        limit = max(1, int(limit))
-    bounded_requests = request_budget is not None
-    requests_remaining = (
-        max(0, int(request_budget))
-        if request_budget is not None
-        else None
-    )
-    stale_after = max(stale_after, timedelta(0))
-    lookback = max(lookback, timedelta(seconds=1))
+    requests_remaining = max(0, int(request_budget))
     observed_at = now or timezone.now()
     stale_cutoff = observed_at - stale_after
     lookback_cutoff = observed_at - lookback
@@ -175,7 +159,7 @@ def reconcile_apipay_invoices(
     # stale local reservation with its original idempotency key; ApiPay either
     # creates it now or returns the existing invoice via duplicate-key recovery.
     issue_candidate = None
-    if requests_remaining is None or requests_remaining > 0:
+    if requests_remaining > 0:
         issue_candidate = (
             ApiPayInvoice.objects.filter(
                 invoice_id__isnull=True,
@@ -187,26 +171,21 @@ def reconcile_apipay_invoices(
             .first()
         )
     stats = ReconciliationStats()
-    issue_attempted = issue_candidate is not None
     if issue_candidate is not None:
         stats.issue_selected = 1
         issue_cursor = issue_candidate.updated_at
+        # Pagination can use any/all of the budget. Reserve it conservatively
+        # so the hard cap is never exceeded.
+        allocated_requests, requests_remaining = requests_remaining, 0
         try:
-            allocated_requests = requests_remaining
             recovered = recover_invoice_issue_mapping(
                 issue_candidate,
                 max_pages=allocated_requests,
                 # A sparse money row is safely polled as a mapped invoice next
                 # cycle; do not spend a hidden GET outside the hard budget.
-                hydrate_money_response=not bounded_requests,
+                hydrate_money_response=False,
             )
-            if bounded_requests:
-                # Pagination can use any/all of this allocation. Reserve it
-                # conservatively so the hard cap is never exceeded.
-                requests_remaining = 0
         except Exception:
-            if bounded_requests:
-                requests_remaining = 0
             # A poison provider response or exhausted pagination budget must
             # not monopolize the oldest issue forever. CAS avoids overwriting
             # a concurrent mapping or a newer successful observation.
@@ -230,20 +209,6 @@ def reconcile_apipay_invoices(
                 if issue_candidate.status == "error":
                     stats.issue_released = 1
 
-    mapped_limit = limit
-    if bounded_requests:
-        assert requests_remaining is not None
-        request_limited_rows = requests_remaining * batch_size
-        mapped_limit = (
-            request_limited_rows
-            if mapped_limit is None
-            else min(mapped_limit, request_limited_rows)
-        )
-    elif issue_attempted and mapped_limit is not None:
-        # The command budgets mapped invoices in provider batches. One create
-        # retry consumed one such request slot.
-        mapped_limit = max(0, mapped_limit - batch_size)
-
     candidate_query = (
         ApiPayInvoice.objects.filter(
             invoice_id__isnull=False,
@@ -252,7 +217,7 @@ def reconcile_apipay_invoices(
         .filter(
             Q(status__in=ACTIVE_INVOICE_STATUSES)
             | Q(
-                status__in=LATE_PAYMENT_INVOICE_STATUSES,
+                status__in=CLOSED_INVOICE_STATUSES,
                 created_at__gte=lookback_cutoff,
             )
         )
@@ -260,9 +225,8 @@ def reconcile_apipay_invoices(
         .annotate(department_code=F("payment__order__department"))
         .order_by("updated_at", "pk")
     )
-    if mapped_limit is not None:
-        candidate_query = candidate_query[:mapped_limit]
-    candidates = list(candidate_query)
+    # Each status request checks one batch of mapped invoices.
+    candidates = list(candidate_query[: requests_remaining * batch_size])
     stats.selected = len(candidates)
 
     for credentials, batch in _department_batches(candidates, batch_size, stats):

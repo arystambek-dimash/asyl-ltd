@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   detectPlateCountry,
+  formatOcrConfidence,
   formatPlate,
   formatPlatePair,
   isValidPlate,
@@ -20,6 +21,7 @@ import {
   transportChanges,
   transportNumberError,
   transportPairOf,
+  typedWagonNumber,
 } from "./plates";
 
 // Те же векторы проверяет бэкенд (apps/common/plates.py): правила должны совпадать.
@@ -188,11 +190,31 @@ describe("номер, который API не примет", () => {
     expect(isValidWagonNumber("1234567A")).toBe(false);
   });
 
+  it("при наборе номера вагона оформление отбрасывается, лишние знаки не вводятся", () => {
+    expect(typedWagonNumber("0012 3456")).toBe("00123456");
+    expect(typedWagonNumber("0012-34567")).toBe("00123456");
+    expect(typedWagonNumber("1234")).toBe("1234");
+  });
+
   it("объясняет, почему номер не примут; пустой — «номера нет»", () => {
     expect(transportNumberError("", "truck")).toBeNull();
     expect(transportNumberError("07kg837pb", "truck")).toBeNull();
     expect(transportNumberError("12", "truck")).toBe("Номер: от 4 до 12 латинских букв и цифр");
     expect(transportNumberError("1234", "train")).toBe("Номер вагона: 8 цифр");
     expect(transportNumberError("1234 5678", "train")).toBeNull();
+  });
+});
+
+describe("уверенность OCR", () => {
+  it("доля 0…1 и готовые проценты дают один и тот же вид", () => {
+    expect(formatOcrConfidence(0.873)).toBe("87%");
+    expect(formatOcrConfidence("0.9500")).toBe("95%");
+    expect(formatOcrConfidence(87.3)).toBe("87%");
+  });
+
+  it("пустое значение — прочерк, а не 0%", () => {
+    expect(formatOcrConfidence(null)).toBe("—");
+    expect(formatOcrConfidence("")).toBe("—");
+    expect(formatOcrConfidence("abc")).toBe("—");
   });
 });

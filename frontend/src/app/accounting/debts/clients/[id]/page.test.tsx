@@ -1,9 +1,11 @@
-import { act, render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Suspense } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { renderRoutePage } from "@/test-utils/route-page";
 import ClientDebtPage from "./page";
+import { stubPhoneMatchMedia } from "@/test-utils/cashier";
 import { resetNavigation } from "@/test-utils/next-navigation";
+import { formatCurrency, formatDateTime } from "@/lib/utils";
 
 const mocks = vi.hoisted(() => ({ get: vi.fn() }));
 
@@ -11,18 +13,8 @@ vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: { is_superuser: true, permissions: [] }, loading: false }),
 }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ title, actions, children }: { title: string; actions?: React.ReactNode; children: React.ReactNode }) => (
-    <main>
-      <h1>{title}</h1>
-      {actions}
-      {children}
-    </main>
-  ),
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("@/lib/api", () => ({
   api: { get: (...args: unknown[]) => mocks.get(...args) },
   apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
@@ -45,12 +37,12 @@ const debtOrder = {
   payment_request_open: true,
   total_amount: "195840",
   paid_total: "0",
+  remaining_amount: "195840",
   is_fully_paid: false,
-  debt_override: false,
   created_at: "2026-07-28T19:50:00",
   shipped_at: "2026-07-28T19:50:00",
   truck_number: "",
-  items: [{ id: 7, product: 1, product_label: "АТ 1с 50кг · Красный 50 кг", quantity: 100, price: "1958.4" }],
+  items: [{ id: 7, product: 1, product_label: "АТ 1с 50кг · Красный 50 кг", quantity: 100, unit_price: "1958.4" }],
   payments: [],
   pending_payments: [],
 };
@@ -60,22 +52,27 @@ const debtDetail = {
   debt_total: "195840",
   debt_currency: "KZT",
   debt_by_currency: { KZT: "195840" },
-  orders_count: 1,
-  unpaid_count: 1,
-  partial_count: 0,
+  overdue_total: "0.00",
+  overdue_by_currency: {},
   orders: [debtOrder],
   stores: [],
 };
 
-function mockPhone() {
-  // Тот же приём, что и в mobile-cashier.test.tsx: matchMedia матчит всегда,
-  // useIsMobile() → true.
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    writable: true,
-    value: () => ({ matches: true, media: "", addEventListener: () => {}, removeEventListener: () => {} }),
-  });
-}
+// Сводка карточки клиента: «за всё время» считается по финансовым заказам.
+const clientHistory = {
+  client: { id: 1, name: "Клиент", phone: "", country: "", currency: "KZT" },
+  summary: {
+    currency: "KZT",
+    revenue: "300000",
+    paid: "104160",
+    debt: "195840",
+    orders_count: 2,
+    by_currency: { KZT: { revenue: "300000", paid: "104160", debt: "195840" } },
+  },
+  sales: [],
+  payments: [],
+  debts: [],
+};
 
 beforeEach(() => {
   resetNavigation("/accounting/debts/clients/1");
@@ -83,7 +80,7 @@ beforeEach(() => {
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
     if (url.pathname === "/clients/1/debt-detail/") return { data: debtDetail };
-    if (url.pathname === "/clients/1/history/") return { data: { payments: [] } };
+    if (url.pathname === "/clients/1/history/") return { data: clientHistory };
     return { data: [] };
   });
 });
@@ -95,22 +92,10 @@ afterEach(() => {
   delete window.matchMedia;
 });
 
-// Страница — клиентский компонент с use(params): без Suspense-обёртки React
-// подвешивает рендер и тело документа остаётся пустым.
-async function renderPage() {
-  const params = Promise.resolve({ id: "1" });
-  await act(async () => {
-    render(
-      <Suspense>
-        <ClientDebtPage params={params} />
-      </Suspense>,
-    );
-    await params;
-  });
-}
+const renderPage = () => renderRoutePage(ClientDebtPage, "1");
 
 it("renders debt orders as cards on phones with payment actions only inside details", async () => {
-  mockPhone();
+  stubPhoneMatchMedia();
   const user = userEvent.setup();
   await renderPage();
 
@@ -162,13 +147,23 @@ it("shows the client with phone above the debt summary", async () => {
     const url = new URL(raw, "http://localhost");
     if (url.pathname === "/clients/1/debt-detail/")
       return { data: { ...debtDetail, client: { ...debtDetail.client, phone: "+7 700 123 45 67" } } };
-    if (url.pathname === "/clients/1/history/") return { data: { payments: [] } };
+    if (url.pathname === "/clients/1/history/") return { data: clientHistory };
     return { data: [] };
   });
   await renderPage();
 
   expect(await screen.findByRole("link", { name: /\+7 700 123 45 67/ })).toHaveAttribute("href", "tel:+77001234567");
   expect(screen.getByText("Текущий долг")).toBeInTheDocument();
+});
+
+it("takes lifetime totals from the client card summary and links to the card", async () => {
+  await renderPage();
+
+  const paid = (await screen.findByText("Оплачено за всё время")).nextElementSibling;
+  expect(paid).toHaveAttribute("title", formatCurrency("104160", "KZT"));
+  const revenue = screen.getByText("Сумма продаж за всё время").nextElementSibling;
+  expect(revenue).toHaveAttribute("title", formatCurrency("300000", "KZT"));
+  expect(screen.getByRole("link", { name: /Карточка клиента/ })).toHaveAttribute("href", "/clients/1");
 });
 
 it("disables payment for an order whose store is outside its payment window", async () => {
@@ -183,7 +178,7 @@ it("disables payment for an order whose store is outside its payment window", as
           stores: [{ id: 5, name: "Береке", payment_schedule_type: "weekly", payment_days: [1], window_open: false }],
         },
       };
-    if (url.pathname === "/clients/1/history/") return { data: { payments: [] } };
+    if (url.pathname === "/clients/1/history/") return { data: clientHistory };
     return { data: [] };
   });
   await renderPage();
@@ -191,4 +186,41 @@ it("disables payment for an order whose store is outside its payment window", as
   await user.click(await screen.findByRole("cell", { name: "#130" }));
   expect(screen.getByRole("button", { name: /Принять оплату/ })).toBeDisabled();
   expect(screen.getByRole("button", { name: /Отправить удалённый счёт/ })).toBeDisabled();
+});
+
+it("shows write-offs net of refunds on the confirmation day", async () => {
+  const user = userEvent.setup();
+  const refundedPayment = {
+    id: 41,
+    order: 130,
+    currency: "KZT",
+    amount: "100000",
+    refunded_amount: "30000",
+    method: "cash",
+    method_label: "Наличные",
+    status: "confirmed",
+    paid_at: "2026-07-20T10:00:00",
+    confirmed_at: "2026-07-22T12:30:00",
+  };
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/clients/1/debt-detail/")
+      return {
+        data: {
+          ...debtDetail,
+          orders: [{ ...debtOrder, paid_total: "70000", remaining_amount: "125840", payments: [refundedPayment] }],
+        },
+      };
+    if (url.pathname === "/clients/1/history/") return { data: clientHistory };
+    return { data: [] };
+  });
+  await renderPage();
+
+  await user.click(await screen.findByRole("cell", { name: "#130" }));
+  await user.click(screen.getByRole("tab", { name: "Списание" }));
+  // Строка сходится с «Уже оплачено» (нетто 70 000), а не с суммой приёма.
+  expect(screen.getByText("+70 000 ₸")).toBeInTheDocument();
+  expect(screen.getByText("из 100 000 ₸, возврат 30 000 ₸")).toBeInTheDocument();
+  expect(screen.getByText(formatDateTime("2026-07-22T12:30:00"))).toBeInTheDocument();
+  expect(screen.queryByText(formatDateTime("2026-07-20T10:00:00"))).not.toBeInTheDocument();
 });

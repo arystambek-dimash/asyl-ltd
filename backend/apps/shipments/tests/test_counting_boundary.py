@@ -1,4 +1,3 @@
-from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -10,9 +9,8 @@ from apps.grain import scale as grain_scale
 from apps.orders.models import Order, OrderItem
 from apps.shipments.services import (
     begin_camera_loading,
+    dispatch_order,
     finish_ai_counting,
-    record_arrival,
-    record_shipment,
 )
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
@@ -25,7 +23,6 @@ def _order(boss) -> tuple[Order, Product]:
         name="Товар независимого подсчёта",
         color="Blue",
         weight_kg="50",
-        price="100.00",
     )
     receive_stock(product, 100, boss)
     client = Client.objects.create_with_user(
@@ -42,7 +39,7 @@ def _order(boss) -> tuple[Order, Product]:
     return order, product
 
 
-def test_camera_loading_does_not_read_scale_or_record_arrival(
+def test_camera_loading_does_not_read_scale_or_register_arrival(
     boss, operator,
 ):
     order, product = _order(boss)
@@ -66,25 +63,8 @@ def test_camera_loading_does_not_read_scale_or_record_arrival(
     assert not EventLog.objects.filter(order=order, event_type="arrival").exists()
 
 
-@pytest.mark.parametrize(
-    ("weigh_in_kg", "expected_weight"),
-    [
-        pytest.param(Decimal("8000"), Decimal("8000"), id="manual-weight"),
-        pytest.param(None, Decimal("2500"), id="estimated-weight"),
-    ],
-)
-def test_arrival_ai_count_and_ship_are_separate_transitions(
-    boss,
-    operator,
-    weigh_in_kg,
-    expected_weight,
-):
+def test_ai_count_and_dispatch_are_separate_transitions(boss, operator):
     order, product = _order(boss)
-
-    record_arrival(order, weigh_in_kg, operator)
-    order.refresh_from_db()
-    assert order.status == "arrived"
-    assert order.shipment.weigh_in_kg == expected_weight
 
     begin_camera_loading(order, "cam2", operator)
     finish_ai_counting(order, 48, operator)
@@ -94,7 +74,6 @@ def test_arrival_ai_count_and_ship_are_separate_transitions(
     assert order.status == "loaded"
     assert order.loading_camera == ""
     assert shipment.bags_loaded == 48
-    assert shipment.weigh_in_kg == expected_weight
     assert shipment.shipped_at is None
     assert StockItem.objects.get(product=product).bags == 100
     assert not EventLog.objects.filter(
@@ -102,7 +81,7 @@ def test_arrival_ai_count_and_ship_are_separate_transitions(
         event_type__in=("debt", "shipment"),
     ).exists()
 
-    record_shipment(order, operator)
+    dispatch_order(order, operator)
 
     order.refresh_from_db()
     shipment.refresh_from_db()

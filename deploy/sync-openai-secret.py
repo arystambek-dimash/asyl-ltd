@@ -8,26 +8,35 @@ import re
 import tempfile
 
 
+# Actions variable -> (.env name, accepted value, strip surrounding whitespace, error).
+SETTINGS = {
+    "OPENAI_API_KEY_B64": (
+        "OPENAI_API_KEY", r"sk-[A-Za-z0-9_-]{20,500}", False, "Invalid OpenAI key format"
+    ),
+    "SHIPPING_WAGON_AI_MODEL_B64": (
+        "SHIPPING_WAGON_AI_MODEL",
+        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}",
+        True,
+        "Invalid shipping wagon model",
+    ),
+    "SHIPPING_WAGON_AI_DETAIL_B64": (
+        "SHIPPING_WAGON_AI_DETAIL", r"high|original", True, "Invalid shipping wagon image detail"
+    ),
+}
+
+
 def sync(path):
     updates = {}
-    encoded = os.environ.get("OPENAI_API_KEY_B64")
-    if encoded:
-        key = base64.b64decode(encoded, validate=True).decode("ascii")
-        if not re.fullmatch(r"sk-[A-Za-z0-9_-]{20,500}", key):
-            raise ValueError("Invalid OpenAI key format")
-        updates["OPENAI_API_KEY"] = key
-    encoded_model = os.environ.get("SHIPPING_WAGON_AI_MODEL_B64")
-    if encoded_model:
-        model = base64.b64decode(encoded_model, validate=True).decode("ascii").strip()
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", model):
-            raise ValueError("Invalid shipping wagon model")
-        updates["SHIPPING_WAGON_AI_MODEL"] = model
-    encoded_detail = os.environ.get("SHIPPING_WAGON_AI_DETAIL_B64")
-    if encoded_detail:
-        detail = base64.b64decode(encoded_detail, validate=True).decode("ascii").strip()
-        if detail not in {"high", "original"}:
-            raise ValueError("Invalid shipping wagon image detail")
-        updates["SHIPPING_WAGON_AI_DETAIL"] = detail
+    for variable, (name, pattern, strip, error) in SETTINGS.items():
+        encoded = os.environ.get(variable)
+        if not encoded:
+            continue
+        value = base64.b64decode(encoded, validate=True).decode("ascii")
+        if strip:
+            value = value.strip()
+        if not re.fullmatch(pattern, value):
+            raise ValueError(error)
+        updates[name] = value
     if not updates:
         return  # Unset Actions values/manual deploys preserve server config.
     path = Path(path)

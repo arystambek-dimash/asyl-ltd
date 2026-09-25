@@ -9,14 +9,14 @@ import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { apiError } from "@/lib/api";
-import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
+import { colorMeta, isUndeterminedColor, normalizedColor } from "@/lib/monoblock-colors";
 import type {
   AlwaysOnInferred,
   AlwaysOnInferredMethod,
   AlwaysOnProductMapping,
   AlwaysOnUnknownColorInput,
 } from "@/lib/types";
-import { cn, formatIsoDate, pluralRu } from "@/lib/utils";
+import { bagsLabel, cn, formatIsoDate } from "@/lib/utils";
 
 const METHOD_ORDER: AlwaysOnInferredMethod[] = ["neighbors", "votes", "manual"];
 const METHOD_LABELS: Record<AlwaysOnInferredMethod, string> = {
@@ -29,15 +29,12 @@ const METHOD_HINTS: Record<AlwaysOnInferredMethod, string> = {
   votes: "цвет выбран по отдельным кадрам линий проверки",
   manual: "цвет указал оператор",
 };
-// Colours that never map to a product: their bags are the ones to assign.
-const PENDING_COLORS = new Set(["unknown", "unclassified"]);
-
 function inferredEntries(inferred: AlwaysOnInferred | undefined) {
   return METHOD_ORDER.map((method) => [method, inferred?.[method] ?? 0] as const).filter(([, count]) => count > 0);
 }
 
 /** «по соседям · 2» или «по соседям 3 · по голосам 1»; пусто, если всё распознала камера. */
-export function inferredLabel(inferred: AlwaysOnInferred | undefined): string {
+function inferredLabel(inferred: AlwaysOnInferred | undefined): string {
   const entries = inferredEntries(inferred);
   if (entries.length === 1) {
     const [method, count] = entries[0];
@@ -47,7 +44,7 @@ export function inferredLabel(inferred: AlwaysOnInferred | undefined): string {
 }
 
 export function unresolvedBagsLabel(bags: number): string {
-  return `Цвет не определён: ${bags} ${pluralRu(bags, ["мешок", "мешка", "мешков"])}`;
+  return `Цвет не определён: ${bagsLabel(bags)}`;
 }
 
 /** Ненавязчивая пометка: часть мешков этого цвета определила CRM, а не камера. */
@@ -56,9 +53,7 @@ export function InferredBadge({ inferred, className }: { inferred?: AlwaysOnInfe
   if (!entries.length) return null;
   const title =
     "Камера не определила цвет этих мешков: " +
-    entries
-      .map(([method, count]) => `${count} ${pluralRu(count, ["мешок", "мешка", "мешков"])} — ${METHOD_HINTS[method]}`)
-      .join("; ");
+    entries.map(([method, count]) => `${bagsLabel(count)} — ${METHOD_HINTS[method]}`).join("; ");
   return (
     <span
       data-inferred-badge
@@ -96,10 +91,7 @@ export function UnknownColorDialog({
   onSubmit,
 }: UnknownColorDialogProps) {
   const choices = useMemo(
-    () =>
-      mappings.filter(
-        (row) => row.product !== null && row.product_label && !PENDING_COLORS.has(normalizedColor(row.color)),
-      ),
+    () => mappings.filter((row) => row.product !== null && row.product_label && !isUndeterminedColor(row.color)),
     [mappings],
   );
   const [color, setColor] = useState("");
@@ -132,7 +124,7 @@ export function UnknownColorDialog({
       await onSubmit({ business_day: businessDay, color, bags: count, reason: reason.trim() });
       onClose();
     } catch (cause) {
-      setError(apiError(cause) || "Не удалось указать цвет");
+      setError(apiError(cause));
     } finally {
       setBusy(false);
     }

@@ -2,25 +2,18 @@ import pytest
 
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
-from apps.sales.models import Department
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def departments():
-    mill = Department.objects.create(code="mill", name="Мельница")
-    city = Department.objects.create(code="city", name="Нью-Сити")
-    return mill, city
-
-
-@pytest.fixture
 def mill_cashier(user_with_perms, departments):
     # Пресет «Касса»: clients.edit нет, забирает клиента через orders.confirm.
-    user = user_with_perms("mill-cashier", codes=["clients.view", "orders.view", "orders.confirm"])
-    user.employee.sales_department = departments[0]
-    user.employee.save(update_fields=["sales_department"])
-    return user
+    return user_with_perms(
+        "mill-cashier",
+        codes=["clients.view", "orders.view", "orders.confirm"],
+        department=departments[0],
+    )
 
 
 def _client(name, department=None):

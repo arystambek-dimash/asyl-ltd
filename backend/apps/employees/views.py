@@ -4,7 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from apps.common.permissions import HasAllPerms, PermViewSetMixin
+from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
 
@@ -37,18 +37,19 @@ class EmployeeViewSet(
     required_perms = {
         "list": "employees.view",
         "retrieve": "employees.view",
-        "create": "employees.manage",
         "update": "employees.manage",
         "partial_update": "employees.manage",
-        "destroy": "employees.manage",
-        "security": "employees.manage",
-        "set_password": "employees.manage",
     }
 
     def get_permissions(self):
+        # Учётки и права сотрудников меняет только тот, у кого есть оба права.
         if self.action in ("create", "destroy", "security", "set_password"):
             return [
-                HasAllPerms("employees.manage", "sys_permissions.manage")
+                HasPerm(
+                    "employees.manage",
+                    "sys_permissions.manage",
+                    require_all=True,
+                )
             ]
         return super().get_permissions()
 

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { reportChartCurrencies, reportChartSeries, shipmentSettlement } from "./report-analytics";
+import {
+  incomeDetailRows,
+  incomeTotals,
+  reportChartCurrencies,
+  reportChartSeries,
+  shipmentSettlement,
+} from "./report-analytics";
 import type { ReportSummary } from "./types";
+import { makeReportDay } from "@/test-utils/factories";
 
 const shipped = (over: Partial<ReportSummary["shipped"]> = {}): ReportSummary["shipped"] => ({
   revenue: "1000",
@@ -8,39 +15,10 @@ const shipped = (over: Partial<ReportSummary["shipped"]> = {}): ReportSummary["s
   bags: 100,
   paid_amount: "100",
   debt_amount: "900",
-  awaiting_amount: "0",
   currency: "KZT",
   revenue_by_currency: { KZT: "1000" },
   paid_amount_by_currency: { KZT: "100" },
   debt_amount_by_currency: { KZT: "900" },
-  awaiting_amount_by_currency: { KZT: "0" },
-  ...over,
-});
-
-const day = (over: Partial<ReportSummary["days"][number]> = {}): ReportSummary["days"][number] => ({
-  date: "2026-07-01",
-  orders: 1,
-  bags: 10,
-  revenue: "100",
-  paid_amount: "100",
-  debt_amount: "0",
-  awaiting_amount: "0",
-  cash: "40",
-  cashless: "10",
-  gross_received: "50",
-  refunded: "0",
-  received: "50",
-  payments: 1,
-  refunds: 0,
-  revenue_by_currency: { KZT: "100" },
-  paid_amount_by_currency: { KZT: "100" },
-  debt_amount_by_currency: {},
-  awaiting_amount_by_currency: {},
-  cash_by_currency: { KZT: "40" },
-  cashless_by_currency: { KZT: "10" },
-  gross_received_by_currency: { KZT: "50" },
-  refunded_by_currency: {},
-  received_by_currency: { KZT: "50" },
   ...over,
 });
 
@@ -51,7 +29,6 @@ describe("shipmentSettlement", () => {
     expect(split.revenue).toBe(1000);
     expect(split.debt).toBe(900);
     expect(split.paidToDate).toBe(100);
-    expect(split.awaiting).toBe(0);
     expect(split.debtSharePct).toBe(90);
   });
 
@@ -61,11 +38,10 @@ describe("shipmentSettlement", () => {
         revenue_by_currency: { KZT: "1000", USD: "500" },
         paid_amount_by_currency: { KZT: "100", USD: "250" },
         debt_amount_by_currency: { KZT: "900", USD: "200" },
-        awaiting_amount_by_currency: { KZT: "0", USD: "50" },
       }),
     );
     expect(split.revenue).toBe(1000);
-    expect(split.others).toEqual([{ currency: "USD", revenue: 500, debt: 200, paidToDate: 250, awaiting: 50 }]);
+    expect(split.others).toEqual([{ currency: "USD", revenue: 500, debt: 200, paidToDate: 250 }]);
   });
 
   it("без отгрузок доля долга неопределена, а не 0%", () => {
@@ -74,11 +50,9 @@ describe("shipmentSettlement", () => {
         revenue: "0",
         paid_amount: "0",
         debt_amount: "0",
-        awaiting_amount: "0",
         revenue_by_currency: {},
         paid_amount_by_currency: {},
         debt_amount_by_currency: {},
-        awaiting_amount_by_currency: {},
       }),
     );
     expect(split.revenue).toBe(0);
@@ -98,28 +72,14 @@ describe("shipmentSettlement", () => {
     );
     expect(split.debtSharePct).toBe(33);
   });
-
-  it("не выдаёт неоплаченный instant-заказ за оплаченный", () => {
-    const split = shipmentSettlement(
-      shipped({
-        paid_amount: "0",
-        debt_amount: "0",
-        awaiting_amount: "1000",
-        paid_amount_by_currency: { KZT: "0" },
-        debt_amount_by_currency: { KZT: "0" },
-        awaiting_amount_by_currency: { KZT: "1000" },
-      }),
-    );
-    expect(split).toMatchObject({ paidToDate: 0, debt: 0, awaiting: 1000 });
-  });
 });
 
 describe("reportChartSeries", () => {
   it("разворачивает дни в хронологию и берёт суммы только выбранной валюты", () => {
     const series = reportChartSeries(
       [
-        day({ date: "2026-07-02", revenue_by_currency: { KZT: "200" }, received_by_currency: { KZT: "80" } }),
-        day({
+        makeReportDay({ date: "2026-07-02", revenue_by_currency: { KZT: "200" }, received_by_currency: { KZT: "80" } }),
+        makeReportDay({
           date: "2026-07-01",
           revenue_by_currency: { KZT: "100", USD: "999" },
           received_by_currency: { USD: "50" },
@@ -136,18 +96,98 @@ describe("reportChartSeries", () => {
     expect(reportChartSeries([], "KZT")).toEqual([]);
   });
 
-  it("legacy flat поля относит только к их валюте", () => {
-    const legacy = day({ revenue: "100", received: "50", revenue_by_currency: {}, received_by_currency: {} });
-    expect(reportChartSeries([legacy], "USD", "KZT", "USD")[0]).toMatchObject({ revenue: 0, received: 50 });
-    expect(reportChartSeries([legacy], "KZT", "KZT", "USD")[0]).toMatchObject({ revenue: 100, received: 0 });
-  });
-
   it("предлагает переключатель для несовпадающих валют отгрузки и кассы", () => {
     const data = {
       shipped: shipped({ revenue_by_currency: { KZT: "1000" } }),
       income: { currency: "USD", total: "50" },
-      days: [day({ revenue_by_currency: { KZT: "100" }, received_by_currency: { USD: "50" } })],
+      days: [makeReportDay({ revenue_by_currency: { KZT: "100" }, received_by_currency: { USD: "50" } })],
     } as ReportSummary;
     expect(reportChartCurrencies(data)).toEqual(["KZT", "USD"]);
+  });
+});
+
+describe("incomeTotals", () => {
+  it("reads the primary currency and keeps the rest separate", () => {
+    const totals = incomeTotals({
+      income: {
+        total: "90",
+        cash: "40",
+        cashless: "50",
+        gross: "100",
+        refunded: "10",
+        payments: 3,
+        refunds: 1,
+        currency: "KZT",
+        by_currency: { KZT: "90", USD: "5" },
+        cash_by_currency: { KZT: "40" },
+        cashless_by_currency: { KZT: "50" },
+        gross_by_currency: { KZT: "100", USD: "5" },
+        refunded_by_currency: { KZT: "10" },
+        by_method_by_currency: { KZT: { cash: "40", kaspi: "50" } },
+        payments_by_method: { cash: 2, kaspi: 1 },
+        method_labels: { cash: "Наличные", kaspi: "QR" },
+      },
+    });
+    expect(totals).toMatchObject({
+      currency: "KZT",
+      total: 90,
+      cash: 40,
+      cashless: 50,
+      gross: 100,
+      refunded: 10,
+      payments: 3,
+      otherCurrencies: [["USD", 5]],
+    });
+    expect(totals.grossFor("USD")).toBe(5);
+  });
+  it("is empty without data", () => {
+    expect(incomeTotals(null)).toMatchObject({ currency: "KZT", total: 0, payments: 0, otherCurrencies: [] });
+  });
+});
+
+const income = (over: Partial<ReportSummary["income"]>): ReportSummary["income"] => ({
+  total: "0",
+  cash: "0",
+  cashless: "0",
+  gross: "0",
+  refunded: "0",
+  payments: 0,
+  refunds: 0,
+  currency: "KZT",
+  by_currency: {},
+  cash_by_currency: {},
+  cashless_by_currency: {},
+  gross_by_currency: {},
+  refunded_by_currency: {},
+  by_method_by_currency: {},
+  payments_by_method: {},
+  method_labels: {},
+  ...over,
+});
+
+describe("incomeDetailRows", () => {
+  it("lists other currencies and refunds per currency without adding them up", () => {
+    const rows = incomeDetailRows(
+      incomeTotals({
+        income: income({
+          by_currency: { KZT: "90", USD: "3" },
+          gross_by_currency: { KZT: "100", USD: "5" },
+          refunded_by_currency: { KZT: "10", USD: "2" },
+        }),
+      }),
+    );
+    expect(rows.map((row) => row.label)).toEqual([
+      "Также чистыми",
+      "Поступило до возвратов",
+      "Возвращено",
+      "Поступило до возвратов, USD",
+      "Возвращено, USD",
+    ]);
+    expect(rows[0].value).toContain("$");
+    expect(rows[1].value).toContain("₸");
+  });
+
+  it("is empty for a single currency without refunds", () => {
+    expect(incomeDetailRows(incomeTotals({ income: income({ by_currency: { KZT: "90" } }) }))).toEqual([]);
   });
 });

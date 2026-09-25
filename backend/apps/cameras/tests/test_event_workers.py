@@ -25,7 +25,6 @@ def test_two_importers_of_same_camera_commit_one_page_once():
     AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=0,
-        event_compat_total=0,
         event_boundary_validated=True,
     )
     now = timezone.now()
@@ -117,9 +116,9 @@ def test_parallel_cameras_preserve_counts_isolate_failures_and_close_connections
     ):
         if failure == "unexpected":
             with pytest.raises(RuntimeError, match="unexpected importer failure"):
-                continuous._record_counts({}, ["cam3", "cam4", "cam4"], {})
+                continuous._record_counts(["cam3", "cam4", "cam4"])
         else:
-            continuous._record_counts({}, ["cam3", "cam4", "cam4"], {})
+            continuous._record_counts(["cam3", "cam4", "cam4"])
 
     assert AlwaysOnDailyAnalytics.objects.get(camera="cam4").model_total == 1
     assert AlwaysOnImportedEvent.objects.filter(camera="cam4").count() == 1

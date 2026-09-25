@@ -6,7 +6,8 @@ import { WagonReportModal } from "./wagon-report-modal";
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: { get: mocks.get, post: mocks.post },
   apiError: (error: Error) => error.message,
 }));
@@ -18,7 +19,6 @@ const draft = (fields: Partial<WagonReportDraft> = {}): WagonReportDraft => ({
   order_ids: [366],
   recipient: { name: "Динара", to: "Динаре", phone: "", chat_name: "" },
   delivery: "link",
-  link: "https://wa.me/?text=…",
   ...fields,
 });
 
@@ -132,7 +132,6 @@ describe("WagonReportModal", () => {
       data: draft({
         order_ids: [366, 367],
         delivery: "bot",
-        link: undefined,
         recipient: { name: "Динара", to: "Динаре", phone: "", chat_name: "Отгрузка вагонов" },
       }),
     });
@@ -162,7 +161,7 @@ describe("WagonReportModal", () => {
     const user = userEvent.setup();
     const onSent = vi.fn();
     mocks.get
-      .mockResolvedValueOnce({ data: draft({ delivery: "bot", link: undefined }) })
+      .mockResolvedValueOnce({ data: draft({ delivery: "bot" }) })
       .mockResolvedValueOnce({ data: draft({ text: "другой текст" }) });
     mocks.post.mockRejectedValueOnce(
       failure("Бот сейчас не отправляет сообщения — отправьте отчёт через WhatsApp", "report_bot_unavailable"),

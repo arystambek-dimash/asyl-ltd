@@ -1,10 +1,8 @@
 "use client";
 import Link from "next/link";
 import { ShoppingCart } from "lucide-react";
-import { pluralRu } from "@/lib/utils";
+import { bagsLabel } from "@/lib/utils";
 import { useCart } from "@/store/cart";
-
-export const bagsLabel = (count: number) => `${count} ${pluralRu(count, ["мешок", "мешка", "мешков"])}`;
 
 /** Иконка корзины в шапке кабинета с числом мешков. */
 export function CartButton() {

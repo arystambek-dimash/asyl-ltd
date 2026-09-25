@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AxiosError, AxiosHeaders } from "axios";
-import { apiError } from "./api";
+import { apiError, apiErrorCode, blobApiError } from "./api";
 
 function withResponse(status: number, data: unknown): AxiosError {
   const error = new AxiosError("failed");
@@ -43,5 +43,35 @@ describe("apiError", () => {
 
   it("оставляет общий текст для прочих ответов без detail", () => {
     expect(apiError(withResponse(400, {}))).toBe("Произошла ошибка. Попробуйте ещё раз.");
+  });
+});
+
+describe("apiErrorCode", () => {
+  it("достаёт машинный code из тела ошибки", () => {
+    expect(apiErrorCode(withResponse(400, { detail: "Занят", code: "alias_taken" }))).toBe("alias_taken");
+  });
+
+  it("без ответа, без code или с не-строкой — пустая строка", () => {
+    expect(apiErrorCode(new AxiosError("offline"))).toBe("");
+    expect(apiErrorCode(withResponse(400, { detail: "x" }))).toBe("");
+    expect(apiErrorCode(withResponse(400, { code: 7 }))).toBe("");
+    expect(apiErrorCode(undefined)).toBe("");
+  });
+});
+
+describe("blobApiError", () => {
+  it("достаёт detail из JSON внутри Blob — ответа скачивания", async () => {
+    const body = new Blob([JSON.stringify({ detail: "Накладная печатается после отгрузки" })], {
+      type: "application/json",
+    });
+    await expect(blobApiError(withResponse(400, body))).resolves.toBe("Накладная печатается после отгрузки");
+  });
+
+  it("не-JSON в Blob — обычный текст по статусу", async () => {
+    await expect(blobApiError(withResponse(500, new Blob(["<html>"])))).resolves.toContain("Сервер не отвечает");
+  });
+
+  it("обычный ответ без Blob — как apiError", async () => {
+    await expect(blobApiError(withResponse(400, { detail: "Нет остатка" }))).resolves.toBe("Нет остатка");
   });
 });

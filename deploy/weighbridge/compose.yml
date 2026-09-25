@@ -1,5 +1,30 @@
 # Independent project. Normal application releases NEVER run compose up here.
 name: asyl-weighbridge
+x-logging: &logging
+  driver: json-file
+  options: {max-size: 10m, max-file: "5"}
+# Both collectors run the pinned application image as a standalone process.
+x-collector: &collector
+  image: ${WEIGHBRIDGE_IMAGE_REF:?Pin collector image during installation}
+  entrypoint: []
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 30s
+  logging: *logging
+  healthcheck:
+    test: [CMD, python, -m, weighbridge.healthcheck]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 15s
+x-collector-environment: &collector-environment
+  DJANGO_SETTINGS_MODULE: config.weighbridge_settings
+  TRUCK_SCALE_TIMEOUT_SECONDS: "2"
+  TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: "2"
+  TRUCK_SCALE_MAX_AGE_SECONDS: "5"
+  AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
+  AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
+  GO2RTC_API_URL: http://video:1984
 services:
   video:
     image: alexxit/go2rtc:1.9.14
@@ -10,52 +35,33 @@ services:
     volumes:
       - ./go2rtc.yaml:/config/go2rtc.yaml:ro
     restart: unless-stopped
-    logging: &logging
-      driver: json-file
-      options: {max-size: 10m, max-file: "5"}
+    logging: *logging
   collector:
-    image: ${WEIGHBRIDGE_IMAGE_REF:?Pin collector image during installation}
-    entrypoint: []
+    <<: *collector
     command: [python, -m, weighbridge.collector]
     environment:
-      DJANGO_SETTINGS_MODULE: config.weighbridge_settings
+      <<: *collector-environment
       WEIGHBRIDGE_OUTBOX_DIR: /var/lib/weighbridge
       TRUCK_SCALE_API_URL: ${TRUCK_SCALE_API_URL-http://desktop-t5p32d3:8000/api/v1/weight}
-      TRUCK_SCALE_TIMEOUT_SECONDS: "2"
-      TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: "2"
-      TRUCK_SCALE_MAX_AGE_SECONDS: "5"
-      AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
-      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
+      # Cameras are fixed: the relay (go2rtc.yaml) serves only cam1main and cam8main.
       VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: cam1
       VEHICLE_PLATE_WEIGHT_FIRST_SOURCE: main
       VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS: "12"
-      GO2RTC_API_URL: http://video:1984
+      VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG: ${VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:-500}
+      VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG: ${VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG:-50}
+      VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS: ${VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:-3}
+      VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG: ${VEHICLE_PLATE_AUTO_SCALE_REARM_DELTA_KG:-1000}
     volumes:
       - outbox:/var/lib/weighbridge
-    init: true
-    restart: unless-stopped
-    stop_grace_period: 30s
-    logging: *logging
-    healthcheck:
-      test: [CMD, python, -m, weighbridge.healthcheck]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 15s
   wagon-collector:
-    image: ${WEIGHBRIDGE_IMAGE_REF:?Pin collector image during installation}
-    entrypoint: []
+    <<: *collector
     command: [python, -m, weighbridge.wagon_collector]
     environment:
-      DJANGO_SETTINGS_MODULE: config.weighbridge_settings
+      <<: *collector-environment
       WEIGHBRIDGE_OUTBOX_DIR: /var/lib/weighbridge-wagon
       WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-http://vesyv:8000/api/v1/weight}
-      TRUCK_SCALE_TIMEOUT_SECONDS: "2"
-      TRUCK_SCALE_PREVIEW_TIMEOUT_SECONDS: "2"
-      TRUCK_SCALE_MAX_AGE_SECONDS: "5"
-      AI_SERVICE_URL: ${AI_SERVICE_URL:-${CAMERA_AI_URL:-}}
-      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
-      WAGON_ARCH_CAMERA: ${WAGON_ARCH_CAMERA:-cam8}
+      # Fixed like the truck camera: the relay has no other stream.
+      WAGON_ARCH_CAMERA: cam8
       WAGON_ARCH_AUTOMATION_ENABLED: ${WAGON_ARCH_AUTOMATION_ENABLED:-0}
       WAGON_ARCH_STILL_SECONDS: ${WAGON_ARCH_STILL_SECONDS:-10}
       WAGON_ARCH_STABLE_SECONDS: ${WAGON_ARCH_STABLE_SECONDS:-2}
@@ -65,19 +71,8 @@ services:
       WAGON_ARCH_MOTION_MAX_AGE_SECONDS: ${WAGON_ARCH_MOTION_MAX_AGE_SECONDS:-5}
       WAGON_ARCH_OCR_RETRY_SECONDS: ${WAGON_ARCH_OCR_RETRY_SECONDS:-15}
       WAGON_ARCH_OCR_MAX_ATTEMPTS: ${WAGON_ARCH_OCR_MAX_ATTEMPTS:-4}
-      GO2RTC_API_URL: http://video:1984
     volumes:
       - wagon-outbox:/var/lib/weighbridge-wagon
-    init: true
-    restart: unless-stopped
-    stop_grace_period: 30s
-    logging: *logging
-    healthcheck:
-      test: [CMD, python, -m, weighbridge.healthcheck]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 15s
 volumes:
   outbox:
     external: true

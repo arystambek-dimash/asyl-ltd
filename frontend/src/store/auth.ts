@@ -1,6 +1,5 @@
 import { create } from "zustand";
-import { CanceledError } from "axios";
-import { api, setTokens, clearTokens, hasAuthTokens, invalidateAuthSessionRequests } from "@/lib/api";
+import { api, setTokens, clearTokens, hasAuthTokens, invalidateAuthSessionRequests, staleAuthSession } from "@/lib/api";
 import { invalidateCameraStreamToken } from "@/lib/camera-stream-auth";
 import type { Me } from "@/lib/types";
 
@@ -40,10 +39,6 @@ function nextAuthGeneration() {
   return authGeneration;
 }
 
-function staleAuthOperation() {
-  return new CanceledError("Authentication session changed");
-}
-
 function requestMe(generation: number): Promise<Me> {
   if (meRequest?.generation === generation) return meRequest.promise;
   meRequest?.controller.abort();
@@ -60,7 +55,7 @@ function requestMe(generation: number): Promise<Me> {
   return promise;
 }
 
-type AuthCommit = (state: { me: Me | null; loading: boolean }) => void;
+type AuthCommit = (state: Partial<Pick<AuthState, "me" | "loading">>) => void;
 
 function isUnauthorized(error: unknown) {
   const status = (error as { response?: { status?: number } } | null)?.response?.status;
@@ -78,10 +73,43 @@ function beginSession(commit: AuthCommit, currentMe: Me | null = null) {
 
 async function commitSessionMe(generation: number, commit: AuthCommit): Promise<Me> {
   const me = await requestMe(generation);
-  if (generation !== authGeneration) throw staleAuthOperation();
+  if (generation !== authGeneration) throw staleAuthSession();
   lastMeFetch = Date.now();
   commit({ me, loading: false });
   return me;
+}
+
+type AuthTokens = { access: string; refresh: string };
+
+async function postForTokens(url: string, body: object, signal: AbortSignal): Promise<AuthTokens> {
+  const { data } = await api.post<AuthTokens>(url, body, { signal });
+  return data;
+}
+
+/** Начать новую сессию: получить токены, сохранить их и загрузить /auth/me/.
+ * Смена поколения (выход, другая вкладка) обрывает запрос и отбрасывает результат. */
+async function openSession(
+  commit: AuthCommit,
+  get: () => AuthState,
+  obtainTokens: (signal: AbortSignal) => AuthTokens | Promise<AuthTokens>,
+): Promise<Me> {
+  const generation = beginSession(commit);
+  const controller = new AbortController();
+  loginController = controller;
+  try {
+    const tokens = await obtainTokens(controller.signal);
+    if (generation !== authGeneration) throw staleAuthSession();
+    setTokens(tokens.access, tokens.refresh);
+    return await commitSessionMe(generation, commit);
+  } catch (error) {
+    if (generation === authGeneration) {
+      if (isUnauthorized(error)) get().logout();
+      else commit({ loading: false });
+    }
+    throw error;
+  } finally {
+    if (loginController === controller) loginController = null;
+  }
 }
 
 export const useAuth = create<AuthState>((set, get) => ({
@@ -133,69 +161,17 @@ export const useAuth = create<AuthState>((set, get) => ({
       // Network/5xx: retain the last known identity and permissions.
     }
   },
-  login: async (username, password) => {
-    const generation = beginSession(set);
-    const controller = new AbortController();
-    loginController = controller;
-    try {
-      const { data } = await api.post<{ access: string; refresh: string }>(
-        "/auth/login/",
-        { username, password },
-        { signal: controller.signal },
-      );
-      if (generation !== authGeneration) throw staleAuthOperation();
-      setTokens(data.access, data.refresh);
-      return await commitSessionMe(generation, set);
-    } catch (error) {
-      if (generation === authGeneration) {
-        if (isUnauthorized(error)) get().logout();
-        else set({ loading: false });
-      }
-      throw error;
-    } finally {
-      if (loginController === controller) loginController = null;
-    }
-  },
-  completeInitialPasswordChange: async (username, currentPassword, newPassword) => {
-    const generation = beginSession(set);
-    const controller = new AbortController();
-    loginController = controller;
-    try {
-      const { data } = await api.post<{ access: string; refresh: string }>(
+  login: (username, password) =>
+    openSession(set, get, (signal) => postForTokens("/auth/login/", { username, password }, signal)),
+  completeInitialPasswordChange: (username, currentPassword, newPassword) =>
+    openSession(set, get, (signal) =>
+      postForTokens(
         "/auth/initial-password/",
-        {
-          username,
-          current_password: currentPassword,
-          new_password: newPassword,
-        },
-        { signal: controller.signal },
-      );
-      if (generation !== authGeneration) throw staleAuthOperation();
-      setTokens(data.access, data.refresh);
-      return await commitSessionMe(generation, set);
-    } catch (error) {
-      if (generation === authGeneration) {
-        if (isUnauthorized(error)) get().logout();
-        else set({ loading: false });
-      }
-      throw error;
-    } finally {
-      if (loginController === controller) loginController = null;
-    }
-  },
-  adoptSession: async (access, refresh) => {
-    const generation = beginSession(set);
-    try {
-      setTokens(access, refresh);
-      return await commitSessionMe(generation, set);
-    } catch (error) {
-      if (generation === authGeneration) {
-        if (isUnauthorized(error)) get().logout();
-        else set({ loading: false });
-      }
-      throw error;
-    }
-  },
+        { username, current_password: currentPassword, new_password: newPassword },
+        signal,
+      ),
+    ),
+  adoptSession: (access, refresh) => openSession(set, get, () => ({ access, refresh })),
   syncExternalSession: async () => {
     const currentMe = get().me;
     const generation = beginSession(set, currentMe);

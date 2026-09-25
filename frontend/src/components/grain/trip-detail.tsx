@@ -2,7 +2,7 @@
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Camera, Check, Printer, Scale, TrainFront, Trash2, Truck, Warehouse } from "lucide-react";
+import { ArrowLeft, Check, Printer, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { LiveScaleStatus } from "@/components/grain/live-scale-status";
 import { RequirePerm } from "@/components/require-perm";
@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
+import { EventTimeline, EventTimelineItem } from "@/components/ui/event-timeline";
+import { InfoRow } from "@/components/ui/info-row";
 import { GrainWagonDeleteDialog } from "@/components/grain/wagon-delete-dialog";
 import { PassageNumberEditor } from "@/components/grain/passage-number-editor";
 import { WagonPhotos } from "@/components/grain/wagon-photos";
@@ -21,6 +23,8 @@ import {
   GRAIN_STATUS_TONE,
   formatKg,
   grainTripHref,
+  grainTripStepIndex,
+  grainTripSteps,
   grainWorkspaceHref,
   isGrainWagonDeleteSupported,
   passageWaybillHref,
@@ -31,49 +35,20 @@ import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { useApi } from "@/lib/use-api";
 import { cn, formatDateTime } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
-import type { GrainTimelineEvent, GrainWagon } from "@/lib/types";
-
-function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--border)]/60 py-2 text-sm last:border-0">
-      <span className="text-[var(--muted-foreground)]">{label}</span>
-      <span className="text-right font-medium">{children}</span>
-    </div>
-  );
-}
+import type { GrainTimelineEvent, GrainWagon, PassageWeightCapture } from "@/lib/types";
 
 function SimpleFlowProgress({ wagon }: { wagon: GrainWagon }) {
   if (wagon.workflow !== "simple") return null;
   if (["cancelled", "return_to_supplier", "blocked"].includes(wagon.status)) return null;
-  const statusIndex =
-    wagon.status === "expected"
-      ? 0
-      : wagon.status === "arrived"
-        ? 1
-        : wagon.status === "at_silo" || wagon.status === "weight_discrepancy"
-          ? 2
-          : 3;
-  const steps =
-    wagon.direction === "passage"
-      ? [
-          { label: "Заезд", icon: Camera },
-          { label: "Вес пустой", icon: Scale },
-          { label: "Погрузка", icon: Warehouse },
-          { label: "Вес гружёной и вывоз", icon: Truck },
-        ]
-      : [
-          { label: "Номер камеры", icon: Camera },
-          { label: "Входной вес", icon: Scale },
-          { label: "Назначенный силос", icon: Warehouse },
-          { label: "Выходной вес и нетто", icon: TrainFront },
-        ];
+  const statusIndex = grainTripStepIndex(wagon.status);
+  const steps = grainTripSteps(wagon.direction);
   return (
     <Card className="overflow-hidden border-slate-200">
       <div className="grid grid-cols-2 gap-px bg-slate-200 lg:grid-cols-4">
         {steps.map((step, index) => {
           const Icon = step.icon;
-          const done = index < statusIndex || wagon.status === "completed";
-          const active = index === statusIndex && wagon.status !== "completed";
+          const done = index < statusIndex;
+          const active = index === statusIndex;
           return (
             <div key={step.label} className={cn("flex items-center gap-3 bg-white p-4", active && "bg-amber-50")}>
               <span
@@ -100,9 +75,7 @@ function SimpleFlowProgress({ wagon }: { wagon: GrainWagon }) {
   );
 }
 
-function recognitionStatusLabel(wagon: GrainWagon) {
-  const capture = wagon.vehicle_recognition_captures?.[0];
-  if (!capture) return "ещё не запускалось";
+function recognitionStatusLabel(capture: PassageWeightCapture) {
   if (capture.status === "completed") {
     return `подтверждено · ${capture.vehicle_number || "номер сохранён"}`;
   }
@@ -174,7 +147,7 @@ function TripPageInner({ params, direction }: TripPageProps) {
       section="Работа"
       actions={
         wagon.direction === "passage" && can(me, "grain.weigh") ? (
-          <LiveScaleStatus active scaleKey="truck" label="Вывоз" />
+          <LiveScaleStatus scaleKey="truck" label="Вывоз" />
         ) : undefined
       }
     >
@@ -307,7 +280,7 @@ function TripPageInner({ params, direction }: TripPageProps) {
             <CardHeader className="p-4 pb-2">
               <CardTitle>Реквизиты</CardTitle>
             </CardHeader>
-            <CardContent className="p-4 pt-0">
+            <CardContent className="p-4 pt-0 text-sm">
               {passage ? (
                 <InfoRow label="Груз на вывоз">{wagon.cargo_name}</InfoRow>
               ) : (
@@ -321,9 +294,11 @@ function TripPageInner({ params, direction }: TripPageProps) {
                   ? `Камера ${wagon.number_camera_source || "проходной"}`
                   : "Ручной ввод"}
               </InfoRow>
-              {wagon.direction === "passage" && Boolean(wagon.vehicle_recognition_captures?.length) && (
-                <InfoRow label="Распознавание номера">{recognitionStatusLabel(wagon)}</InfoRow>
-              )}
+              {wagon.direction === "passage" && wagon.vehicle_recognition_captures?.length ? (
+                <InfoRow label="Распознавание номера">
+                  {recognitionStatusLabel(wagon.vehicle_recognition_captures[0])}
+                </InfoRow>
+              ) : null}
               <InfoRow label="Прибыл">{wagon.arrived_at ? formatDateTime(wagon.arrived_at) : "—"}</InfoRow>
               {!passage && (
                 <>
@@ -341,7 +316,7 @@ function TripPageInner({ params, direction }: TripPageProps) {
               <CardHeader className="p-4 pb-2">
                 <CardTitle>Распределение по силосам</CardTitle>
               </CardHeader>
-              <CardContent className="p-4 pt-0">
+              <CardContent className="p-4 pt-0 text-sm">
                 {(wagon.allocations ?? []).map((allocation) => (
                   <InfoRow key={allocation.id} label={allocation.silo_name}>
                     {formatKg(allocation.amount_kg)}
@@ -358,7 +333,7 @@ function TripPageInner({ params, direction }: TripPageProps) {
               <CardTitle>{passage ? "История рейса" : "История вагона"}</CardTitle>
             </CardHeader>
             <CardContent className="p-4 pt-0">
-              <div className="relative space-y-3 before:absolute before:bottom-2 before:left-[5px] before:top-2 before:w-px before:bg-[var(--border)]">
+              <EventTimeline>
                 {timelineError ? (
                   <ErrorAlert message={timelineError} onRetry={reloadTimeline} />
                 ) : timelineLoading && !timeline ? (
@@ -367,26 +342,16 @@ function TripPageInner({ params, direction }: TripPageProps) {
                   <p className="text-sm text-[var(--muted-foreground)]">Событий пока нет.</p>
                 ) : (
                   (timeline ?? []).map((event, index) => (
-                    <div key={event.id} className="relative flex gap-3 text-xs">
-                      <span
-                        className={cn(
-                          "relative z-10 mt-1 size-2.5 shrink-0 rounded-full ring-4 ring-[var(--card)]",
-                          index === (timeline ?? []).length - 1
-                            ? "bg-[var(--success)]"
-                            : "bg-[var(--muted-foreground)]/45",
-                        )}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="font-medium">{event.message}</div>
-                        <div className="mt-0.5 text-[10px] text-[var(--muted-foreground)]">
-                          {formatDateTime(event.created_at)}
-                          {event.user_name ? ` · ${event.user_name}` : ""}
-                        </div>
-                      </div>
-                    </div>
+                    <EventTimelineItem
+                      key={event.id}
+                      title={event.message}
+                      at={event.created_at}
+                      userName={event.user_name}
+                      highlighted={index === (timeline ?? []).length - 1}
+                    />
                   ))
                 )}
-              </div>
+              </EventTimeline>
             </CardContent>
           </Card>
 

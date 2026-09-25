@@ -7,7 +7,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { useApi } from "@/lib/use-api";
-import { formatPortalMoney } from "@/lib/utils";
+import { formatPortalMoney, pluralRu } from "@/lib/utils";
 import { Plus } from "lucide-react";
 import type { PortalOrder } from "@/lib/types";
 
@@ -23,9 +23,13 @@ export default function PortalOrdersPage() {
         </Link>
       }
     >
-      <div className="mb-4">
-        <p className="text-sm text-[var(--muted-foreground)]">{orders?.length ?? 0} заказов</p>
-      </div>
+      {orders && (
+        <div className="mb-4">
+          <p className="text-sm text-[var(--muted-foreground)]">
+            {orders.length} {pluralRu(orders.length, ["заказ", "заказа", "заказов"])}
+          </p>
+        </div>
+      )}
       <Card>
         <CardContent className="pt-6">
           {!orders ? (

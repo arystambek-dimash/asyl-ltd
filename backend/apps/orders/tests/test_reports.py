@@ -6,7 +6,6 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from apps.catalog.models import Product
 from apps.clients.models import Client, Store
 from apps.orders.models import Order, OrderItem, Payment, PaymentRefund
 from apps.orders.reports import summary_report
@@ -20,11 +19,6 @@ URL = "/api/reports/summary/"
 def _client(**kwargs):
     defaults = {"first_name": "И", "last_name": "П", "phone": "x"}
     return Client.objects.create_with_user(**{**defaults, **kwargs})
-
-
-def _product(price="1000", name="Мука", color="Red", weight="50"):
-    return Product.objects.create(
-        name=name, color=color, weight_kg=Decimal(weight), price=Decimal(price))
 
 
 def _shipped_order(client, product, qty=10, price="1000", *,
@@ -51,8 +45,8 @@ def test_requires_reports_view(auth_client, manager, boss):
     assert auth_client(boss).get(URL).status_code == 200
 
 
-def test_income_split_cash_cashless(auth_client, boss):
-    order = _shipped_order(_client(), _product(), qty=10, price="1000")
+def test_income_split_cash_cashless(auth_client, boss, make_product):
+    order = _shipped_order(_client(), make_product(), qty=10, price="1000")
     _confirmed_payment(order, 3000, method="cash")
     _confirmed_payment(order, 2000, method="card")
     _confirmed_payment(order, 1000, method="kaspi")
@@ -70,23 +64,23 @@ def test_income_split_cash_cashless(auth_client, boss):
     assert data["income"]["payments"] == 4
 
 
-def test_income_day_is_confirmation_date(auth_client, boss):
+def test_income_day_is_confirmation_date(auth_client, boss, make_product):
     """Оплата, записанная вчера и подтверждённая сегодня, — в сегодняшнем дне."""
-    order = _shipped_order(_client(), _product())
+    order = _shipped_order(_client(), make_product())
     payment = _confirmed_payment(order, 1000, confirmed_at=timezone.now())
     Payment.objects.filter(pk=payment.pk).update(
         paid_at=timezone.now() - timedelta(days=1))
 
     today = timezone.localdate().isoformat()
-    data = auth_client(boss).get(URL, {"from": today, "to": today}).json()
+    data = auth_client(boss).get(URL, {"date_from": today, "date_to": today}).json()
     assert data["income"]["total"] == "1000.00"
     assert len(data["days"]) == 1
     assert data["days"][0]["date"] == today
     assert data["days"][0]["received"] == "1000.00"
 
 
-def test_shipped_revenue_and_debt(auth_client, boss):
-    product = _product()
+def test_shipped_revenue_and_debt(auth_client, boss, make_product):
+    product = make_product()
     _shipped_order(_client(), product, qty=10, price="1000", intent="debt")
     order_instant = _shipped_order(_client(), product, qty=5, price="1000",
                                    intent="instant")
@@ -102,7 +96,6 @@ def test_shipped_revenue_and_debt(auth_client, boss):
     assert data["shipped"]["orders"] == 2
     assert data["shipped"]["paid_amount"] == "5000.00"
     assert data["shipped"]["debt_amount"] == "10000.00"
-    assert data["shipped"]["awaiting_amount"] == "0.00"
     assert data["debt_now"] == {
         "total": "10000.00", "orders": 1,
         "by_currency": {"KZT": "10000.00"}, "currency": "KZT",
@@ -112,10 +105,10 @@ def test_shipped_revenue_and_debt(auth_client, boss):
     }
 
 
-def test_period_shipment_split_uses_confirmed_net_balance(auth_client, boss):
-    """Intent is provenance; paid/debt/awaiting are calculated from real money."""
+def test_period_shipment_split_uses_confirmed_net_balance(auth_client, boss, make_product):
+    """Intent is provenance; paid/debt are calculated from real money."""
     client = _client()
-    product = _product()
+    product = make_product()
     fully_paid_debt = _shipped_order(
         client, product, qty=1, price="1000", intent="debt"
     )
@@ -133,48 +126,38 @@ def test_period_shipment_split_uses_confirmed_net_balance(auth_client, boss):
 
     assert shipped["revenue_by_currency"] == {"KZT": "2500.00"}
     assert shipped["paid_amount_by_currency"] == {"KZT": "1400.00"}
-    # Неоплаченный остаток отгрузки — долг и при «сразу»: «ожидает оплаты» больше не бывает.
+    # Неоплаченный остаток отгрузки — долг и при «сразу».
     assert shipped["debt_amount_by_currency"] == {"KZT": "1100.00"}
-    assert shipped["awaiting_amount_by_currency"] == {"KZT": "0.00"}
     assert Decimal(shipped["revenue"]) == (
-        Decimal(shipped["paid_amount"])
-        + Decimal(shipped["debt_amount"])
-        + Decimal(shipped["awaiting_amount"])
+        Decimal(shipped["paid_amount"]) + Decimal(shipped["debt_amount"])
     )
 
     [day] = data["days"]
     assert day["paid_amount"] == "1400.00"
     assert day["debt_amount"] == "1100.00"
-    assert day["awaiting_amount"] == "0.00"
 
     [client_row] = data["clients"]
     assert client_row["paid_amount_by_currency"] == {"KZT": "1400.00"}
     assert client_row["debt_amount_by_currency"] == {"KZT": "1100.00"}
-    assert client_row["awaiting_amount_by_currency"] == {"KZT": "0.00"}
     by_id = {row["id"]: row for row in client_row["order_list"]}
     assert by_id[fully_paid_debt.id] == {
         "id": fully_paid_debt.id,
         "date": timezone.localdate().isoformat(),
         "bags": 1,
         "total": "1000.00",
-        "paid_amount": "1000.00",
         "remaining_amount": "0.00",
         "currency": "KZT",
-        "is_debt": False,
-        "on_debt": False,
         "payment_status": "settled",
     }
     assert by_id[partial_debt.id]["remaining_amount"] == "600.00"
-    assert by_id[partial_debt.id]["is_debt"] is True
     assert by_id[partial_debt.id]["payment_status"] == "partial"
     assert by_id[instant_unpaid.id]["remaining_amount"] == "500.00"
-    assert by_id[instant_unpaid.id]["is_debt"] is True
     assert by_id[instant_unpaid.id]["payment_status"] == "unpaid"
     assert data["debt_now"]["by_currency"] == {"KZT": "1100.00"}
 
 
-def test_completed_refund_reopens_current_period_debt(auth_client, boss):
-    order = _shipped_order(_client(), _product(), qty=1, price="1000")
+def test_completed_refund_reopens_current_period_debt(auth_client, boss, make_product):
+    order = _shipped_order(_client(), make_product(), qty=1, price="1000")
     payment = _confirmed_payment(order, 1000)
     PaymentRefund.objects.create(
         payment=payment,
@@ -190,20 +173,18 @@ def test_completed_refund_reopens_current_period_debt(auth_client, boss):
 
     assert data["shipped"]["paid_amount"] == "750.00"
     assert data["shipped"]["debt_amount"] == "250.00"
-    assert data["shipped"]["awaiting_amount"] == "0.00"
     assert data["debt_now"]["total"] == "250.00"
     [order_row] = data["clients"][0]["order_list"]
     assert order_row["payment_status"] == "partial"
     assert order_row["remaining_amount"] == "250.00"
-    assert order_row["is_debt"] is True
 
 
-def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
+def test_refund_is_cash_outflow_on_completion_day(auth_client, boss, make_product):
     """A later cash refund must not rewrite the old cashless receipt day."""
     old_stamp = timezone.now() - timedelta(days=10)
     today_stamp = timezone.now()
     order = _shipped_order(
-        _client(), _product(), qty=1, price="100",
+        _client(), make_product(), qty=1, price="100",
         shipped_at=old_stamp,
     )
     payment = _confirmed_payment(
@@ -221,7 +202,7 @@ def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
     old_day = timezone.localdate(old_stamp).isoformat()
     today = timezone.localdate(today_stamp).isoformat()
 
-    old = auth_client(boss).get(URL, {"from": old_day, "to": old_day}).json()
+    old = auth_client(boss).get(URL, {"date_from": old_day, "date_to": old_day}).json()
     assert old["income"] == {
         "total": "100.00",
         "gross": "100.00",
@@ -238,10 +219,11 @@ def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
         "cashless_by_currency": {"KZT": "100.00"},
         "by_method_by_currency": {"KZT": {"invoice": "100.00"}},
         "payments_by_method": {"invoice": 1},
+        "method_labels": {"invoice": "Счёт на оплату"},
     }
 
     refund_day = auth_client(boss).get(
-        URL, {"from": today, "to": today}
+        URL, {"date_from": today, "date_to": today}
     ).json()
     assert refund_day["income"]["total"] == "-40.00"
     assert refund_day["income"]["gross"] == "0.00"
@@ -252,14 +234,13 @@ def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
     assert refund_day["income"]["refunds"] == 1
     [day] = refund_day["days"]
     assert day["received"] == "-40.00"
-    assert day["gross_received"] == "0.00"
     assert day["refunded"] == "40.00"
     assert day["refunds"] == 1
     assert day["cash_by_currency"] == {"KZT": "-40.00"}
     assert day["cashless_by_currency"] == {"KZT": "0.00"}
 
     all_time = auth_client(boss).get(
-        URL, {"from": old_day, "to": today}
+        URL, {"date_from": old_day, "date_to": today}
     ).json()["income"]
     assert all_time["total"] == "60.00"
     assert all_time["gross"] == "100.00"
@@ -268,8 +249,8 @@ def test_refund_is_cash_outflow_on_completion_day(auth_client, boss):
     assert all_time["payments_by_method"] == {"invoice": 1}
 
 
-def test_deleted_orders_excluded(auth_client, boss):
-    order = _shipped_order(_client(), _product(), qty=10, price="1000")
+def test_deleted_orders_excluded(auth_client, boss, make_product):
+    order = _shipped_order(_client(), make_product(), qty=10, price="1000")
     _confirmed_payment(order, 1000)
     Order.all_objects.filter(pk=order.pk).update(deleted_at=timezone.now())
 
@@ -279,28 +260,28 @@ def test_deleted_orders_excluded(auth_client, boss):
     assert data["debt_now"]["orders"] == 0
 
 
-def test_period_filter(auth_client, boss):
-    product = _product()
+def test_period_filter(auth_client, boss, make_product):
+    product = make_product()
     _shipped_order(_client(), product, qty=1, price="1000",
                    shipped_at=timezone.now() - timedelta(days=10))
     _shipped_order(_client(), product, qty=2, price="1000")
 
     today = timezone.localdate()
     data = auth_client(boss).get(URL, {
-        "from": (today - timedelta(days=1)).isoformat(),
-        "to": today.isoformat(),
+        "date_from": (today - timedelta(days=1)).isoformat(),
+        "date_to": today.isoformat(),
     }).json()
     assert data["shipped"]["revenue"] == "2000.00"
     assert len(data["days"]) == 1
 
     assert auth_client(boss).get(
-        URL, {"from": "2026-02-30"}).status_code == 400
+        URL, {"date_from": "2026-02-30"}).status_code == 400
     assert auth_client(boss).get(
-        URL, {"from": "2026-07-10", "to": "2026-07-01"}).status_code == 400
+        URL, {"date_from": "2026-07-10", "date_to": "2026-07-01"}).status_code == 400
 
 
-def test_dynamic_department_filter(auth_client, user_with_perms):
-    product = _product()
+def test_dynamic_department_filter(auth_client, user_with_perms, make_product):
+    product = make_product()
     _shipped_order(_client(), product, qty=1, price="1000",
                    department="main")
     _shipped_order(_client(), product, qty=3, price="1000",
@@ -314,8 +295,8 @@ def test_dynamic_department_filter(auth_client, user_with_perms):
     assert data["shipped"]["revenue"] == "3000.00"
 
 
-def test_store_filter(auth_client, boss):
-    product = _product()
+def test_store_filter(auth_client, boss, make_product):
+    product = make_product()
     client = _client()
     first = Store.objects.create(client=client, name="Первый")
     second = Store.objects.create(client=client, name="Второй")
@@ -333,11 +314,11 @@ def test_store_filter(auth_client, boss):
     assert auth_client(boss).get(URL, {"store": "bad"}).status_code == 400
 
 
-def test_manual_shipped_without_shipment_falls_back_to_created(auth_client, boss):
+def test_manual_shipped_without_shipment_falls_back_to_created(auth_client, boss, make_product):
     """Заказ, переведённый в shipped вручную (без Shipment), не теряется."""
     order = Order.objects.create(client=_client(), status="shipped",
                                  settlement_intent="debt")
-    OrderItem.objects.create(order=order, product=_product(), quantity=4,
+    OrderItem.objects.create(order=order, product=make_product(), quantity=4,
                              unit_price=Decimal(500))
 
     data = auth_client(boss).get(URL).json()
@@ -345,14 +326,14 @@ def test_manual_shipped_without_shipment_falls_back_to_created(auth_client, boss
     assert data["days"][0]["date"] == timezone.localdate().isoformat()
 
 
-def test_report_does_not_add_kzt_and_usd(auth_client, boss):
+def test_report_does_not_add_kzt_and_usd(auth_client, boss, make_product):
     """1000 ₸ и 5 $ — это не «1005». Валюты идут раздельно.
 
     Остальная система уже считает по валютам (orders/debt.py); сводный отчёт
     оставался последним местом, где суммы складывались через курс «1:1».
     """
     client = _client()
-    product = _product()
+    product = make_product()
     kzt = _shipped_order(client, product, qty=1, price="1000")
     usd = _shipped_order(client, product, qty=1, price="5")
     usd.currency = "USD"
@@ -373,14 +354,9 @@ def test_report_does_not_add_kzt_and_usd(auth_client, boss):
         "KZT": "0.00",
         "USD": "0.00",
     }
-    assert data["shipped"]["awaiting_amount_by_currency"] == {
-        "KZT": "0.00",
-        "USD": "0.00",
-    }
     assert data["shipped"]["revenue"] == "1000.00"
     assert data["shipped"]["paid_amount"] == "1000.00"
     assert data["shipped"]["debt_amount"] == "0.00"
-    assert data["shipped"]["awaiting_amount"] == "0.00"
     assert data["days"][0]["revenue"] == "1000.00"
     assert data["days"][0]["paid_amount"] == "1000.00"
     assert data["days"][0]["revenue_by_currency"] == {
@@ -409,9 +385,9 @@ def test_report_does_not_add_kzt_and_usd(auth_client, boss):
     assert data["income"]["cash_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
 
 
-def test_report_debt_by_currency_keeps_outstanding_apart(auth_client, boss):
+def test_report_debt_by_currency_keeps_outstanding_apart(auth_client, boss, make_product):
     client = _client()
-    product = _product()
+    product = make_product()
     kzt = _shipped_order(client, product, qty=1, price="1000")
     usd = _shipped_order(client, product, qty=1, price="5")
     usd.currency = "USD"
@@ -425,7 +401,7 @@ def test_report_debt_by_currency_keeps_outstanding_apart(auth_client, boss):
     assert data["debt_now"]["orders"] == 2
 
 
-def test_report_includes_small_overdue_dashboard_aggregate(auth_client, boss):
+def test_report_includes_small_overdue_dashboard_aggregate(auth_client, boss, make_product):
     client = _client()
     store = Store.objects.create(
         client=client,
@@ -433,7 +409,7 @@ def test_report_includes_small_overdue_dashboard_aggregate(auth_client, boss):
         payment_schedule_type="monthly",
         payment_days=[timezone.localdate().day],
     )
-    order = _shipped_order(client, _product(), qty=2, price="250")
+    order = _shipped_order(client, make_product(), qty=2, price="250")
     order.store = store
     order.save(update_fields=["store"])
 
@@ -444,8 +420,8 @@ def test_report_includes_small_overdue_dashboard_aggregate(auth_client, boss):
     assert data["overdue_clients"] == 1
 
 
-def test_clients_breakdown_groups_orders_with_details(auth_client, boss):
-    product = _product()
+def test_clients_breakdown_groups_orders_with_details(auth_client, boss, make_product):
+    product = make_product()
     gani = _client(first_name="Гани", last_name="Таскен")
     erzhan = _client(first_name="Ержан", last_name="Ко")
     debt_order = _shipped_order(gani, product, qty=10, price="1000", intent="debt")
@@ -463,22 +439,19 @@ def test_clients_breakdown_groups_orders_with_details(auth_client, boss):
     assert top["revenue_by_currency"] == {"KZT": "15000.00"}
     assert top["paid_amount_by_currency"] == {"KZT": "0.00"}
     assert top["debt_amount_by_currency"] == {"KZT": "15000.00"}
-    assert top["awaiting_amount_by_currency"] == {"KZT": "0.00"}
 
     by_id = {o["id"]: o for o in top["order_list"]}
     assert set(by_id) == {debt_order.id, instant.id}
-    assert by_id[debt_order.id]["on_debt"] is True
+    assert by_id[debt_order.id]["remaining_amount"] == "10000.00"
     assert by_id[debt_order.id]["bags"] == 10
     assert by_id[debt_order.id]["total"] == "10000.00"
     assert by_id[debt_order.id]["currency"] == "KZT"
-    assert by_id[instant.id]["on_debt"] is True
-    assert by_id[instant.id]["is_debt"] is True
     assert by_id[instant.id]["payment_status"] == "unpaid"
     assert by_id[instant.id]["remaining_amount"] == "5000.00"
 
 
-def test_clients_breakdown_respects_period_and_currencies(auth_client, boss):
-    product = _product()
+def test_clients_breakdown_respects_period_and_currencies(auth_client, boss, make_product):
+    product = make_product()
     client = _client()
     _shipped_order(client, product, qty=1, price="100",
                    shipped_at=timezone.now() - timedelta(days=10))
@@ -487,7 +460,7 @@ def test_clients_breakdown_respects_period_and_currencies(auth_client, boss):
     usd.save(update_fields=["currency"])
 
     today = timezone.localdate().isoformat()
-    data = auth_client(boss).get(URL, {"from": today, "to": today}).json()
+    data = auth_client(boss).get(URL, {"date_from": today, "date_to": today}).json()
 
     [row] = data["clients"]
     # Валюты не складываются, старый заказ отрезан периодом.
@@ -495,9 +468,30 @@ def test_clients_breakdown_respects_period_and_currencies(auth_client, boss):
     assert [o["id"] for o in row["order_list"]] == [usd.id]
 
 
-def test_report_query_count_is_constant_for_period_cohort():
+def test_clients_breakdown_does_not_rank_currencies_against_each_other(auth_client, boss, make_product):
+    """Без курса 50 USD и 1 000 000 KZT не сравнивают: сначала группа валюты."""
+    product = make_product()
+    dollar = _client(first_name="Доллар", last_name="Большой")
+    tenge_small = _client(first_name="Тенге", last_name="Малый")
+    tenge_big = _client(first_name="Тенге", last_name="Крупный")
+    usd = _shipped_order(dollar, product, qty=1, price="1000000")
+    usd.currency = "USD"
+    usd.save(update_fields=["currency"])
+    _shipped_order(tenge_small, product, qty=1, price="500")
+    _shipped_order(tenge_big, product, qty=1, price="5000")
+
+    clients = auth_client(boss).get(URL).json()["clients"]
+
+    assert [(c["name"], c["currency"]) for c in clients] == [
+        ("Тенге Крупный", "KZT"),
+        ("Тенге Малый", "KZT"),
+        ("Доллар Большой", "USD"),
+    ]
+
+
+def test_report_query_count_is_constant_for_period_cohort(make_product):
     client = _client()
-    product = _product()
+    product = make_product()
 
     def add_orders(count):
         for _ in range(count):
@@ -517,9 +511,9 @@ def test_report_query_count_is_constant_for_period_cohort():
     assert large == small, f"report summary: {small} -> {large} queries"
 
 
-def test_income_by_method_is_net_of_refunds(auth_client, boss):
+def test_income_by_method_is_net_of_refunds(auth_client, boss, make_product):
     """Возврат уменьшает способ исходной оплаты, а не способ выдачи денег."""
-    order = _shipped_order(_client(), _product(), qty=10, price="1000")
+    order = _shipped_order(_client(), make_product(), qty=10, price="1000")
     _confirmed_payment(order, 3000, method="cash")
     kaspi = _confirmed_payment(order, 1000, method="kaspi")
     PaymentRefund.objects.create(
@@ -537,6 +531,7 @@ def test_income_by_method_is_net_of_refunds(auth_client, boss):
         "KZT": {"cash": "3000.00", "kaspi": "800.00"},
     }
     assert data["income"]["payments_by_method"] == {"cash": 1, "kaspi": 1}
+    assert data["income"]["method_labels"] == {"cash": "Наличные", "kaspi": "QR"}
     assert data["income"]["cashless"] == "800.00"
     assert data["income"]["total"] == "3800.00"
     department = next(row for row in data["departments"] if row["code"] == "main")

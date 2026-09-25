@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { GrainToolbar } from "./grain-toolbar";
 
 vi.mock("./live-scale-status", () => ({
-  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "truck"; label: string }) =>
-    active ? <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} /> : null,
+  LiveScaleStatus: ({ scaleKey, label }: { scaleKey: "truck" | "wagon"; label: string }) => (
+    <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} />
+  ),
 }));
 
 function renderToolbar(overrides: Partial<React.ComponentProps<typeof GrainToolbar>> = {}) {
@@ -40,7 +41,6 @@ describe("GrainToolbar", () => {
     const user = userEvent.setup();
     const { props } = renderToolbar({ direction: "passage" });
 
-    expect(screen.getByRole("group", { name: "Текущий вес вывоза" })).toBeInTheDocument();
     expect(screen.getByLabelText("Весы Вывоз")).toHaveAttribute("data-scale-key", "truck");
     expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
 
@@ -73,7 +73,6 @@ describe("GrainToolbar", () => {
   it("shows the wagon scale for intake weighers even without other actions", () => {
     renderToolbar({ canArrive: false, canSupply: false, canWeigh: true });
 
-    expect(screen.getByRole("group", { name: "Текущий вес прихода" })).toBeInTheDocument();
     expect(screen.getByLabelText("Весы Приход")).toHaveAttribute("data-scale-key", "wagon");
     expect(screen.queryByRole("button", { name: "Операции прихода" })).not.toBeInTheDocument();
   });

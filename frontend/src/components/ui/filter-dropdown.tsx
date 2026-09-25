@@ -1,10 +1,56 @@
 "use client";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type ComponentProps, type ElementType, type KeyboardEvent } from "react";
 import { Check, ChevronDown } from "lucide-react";
+import { nextRovingIndex } from "@/lib/focus";
 import { useDismiss } from "@/lib/use-dismiss";
 import { cn } from "@/lib/utils";
 
 export type FilterOption = { key: string; label: string; count?: number };
+
+/**
+ * Кнопка фильтра «Ярлык: Значение ▾». active — выбран не вариант по
+ * умолчанию: кнопка подсвечивается, чтобы было видно, что список сужен.
+ */
+export function FilterTrigger({
+  label,
+  value,
+  count,
+  active,
+  open,
+  icon: Icon,
+  className,
+  ...props
+}: Omit<ComponentProps<"button">, "value"> & {
+  label: string;
+  value: string;
+  count?: number;
+  active: boolean;
+  open: boolean;
+  icon?: ElementType;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      {...props}
+      className={cn(
+        "flex h-9 items-center gap-1.5 rounded-md border px-3 text-[13px] transition-colors",
+        active
+          ? "border-[var(--primary)]/40 bg-[var(--primary)]/5 text-[var(--foreground)]"
+          : "border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+        className,
+      )}
+    >
+      {Icon && <Icon className="size-3.5" />}
+      <span className="text-[var(--muted-foreground)]">{label}:</span>
+      <span className="max-w-52 truncate font-medium">{value}</span>
+      {count !== undefined && <span className="tabular-nums text-[11px] text-[var(--muted-foreground)]">{count}</span>}
+      <ChevronDown
+        className={cn("size-3.5 text-[var(--muted-foreground)] transition-transform", open && "rotate-180")}
+      />
+    </button>
+  );
+}
 
 /**
  * Компактный фильтр-дропдаун: кнопка «Ярлык: Значение ▾» и меню с вариантами
@@ -28,7 +74,7 @@ export function FilterDropdown({
   const focusIndexRef = useRef(0);
   const listboxId = useId();
 
-  useDismiss(ref, () => setOpen(false), open);
+  useDismiss(ref, () => setOpen(false), open, { returnFocusRef: triggerRef });
 
   const current = options.find((o) => o.key === active) ?? options[0];
   const currentIndex = Math.max(
@@ -62,22 +108,11 @@ export function FilterDropdown({
 
   function onListboxKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const focusedIndex = optionRefs.current.findIndex((option) => option === document.activeElement);
-    let nextIndex: number | null = null;
-    if (event.key === "ArrowDown") nextIndex = (focusedIndex + 1) % options.length;
-    if (event.key === "ArrowUp") nextIndex = (focusedIndex - 1 + options.length) % options.length;
-    if (event.key === "Home") nextIndex = 0;
-    if (event.key === "End") nextIndex = options.length - 1;
-    if (nextIndex !== null && options[nextIndex]) {
+    const nextIndex = nextRovingIndex(event.key, focusedIndex, options.length);
+    if (nextIndex !== null) {
       event.preventDefault();
       focusIndexRef.current = nextIndex;
       optionRefs.current[nextIndex]?.focus();
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-      triggerRef.current?.focus();
     } else if (event.key === "Tab") {
       setOpen(false);
     }
@@ -85,31 +120,19 @@ export function FilterDropdown({
 
   return (
     <div ref={ref} className="relative shrink-0">
-      <button
+      <FilterTrigger
         ref={triggerRef}
-        type="button"
+        label={label}
+        value={current?.label ?? "—"}
+        count={current?.count}
+        active={!isDefault}
+        open={open}
         onClick={() => (open ? setOpen(false) : openAt(currentIndex))}
         onKeyDown={onTriggerKeyDown}
         aria-haspopup="listbox"
-        aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         disabled={options.length === 0}
-        className={cn(
-          "flex h-9 items-center gap-1.5 rounded-md border px-3 text-[13px] transition-colors",
-          isDefault
-            ? "border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            : "border-[var(--primary)]/40 bg-[var(--primary)]/5 text-[var(--foreground)]",
-        )}
-      >
-        <span className="text-[var(--muted-foreground)]">{label}:</span>
-        <span className="font-medium">{current?.label ?? "—"}</span>
-        {current?.count !== undefined && (
-          <span className="tabular-nums text-[11px] text-[var(--muted-foreground)]">{current.count}</span>
-        )}
-        <ChevronDown
-          className={cn("size-3.5 text-[var(--muted-foreground)] transition-transform", open && "rotate-180")}
-        />
-      </button>
+      />
 
       {open && (
         <div

@@ -54,28 +54,3 @@ def test_event_payload_exposes_related_order(auth_client, operator):
     assert response.status_code == 200
     row = next(item for item in response.data["results"] if item["id"] == event.id)
     assert row["order"] == order.id
-
-
-def test_order_events_include_all_departments(auth_client, operator):
-    from apps.clients.models import Client
-    from apps.orders.models import Order
-    from apps.eventlog.models import EventLog
-
-    main = Order.objects.create(client=Client.objects.create_with_user(
-        first_name="Main", last_name="Client", phone="1"))
-    field = Order.objects.create(
-        client=Client.objects.create_with_user(
-            first_name="Field", last_name="Client", phone="2"),
-        department="field",
-    )
-    main_event = EventLog.objects.create(
-        event_type="status", message="main", order=main)
-    field_event = EventLog.objects.create(event_type="status", message="field", order=field)
-
-    response = auth_client(operator).get("/api/events/")
-
-    assert response.status_code == 200
-    assert {row["id"] for row in response.data["results"]} == {
-        main_event.id,
-        field_event.id,
-    }

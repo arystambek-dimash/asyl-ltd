@@ -9,37 +9,51 @@ independently; this integration does not require changing bag-counter-cv-service
 
 ## Decision rules
 
-With the key configured, automatic rear/unknown captures are first saved as
-unassigned weighings, including exact OCR matches. Vision independently reads
-the physical plates in departure and candidate entry images and compares the
-individual truck/body/trailer. Database plate answers are not supplied to the
-model. Generic make/colour or matching plates alone are insufficient.
+With the key configured, every automatic capture is first saved as an
+unassigned weighing with an identity check. The worker takes the oldest open
+weighing of the last 24 hours and books it by an explicitly read plate and
+direction (`backend/apps/grain/automatic_routing.py`): a front reading opens or
+continues a visit, a rear reading closes it with the loaded weight.
+
+OCR goes first. A valid OCR plate with a known front/rear direction is booked
+without an OpenAI request. Exactly one frame, the saved photograph of this
+weighing, is sent to the model only when OCR is not enough:
+
+- one changed character would name another known truck (tare memory or an
+  on-site visit);
+- a rear plate is not the single on-site visit that leaves at least 1,000 kg
+  heavier than its entry;
+- a front plate is weak (two camera votes of three);
+- OCR booking fails, for example there is no plate or no direction.
+
+The model reads the plate and direction from the frame alone; database plate
+answers, candidate photos and weights are not supplied. Its reading is booked
+by the same rules. A rear reading does not overrule an OCR plate whose truck is
+on site when the model's variant names nobody; the model number is kept in the
+audit evidence.
 
 Readings drop whitespace/hyphens and a leading country label `KZ` only when
 the remaining complete number has a valid Kazakhstan plate format. This is
 format normalization; digits/letters are never substituted to fit an answer.
-Old format-only rejections are queued once for a fresh image verification, within
-the existing attempt/daily caps. Old model verdicts alone never book a weighing.
 
-Code can complete an exit only when there is exactly one clear plate match,
-the image directions are front/rear, distinctive appearance agrees, and the
-original exit OCR is empty, identical or differs by one character. Unclear
-plates, incomparable front/rear evidence, competing matches and changed evidence
-require manual verification in the existing unassigned queue.
+An unreadable plate, an unknown direction or a weighing changed during the
+request go to manual verification in the existing unassigned queue. A rear
+weighing waits while an earlier front weighing of a similar plate is still
+being processed. A missing entry prerequisite (`saved_tare_missing`,
+`entry_weight_required`, `previous_exit_missing`) is rechecked every 30 seconds
+without a paid request. A photograph still being delivered is retried every
+15 seconds; an unavailable photograph leaves the weighing for review.
 
-Candidates are actual scale readings from open visits on the same scale/camera,
-within 12 hours before departure, after the configured minimum trip interval.
-Unassigned front weighings can recover a missed entry using their original
-weight, time and photograph. Completed trips and historical tare averages are
-never used. A later completed visit with the same plate disqualifies an orphan
-entry. Known unrelated plate numbers are excluded before the API request; at
-most six candidate photos are sent. Large ambiguous candidate sets stay manual.
+Visits open longer than `WEIGHING_AI_ENTRY_MAX_HOURS` are reconciled every five
+minutes: the one unread loaded exit of the visit's window closes it; with no
+candidate and twice that age gone the visit is cancelled without an exit;
+anything ambiguous is left for the operator.
 
-The loaded weight must exceed the saved entry weight. Database locks, leases,
-fresh evidence checks and existing unique active-visit constraints prevent
-duplicate assignment and protect operator changes during API calls. Model
-output cannot set weights or execute tools. Audit records retain the model,
-response ID, original OCR, readings, comparison and actual source measurements.
+Database locks, leases, fresh evidence checks and existing unique active-visit
+constraints prevent duplicate assignment and protect operator changes during
+API calls. Model output cannot set weights or execute tools. Audit records
+retain the identity source (`ocr`/`gpt`), model, response ID, original OCR,
+reading and actual source measurements.
 
 No vision model can guarantee 100% identity accuracy. When the evidence is
 uncertain, the system keeps weight/photo and requires operator confirmation.
@@ -69,11 +83,11 @@ the durable verification queue.
 | `WEIGHING_AI_ENTRY_MAX_HOURS` | `12` | Maximum age of an actual open entry, configurable from 1–24 hours. |
 
 Requests use `store: false`, a 45-second socket timeout, a three-minute lease,
-at most three attempts per weighing and a 5,000-output-token bound. Image size
-and response size are bounded. API/storage failures and delayed entry photos
-retry after 60/120 seconds, then remain for manual review. Restarting a worker
+at most six single-frame requests per weighing and a 1,200-output-token bound.
+Image size and response size are bounded. API/storage failures retry after
+60 seconds per attempt made, then remain for manual review. Restarting a worker
 recovers expired leases. An exhausted daily budget leaves weights pending
-until the next UTC day, with an explicit limit message and manual assignment.
+until the next local (`TIME_ZONE`) day, with an explicit limit message and manual assignment.
 Missing photos are shown as waiting for a photo; evidence older than 24 hours
 requires operator review. No pending label implies that a model is still running.
 This is an upper bound on attempts, not a fixed monetary spending guarantee.
@@ -88,10 +102,6 @@ docker compose -f docker-compose.prod.yml exec -T backend python manage.py shell
   'from django.conf import settings; print({"enabled": settings.WEIGHING_AI_ENABLED, "key_configured": bool(settings.OPENAI_API_KEY), "model": settings.WEIGHING_AI_MODEL})'
 docker compose -f docker-compose.prod.yml logs --tail=100 passage-scale-monitor
 ```
-
-The separate shipping/conveyor automation in the same release requires its
-compatible CV service update and body detector; see `deploy/shipping-transports.md`.
-This requirement does not apply to the OpenAI weighbridge wrapper.
 
 ## Production acceptance diagnostic
 

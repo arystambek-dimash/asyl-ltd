@@ -17,7 +17,23 @@ export function paymentBadgeStatus(order: PaymentBadgeOrder): string | null {
   return status === "partial" || status === "settled" ? status : null;
 }
 
-export function OrderPaymentBadge({ order, dot }: { order: PaymentBadgeOrder; dot?: boolean }) {
+/** pending — у заказа есть оплата на проверке у кассы: она важнее статуса оплаты. */
+export function OrderPaymentBadge({
+  order,
+  pending,
+  dot,
+}: {
+  order: PaymentBadgeOrder;
+  pending?: boolean;
+  dot?: boolean;
+}) {
+  if (pending) {
+    return (
+      <Badge tone="warning" dot={dot}>
+        На проверке
+      </Badge>
+    );
+  }
   const status = paymentBadgeStatus(order);
   if (!status) return null;
   return (

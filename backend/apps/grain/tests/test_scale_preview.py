@@ -1,5 +1,4 @@
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -8,7 +7,6 @@ from django.core.cache import cache
 
 pytestmark = pytest.mark.django_db
 
-READING_URL = "/api/truck-scale/reading/"
 WAGON_READING_URL = "/api/truck-scales/wagon/reading/"
 TRUCK_READING_URL = "/api/truck-scales/truck/reading/"
 SAFE_RESPONSE_FIELDS = {
@@ -23,7 +21,6 @@ SAFE_RESPONSE_FIELDS = {
     "age_seconds",
     "updated_at",
     "observed_at",
-    "refresh_mode",
 }
 
 
@@ -55,7 +52,9 @@ def observation(**overrides):
     return scale.ScaleObservation(**values)
 
 
-def test_reading_endpoint_allows_grain_weigher(api_client, user_with_perms):
+def test_truck_preview_route_allows_grain_weigher(
+    api_client, user_with_perms
+):
     user = user_with_perms(
         "preview-grain-weigher",
         codes=["grain.weigh"],
@@ -67,37 +66,14 @@ def test_reading_endpoint_allows_grain_weigher(api_client, user_with_perms):
         "read_truck_scale_observation",
         return_value=observation(),
     ) as read_scale:
-        response = api_client.get(READING_URL)
+        response = api_client.get(TRUCK_READING_URL)
 
     assert response.status_code == 200
     assert set(response.data) == SAFE_RESPONSE_FIELDS
     assert response.data["state"] == "ready"
     assert response.data["weight_kg"] == "3660.00"
     assert response.data["capturable"] is True
-    assert response.data["refresh_mode"] == "manual"
     assert "no-store" in response["Cache-Control"]
-    read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
-
-
-@pytest.mark.parametrize("url", [TRUCK_READING_URL, READING_URL])
-def test_truck_preview_routes_remain_compatible(
-    api_client, user_with_perms, url
-):
-    user = user_with_perms(
-        f"preview-truck-{url.count('/')}",
-        codes=["grain.weigh"],
-    )
-    api_client.force_authenticate(user)
-
-    with patch.object(
-        scale_preview.scale,
-        "read_truck_scale_observation",
-        return_value=observation(weight_kg=Decimal("12000.00")),
-    ) as read_scale:
-        response = api_client.get(url)
-
-    assert response.status_code == 200
-    assert response.data["weight_kg"] == "12000.00"
     read_scale.assert_called_once_with(scale.TRUCK_SCALE_KEY)
 
 
@@ -134,48 +110,22 @@ def test_unknown_scale_preview_is_404_before_scale_io(
 
 @pytest.mark.parametrize(
     "permission_code",
-    ["monoblock.view", "loader.view", "loader.confirm"],
+    ["monoblock.view", "loader.view", "loader.confirm", "grain.view", None],
 )
-def test_reading_endpoint_denies_shipping_permissions_before_scale_io(
-    api_client, user_with_perms, permission_code
+def test_reading_endpoint_denies_non_weighers_before_scale_io(
+    api_client, user_with_perms, make_user, permission_code
 ):
-    user = user_with_perms(
-        f"preview-denied-{permission_code.replace('.', '-')}",
-        codes=[permission_code],
-    )
+    if permission_code is None:
+        user = make_user(username="preview-denied-client", client=True)
+    else:
+        user = user_with_perms(
+            f"preview-denied-{permission_code.replace('.', '-')}",
+            codes=[permission_code],
+        )
     api_client.force_authenticate(user)
 
     with patch("apps.grain.views.get_scale_preview") as get_scale_preview:
-        response = api_client.get(READING_URL)
-
-    assert response.status_code == 403
-    get_scale_preview.assert_not_called()
-
-
-def test_reading_endpoint_denies_unrelated_permission_before_scale_io(
-    api_client, user_with_perms
-):
-    user = user_with_perms("preview-denied", codes=["grain.view"])
-    api_client.force_authenticate(user)
-
-    with patch(
-        "apps.grain.views.get_scale_preview"
-    ) as get_scale_preview:
-        response = api_client.get(READING_URL)
-
-    assert response.status_code == 403
-    get_scale_preview.assert_not_called()
-
-
-def test_reading_endpoint_denies_client_accounts_before_scale_io(
-    api_client, client_user
-):
-    api_client.force_authenticate(client_user)
-
-    with patch(
-        "apps.grain.views.get_scale_preview"
-    ) as get_scale_preview:
-        response = api_client.get(READING_URL)
+        response = api_client.get(TRUCK_READING_URL)
 
     assert response.status_code == 403
     get_scale_preview.assert_not_called()
@@ -241,55 +191,46 @@ def test_truck_preview_lock_does_not_block_wagon_refresh():
     read_scale.assert_called_once_with(scale.WAGON_SCALE_KEY)
 
 
-def test_expired_preview_owner_cannot_delete_a_reacquired_lock():
-    lock_key = scale_preview._preview_lock_key(scale.TRUCK_SCALE_KEY)
-    cache.set(lock_key, "new-owner", 30)
-
-    scale_preview._release_owned_lock(lock_key, "expired-owner")
-
-    assert cache.get(lock_key) == "new-owner"
-
-
-def test_non_redis_preview_lock_is_left_to_expire_safely():
+def test_preview_lock_is_released_by_its_owner():
     lock_key = scale_preview._preview_lock_key(scale.WAGON_SCALE_KEY)
-    cache.set(lock_key, "owner", 30)
 
-    scale_preview._release_owned_lock(lock_key, "owner")
-
-    assert cache.get(lock_key) == "owner"
-
-
-def test_redis_preview_lock_release_is_an_atomic_owner_check():
-    client = Mock()
-    client.eval.return_value = 0
-    serializer = Mock()
-    serializer.dumps.return_value = b"encoded-owner"
-    adapter = SimpleNamespace(
-        get_client=Mock(return_value=client),
-        _serializer=serializer,
-    )
-    backend = SimpleNamespace(
-        _cache=adapter,
-        make_and_validate_key=Mock(return_value=":1:preview-lock"),
-    )
-
-    with patch(
-        "apps.grain.scale_preview.caches", {"default": backend}
+    with patch.object(
+        scale_preview.scale,
+        "read_truck_scale_observation",
+        return_value=observation(),
     ):
-        released = scale_preview._redis_release_owned_lock(
-            "preview-lock", "owner"
-        )
+        scale_preview.get_scale_preview(scale.WAGON_SCALE_KEY)
 
-    assert released is False
-    assert client.eval.call_args.args[1:] == (
-        1,
-        ":1:preview-lock",
-        b"encoded-owner",
-    )
+    assert cache.get(lock_key) is None
+
+
+def test_preview_lock_release_failure_keeps_the_fresh_payload():
+    # Сбой Redis на снятии лока не должен превращать готовый ответ в 500:
+    # лок всё равно истечёт по TTL.
+    client = Mock()
+    client.eval.side_effect = ConnectionError("redis down")
+    lease_cache = Mock()
+    lease_cache.add.return_value = True
+    lease_cache._cache.get_client.return_value = client
+
+    with (
+        patch("apps.common.locks.cache", lease_cache),
+        patch.object(
+            scale_preview.scale,
+            "read_truck_scale_observation",
+            return_value=observation(),
+        ),
+    ):
+        payload = scale_preview.get_scale_preview(scale.WAGON_SCALE_KEY)
+
+    assert payload["state"] == "ready"
+    client.eval.assert_called_once()
 
 
 def test_preview_single_flight_does_not_queue_another_scale_request():
-    assert cache.add(scale_preview.PREVIEW_LOCK_KEY, "busy", 30) is True
+    lock_key = scale_preview._preview_lock_key(scale.TRUCK_SCALE_KEY)
+    cache_key = scale_preview._preview_cache_key(scale.TRUCK_SCALE_KEY)
+    assert cache.add(lock_key, "busy", 30) is True
 
     with patch.object(
         scale_preview.scale,
@@ -299,8 +240,7 @@ def test_preview_single_flight_does_not_queue_another_scale_request():
 
     assert payload["state"] == "refreshing"
     assert payload["weight_kg"] is None
-    assert payload["refresh_mode"] == "manual"
-    assert cache.get(scale_preview.PREVIEW_CACHE_KEY) is None
+    assert cache.get(cache_key) is None
     read_scale.assert_not_called()
 
 
@@ -312,7 +252,7 @@ def test_preview_single_flight_does_not_queue_another_scale_request():
         (scale.TruckScaleMalformedResponse(), "malformed", True),
     ],
 )
-def test_operational_failures_return_safe_manual_refresh_state(
+def test_operational_failures_return_safe_state(
     exception, state, enabled
 ):
     with patch.object(
@@ -328,7 +268,6 @@ def test_operational_failures_return_safe_manual_refresh_state(
     assert payload["weight_kg"] is None
     assert payload["ready"] is False
     assert payload["capturable"] is False
-    assert payload["refresh_mode"] == "manual"
 
 
 def test_zero_weight_is_visible_but_not_capturable():

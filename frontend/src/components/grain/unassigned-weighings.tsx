@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
-import { apiFileUrl, formatKg } from "@/lib/grain";
+import { apiFileUrl } from "@/lib/api-file-url";
+import { formatKg, passageNetKg } from "@/lib/grain";
 import type { GrainUnassignedWeighing, GrainWagon } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -56,15 +57,9 @@ function identityStatusLabel(item: GrainUnassignedWeighing) {
   }
   if (check.status === "waiting_budget") return "Лимит ИИ на сегодня исчерпан — нужна резервная ручная проверка";
   if (check.status === "disabled") return "Проверка ИИ отключена — нужна резервная ручная проверка";
-  if (check.status === "review") return identityReviewLabel(check.review_reason || check.reason, item.orientation);
+  if (check.status === "review") return identityReviewLabel(check.reason, item.orientation);
   if (check.status === "matched") return "Номер подтверждён — обновляем рейс…";
-  if (check.status === "retrying") {
-    if (check.reason === "image_binding_recheck") return "ИИ повторно сверяет только фото этой машины…";
-    if (check.reason === "entry_evidence_pending" && item.orientation !== "front") {
-      return "Повторно проверяем номер, открытые рейсы и сохранённую тару…";
-    }
-    return "Повторяем автоматическое распознавание сохранённого кадра…";
-  }
+  if (check.status === "retrying") return "Повторяем автоматическое распознавание сохранённого кадра…";
   return "Распознаём госномер и направление проезда…";
 }
 
@@ -78,10 +73,6 @@ function isUnassignedWeighing(value: unknown): value is GrainUnassignedWeighing 
     typeof item.stable_weight_at === "string" &&
     !Number.isNaN(new Date(item.stable_weight_at).getTime())
   );
-}
-
-function isWagon(value: unknown): value is GrainWagon {
-  return Boolean(value) && typeof value === "object" && typeof (value as GrainWagon).id === "number";
 }
 
 function awaitsEntry(wagon: GrainWagon) {
@@ -225,13 +216,7 @@ function UnassignedRow({
               ? "Вес сохранён · действия оператора не нужны"
               : exitWagon
                 ? `Сверьте фото с машиной ${exitWagon.number || `#${exitWagon.id}`}`
-                : item.reason && item.reason !== "open_passages_exist"
-                  ? weighingReasonLabel(item.reason)
-                  : loaded
-                    ? suggestedExit
-                      ? `похоже на выезд ${suggestedExit.number || `#${suggestedExit.id}`}`
-                      : "номер не распознан — выберите рейс по фото и времени"
-                    : "номер не распознан, похоже на новый заезд"}
+                : weighingReasonLabel(item.reason)}
             {cameraHint && <span className="ml-1 text-amber-700">· {cameraHint}</span>}
           </div>
         </div>
@@ -302,7 +287,8 @@ function UnassignedRow({
               {exitWagon ? (
                 <p className="w-full text-sm">
                   Вывоз {exitWagon.number || `#${exitWagon.id}`}: вес гружёной {formatKg(item.weight_kg)}, нетто{" "}
-                  {formatKg(item.weight_kg - (exitWagon.entry_weight_kg ?? 0))}. Записать этот вес и завершить рейс?
+                  {formatKg(passageNetKg(item.weight_kg, exitWagon.entry_weight_kg ?? 0))}. Записать этот вес и
+                  завершить рейс?
                 </p>
               ) : (
                 <Select
@@ -334,7 +320,7 @@ function UnassignedRow({
               className="flex flex-wrap items-center gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
-                void run("create-passage", { number, cargo_name: "" });
+                void run("create-passage", { number });
               }}
             >
               <Input
@@ -510,7 +496,7 @@ export function UnassignedWeighingsPanel({
     reload: reloadCandidates,
     error: candidatesError,
     setData: setCandidatesData,
-  } = useApi<GrainWagon[] | { results: GrainWagon[] }>(exitWagon ? null : CANDIDATES_URL);
+  } = useApi<GrainWagon[]>(exitWagon ? null : CANDIDATES_URL);
   const refresh = () => (mutationBusyRef.current ? Promise.resolve([]) : Promise.all([reload(), reloadCandidates()]));
   useVisiblePolling(refresh, 10_000, active && !mutationBusy);
 
@@ -531,8 +517,7 @@ export function UnassignedWeighingsPanel({
   const items = Array.isArray(data)
     ? data.filter(isUnassignedWeighing).filter((item) => !exitWagon || canBeExit(item, exitWagon))
     : [];
-  const rawCandidates = Array.isArray(candidatesData) ? candidatesData : (candidatesData?.results ?? []);
-  const candidates = exitWagon ? [exitWagon] : Array.isArray(rawCandidates) ? rawCandidates.filter(isWagon) : [];
+  const candidates = exitWagon ? [exitWagon] : (candidatesData ?? []);
   if (!items.length && !loading && !loadError) return null;
   const processing = items.filter(isProcessing);
   const exceptions = items.filter((item) => !isProcessing(item));

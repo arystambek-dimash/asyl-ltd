@@ -1,11 +1,12 @@
 "use client";
 import Image from "next/image";
 import { useState } from "react";
-import { QrCode } from "lucide-react";
-import type { Payment } from "@/lib/types";
+import { ExternalLink, QrCode } from "lucide-react";
+import { Button, type ButtonProps } from "@/components/ui/button";
+import type { ApiPayInvoiceView } from "@/lib/types";
 
 /** Kaspi QR платёжного сервиса; без картинки — подсказка открыть оплату кнопкой. */
-export function QrCodeImage({ provider }: { provider: NonNullable<Payment["provider"]> }) {
+export function QrCodeImage({ provider }: { provider: ApiPayInvoiceView }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   if (provider.qr_image_url && failedUrl !== provider.qr_image_url) {
     return (
@@ -27,5 +28,31 @@ export function QrCodeImage({ provider }: { provider: NonNullable<Payment["provi
         Изображение QR недоступно. Откройте оплату кнопкой ниже.
       </p>
     </div>
+  );
+}
+
+/** Kaspi QR и кнопка «Открыть Kaspi», если у оплаты есть ссылка. */
+export function KaspiQr({
+  provider,
+  buttonVariant,
+  buttonClassName = "w-full",
+}: {
+  provider: ApiPayInvoiceView;
+  buttonVariant?: ButtonProps["variant"];
+  buttonClassName?: string;
+}) {
+  return (
+    <>
+      <QrCodeImage provider={provider} />
+      {provider.qr_token_url && (
+        <Button
+          variant={buttonVariant}
+          className={buttonClassName}
+          onClick={() => window.open(provider.qr_token_url!, "_blank", "noopener")}
+        >
+          <ExternalLink className="size-4" /> Открыть Kaspi
+        </Button>
+      )}
+    </>
   );
 }

@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { apiFileUrl, formatKg, grainTripHref } from "@/lib/grain";
+import { apiFileUrl } from "@/lib/api-file-url";
+import { formatKg, grainTripHref } from "@/lib/grain";
 import type { WagonArchStop } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
@@ -30,7 +31,7 @@ const STATUS: Record<
 
 function statusView(status: WagonArchStop["status"]) {
   // Неизвестный статус (например, из более новой версии бэкенда) — нейтральный
-  // серый бейдж с сырым значением, а не зелёное «Идёт» по умолчанию (m5).
+  // серый бейдж с сырым значением, а не зелёное «Идёт» по умолчанию.
   return STATUS[status] ?? { label: status, tone: "muted" as const };
 }
 
@@ -48,11 +49,15 @@ function StopRow({
   const status = statusView(row.status);
   const photo = apiFileUrl(row.photo_url);
   const waiting = row.status === "open" && row.blocked_reason ? "Ждёт" : null;
-  // Заметка оператора — по форме, а не по конкретному тексту (m3): стоп закрыт,
+  // Заметка оператора — по форме, а не по конкретному тексту: стоп закрыт,
   // причина блокировки пуста, но деталь есть — значит это deliberate-запись
   // бэкенда (dismiss/ручной ввод), а не предупреждение об ошибке импорта.
   const operatorNote = row.status === "closed" && !row.blocked_reason && row.blocked_detail ? row.blocked_detail : "";
   const showWarningReason = Boolean(row.blocked_reason) && !operatorNote;
+  // Нетто стоянки — только у цельной стоянки. Продолжение и переставленный
+  // стоп несут лишь часть рейса (вес до/после перестановки); нетто всего рейса
+  // — на странице рейса (Wagon.computed_net_kg).
+  const showNet = row.continues == null && row.status !== "superseded" && row.net_kg != null && row.net_kg > 0;
   const showDismiss =
     canDismiss && (row.status === "attention" || (row.status === "open" && Boolean(row.blocked_reason)));
 
@@ -95,12 +100,8 @@ function StopRow({
         <p className="mt-1 text-sm tabular-nums">
           {formatKg(row.full_weight_kg)}
           {row.exit_weight_kg != null && ` → ${formatKg(row.exit_weight_kg)}`}
-          {row.continues == null && row.net_kg != null && row.net_kg > 0 && ` · нетто ${formatKg(row.net_kg)}`}
-          {row.continues != null && (
-            <span className="ml-1 text-[var(--muted-foreground)]" data-testid="continues-note">
-              · продолжение стоянки
-            </span>
-          )}
+          {showNet && ` · нетто ${formatKg(row.net_kg)}`}
+          {row.continues != null && <span className="ml-1 text-[var(--muted-foreground)]">· продолжение стоянки</span>}
         </p>
         {showWarningReason && (
           <p className="mt-1 text-sm text-[var(--warning)]">
@@ -142,7 +143,7 @@ export function WagonArchStops() {
   );
   useVisiblePolling(reload, 5000, before === null);
 
-  // Всегда самые свежие данные для replaceRow (m2): dismiss — async-запрос, и
+  // Всегда самые свежие данные для replaceRow: dismiss — async-запрос, и
   // пока он летит, может прилететь poll и обновить data. Если replaceRow
   // соберёт замену из data, захваченного при рендере клика (замыкание в
   // StopRow.dismiss), он перезапишет строки, пришедшие после клика, устаревшим

@@ -4,12 +4,11 @@ import { useId, useState, type FormEvent } from "react";
 import { Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
+import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import type { ShippingSessionSettings } from "@/lib/shipping-sessions";
 import { useApi } from "@/lib/use-api";
-
-const INPUT_CLASS = "h-10 w-full rounded-md border bg-[var(--background)] px-3 text-sm";
 
 /** Простой один на все конвейеры: без мешков дольше него отрезок погрузки закрывается. */
 export function ShippingIdleSettings() {
@@ -76,13 +75,12 @@ export function ShippingIdleSettings() {
           <label htmlFor={inputId} className="block text-sm font-medium">
             Простой, минут
           </label>
-          <input
+          <Input
             id={inputId}
             type="number"
             min="0.5"
             max="1440"
             step="any"
-            className={INPUT_CLASS}
             value={minutes}
             onChange={(event) => setMinutes(event.target.value)}
             disabled={saving}

@@ -1,29 +1,14 @@
 "use client";
 import { useState } from "react";
-import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { OrderRef } from "@/components/orders/order-ref";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
-import { cn, formatCurrency as money, formatDateTime } from "@/lib/utils";
-import { PAYMENT_STAGE_TONE, PAYMENT_STAGE_LABELS, PAYMENT_METHOD_LABELS } from "@/lib/constants";
-/** Платёж из /clients/{id}/history/ — вся история, включая погашенные заказы. */
-export interface HistoryPayment {
-  can_reopen?: boolean;
-  can_reject?: boolean;
-  provider?: boolean;
-  refunded_amount?: string;
-  id: number;
-  order_id: number;
-  date: string;
-  employee: string | null;
-  method: string;
-  status: string;
-  amount: string;
-  currency: string;
-}
+import { cn, formatCurrency, formatDateTime } from "@/lib/utils";
+import { PaymentStageBadge } from "@/components/payment-chain";
+import type { ClientHistoryPayment } from "@/lib/types";
 export function PaymentHistoryTable({
   rows,
   emptyText,
@@ -31,13 +16,13 @@ export function PaymentHistoryTable({
   canManagePayments,
   onChanged,
 }: {
-  rows: HistoryPayment[];
+  rows: ClientHistoryPayment[];
   emptyText: string;
   canViewOrders: boolean;
   canManagePayments: boolean;
   onChanged: () => void;
 }) {
-  const [target, setTarget] = useState<HistoryPayment | null>(null);
+  const [target, setTarget] = useState<ClientHistoryPayment | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -87,7 +72,7 @@ export function PaymentHistoryTable({
           title={target?.can_reopen ? "Отменить подтверждение оплаты?" : "Отклонить оплату?"}
           description={
             target
-              ? `Заказ #${target.order_id} · ${money(target.amount, target.currency)}. ${target.can_reopen ? "Сумма перестанет учитываться как оплаченная, долг увеличится. Платёж вернётся на подтверждение и останется в истории." : "Запись останется в истории. Для онлайн-счёта будет запрошена отмена у платёжного сервиса."}`
+              ? `Заказ #${target.order_id} · ${formatCurrency(target.amount, target.currency)}. ${target.can_reopen ? "Сумма перестанет учитываться как оплаченная, долг увеличится. Платёж вернётся на подтверждение и останется в истории." : "Запись останется в истории. Для онлайн-счёта будет запрошена отмена у платёжного сервиса."}`
               : ""
           }
           confirmLabel={target?.can_reopen ? "Отменить подтверждение" : "Отклонить оплату"}
@@ -112,19 +97,13 @@ export function PaymentHistoryTable({
               <TR key={p.id}>
                 <TD className="tabular-nums">{formatDateTime(p.date)}</TD>
                 <TD>
-                  {canViewOrders ? (
-                    <Link href={`/orders/${p.order_id}`} className="font-medium hover:underline">
-                      #{p.order_id}
-                    </Link>
-                  ) : (
-                    <span className="font-medium">#{p.order_id}</span>
-                  )}
+                  <OrderRef id={p.order_id} canOpen={canViewOrders} className="font-medium">
+                    #{p.order_id}
+                  </OrderRef>
                 </TD>
-                <TD>{PAYMENT_METHOD_LABELS[p.method] ?? p.method}</TD>
+                <TD>{p.method_label}</TD>
                 <TD>
-                  <Badge tone={PAYMENT_STAGE_TONE[p.status] ?? "muted"}>
-                    {PAYMENT_STAGE_LABELS[p.status] ?? p.status}
-                  </Badge>
+                  <PaymentStageBadge payment={p} dot={false} />
                 </TD>
                 <TD className="text-[var(--muted-foreground)]">{p.employee ?? "—"}</TD>
                 <TD
@@ -133,7 +112,7 @@ export function PaymentHistoryTable({
                     p.status === "confirmed" && "text-[var(--success)]",
                   )}
                 >
-                  {money(p.amount, p.currency)}
+                  {formatCurrency(p.amount, p.currency)}
                 </TD>
                 {canManagePayments && (
                   <TD className="text-right">

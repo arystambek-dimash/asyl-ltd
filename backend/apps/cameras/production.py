@@ -1,7 +1,7 @@
 """Commands for production configuration, corrections and atomic stock posting.
 
-Public entry points stay here for existing API/worker callers. Read projections,
-warehouse rules and the run ledger live in their respective focused modules.
+Read projections, warehouse rules and the run ledger live in their respective
+focused modules (production_queries, production_catalog, production_runs).
 """
 
 from __future__ import annotations
@@ -17,11 +17,12 @@ from rest_framework.exceptions import NotFound, ValidationError
 from apps.catalog.models import Product
 from apps.eventlog.services import log_event
 from apps.warehouse.models import StockItem, Warehouse
-from apps.warehouse.services import lock_stock_item, receive_stock
+from apps.warehouse.services import get_main_warehouse, lock_stock_item, receive_stock
 
 from . import ai, color_resolution
 from .models import (
     ANALYTICS_SCOPE_AI247,
+    METHOD_MANUAL,
     AlwaysOnColorProductMapping,
     AlwaysOnCounterCursor,
     AlwaysOnImportedEvent,
@@ -32,53 +33,30 @@ from .models import (
     AlwaysOnWarehouseRoute,
     ContinuousCameraRole,
 )
+from .policies import assert_contour_camera
 from .production_catalog import (
     BASE_COLORS,
-    COLOR_LABELS,
     color_label,
-    _compatibility_warehouse,
-    _stock_scope_for_warehouse,
     _warehouse_for_camera,
 )
 from .production_queries import (
     _batch_payload,
-    _run_color_totals,
     _selected_day,
     production_payload,
-    smooth_day_runs,
 )
 from .production_runs import (
-    RUN_GAP,
     TERMINAL_BATCH_STATUSES,
     _aware,
     _day_totals,
     _normalize_color,
     business_day_for,
     close_stale_runs,
-    record_color_deltas,
     scheduled_for,
 )
 
 log = logging.getLogger(__name__)
 # Keep a clean post-cutoff journal observation before making stock immutable.
 EVENT_SETTLE_DELAY = timedelta(minutes=1)
-
-__all__ = [
-    "RUN_GAP",
-    "TERMINAL_BATCH_STATUSES",
-    "business_day_for",
-    "scheduled_for",
-    "record_color_deltas",
-    "close_stale_runs",
-    "production_payload",
-    "smooth_day_runs",
-    "save_mappings",
-    "record_correction",
-    "post_due_stock",
-    "retry_batch",
-    "assign_unknown_color",
-    "_run_color_totals",
-]
 
 
 def _camera_has_unposted_production(camera: str) -> bool:
@@ -115,41 +93,32 @@ def save_mappings(
     mappings: list[dict],
     user=None,
     *,
-    warehouse=None,
+    warehouse_id: int | None = None,
 ) -> dict:
-    camera = ai.normalize(camera)
-    if not isinstance(mappings, list):
-        raise ValidationError({"mappings": "Передайте список привязок"})
+    """Route the camera to a warehouse and bind its colours to products.
 
+    ``mappings`` are rows validated by AlwaysOnProductMappingsSerializer:
+    normalized unique colours and ``product`` as a positive id or ``None``.
+    """
+
+    camera = ai.normalize(camera)
     # Event ingestion and stock posting take this per-camera mutex first.
     # Taking the same lock before reading runs/batches closes the window where
     # a page from the old route is in flight but not committed yet.
-    AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)
+    AlwaysOnCounterCursor.locked(camera)
     # Warehouse configuration and transfers always lock the stable main row
     # first. Follow the same order here, then lock current/selected ids in
     # ascending order; a secondary -> main route change must not invert it.
-    compatibility_warehouse = _compatibility_warehouse(lock=True)
+    main_warehouse = get_main_warehouse(lock=True)
     route = (
         AlwaysOnWarehouseRoute.objects.select_for_update().filter(camera=camera).first()
     )
-    current_warehouse_id = (
-        route.warehouse_id
-        if route and route.warehouse_id
-        else compatibility_warehouse.pk
+    current_warehouse_id = route.warehouse_id if route else main_warehouse.pk
+    selected_warehouse_id = (
+        current_warehouse_id if warehouse_id is None else warehouse_id
     )
-    if warehouse is None:
-        selected_warehouse_id = current_warehouse_id
-    elif isinstance(warehouse, Warehouse):
-        selected_warehouse_id = warehouse.pk
-    elif isinstance(warehouse, bool):
-        selected_warehouse_id = 0
-    else:
-        try:
-            selected_warehouse_id = int(warehouse)
-        except (TypeError, ValueError):
-            selected_warehouse_id = 0
 
-    locked_warehouses = {compatibility_warehouse.pk: compatibility_warehouse}
+    locked_warehouses = {main_warehouse.pk: main_warehouse}
     locked_warehouses.update(
         {
             row.pk: row
@@ -191,27 +160,7 @@ def save_mappings(
             }
         )
 
-    normalized: list[tuple[str, int | None]] = []
-    seen: set[str] = set()
-    for item in mappings:
-        if not isinstance(item, dict):
-            raise ValidationError({"mappings": "Некорректная привязка"})
-        color = _normalize_color(item.get("color"))
-        if color in seen:
-            raise ValidationError({"mappings": f"Цвет {color} передан повторно"})
-        seen.add(color)
-        product_id = item.get("product")
-        if product_id is not None:
-            if isinstance(product_id, bool):
-                raise ValidationError({"mappings": "Некорректный товар"})
-            try:
-                product_id = int(product_id)
-            except (TypeError, ValueError) as exc:
-                raise ValidationError({"mappings": "Некорректный товар"}) from exc
-            if product_id <= 0:
-                raise ValidationError({"mappings": "Некорректный товар"})
-        normalized.append((color, product_id))
-
+    normalized = [(item["color"], item["product"]) for item in mappings]
     product_ids = {product_id for _color, product_id in normalized if product_id}
     products = (
         Product.objects.select_for_update()
@@ -222,10 +171,7 @@ def save_mappings(
     stock_by_product = {
         row.product_id: row
         for row in StockItem.objects.select_for_update(of=("self",))
-        .filter(
-            _stock_scope_for_warehouse(selected_warehouse),
-            product_id__in=product_ids,
-        )
+        .filter(warehouse=selected_warehouse, product_id__in=product_ids)
         .select_related("warehouse")
         .order_by("product_id")
     }
@@ -240,7 +186,7 @@ def save_mappings(
                 }
             )
         if color in BASE_COLORS and product.color.lower() != color:
-            expected = COLOR_LABELS[color]
+            expected = color_label(color)
             raise ValidationError(
                 {
                     "mappings": f"Для цвета «{expected}» выберите товар того же цвета",
@@ -250,21 +196,11 @@ def save_mappings(
     # be produced and held in several warehouses independently.
     for product_id in sorted(product_ids):
         if product_id not in stock_by_product:
-            try:
-                stock_by_product[product_id] = lock_stock_item(
-                    products[product_id],
-                    selected_warehouse,
-                    require_active=False,
-                )
-            except ValidationError as exc:
-                if exc.detail.get("code") != "product_in_other_warehouse":
-                    raise
-                raise ValidationError(
-                    {
-                        "mappings": str(exc.detail["detail"]),
-                        "code": "product_assigned_other_warehouse",
-                    }
-                ) from exc
+            stock_by_product[product_id] = lock_stock_item(
+                products[product_id],
+                selected_warehouse,
+                require_active=False,
+            )
 
     AlwaysOnWarehouseRoute.objects.update_or_create(
         camera=camera,
@@ -277,7 +213,7 @@ def save_mappings(
     list(
         AlwaysOnColorProductMapping.objects.select_for_update().filter(
             camera=camera,
-            color__in=seen,
+            color__in=[color for color, _product_id in normalized],
         )
     )
     for color, product_id in normalized:
@@ -295,80 +231,6 @@ def save_mappings(
     return production_payload(camera)
 
 
-@transaction.atomic
-def record_correction(
-    camera: str,
-    color: str,
-    amount: int,
-    reason: str,
-    user=None,
-) -> AlwaysOnProductionCorrection:
-    camera = ai.normalize(camera)
-    color = _normalize_color(color)
-    if isinstance(amount, bool):
-        amount = 0
-    try:
-        amount = int(amount)
-    except (TypeError, ValueError) as exc:
-        raise ValidationError({"amount": "Укажите количество больше нуля"}) from exc
-    if amount <= 0:
-        raise ValidationError({"amount": "Укажите количество больше нуля"})
-    reason = " ".join(str(reason or "").split())
-    if len(reason) < 5 or len(reason) > 500:
-        raise ValidationError({"reason": "Укажите причину от 5 до 500 символов"})
-
-    # Share the same camera→batch mutex and lock order as event ingestion and
-    # automatic stock posting.  Otherwise a correction could commit just
-    # after the receipt totals were read but before the batch became terminal.
-    AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)
-    business_day = business_day_for(timezone.now())
-    batch = (
-        AlwaysOnStockBatch.objects.select_for_update()
-        .filter(camera=camera, business_day=business_day)
-        .first()
-    )
-    if batch is not None and batch.status in TERMINAL_BATCH_STATUSES:
-        raise ValidationError({"detail": "Эта производственная смена уже закрыта"})
-
-    list(
-        AlwaysOnProductionRun.objects.select_for_update().filter(
-            camera=camera,
-            business_day=business_day,
-            color=color,
-        )
-    )
-    list(
-        AlwaysOnProductionCorrection.objects.select_for_update().filter(
-            camera=camera,
-            business_day=business_day,
-            color=color,
-        )
-    )
-    # Same totals the preview and the 19:00 posting use, but only the bags
-    # that cannot move away later: camera-detected and manually assigned.
-    # A neighbour/vote decision may still change before posting; had a
-    # correction consumed it, the colour would go negative and fail the shift.
-    totals = _day_totals(camera, business_day).get(color, {})
-    provisional = int(totals.get("provisional_bags", 0))
-    available = max(0, int(totals.get("net_bags", 0)) - provisional)
-    if amount > available:
-        message = f"Для цвета доступно только {available}"
-        if provisional > 0:
-            message += (
-                f" (ещё {provisional} меш. определены автоматически и могут "
-                "измениться до закрытия смены)"
-            )
-        raise ValidationError({"amount": message})
-    return AlwaysOnProductionCorrection.objects.create(
-        camera=camera,
-        business_day=business_day,
-        color=color,
-        delta=-amount,
-        reason=reason,
-        created_by=user,
-    )
-
-
 def _locked_or_created_batch(
     camera: str,
     business_day: date,
@@ -380,17 +242,13 @@ def _locked_or_created_batch(
         lock=True,
         require_active=False,
     )
-    try:
-        batch = AlwaysOnStockBatch.objects.select_for_update().get(
-            camera=camera,
-            business_day=business_day,
-        )
-        if batch.warehouse_id is None:
-            batch.warehouse = warehouse
-            batch.save(update_fields=["warehouse", "updated_at"])
+    batch = (
+        AlwaysOnStockBatch.objects.select_for_update()
+        .filter(camera=camera, business_day=business_day)
+        .first()
+    )
+    if batch is not None:
         return batch
-    except AlwaysOnStockBatch.DoesNotExist:
-        pass
     try:
         with transaction.atomic():
             return AlwaysOnStockBatch.objects.create(
@@ -400,32 +258,77 @@ def _locked_or_created_batch(
                 scheduled_for=scheduled_for(business_day),
             )
     except IntegrityError:
-        batch = AlwaysOnStockBatch.objects.select_for_update().get(
+        return AlwaysOnStockBatch.objects.select_for_update().get(
             camera=camera,
             business_day=business_day,
         )
-        if batch.warehouse_id is None:
-            batch.warehouse = warehouse
-            batch.save(update_fields=["warehouse", "updated_at"])
-        return batch
 
 
-def _assert_ai247_role(camera: str) -> None:
-    if not ContinuousCameraRole.objects.filter(
-        camera=camera,
-        analytics_scope=ANALYTICS_SCOPE_AI247,
-    ).exists():
-        raise ValidationError(
-            {
-                "detail": "Камера не закреплена за контуром AI 24/7",
-                "code": "camera_not_in_ai247",
-            }
+def _save_batch_state(
+    batch: AlwaysOnStockBatch,
+    status: str,
+    error: str = "",
+    **fields,
+) -> AlwaysOnStockBatch:
+    """Persist a batch transition together with the attempt counter."""
+
+    batch.status = status
+    batch.last_error = error
+    for name, value in fields.items():
+        setattr(batch, name, value)
+    batch.save(
+        update_fields=["status", "last_error", "attempts", *fields, "updated_at"]
+    )
+    return batch
+
+
+def _event_journal_wait(
+    cursor: AlwaysOnCounterCursor, camera: str, business_day: date
+) -> str:
+    """Why the shift must wait for the AI event journal, or ``""``."""
+
+    if cursor.last_event_id is None or not cursor.event_boundary_validated:
+        return "Ожидается проверка журнала событий AI"
+    required_caught_up_at = scheduled_for(business_day) + EVENT_SETTLE_DELAY
+    if (
+        cursor.has_sync_failure
+        or cursor.event_caught_up_at is None
+        or cursor.event_caught_up_at < required_caught_up_at
+        # A bag without a colour just before 19:00 may take it from the
+        # first bags after it; the final pass in _post_one freezes it.
+        or color_resolution.awaits_following_bags(
+            camera, business_day, cursor.event_caught_up_at
         )
+    ):
+        return "Ожидается синхронизация событий AI после закрытия смены"
+    return ""
+
+
+def _log_stock_posted(
+    batch: AlwaysOnStockBatch,
+    camera: str,
+    business_day: date,
+    message: str,
+    **extra,
+) -> None:
+    log_event(
+        "always_on_stock_posted",
+        f"AI 24/7 · {camera}: {message}" + _pending_suffix(batch.pending_bags),
+        payload={
+            "batch": batch.pk,
+            "camera": camera,
+            "warehouse": batch.warehouse_id,
+            "business_day": business_day.isoformat(),
+            "total_bags": batch.total_bags,
+            "pending_bags": batch.pending_bags,
+            **extra,
+        },
+    )
 
 
 @transaction.atomic
 def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBatch:
-    _assert_ai247_role(camera)
+    assert_contour_camera(camera, ANALYTICS_SCOPE_AI247)
     # The event importer owns this lock before it checks a terminal batch.
     # Keep the same lock order here so count ingestion and stock closing can
     # never deadlock or let a late event slip behind an immutable receipt.
@@ -449,54 +352,20 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
     if batch.status in TERMINAL_BATCH_STATUSES:
         return batch
     if cursor is not None and cursor.event_sync_supported is not False:
-        if cursor.last_event_id is None or not cursor.event_boundary_validated:
-            batch.status = AlwaysOnStockBatch.BLOCKED
-            batch.last_error = "Ожидается проверка журнала событий AI"
+        waiting = _event_journal_wait(cursor, camera, business_day)
+        if waiting:
             batch.attempts += 1
-            batch.posted_at = None
-            batch.save(
-                update_fields=[
-                    "status",
-                    "last_error",
-                    "attempts",
-                    "posted_at",
-                    "updated_at",
-                ]
+            return _save_batch_state(
+                batch, AlwaysOnStockBatch.BLOCKED, waiting, posted_at=None
             )
-            return batch
-        required_caught_up_at = scheduled_for(business_day) + EVENT_SETTLE_DELAY
-        if (
-            cursor.event_sync_error
-            or cursor.event_sync_failed_at is not None
-            or cursor.event_caught_up_at is None
-            or cursor.event_caught_up_at < required_caught_up_at
-            # A bag without a colour just before 19:00 may take it from the
-            # first bags after it; the final pass below freezes the decision.
-            or color_resolution.awaits_following_bags(
-                camera, business_day, cursor.event_caught_up_at
-            )
-        ):
-            batch.status = AlwaysOnStockBatch.BLOCKED
-            batch.last_error = "Ожидается синхронизация событий AI после закрытия смены"
-            batch.attempts += 1
-            batch.posted_at = None
-            batch.save(
-                update_fields=[
-                    "status",
-                    "last_error",
-                    "attempts",
-                    "posted_at",
-                    "updated_at",
-                ]
-            )
-            return batch
     if batch.items.exists():
         # A non-terminal batch with committed receipt links cannot be retried
         # automatically without risking a duplicate warehouse movement.
-        batch.status = AlwaysOnStockBatch.FAILED
-        batch.last_error = "Партия содержит незавершённые складские проводки"
-        batch.save(update_fields=["status", "last_error", "updated_at"])
-        return batch
+        return _save_batch_state(
+            batch,
+            AlwaysOnStockBatch.FAILED,
+            "Партия содержит незавершённые складские проводки",
+        )
 
     batch.attempts += 1
     # No production run may remain active once its shift is being posted.
@@ -519,10 +388,11 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
     totals = _day_totals(camera, business_day)
     invalid = [color for color, values in totals.items() if values["net_bags"] < 0]
     if invalid:
-        batch.status = AlwaysOnStockBatch.FAILED
-        batch.last_error = "Коррекции превысили выпуск: " + ", ".join(invalid)
-        batch.save(update_fields=["status", "last_error", "attempts", "updated_at"])
-        return batch
+        return _save_batch_state(
+            batch,
+            AlwaysOnStockBatch.FAILED,
+            "Коррекции превысили выпуск: " + ", ".join(invalid),
+        )
 
     # Bags still without a colour never block the shift: they stay pending on
     # the batch until an operator assigns them (assign_unknown_color).
@@ -537,38 +407,24 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
         if values["net_bags"] > 0 and color not in color_resolution.PENDING_COLORS
     }
     if not positive:
-        batch.status = AlwaysOnStockBatch.EMPTY
-        batch.total_bags = 0
-        batch.pending_bags = pending_bags
-        batch.last_error = ""
-        batch.posted_at = now
-        batch.save(
-            update_fields=[
-                "status",
-                "total_bags",
-                "pending_bags",
-                "last_error",
-                "attempts",
-                "posted_at",
-                "updated_at",
-            ]
+        _save_batch_state(
+            batch,
+            AlwaysOnStockBatch.EMPTY,
+            total_bags=0,
+            pending_bags=pending_bags,
+            posted_at=now,
         )
-        log_event(
-            "always_on_stock_posted",
-            f"AI 24/7 · {camera}: смена {business_day:%d.%m.%Y} закрыта без прихода"
-            + _pending_suffix(pending_bags),
-            payload={
-                "batch": batch.pk,
-                "camera": camera,
-                "warehouse": batch.warehouse_id,
-                "business_day": business_day.isoformat(),
-                "total_bags": 0,
-                "pending_bags": pending_bags,
-                "status": batch.status,
-            },
+        _log_stock_posted(
+            batch,
+            camera,
+            business_day,
+            f"смена {business_day:%d.%m.%Y} закрыта без прихода",
+            status=batch.status,
         )
         return batch
 
+    # FOR UPDATE also locks the joined (NOT NULL, PROTECT) product rows, so
+    # the active state checked here holds until the receipts are written.
     mapping_rows = list(
         AlwaysOnColorProductMapping.objects.select_for_update()
         .filter(camera=camera, color__in=positive)
@@ -586,22 +442,14 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
         should_log = (
             batch.status != AlwaysOnStockBatch.BLOCKED or batch.last_error != error
         )
-        batch.status = AlwaysOnStockBatch.BLOCKED
-        batch.total_bags = sum(values["net_bags"] for values in positive.values())
-        # Shown next to the error so they can be assigned before the retry.
-        batch.pending_bags = pending_bags
-        batch.last_error = error
-        batch.posted_at = None
-        batch.save(
-            update_fields=[
-                "status",
-                "total_bags",
-                "pending_bags",
-                "last_error",
-                "attempts",
-                "posted_at",
-                "updated_at",
-            ]
+        _save_batch_state(
+            batch,
+            AlwaysOnStockBatch.BLOCKED,
+            error,
+            total_bags=sum(values["net_bags"] for values in positive.values()),
+            # Shown next to the error so they can be assigned before the retry.
+            pending_bags=pending_bags,
+            posted_at=None,
         )
         if should_log:
             log_event(
@@ -619,31 +467,11 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
             )
         return batch
 
-    # Lock the exact catalogue rows whose active state was just validated.
-    product_ids = {mapping_by_color[color].product_id for color in positive}
-    locked_products = (
-        Product.objects.select_for_update()
-        .filter(pk__in=product_ids)
-        .order_by("pk")
-        .in_bulk()
-    )
-    newly_inactive = sorted(
-        color
-        for color in positive
-        if not locked_products.get(mapping_by_color[color].product_id)
-        or not locked_products[mapping_by_color[color].product_id].is_active
-    )
-    if newly_inactive:
-        batch.status = AlwaysOnStockBatch.BLOCKED
-        batch.last_error = "Товар отключён для цветов: " + ", ".join(newly_inactive)
-        batch.save(update_fields=["status", "last_error", "attempts", "updated_at"])
-        return batch
-
     posted_items = []
     total_bags = 0
     for color in sorted(positive):
         values = positive[color]
-        product = locked_products[mapping_by_color[color].product_id]
+        product = mapping_by_color[color].product
         note = f"AI 24/7 · {camera} · смена {business_day.isoformat()} · цвет {color}"
         receipt = receive_stock(
             product,
@@ -666,44 +494,28 @@ def _post_one(camera: str, business_day: date, now: datetime) -> AlwaysOnStockBa
         posted_items.append(posting)
         total_bags += values["net_bags"]
 
-    batch.status = AlwaysOnStockBatch.POSTED
-    batch.total_bags = total_bags
-    batch.pending_bags = pending_bags
-    batch.last_error = ""
-    batch.posted_at = now
-    batch.save(
-        update_fields=[
-            "status",
-            "total_bags",
-            "pending_bags",
-            "last_error",
-            "attempts",
-            "posted_at",
-            "updated_at",
-        ]
+    _save_batch_state(
+        batch,
+        AlwaysOnStockBatch.POSTED,
+        total_bags=total_bags,
+        pending_bags=pending_bags,
+        posted_at=now,
     )
-    log_event(
-        "always_on_stock_posted",
-        f"AI 24/7 · {camera}: {total_bags} мешков добавлено на склад"
-        + _pending_suffix(pending_bags),
-        payload={
-            "batch": batch.pk,
-            "camera": camera,
-            "warehouse": batch.warehouse_id,
-            "business_day": business_day.isoformat(),
-            "total_bags": total_bags,
-            "pending_bags": pending_bags,
-            "items": [
-                {
-                    "color": item.color,
-                    "product": item.product_id,
-                    "bags": item.posted_bags,
-                    "resolved_bags": item.resolved_bags,
-                    "receipt": item.receipt_id,
-                }
-                for item in posted_items
-            ],
-        },
+    _log_stock_posted(
+        batch,
+        camera,
+        business_day,
+        f"{total_bags} мешков добавлено на склад",
+        items=[
+            {
+                "color": item.color,
+                "product": item.product_id,
+                "bags": item.posted_bags,
+                "resolved_bags": item.resolved_bags,
+                "receipt": item.receipt_id,
+            }
+            for item in posted_items
+        ],
     )
     return batch
 
@@ -737,11 +549,12 @@ def _mark_failed(
         batch = _locked_or_created_batch(camera, business_day)
         if batch.status in TERMINAL_BATCH_STATUSES:
             return batch
-        batch.status = AlwaysOnStockBatch.FAILED
-        batch.last_error = str(error)[:500] or error.__class__.__name__
         batch.attempts += 1
-        batch.save(update_fields=["status", "last_error", "attempts", "updated_at"])
-        return batch
+        return _save_batch_state(
+            batch,
+            AlwaysOnStockBatch.FAILED,
+            str(error)[:500] or error.__class__.__name__,
+        )
 
 
 def _due_pairs(now: datetime) -> list[tuple[str, date]]:
@@ -779,24 +592,29 @@ def _due_pairs(now: datetime) -> list[tuple[str, date]]:
     return sorted(pairs, key=lambda item: (item[1], item[0]))
 
 
+def _post_or_mark_failed(
+    camera: str, business_day: date, now: datetime
+) -> AlwaysOnStockBatch:
+    try:
+        return _post_one(camera, business_day, now)
+    except Exception as exc:
+        log.exception(
+            "AI 24/7 stock posting failed camera=%s day=%s",
+            camera,
+            business_day,
+        )
+        return _mark_failed(camera, business_day, exc)
+
+
 def post_due_stock(now: datetime | None = None) -> list[dict]:
     """Post every overdue camera/day independently and retry safe failures."""
 
     now = _aware(now)
-    close_stale_runs(now, reserved_ai247_only=True)
-    result = []
-    for camera, business_day in _due_pairs(now):
-        try:
-            batch = _post_one(camera, business_day, now)
-        except Exception as exc:
-            log.exception(
-                "AI 24/7 stock posting failed camera=%s day=%s",
-                camera,
-                business_day,
-            )
-            batch = _mark_failed(camera, business_day, exc)
-        result.append(_batch_payload(batch))
-    return result
+    close_stale_runs(now)
+    return [
+        _batch_payload(_post_or_mark_failed(camera, business_day, now))
+        for camera, business_day in _due_pairs(now)
+    ]
 
 
 def retry_batch(batch_id: int) -> dict:
@@ -804,16 +622,12 @@ def retry_batch(batch_id: int) -> dict:
         batch = AlwaysOnStockBatch.objects.get(pk=batch_id)
     except AlwaysOnStockBatch.DoesNotExist as exc:
         raise NotFound("Складская партия не найдена") from exc
-    _assert_ai247_role(batch.camera)
+    assert_contour_camera(batch.camera, ANALYTICS_SCOPE_AI247)
     if batch.status in TERMINAL_BATCH_STATUSES:
         return _batch_payload(batch)
-    now = timezone.now()
-    try:
-        batch = _post_one(batch.camera, batch.business_day, now)
-    except Exception as exc:
-        log.exception("AI 24/7 manual stock retry failed batch=%s", batch_id)
-        batch = _mark_failed(batch.camera, batch.business_day, exc)
-    return _batch_payload(batch)
+    return _batch_payload(
+        _post_or_mark_failed(batch.camera, batch.business_day, timezone.now())
+    )
 
 
 @transaction.atomic
@@ -832,24 +646,16 @@ def assign_unknown_color(
     all: the 19:00 posting counts them under the colour. A shift already
     posted receives them now as a separate ``manual_color`` receipt, so the
     immutable 19:00 posting is never rewritten. Every call is audited.
+    ``bags`` is the positive count validated by AlwaysOnUnknownColorSerializer.
     """
 
-    camera = ai.normalize(camera)
-    _assert_ai247_role(camera)
+    camera = assert_contour_camera(camera, ANALYTICS_SCOPE_AI247)
     day = _selected_day(business_day)
     if day is None:
         raise ValidationError({"business_day": "Укажите смену"})
     color = _normalize_color(color)
     if color in color_resolution.PENDING_COLORS or color == "unclassified":
         raise ValidationError({"color": "Выберите цвет продукции"})
-    if isinstance(bags, bool):
-        bags = 0
-    try:
-        bags = int(bags)
-    except (TypeError, ValueError):
-        bags = 0
-    if bags <= 0:
-        raise ValidationError({"bags": "Укажите количество мешков больше нуля"})
     reason = " ".join(str(reason or "").split())
     if len(reason) < 5 or len(reason) > 500:
         raise ValidationError({"reason": "Укажите причину от 5 до 500 символов"})
@@ -859,8 +665,8 @@ def assign_unknown_color(
 
     # Same lock order as event ingestion and _post_one: cursor → route →
     # batch → catalogue → stock.
-    AlwaysOnCounterCursor.objects.select_for_update().get_or_create(camera=camera)
-    route_warehouse = _warehouse_for_camera(camera, lock=True, require_active=False)
+    AlwaysOnCounterCursor.locked(camera)
+    _warehouse_for_camera(camera, lock=True, require_active=False)
     batch = (
         AlwaysOnStockBatch.objects.select_for_update()
         .filter(camera=camera, business_day=day)
@@ -878,6 +684,7 @@ def assign_unknown_color(
     if bags > pending:
         raise ValidationError({"bags": f"Без цвета осталось только {pending} меш."})
 
+    # Locks the joined product row too, as in _post_one.
     mapping = (
         AlwaysOnColorProductMapping.objects.select_for_update()
         .filter(camera=camera, color=color)
@@ -901,7 +708,7 @@ def assign_unknown_color(
     note = f"вручную ({actor}): {reason}"[:300]
     for event in events:
         event.resolved_color = color
-        event.color_resolution = color_resolution.METHOD_MANUAL
+        event.color_resolution = METHOD_MANUAL
         event.resolution_note = {**(event.resolution_note or {}), "color": note}
     AlwaysOnImportedEvent.objects.bulk_update(
         events, ["resolved_color", "color_resolution", "resolution_note"]
@@ -914,12 +721,8 @@ def assign_unknown_color(
         batch.pending_bags = max(0, pending - bags)
         batch.save(update_fields=["pending_bags", "updated_at"])
     if posted:
-        warehouse = batch.warehouse or route_warehouse
-        product = (
-            Product.objects.select_for_update().filter(pk=mapping.product_id).first()
-        )
-        if product is None or not product.is_active:
-            raise ValidationError({"color": "Товар для этого цвета отключён"})
+        warehouse = batch.warehouse
+        product = mapping.product
         receipt = receive_stock(
             product,
             bags,

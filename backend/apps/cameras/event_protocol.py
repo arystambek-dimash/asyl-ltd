@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from django.utils import timezone
-from django.utils.dateparse import parse_datetime
+from apps.common.datetimes import parse_aware_datetime
 
+from .ai import unit_interval
 from .models import ANALYTICS_SCOPE_AI247, ANALYTICS_SCOPE_SHIPPING
 
 EVENT_PAGE_LIMIT = 500
@@ -42,7 +41,7 @@ class CountEvent:
     sku: str | None = None
     classification_status: str | None = None
     # Compact per-frame colour/brand votes from the camera's multi-line
-    # verification (color_resolution.compact_votes). Evidence only: it never
+    # verification (compact_votes). Evidence only: it never
     # changes what is counted, and a replay does not compare it.
     verification_votes: dict = field(default_factory=dict, compare=False)
 
@@ -80,14 +79,10 @@ def _optional_confidence(raw: dict, field: str) -> float | None:
     value = raw.get(field)
     if value is None:
         return None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or not 0.0 <= float(value) <= 1.0
-    ):
+    confidence = unit_interval(value)
+    if confidence is None:
         raise EventSyncError(f"AI /events: invalid event.{field}")
-    return float(value)
+    return confidence
 
 
 def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
@@ -99,9 +94,8 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
     if raw.get("cam") != camera:
         raise EventSyncError("AI /events: event camera does not match the filter")
 
-    created_at = raw.get("created_at")
-    occurred_at = parse_datetime(created_at) if isinstance(created_at, str) else None
-    if occurred_at is None or timezone.is_naive(occurred_at):
+    occurred_at = parse_aware_datetime(raw.get("created_at"))
+    if occurred_at is None:
         raise EventSyncError("AI /events: invalid event.created_at")
 
     mode = raw.get("mode")
@@ -148,7 +142,7 @@ def _parse_event(raw: object, *, camera: str, previous_id: int) -> CountEvent:
     )
 
 
-def _applies_to_continuous_analytics(event: CountEvent) -> bool:
+def applies_to_continuous_analytics(event: CountEvent) -> bool:
     """Honor the durable decision made when the camera event was created."""
 
     return event.mode == "always_on" or (
@@ -222,29 +216,25 @@ def event_color_key(color: str | None, class_name: str | None) -> str:
     return key if len(key) <= 32 else ""
 
 
-def _event_color(event: CountEvent) -> dict[str, int]:
+def event_color_delta(event: CountEvent) -> dict[str, int]:
     color = event_color_key(event.color, event.class_name)
     return {color: 1} if color else {}
 
 
-def _event_brand(event: CountEvent) -> dict[str, int] | None:
-    """Return a classified brand, preserving absence as legacy data."""
+def brand_key(value: object) -> str | None:
+    """Brand as analytics stores it (``unknown`` included), or ``None`` if unusable."""
 
-    if event.brand is None:
+    if not isinstance(value, str):
         return None
-    brand = " ".join(event.brand.split()).lower()
-    return {brand: 1} if brand and len(brand) <= 100 else None
+    brand = " ".join(value.split()).lower()
+    return brand if brand and len(brand) <= 100 else None
 
 
 def normalize_brand(value: object) -> str | None:
     """Brand key as analytics stores it, or ``None`` for no brand evidence."""
 
-    if not isinstance(value, str):
-        return None
-    brand = " ".join(value.split()).lower()
-    if not brand or len(brand) > 100 or brand in NO_BRAND:
-        return None
-    return brand
+    brand = brand_key(value)
+    return None if brand in NO_BRAND else brand
 
 
 def compact_votes(verification: object) -> dict:

@@ -16,15 +16,16 @@ function stopStream(stream: MediaStream | null | undefined) {
 
 type RecorderStatus = "idle" | "starting" | "recording" | "stopping";
 
-export interface VoiceRecorderProps {
+/** Автостоп, чтобы случайно не записать сорокаминутный файл. */
+const MAX_RECORDING_SECONDS = 300;
+
+interface VoiceRecorderProps {
   /** Отдаёт готовую запись наружу; null — запись удалили. */
   onChange: (file: File | null) => void;
   disabled?: boolean;
-  /** Автостоп, чтобы случайно не записать сорокаминутный файл. */
-  maxSeconds?: number;
 }
 
-export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRecorderProps) {
+export function VoiceRecorder({ onChange, disabled }: VoiceRecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [seconds, setSeconds] = useState(0);
   const [url, setUrl] = useState<string | null>(null);
@@ -40,15 +41,10 @@ export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRec
   const secondsRef = useRef(0);
   const urlRef = useRef<string | null>(null);
   const onChangeRef = useRef(onChange);
-  const maxSecondsRef = useRef(Math.max(1, Math.floor(maxSeconds)));
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
-
-  useEffect(() => {
-    maxSecondsRef.current = Math.max(1, Math.floor(maxSeconds));
-  }, [maxSeconds]);
 
   const stopTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -66,6 +62,26 @@ export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRec
     if (mountedRef.current) setUrl(next);
   }, []);
 
+  // Отцепить рекордер и погасить микрофон — общий выход для размонтирования и сбоев.
+  const releaseRecorder = useCallback(() => {
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    finishRef.current = null;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      if (recorder.state !== "inactive") {
+        try {
+          recorder.stop();
+        } catch {
+          // Поток всё равно будет остановлен ниже.
+        }
+      }
+    }
+    stopStream(streamRef.current ?? recorder?.stream);
+    streamRef.current = null;
+  }, []);
+
   // Микрофон и объектный URL — внешние ресурсы: гасим их при размонтировании,
   // иначе индикатор записи останется гореть после закрытия формы. Идентификатор
   // запроса также инвалидирует ещё не завершившийся запрос разрешения.
@@ -75,26 +91,11 @@ export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRec
       mountedRef.current = false;
       requestRef.current += 1;
       stopTimer();
-      finishRef.current = null;
-      const recorder = recorderRef.current;
-      recorderRef.current = null;
-      if (recorder) {
-        recorder.ondataavailable = null;
-        recorder.onstop = null;
-        if (recorder.state !== "inactive") {
-          try {
-            recorder.stop();
-          } catch {
-            // Поток всё равно будет остановлен ниже.
-          }
-        }
-      }
-      stopStream(streamRef.current ?? recorder?.stream);
-      streamRef.current = null;
+      releaseRecorder();
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
       urlRef.current = null;
     };
-  }, [stopTimer]);
+  }, [stopTimer, releaseRecorder]);
 
   async function start() {
     if (disabled || statusRef.current !== "idle" || urlRef.current) return;
@@ -167,21 +168,13 @@ export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRec
       secondsRef.current = 0;
       setSeconds(0);
       timerRef.current = setInterval(() => {
-        const next = Math.min(secondsRef.current + 1, maxSecondsRef.current);
+        const next = Math.min(secondsRef.current + 1, MAX_RECORDING_SECONDS);
         secondsRef.current = next;
         if (mountedRef.current) setSeconds(next);
-        if (next >= maxSecondsRef.current) stop();
+        if (next >= MAX_RECORDING_SECONDS) stop();
       }, 1000);
     } catch {
-      const recorder = recorderRef.current;
-      finishRef.current = null;
-      recorderRef.current = null;
-      if (recorder) {
-        recorder.ondataavailable = null;
-        recorder.onstop = null;
-      }
-      stopStream(stream);
-      if (streamRef.current === stream) streamRef.current = null;
+      releaseRecorder();
       if (mountedRef.current && requestRef.current === requestId) {
         updateStatus("idle");
         setError("Не удалось начать запись звука");
@@ -204,12 +197,7 @@ export function VoiceRecorder({ onChange, disabled, maxSeconds = 300 }: VoiceRec
       if (recorder.state === "inactive") finishRef.current?.();
       else recorder.stop();
     } catch {
-      recorder.ondataavailable = null;
-      recorder.onstop = null;
-      recorderRef.current = null;
-      finishRef.current = null;
-      stopStream(streamRef.current ?? recorder.stream);
-      streamRef.current = null;
+      releaseRecorder();
       updateStatus("idle");
       setError("Не удалось завершить запись звука");
     }

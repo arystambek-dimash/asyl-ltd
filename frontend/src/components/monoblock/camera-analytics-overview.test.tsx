@@ -8,9 +8,7 @@ const point: AlwaysOnHistoryPoint = {
   day: "2026-03-01",
   model_total: 817,
   model_per_color: { red: 817 },
-  model_per_brand: {},
   colors: [{ color: "red", total: 817, percent: 100 }],
-  brands: [],
   adjustment: 0,
   total: 817,
   updated_at: null,
@@ -21,8 +19,6 @@ const daily: AlwaysOnDailyCameraAnalytics = {
   period_total: 817,
   all_time_total: 166947,
   history: [point],
-  dominant_color: "red",
-  dominant_brand: null,
 };
 function setup(overrides: Partial<React.ComponentProps<typeof CameraAnalyticsOverview>> = {}) {
   const props: React.ComponentProps<typeof CameraAnalyticsOverview> = {

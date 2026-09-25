@@ -14,16 +14,16 @@ from datetime import date, datetime
 from django.db import transaction
 from django.utils import timezone
 
-from . import ai, analytics, color_resolution, production
+from . import ai, analytics, color_resolution, production_runs
 from .event_policy import decide_event
 from .event_protocol import (
     EVENT_PAGE_LIMIT,
     CountEvent,
     EventPage,
     EventSyncError,
-    _applies_to_continuous_analytics,
-    _event_brand,
-    _event_color,
+    applies_to_continuous_analytics,
+    brand_key,
+    event_color_key,
     parse_page,
 )
 from .models import (
@@ -34,11 +34,26 @@ from .models import (
     AlwaysOnImportedEvent,
     AlwaysOnStockBatch,
     ContinuousCameraRole,
-    ShippingAnalyticsBootstrap,
-    ShippingDailyAnalytics,
 )
 
 EVENT_MAX_PAGES_PER_SYNC = 4
+# Camera-PC facts of one event. A replayed event must match its imported row
+# on every one of them; verification votes are informational and not compared.
+EVENT_CONTENT_FIELDS = (
+    "occurred_at",
+    "source",
+    "mode",
+    "continuous_analytics",
+    "analytics_scope",
+    "class_name",
+    "color",
+    "color_confidence",
+    "brand",
+    "brand_confidence",
+    "sku",
+    "classification_status",
+    "total_after",
+)
 
 
 log = logging.getLogger(__name__)
@@ -46,7 +61,6 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SyncResult:
-    supported: bool
     processed: int
     ignored: int
     pages: int
@@ -54,21 +68,11 @@ class SyncResult:
     caught_up: bool
 
 
-def _daily_model(analytics_scope: str):
-    if analytics_scope == ANALYTICS_SCOPE_AI247:
-        return AlwaysOnDailyAnalytics
-    if analytics_scope == ANALYTICS_SCOPE_SHIPPING:
-        return ShippingDailyAnalytics
-    raise EventSyncError("AI /events: invalid event.analytics_scope")
-
-
 @transaction.atomic
 def mark_sync_failure(camera: str, error: Exception) -> None:
     """Persist a fail-closed journal error so it is not only a log line."""
 
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=ai.normalize(camera)
-    )
+    cursor = AlwaysOnCounterCursor.locked(ai.normalize(camera))
     cursor.event_sync_error = (str(error) or error.__class__.__name__)[:500]
     cursor.event_sync_failed_at = timezone.now()
     cursor.event_caught_up_at = None
@@ -89,35 +93,10 @@ def mark_sync_failure(camera: str, error: Exception) -> None:
 
 
 @transaction.atomic
-def require_fresh_drain(
-    camera: str, *, required_at: datetime | None = None
-) -> datetime:
-    """Invalidate older in-flight GETs before a stop/archive boundary."""
-
-    required_at = required_at or timezone.now()
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=ai.normalize(camera)
-    )
-    if cursor.event_sync_supported is not False:
-        cursor.event_drain_required_at = required_at
-        cursor.event_caught_up_at = None
-        cursor.save(
-            update_fields=[
-                "event_drain_required_at",
-                "event_caught_up_at",
-                "updated_at",
-            ]
-        )
-    return required_at
-
-
-@transaction.atomic
 def request_stop_drain(camera: str) -> None:
     """Persist removal intent before the remote processor is stopped."""
 
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=ai.normalize(camera)
-    )
+    cursor = AlwaysOnCounterCursor.locked(ai.normalize(camera))
     if cursor.event_sync_supported is not False:
         cursor.event_stop_drain_requested_at = timezone.now()
         cursor.event_stop_confirmed_at = None
@@ -136,9 +115,7 @@ def request_stop_drain(camera: str) -> None:
 def confirm_stop_drain(camera: str) -> None:
     """Fence the final GET after a remote stop has been observed complete."""
 
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=ai.normalize(camera)
-    )
+    cursor = AlwaysOnCounterCursor.locked(ai.normalize(camera))
     if (
         cursor.event_sync_supported is not False
         and cursor.event_stop_drain_requested_at is not None
@@ -201,43 +178,11 @@ def reactivate_stop_drain(
 
 @transaction.atomic
 def _mark_events_observed(camera: str) -> None:
-    """Make a non-404 /events capability a permanent one-way decision."""
+    """Record the first successful /events reply as a one-way cutover."""
 
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=camera
-    )
+    cursor = AlwaysOnCounterCursor.locked(camera)
     cursor.event_sync_supported = True
     cursor.save(update_fields=["event_sync_supported", "updated_at"])
-
-
-@transaction.atomic
-def _mark_events_unsupported(camera: str) -> None:
-    """Record an explicit legacy 404 without weakening an active cutover."""
-
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=camera
-    )
-    if cursor.last_event_id is not None or cursor.event_sync_supported is True:
-        raise EventSyncError("AI /events disappeared after event-mode cutover")
-    cursor.event_sync_supported = False
-    cursor.event_sync_error = ""
-    cursor.event_sync_failed_at = None
-    cursor.event_caught_up_at = None
-    cursor.event_drain_required_at = None
-    cursor.event_stop_drain_requested_at = None
-    cursor.event_stop_confirmed_at = None
-    cursor.save(
-        update_fields=[
-            "event_sync_supported",
-            "event_sync_error",
-            "event_sync_failed_at",
-            "event_caught_up_at",
-            "event_drain_required_at",
-            "event_stop_drain_requested_at",
-            "event_stop_confirmed_at",
-            "updated_at",
-        ]
-    )
 
 
 def _locked_accounting_periods(
@@ -253,7 +198,7 @@ def _locked_accounting_periods(
         event for event in events if event.analytics_scope == ANALYTICS_SCOPE_AI247
     ]
     business_days = {
-        production.business_day_for(event.occurred_at) for event in ai_events
+        production_runs.business_day_for(event.occurred_at) for event in ai_events
     }
     calendar_days = {timezone.localdate(event.occurred_at) for event in ai_events}
     batches = (
@@ -276,7 +221,7 @@ def _locked_accounting_periods(
         {
             row.business_day
             for row in batches
-            if row.status in production.TERMINAL_BATCH_STATUSES
+            if row.status in production_runs.TERMINAL_BATCH_STATUSES
         },
         {row.day for row in days if row.archived_at is not None},
     )
@@ -293,9 +238,7 @@ def apply_page(
     """Apply one validated page and return processed, ignored, cursor id."""
 
     synced_at = synced_at or timezone.now()
-    cursor, _ = AlwaysOnCounterCursor.objects.select_for_update().get_or_create(
-        camera=camera,
-    )
+    cursor = AlwaysOnCounterCursor.locked(camera)
     current_id = cursor.last_event_id
     if current_id is None:
         current_id = 0
@@ -325,17 +268,6 @@ def apply_page(
     ignored = 0
     late_for_posted_shift = 0
     last_event_at = cursor.last_event_at
-    compat_total = (
-        cursor.event_compat_total
-        if cursor.event_compat_total is not None
-        else cursor.last_total
-    )
-    compat_colors = dict(cursor.last_per_color or {})
-    pending_shipping_bootstrap = (
-        ShippingAnalyticsBootstrap.objects.select_for_update()
-        .filter(camera=camera, completed_at__isnull=True)
-        .exists()
-    )
     role = (
         ContinuousCameraRole.objects.select_for_update()
         .filter(camera=camera)
@@ -347,21 +279,18 @@ def apply_page(
 
     if not cursor.event_boundary_validated:
         first_continuous = next(
-            (event for event in page.events if _applies_to_continuous_analytics(event)),
+            (event for event in page.events if applies_to_continuous_analytics(event)),
             None,
         )
         if first_continuous is not None:
             if first_continuous.total_after < 1:
                 raise EventSyncError("AI /events: invalid initial counter boundary")
-            daily_model = _daily_model(first_continuous.analytics_scope)
-            daily_filters = {
-                "camera": camera,
-                "day": timezone.localdate(first_continuous.occurred_at),
-            }
-            if first_continuous.analytics_scope == ANALYTICS_SCOPE_AI247:
-                daily_filters["archived_at__isnull"] = True
             active_rows = list(
-                daily_model.objects.select_for_update().filter(**daily_filters)
+                analytics.active_daily_rows(
+                    first_continuous.analytics_scope,
+                    camera=camera,
+                    day=timezone.localdate(first_continuous.occurred_at),
+                ).select_for_update()
             )
             active_model_total = sum(row.model_total for row in active_rows)
             upstream_baseline = first_continuous.total_after - 1
@@ -372,19 +301,9 @@ def apply_page(
                 and upstream_baseline == 0
             )
             if snapshot_to_shipping_reset:
-                authorized_reset = (
-                    ShippingAnalyticsBootstrap.objects.select_for_update()
-                    .filter(
-                        camera=camera,
-                        scope_confirmed_at__isnull=False,
-                        completed_at__isnull=True,
-                    )
-                    .exists()
+                raise EventSyncError(
+                    "AI /events: shipping generation reset is not authorized"
                 )
-                if not authorized_reset:
-                    raise EventSyncError(
-                        "AI /events: shipping generation reset is not authorized"
-                    )
             if upstream_baseline not in {cursor.last_total, active_model_total}:
                 raise EventSyncError(
                     "AI /events: initial counter boundary does not match CRM"
@@ -410,20 +329,13 @@ def apply_page(
     new_events: list[AlwaysOnImportedEvent] = []
     first_resolvable_at: datetime | None = None
 
-    for event in page.events:
-        if event.upstream_event_id <= current_id:
-            continue
-        disposition = decide_event(
-            event,
-            role=role,
-            pending_shipping_bootstrap=pending_shipping_bootstrap,
-        )
+    for event in incoming:
+        disposition = decide_event(event, role=role)
         applies_to_analytics = disposition.analytics
-        applies_to_shipping_bootstrap = disposition.shipping_bootstrap
         applies_to_production = disposition.production
         if (
             applies_to_production
-            and production.business_day_for(event.occurred_at) in posted_days
+            and production_runs.business_day_for(event.occurred_at) in posted_days
         ):
             # The shift is already posted to stock, so this late bag (a
             # restart-gap backfill, typically) cannot join it. Refusing the
@@ -432,28 +344,18 @@ def apply_page(
             # production never received it.
             applies_to_production = False
             late_for_posted_shift += 1
-        applies_to_daily = disposition.daily
-        defaults = {
-            "occurred_at": event.occurred_at,
-            "source": event.source,
-            "mode": event.mode,
-            "continuous_analytics": event.continuous_analytics,
-            "analytics_scope": event.analytics_scope,
-            "class_name": event.class_name,
-            "color": event.color,
-            "color_confidence": event.color_confidence,
-            "brand": event.brand,
-            "brand_confidence": event.brand_confidence,
-            "sku": event.sku,
-            "classification_status": event.classification_status,
-            "total_after": event.total_after,
-            "applied_to_analytics": applies_to_analytics,
-            "applied_to_production": applies_to_production,
-            "applied_to_shipping_bootstrap": applies_to_shipping_bootstrap,
-        }
         imported = existing_events.get(event.upstream_event_id)
-        created = imported is None
-        if created:
+        if imported is not None:
+            if any(
+                getattr(imported, field) != getattr(event, field)
+                for field in EVENT_CONTENT_FIELDS
+            ):
+                raise EventSyncError("AI /events: replayed event changed contents")
+            if imported.applied_to_analytics != applies_to_analytics:
+                raise EventSyncError("AI /events: imported event was not fully applied")
+            if imported.applied_to_production != applies_to_production:
+                raise EventSyncError("AI /events: event production eligibility changed")
+        else:
             resolvable = (
                 applies_to_analytics and event.analytics_scope == ANALYTICS_SCOPE_AI247
             )
@@ -462,7 +364,9 @@ def apply_page(
                     camera=camera,
                     upstream_event_id=event.upstream_event_id,
                     verification_votes=event.verification_votes,
-                    **defaults,
+                    applied_to_analytics=applies_to_analytics,
+                    applied_to_production=applies_to_production,
+                    **{field: getattr(event, field) for field in EVENT_CONTENT_FIELDS},
                     **(
                         color_resolution.initial_markers(
                             event.color,
@@ -479,54 +383,25 @@ def apply_page(
                 first_resolvable_at = min(
                     filter(None, (first_resolvable_at, event.occurred_at))
                 )
-        if not created:
-            if (
-                imported.occurred_at != event.occurred_at
-                or imported.source != event.source
-                or imported.mode != event.mode
-                or imported.continuous_analytics != event.continuous_analytics
-                or imported.analytics_scope != event.analytics_scope
-                or imported.class_name != event.class_name
-                or imported.color != event.color
-                or imported.color_confidence != event.color_confidence
-                or imported.brand != event.brand
-                or imported.brand_confidence != event.brand_confidence
-                or imported.sku != event.sku
-                or imported.classification_status != event.classification_status
-                or imported.total_after != event.total_after
-            ):
-                raise EventSyncError("AI /events: replayed event changed contents")
-            if imported.applied_to_analytics != applies_to_analytics:
-                raise EventSyncError("AI /events: imported event was not fully applied")
-            if imported.applied_to_production != applies_to_production:
-                raise EventSyncError("AI /events: event production eligibility changed")
-            if imported.applied_to_shipping_bootstrap != applies_to_shipping_bootstrap:
-                raise EventSyncError("AI /events: event bootstrap eligibility changed")
-        elif applies_to_daily:
-            if (
-                event.analytics_scope == ANALYTICS_SCOPE_AI247
-                and timezone.localdate(event.occurred_at) in archived_days
-            ):
-                raise EventSyncError(
-                    "AI /events: event belongs to an archived analytics day"
+            if applies_to_analytics:
+                if (
+                    event.analytics_scope == ANALYTICS_SCOPE_AI247
+                    and timezone.localdate(event.occurred_at) in archived_days
+                ):
+                    raise EventSyncError(
+                        "AI /events: event belongs to an archived analytics day"
+                    )
+                analytics.record_counted_bag(
+                    camera=camera,
+                    color=event_color_key(event.color, event.class_name),
+                    brand=brand_key(event.brand),
+                    observed_at=event.occurred_at,
+                    analytics_scope=event.analytics_scope,
+                    record_production=applies_to_production,
                 )
-            color_delta = _event_color(event)
-            analytics.record_model_delta(
-                camera=camera,
-                color_delta=color_delta,
-                brand_delta=_event_brand(event),
-                total_delta=1,
-                observed_at=event.occurred_at,
-                analytics_scope=event.analytics_scope,
-                ordered_color_event=True,
-                record_production=applies_to_production,
-            )
-            compat_total += 1
-            for color, value in color_delta.items():
-                compat_colors[color] = int(compat_colors.get(color, 0)) + value
-            processed += 1
-        else:
-            ignored += 1
+                processed += 1
+            else:
+                ignored += 1
 
         current_id = event.upstream_event_id
         last_event_at = event.occurred_at
@@ -569,10 +444,6 @@ def apply_page(
     cursor.event_sync_supported = True
     cursor.event_sync_error = ""
     cursor.event_sync_failed_at = None
-    cursor.event_compat_total = compat_total
-    cursor.last_total = compat_total
-    cursor.last_per_color = compat_colors
-    cursor.last_mode = "always_on"
     cursor.save(
         update_fields=[
             "last_event_id",
@@ -586,10 +457,6 @@ def apply_page(
             "event_boundary_validated",
             "event_sync_error",
             "event_sync_failed_at",
-            "event_compat_total",
-            "last_total",
-            "last_per_color",
-            "last_mode",
             "updated_at",
         ]
     )
@@ -613,25 +480,25 @@ def _resolve_unknown_bags(camera: str, since: datetime) -> None:
 def sync_camera(
     camera: str,
     *,
-    page_limit: int = EVENT_PAGE_LIMIT,
     max_pages: int = EVENT_MAX_PAGES_PER_SYNC,
 ) -> SyncResult:
     """Fetch and commit bounded pages for one camera without holding DB locks."""
 
     camera = ai.normalize(camera)
-    if not 1 <= page_limit <= EVENT_PAGE_LIMIT:
-        raise ValueError("page_limit must be between 1 and 500")
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
 
     stored = (
         AlwaysOnCounterCursor.objects.filter(camera=camera)
-        .only("last_event_id")
+        .only("last_event_id", "event_sync_supported")
         .first()
     )
     after_id = (
         stored.last_event_id if stored and stored.last_event_id is not None else 0
     )
+    # The capability flag is one-way; once stored, do not re-lock the cursor
+    # on every poll just to write the same True again.
+    events_observed = stored is not None and stored.event_sync_supported is True
     processed = 0
     ignored = 0
 
@@ -640,11 +507,10 @@ def sync_camera(
         # commits.  The warehouse-close barrier can therefore require a poll
         # that definitely started after its cutoff and grace period.
         requested_at = timezone.now()
-        payload = ai.count_events(camera, after_id, page_limit)
-        if payload is None:
-            _mark_events_unsupported(camera)
-            return SyncResult(False, 0, 0, 0, None, False)
-        _mark_events_observed(camera)
+        payload = ai.count_events(camera, after_id, EVENT_PAGE_LIMIT)
+        if not events_observed:
+            _mark_events_observed(camera)
+            events_observed = True
         page = parse_page(payload, camera=camera, after_id=after_id)
         added, skipped, cursor_id = apply_page(
             camera=camera,
@@ -662,7 +528,6 @@ def sync_camera(
             continue
         if not page.has_more:
             return SyncResult(
-                True,
                 processed,
                 ignored,
                 page_number,
@@ -674,7 +539,6 @@ def sync_camera(
         after_id = cursor_id
 
     return SyncResult(
-        True,
         processed,
         ignored,
         max_pages,

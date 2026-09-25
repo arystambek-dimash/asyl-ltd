@@ -1,5 +1,4 @@
 from decimal import Decimal
-from html import escape
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -18,21 +17,25 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from apps.orders.invoices import _register_fonts
+from apps.common.money import ZERO
+from apps.common.pdf import money_text, para_text, register_fonts
+from apps.orders.debt import order_remaining
 from apps.orders.labels import (
     order_payment_method_label,
-    payment_method_label,
     payment_status_label,
     transport_label,
 )
 from apps.orders.statuses import public_status_label
 
-from .data import (
-    StatementData,
-    StatementOperation,
-    build_statement_data,
-    department_name,
-    local_time,
+from .data import StatementData, department_name, local_time
+from .presentation import (
+    Column,
+    columns_for,
+    method_label,
+    operation_display,
+    reconciliation_lines,
+    shipped_at,
+    username,
 )
 
 INK = colors.HexColor("#101828")
@@ -40,21 +43,15 @@ MUTED = colors.HexColor("#667085")
 RULE = colors.HexColor("#E4E7EC")
 BAND = colors.HexColor("#F9FAFB")
 PANEL = colors.HexColor("#F2F4F7")
-
-ZERO = Decimal(0)
-
-
-def _text(value: object) -> str:
-    return escape(str(value if value is not None else ""), quote=True)
-
-
-def _money(value) -> str:
-    return f"{Decimal(value or 0):,.2f}".replace(",", " ")
+DEBIT = "#B42318"   # начисление (долг растёт)
+CREDIT = "#067647"  # оплата (долг гасится)
+ROLE_COLOURS = {"debit": DEBIT, "credit": CREDIT}
+RIGHT_KINDS = ("number", "money", "signed")
 
 
 def _signed(value) -> str:
     amount = Decimal(value or 0)
-    return f"{'+' if amount > 0 else ''}{_money(amount)}"
+    return f"{'+' if amount > 0 else ''}{money_text(amount)}"
 
 
 def _stamp(value) -> str:
@@ -97,7 +94,7 @@ class _Styles:
         )
 
 
-def _table(rows, widths, styles, *, aligns=None, header=True, total_row=False):
+def _table(rows, widths, *, aligns=None, header=True, total_row=False):
     table = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
     commands = [
         ("FONTNAME", (0, 0), (-1, -1), "InvoiceSans"),
@@ -134,51 +131,73 @@ def _table(rows, widths, styles, *, aligns=None, header=True, total_row=False):
 
 def _cells(values, styles, *, right=()):
     return [
-        Paragraph(_text(value), styles.right if index in right else styles.body)
+        Paragraph(para_text(value), styles.right if index in right else styles.body)
         for index, value in enumerate(values)
     ]
 
 
-def _reconciliation_block(styles, currency, opening, charged, paid):
-    closing = opening + charged - paid
-    payment_movement = -paid
-    payment_colour = "#067647" if payment_movement <= 0 else "#B42318"
-    rows = [
-        [
-            Paragraph(
-                f"Остаток на начало периода, {_text(currency)}", styles.body
-            ),
-            Paragraph(_money(opening), styles.right),
-        ],
-        [
-            Paragraph("Начислено (отгрузки)", styles.body),
-            Paragraph(
-                f'<font color="#B42318">{_signed(charged)}</font>',
-                styles.right,
-            ),
-        ],
-        [
-            Paragraph("Оплачено (поступления − возвраты)", styles.body),
-            Paragraph(
-                f'<font color="{payment_colour}">{_signed(payment_movement)}</font>',
-                styles.right,
-            ),
-        ],
-        [
-            Paragraph("Остаток на конец периода", styles.bold),
-            Paragraph(_money(closing), styles.right_bold),
-        ],
-    ]
+def _cell(column: Column, row, styles):
+    value = column.value(row)
+    if column.kind == "signed":
+        colour = DEBIT if value > 0 else CREDIT
+        return Paragraph(
+            f'<font color="{colour}">{_signed(value)}</font>', styles.right
+        )
+    if column.kind == "money":
+        value = money_text(value)
+    elif column.kind == "date":
+        value = _stamp(value)
+    style = styles.right if column.kind in RIGHT_KINDS else styles.body
+    return Paragraph(para_text(value), style)
+
+
+def _column_table(columns: list[Column], rows, styles, *, compact_header=False):
+    """Таблица по спецификации колонок; суммы и количества — вправо."""
+    right = tuple(
+        index for index, column in enumerate(columns)
+        if column.kind in RIGHT_KINDS
+    )
+    headers = [column.header for column in columns]
+    header = (
+        [Paragraph(f"<b>{para_text(name)}</b>", styles.small) for name in headers]
+        if compact_header
+        else _cells(headers, styles, right=right)
+    )
+    return _table(
+        [header, *([_cell(column, row, styles) for column in columns] for row in rows)],
+        [column.width * mm for column in columns],
+        aligns={index: "RIGHT" for index in right},
+    )
+
+
+def _section(story, styles, data: StatementData, titles, columns, rows) -> None:
+    """Раздел-таблица; ``titles`` — заголовок выписки клиента и общей выписки."""
+    _start_section(story, styles, titles[data.client is None])
+    story.append(_column_table(columns_for(columns, data), rows, styles))
+
+
+def _reconciliation_block(styles, data: StatementData, currency):
+    lines = reconciliation_lines(data, currency)
+    rows = []
+    for index, (label, value, role) in enumerate(lines):
+        last = index == len(lines) - 1
+        amount = (
+            f'<font color="{ROLE_COLOURS[role]}">{_signed(value)}</font>'
+            if role else money_text(value)
+        )
+        rows.append([
+            Paragraph(para_text(label), styles.bold if last else styles.body),
+            Paragraph(amount, styles.right_bold if last else styles.right),
+        ])
     return KeepTogether(
         [
             Paragraph(
-                f"Краткое содержание операций · {_text(currency)}", styles.h2
+                f"Краткое содержание операций · {para_text(currency)}", styles.h2
             ),
             Spacer(1, 2 * mm),
             _table(
                 rows,
                 [110 * mm, 40 * mm],
-                styles,
                 aligns={1: "RIGHT"},
                 header=False,
                 total_row=True,
@@ -188,95 +207,11 @@ def _reconciliation_block(styles, currency, opening, charged, paid):
     )
 
 
-def _operation_description(operation: StatementOperation) -> tuple[str, str]:
-    if operation.kind == "sale":
-        return "Продажа / отгрузка", public_status_label(operation.order.status)
-
-    if operation.kind == "refund":
-        refund = operation.refund
-        if refund is None:
-            raise ValueError("Refund operation must contain a refund")
-        method = (
-            "ApiPay"
-            if refund.method in ("apipay", "apipay_qr")
-            else payment_method_label(refund.method, archived_hint=True)
-        )
-        return "Возврат", method
-
-    payment = operation.payment
-    if payment is None:
-        raise ValueError("Payment operation must contain a payment")
-    return (
-        "Оплата",
-        payment_method_label(payment.method, archived_hint=True),
-    )
-
-
-def _ledger_rows(styles, data: StatementData, *, with_client: bool):
-    """Render canonical operations and their presentation-time running balance."""
-    header = [
-        "Дата",
-        "Операция",
-        "Заказ",
-        "Описание",
-        "Способ / статус",
-        "Вал.",
-        "Сумма",
-        "Остаток",
-    ]
-    if with_client:
-        header.insert(1, "Клиент")
-    rows = [[Paragraph(f"<b>{_text(name)}</b>", styles.small) for name in header]]
-
-    balances = dict(data.client_opening if with_client else data.opening)
-    for operation in data.operations:
-        order = operation.order
-        key = (
-            (order.client_id, order.currency)
-            if with_client
-            else order.currency
-        )
-        balances[key] = balances.get(key, ZERO) + operation.amount
-        operation_label, status_label = _operation_description(operation)
-        payment = operation.payment
-        description = (
-            operation.refund.reason or "Возврат оплаты"
-            if operation.refund is not None
-            else payment.note or "Поступление оплаты"
-            if payment is not None
-            else ", ".join(
-                f"{item.product_label} × {item.quantity}"
-                for item in order.items.all()
-            )
-        )
-        colour = "#B42318" if operation.amount > 0 else "#067647"
-        values = [
-            _stamp(operation.occurred_at),
-            operation_label,
-            order.id,
-            description,
-            status_label,
-            order.currency,
-        ]
-        if with_client:
-            values.insert(1, order.client.name)
-        cells = [Paragraph(_text(value), styles.body) for value in values]
-        cells.append(
-            Paragraph(
-                f'<font color="{colour}">{_signed(operation.amount)}</font>',
-                styles.right,
-            )
-        )
-        cells.append(Paragraph(_money(balances[key]), styles.right))
-        rows.append(cells)
-    return rows
-
-
-def _build(story, styles, title, subtitle, landscape_mode=True):
+def _build(story, styles, title, subtitle):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=landscape(A4) if landscape_mode else A4,
+        pagesize=landscape(A4),
         leftMargin=12 * mm,
         rightMargin=12 * mm,
         topMargin=12 * mm,
@@ -298,8 +233,8 @@ def _build(story, styles, title, subtitle, landscape_mode=True):
         canvas.restoreState()
 
     head = [
-        Paragraph(_text(title), styles.h1),
-        Paragraph(_text(subtitle), styles.small),
+        Paragraph(para_text(title), styles.h1),
+        Paragraph(para_text(subtitle), styles.small),
         HRFlowable(
             width="100%",
             thickness=1.2,
@@ -318,15 +253,15 @@ def _start_section(story, styles, title) -> None:
         story.append(PageBreak())
     story.extend(
         [
-            Paragraph(_text(title), styles.h2),
+            Paragraph(para_text(title), styles.h2),
             Spacer(1, 3 * mm),
         ]
     )
 
 
-def _ledger_opening_block(styles, data: StatementData, *, with_client: bool):
+def _ledger_opening_block(styles, data: StatementData):
     """Show the balances that seed the running ledger, even with no movements."""
-    if with_client:
+    if data.client is None:
         values = [
             (
                 client.name,
@@ -350,7 +285,7 @@ def _ledger_opening_block(styles, data: StatementData, *, with_client: bool):
             )
         ]
         rows.extend(
-            _cells([name, currency, _money(opening)], styles, right=(2,))
+            _cells([name, currency, money_text(opening)], styles, right=(2,))
             for name, currency, opening in values
         )
         widths = [85 * mm, 20 * mm, 45 * mm]
@@ -361,7 +296,7 @@ def _ledger_opening_block(styles, data: StatementData, *, with_client: bool):
         ]
         rows.extend(
             _cells(
-                [currency, _money(data.opening.get(currency, ZERO))],
+                [currency, money_text(data.opening.get(currency, ZERO))],
                 styles,
                 right=(1,),
             )
@@ -373,652 +308,183 @@ def _ledger_opening_block(styles, data: StatementData, *, with_client: bool):
         [
             Paragraph("Входящий остаток", styles.h2),
             Spacer(1, 2 * mm),
-            _table(rows, widths, styles, aligns=aligns),
+            _table(rows, widths, aligns=aligns),
             Spacer(1, 5 * mm),
         ]
     )
 
 
-def _client_summary(story, styles, data: StatementData) -> None:
+def _summary(story, styles, data: StatementData) -> None:
+    info = [["Отделы", data.department_scope, "Период", data.period]]
     client = data.client
-    if client is None:
-        raise ValueError("Client statement data must contain a client")
-    info = [
-        ["Клиент", client.name, "Телефон", client.phone],
-        ["ИИН / БИН", client.iin or "—", "Страна", client.country or "—"],
-        ["Отделы", data.department_scope, "Период", data.period],
-    ]
+    if client is not None:
+        info = [
+            ["Клиент", client.name, "Телефон", client.phone],
+            ["ИИН / БИН", client.iin or "—", "Страна", client.country or "—"],
+            *info,
+        ]
     story.extend(
         [
             _table(
                 [
                     [
-                        Paragraph(f"<b>{_text(row[0])}</b>", styles.small),
-                        Paragraph(_text(row[1]), styles.body),
-                        Paragraph(f"<b>{_text(row[2])}</b>", styles.small),
-                        Paragraph(_text(row[3]), styles.body),
+                        Paragraph(f"<b>{para_text(row[0])}</b>", styles.small),
+                        Paragraph(para_text(row[1]), styles.body),
+                        Paragraph(f"<b>{para_text(row[2])}</b>", styles.small),
+                        Paragraph(para_text(row[3]), styles.body),
                     ]
                     for row in info
                 ],
                 [28 * mm, 95 * mm, 28 * mm, 70 * mm],
-                styles,
                 header=False,
             ),
             Spacer(1, 6 * mm),
         ]
     )
-    for currency in data.currencies:
-        totals = data.totals[currency]
-        story.append(
-            _reconciliation_block(
-                styles,
-                currency,
-                data.opening.get(currency, ZERO),
-                totals["sales"],
-                totals["payments"],
-            )
-        )
-
-
-def _client_orders(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Заказы")
-    rows = [
-        _cells(
-            [
-                "№",
-                "Создан",
-                "Статус",
-                "Отгружен",
-                "Отдел",
-                "Транспорт",
-                "Вал.",
-                "Сумма",
-                "Оплачено",
-                "Долг",
-            ],
-            styles,
-            right=(7, 8, 9),
-        )
-    ]
-    for order in data.orders:
-        shipment = getattr(order, "shipment", None)
-        rows.append(
-            _cells(
-                [
-                    order.id,
-                    _stamp(order.created_at),
-                    public_status_label(order.status),
-                    _stamp(shipment.shipped_at) if shipment else "—",
-                    department_name(data, order.department),
-                    transport_label(order.transport_type),
-                    order.currency,
-                    _money(order.total_amount),
-                    _money(order.paid_total),
-                    _money(max(ZERO, order.remaining_amount)),
-                ],
-                styles,
-                right=(7, 8, 9),
-            )
-        )
-    story.append(
-        _table(
-            rows,
-            [
-                14 * mm,
-                26 * mm,
-                26 * mm,
-                26 * mm,
-                26 * mm,
-                22 * mm,
-                12 * mm,
-                28 * mm,
-                28 * mm,
-                28 * mm,
-            ],
-            styles,
-            aligns={7: "RIGHT", 8: "RIGHT", 9: "RIGHT"},
-        )
-    )
-
-
-def _client_items(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Позиции заказов")
-    rows = [
-        _cells(
-            ["Заказ", "Дата", "Товар", "Мешков", "Цена", "Сумма", "Вал."],
-            styles,
-            right=(3, 4, 5),
-        )
-    ]
-    for order in data.orders:
-        for item in order.items.all():
-            rows.append(
-                _cells(
-                    [
-                        order.id,
-                        _stamp(order.created_at),
-                        item.product_label,
-                        item.quantity,
-                        _money(item.unit_price),
-                        _money(item.quantity * (item.unit_price or 0)),
-                        order.currency,
-                    ],
-                    styles,
-                    right=(3, 4, 5),
-                )
-            )
-    story.append(
-        _table(
-            rows,
-            [16 * mm, 28 * mm, 90 * mm, 22 * mm, 30 * mm, 34 * mm, 14 * mm],
-            styles,
-            aligns={3: "RIGHT", 4: "RIGHT", 5: "RIGHT"},
-        )
-    )
-
-
-def _client_payments(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Платежи")
-    rows = [
-        _cells(
-            [
-                "№",
-                "Дата",
-                "Заказ",
-                "Способ",
-                "Статус",
-                "Сумма",
-                "Вал.",
-                "Сотрудник",
-            ],
-            styles,
-            right=(5,),
-        )
-    ]
-    for payment in data.payments:
-        author = payment.confirmed_by or payment.received_by or payment.recorded_by
-        rows.append(
-            _cells(
-                [
-                    payment.id,
-                    _stamp(payment.confirmed_at or payment.paid_at),
-                    payment.order_id,
-                    payment_method_label(payment.method, archived_hint=True),
-                    payment_status_label(payment.status),
-                    _money(payment.amount),
-                    payment.order.currency,
-                    author.username if author else "—",
-                ],
-                styles,
-                right=(5,),
-            )
-        )
-    story.append(
-        _table(
-            rows,
-            [
-                16 * mm,
-                28 * mm,
-                16 * mm,
-                34 * mm,
-                30 * mm,
-                32 * mm,
-                12 * mm,
-                30 * mm,
-            ],
-            styles,
-            aligns={5: "RIGHT"},
-        )
-    )
-
-
-def _client_debts(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Текущие долги")
-    rows = [
-        _cells(
-            [
-                "Заказ",
-                "Отгружен",
-                "Магазин",
-                "Сумма",
-                "Оплачено",
-                "Остаток",
-                "Вал.",
-                "Способ",
-            ],
-            styles,
-            right=(3, 4, 5),
-        )
-    ]
-    for order in data.debt_orders:
-        shipment = getattr(order, "shipment", None)
-        rows.append(
-            _cells(
-                [
-                    order.id,
-                    _stamp(shipment.shipped_at if shipment else order.created_at),
-                    order.store.name if order.store else "—",
-                    _money(order.total_amount),
-                    _money(order.paid_total),
-                    _money(order.remaining_amount),
-                    order.currency,
-                    order_payment_method_label(order.payment_method),
-                ],
-                styles,
-                right=(3, 4, 5),
-            )
-        )
-    story.append(
-        _table(
-            rows,
-            [
-                16 * mm,
-                28 * mm,
-                40 * mm,
-                30 * mm,
-                30 * mm,
-                30 * mm,
-                12 * mm,
-                30 * mm,
-            ],
-            styles,
-            aligns={3: "RIGHT", 4: "RIGHT", 5: "RIGHT"},
-        )
-    )
-
-
-def render_client_statement_pdf(data: StatementData) -> bytes:
-    """Render a prepared single-client statement without querying the ORM."""
-    if data.client is None:
-        raise ValueError("Client statement data must contain a client")
-
-    _register_fonts()
-    styles = _Styles()
-    story: list = []
-    if "summary" in data.sections:
-        _client_summary(story, styles, data)
-    if "ledger" in data.sections:
-        _start_section(story, styles, "Операции")
-        story.append(_ledger_opening_block(styles, data, with_client=False))
-        rows = _ledger_rows(styles, data, with_client=False)
-        story.append(
-            _table(
-                rows,
-                [
-                    26 * mm,
-                    30 * mm,
-                    14 * mm,
-                    78 * mm,
-                    30 * mm,
-                    12 * mm,
-                    25 * mm,
-                    25 * mm,
-                ],
-                styles,
-                aligns={6: "RIGHT", 7: "RIGHT"},
-            )
-        )
-    if "orders" in data.sections:
-        _client_orders(story, styles, data)
-    if "items" in data.sections:
-        _client_items(story, styles, data)
-    if "payments" in data.sections:
-        _client_payments(story, styles, data)
-    if "debts" in data.sections:
-        _client_debts(story, styles, data)
-    if not story:
-        story = [Paragraph("Нет данных за выбранный период.", styles.body)]
-    return _build(story, styles, "Выписка по клиенту", data.subtitle)
-
-
-def _all_summary(story, styles, data: StatementData) -> None:
     story.extend(
-        [
-            _table(
-                [
-                    [
-                        Paragraph("<b>Отделы</b>", styles.small),
-                        Paragraph(_text(data.department_scope), styles.body),
-                        Paragraph("<b>Период</b>", styles.small),
-                        Paragraph(_text(data.period), styles.body),
-                    ]
-                ],
-                [28 * mm, 95 * mm, 28 * mm, 70 * mm],
-                styles,
-                header=False,
-            ),
-            Spacer(1, 6 * mm),
-        ]
+        _reconciliation_block(styles, data, currency)
+        for currency in data.currencies
     )
-    for currency in data.currencies:
-        totals = data.totals[currency]
-        story.append(
-            _reconciliation_block(
-                styles,
-                currency,
-                data.opening.get(currency, ZERO),
-                totals["sales"],
-                totals["payments"],
-            )
-        )
 
 
-def _all_clients(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Клиенты")
+def _clients(story, styles, data: StatementData) -> None:
+    # Снимок заводит строку на каждого клиента в каждой валюте выписки:
+    # пропускаем пары без движения, а не только отсутствующие.
     rows = [
-        _cells(
-            [
-                "Клиент",
-                "Телефон",
-                "Вал.",
-                "Заказов",
-                "Продажи",
-                "Оплачено",
-                "Долг",
-            ],
-            styles,
-            right=(3, 4, 5, 6),
-        )
+        (client, currency, data.client_totals[(client.id, currency)])
+        for client in data.clients
+        for currency in data.currencies
+        if any((data.client_totals.get((client.id, currency)) or {}).values())
     ]
-    for client in data.clients:
-        for currency in data.currencies:
-            totals = data.client_totals.get((client.id, currency))
-            if not totals:
-                continue
-            rows.append(
-                _cells(
-                    [
-                        client.name,
-                        client.phone,
-                        currency,
-                        totals["orders"],
-                        _money(totals["sales"]),
-                        _money(totals["payments"]),
-                        _money(totals["debt"]),
-                    ],
-                    styles,
-                    right=(3, 4, 5, 6),
-                )
-            )
-    story.append(
-        _table(
-            rows,
-            [64 * mm, 32 * mm, 12 * mm, 22 * mm, 34 * mm, 34 * mm, 34 * mm],
-            styles,
-            aligns={3: "RIGHT", 4: "RIGHT", 5: "RIGHT", 6: "RIGHT"},
-        )
-    )
+    _section(story, styles, data, (None, "Клиенты"), [
+        Column("Клиент", 64, lambda row: row[0].name),
+        Column("Телефон", 32, lambda row: row[0].phone),
+        Column("Вал.", 12, lambda row: row[1]),
+        Column("Заказов", 22, lambda row: row[2]["orders"], "number"),
+        Column("Продажи", 34, lambda row: row[2]["sales"], "money"),
+        Column("Оплачено", 34, lambda row: row[2]["payments"], "money"),
+        Column("Долг", 34, lambda row: row[2]["debt"], "money"),
+    ], rows)
 
 
-def _all_orders(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Все заказы")
+def _ledger(story, styles, data: StatementData) -> None:
+    """Canonical operations with the running balance prepared by ``data``."""
+    _start_section(story, styles, "Операции")
+    story.append(_ledger_opening_block(styles, data))
+    columns = columns_for([
+        Column("Дата", (26, 24), lambda row: row[0].occurred_at, "date"),
+        Column("Клиент", (None, 40), lambda row: row[0].order.client.name),
+        Column("Операция", (30, 26), lambda row: row[1].label),
+        Column("Заказ", (14, 13), lambda row: row[0].order.id),
+        Column("Описание", (78, 58), lambda row: row[1].description),
+        Column("Способ / статус", (30, 26), lambda row: row[1].method),
+        Column("Вал.", (12, 11), lambda row: row[0].order.currency),
+        Column("Сумма", (25, 24), lambda row: row[0].amount, "signed"),
+        Column("Остаток", (25, 24), lambda row: row[0].balance_after, "money"),
+    ], data)
     rows = [
-        _cells(
-            [
-                "№",
-                "Создан",
-                "Клиент",
-                "Статус",
-                "Отдел",
-                "Вал.",
-                "Сумма",
-                "Оплачено",
-                "Долг",
-            ],
-            styles,
-            right=(6, 7, 8),
-        )
+        (operation, operation_display(operation))
+        for operation in data.operations
     ]
-    for order in data.orders:
-        rows.append(
-            _cells(
-                [
-                    order.id,
-                    _stamp(order.created_at),
-                    order.client.name,
-                    public_status_label(order.status),
-                    department_name(data, order.department),
-                    order.currency,
-                    _money(order.total_amount),
-                    _money(order.paid_total),
-                    _money(max(ZERO, order.remaining_amount)),
-                ],
-                styles,
-                right=(6, 7, 8),
-            )
-        )
-    story.append(
-        _table(
-            rows,
-            [
-                14 * mm,
-                26 * mm,
-                50 * mm,
-                26 * mm,
-                26 * mm,
-                12 * mm,
-                28 * mm,
-                28 * mm,
-                26 * mm,
-            ],
-            styles,
-            aligns={6: "RIGHT", 7: "RIGHT", 8: "RIGHT"},
-        )
-    )
+    story.append(_column_table(columns, rows, styles, compact_header=True))
 
 
-def _all_items(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Позиции всех заказов")
-    rows = [
-        _cells(
-            ["Заказ", "Клиент", "Товар", "Мешков", "Цена", "Сумма", "Вал."],
-            styles,
-            right=(3, 4, 5),
-        )
-    ]
-    for order in data.orders:
-        for item in order.items.all():
-            rows.append(
-                _cells(
-                    [
-                        order.id,
-                        order.client.name,
-                        item.product_label,
-                        item.quantity,
-                        _money(item.unit_price),
-                        _money(item.quantity * (item.unit_price or 0)),
-                        order.currency,
-                    ],
-                    styles,
-                    right=(3, 4, 5),
-                )
-            )
-    story.append(
-        _table(
-            rows,
-            [16 * mm, 50 * mm, 74 * mm, 20 * mm, 28 * mm, 32 * mm, 14 * mm],
-            styles,
-            aligns={3: "RIGHT", 4: "RIGHT", 5: "RIGHT"},
-        )
-    )
+def _orders(story, styles, data: StatementData) -> None:
+    _section(story, styles, data, ("Заказы", "Все заказы"), [
+        Column("№", 14, lambda order: order.id),
+        Column("Создан", 26, lambda order: order.created_at, "date"),
+        Column("Клиент", (None, 50), lambda order: order.client.name),
+        Column("Статус", 26, lambda order: public_status_label(order.status)),
+        Column("Отгружен", (26, None), shipped_at, "date"),
+        Column("Отдел", 26, lambda order: department_name(data, order.department)),
+        Column(
+            "Транспорт", (22, None),
+            lambda order: transport_label(order.transport_type),
+        ),
+        Column("Вал.", 12, lambda order: order.currency),
+        Column("Сумма", 28, lambda order: order.total_amount, "money"),
+        Column("Оплачено", 28, lambda order: order.paid_total, "money"),
+        Column("Долг", (28, 26), order_remaining, "money"),
+    ], data.orders)
 
 
-def _all_payments(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Все платежи")
-    rows = [
-        _cells(
-            [
-                "№",
-                "Дата",
-                "Клиент",
-                "Заказ",
-                "Способ",
-                "Статус",
-                "Сумма",
-                "Вал.",
-            ],
-            styles,
-            right=(6,),
-        )
-    ]
-    for payment in data.payments:
-        rows.append(
-            _cells(
-                [
-                    payment.id,
-                    _stamp(payment.confirmed_at or payment.paid_at),
-                    payment.order.client.name,
-                    payment.order_id,
-                    payment_method_label(payment.method, archived_hint=True),
-                    payment_status_label(payment.status),
-                    _money(payment.amount),
-                    payment.order.currency,
-                ],
-                styles,
-                right=(6,),
-            )
-        )
-    story.append(
-        _table(
-            rows,
-            [
-                14 * mm,
-                26 * mm,
-                50 * mm,
-                16 * mm,
-                32 * mm,
-                28 * mm,
-                32 * mm,
-                12 * mm,
-            ],
-            styles,
-            aligns={6: "RIGHT"},
-        )
-    )
+def _items(story, styles, data: StatementData) -> None:
+    _section(story, styles, data, ("Позиции заказов", "Позиции всех заказов"), [
+        Column("Заказ", 16, lambda row: row[0].id),
+        Column("Дата", (28, None), lambda row: row[0].created_at, "date"),
+        Column("Клиент", (None, 50), lambda row: row[0].client.name),
+        Column("Товар", (90, 74), lambda row: row[1].product_label),
+        Column("Мешков", (22, 20), lambda row: row[1].quantity, "number"),
+        Column("Цена", (30, 28), lambda row: row[1].unit_price, "money"),
+        Column(
+            "Сумма", (34, 32),
+            lambda row: row[1].quantity * (row[1].unit_price or 0), "money",
+        ),
+        Column("Вал.", 14, lambda row: row[0].currency),
+    ], [(order, item) for order in data.orders for item in order.items.all()])
 
 
-def _all_debts(story, styles, data: StatementData) -> None:
-    _start_section(story, styles, "Текущие долги")
-    rows = [
-        _cells(
-            [
-                "Заказ",
-                "Клиент",
-                "Отгружен",
-                "Сумма",
-                "Оплачено",
-                "Остаток",
-                "Вал.",
-            ],
-            styles,
-            right=(3, 4, 5),
-        )
-    ]
-    for order in data.debt_orders:
-        shipment = getattr(order, "shipment", None)
-        rows.append(
-            _cells(
-                [
-                    order.id,
-                    order.client.name,
-                    _stamp(shipment.shipped_at if shipment else order.created_at),
-                    _money(order.total_amount),
-                    _money(order.paid_total),
-                    _money(order.remaining_amount),
-                    order.currency,
-                ],
-                styles,
-                right=(3, 4, 5),
-            )
-        )
-    story.append(
-        _table(
-            rows,
-            [16 * mm, 54 * mm, 28 * mm, 32 * mm, 32 * mm, 32 * mm, 14 * mm],
-            styles,
-            aligns={3: "RIGHT", 4: "RIGHT", 5: "RIGHT"},
-        )
-    )
+def _payments(story, styles, data: StatementData) -> None:
+    _section(story, styles, data, ("Платежи", "Все платежи"), [
+        Column("№", (16, 14), lambda payment: payment.id),
+        Column("Дата", (28, 26), lambda payment: payment.recognized_at, "date"),
+        Column("Клиент", (None, 50), lambda payment: payment.order.client.name),
+        Column("Заказ", 16, lambda payment: payment.order_id),
+        Column("Способ", (34, 32), lambda payment: method_label(payment.method)),
+        Column(
+            "Статус", (30, 28),
+            lambda payment: payment_status_label(payment.status),
+        ),
+        Column("Сумма", 32, lambda payment: payment.amount, "money"),
+        Column("Вал.", 12, lambda payment: payment.order.currency),
+        Column(
+            "Сотрудник", (30, None), lambda payment: username(payment.author),
+        ),
+    ], data.payments)
 
 
-def render_all_clients_statement_pdf(data: StatementData) -> bytes:
-    """Render a prepared consolidated statement without querying the ORM."""
-    if data.client is not None:
-        raise ValueError("All-clients statement data must not contain a client")
+def _debts(story, styles, data: StatementData) -> None:
+    _section(story, styles, data, ("Текущие долги", "Текущие долги"), [
+        Column("Заказ", 16, lambda order: order.id),
+        Column("Клиент", (None, 54), lambda order: order.client.name),
+        Column("Отгружен", 28, lambda order: order.sale_at, "date"),
+        Column(
+            "Магазин", (40, None),
+            lambda order: order.store.name if order.store else "—",
+        ),
+        Column("Сумма", (30, 32), lambda order: order.total_amount, "money"),
+        Column("Оплачено", (30, 32), lambda order: order.paid_total, "money"),
+        Column("Остаток", (30, 32), order_remaining, "money"),
+        Column("Вал.", (12, 14), lambda order: order.currency),
+        Column(
+            "Способ", (30, None),
+            lambda order: order_payment_method_label(order.payment_method),
+        ),
+    ], data.debt_orders)
 
-    _register_fonts()
+
+SECTIONS = {
+    "summary": _summary,
+    "clients": _clients,
+    "ledger": _ledger,
+    "orders": _orders,
+    "items": _items,
+    "payments": _payments,
+    "debts": _debts,
+}
+
+
+def render_statement_pdf(data: StatementData) -> bytes:
+    """Render a prepared statement (one client or all clients) without the ORM."""
+    register_fonts()
     styles = _Styles()
     story: list = []
-    if "summary" in data.sections:
-        _all_summary(story, styles, data)
-    if "clients" in data.sections:
-        _all_clients(story, styles, data)
-    if "ledger" in data.sections:
-        _start_section(story, styles, "Операции")
-        story.append(_ledger_opening_block(styles, data, with_client=True))
-        rows = _ledger_rows(styles, data, with_client=True)
-        story.append(
-            _table(
-                rows,
-                [
-                    24 * mm,
-                    40 * mm,
-                    26 * mm,
-                    13 * mm,
-                    58 * mm,
-                    26 * mm,
-                    11 * mm,
-                    24 * mm,
-                    24 * mm,
-                ],
-                styles,
-                aligns={7: "RIGHT", 8: "RIGHT"},
-            )
-        )
-    if "orders" in data.sections:
-        _all_orders(story, styles, data)
-    if "items" in data.sections:
-        _all_items(story, styles, data)
-    if "payments" in data.sections:
-        _all_payments(story, styles, data)
-    if "debts" in data.sections:
-        _all_debts(story, styles, data)
+    for section in data.sections:
+        SECTIONS[section](story, styles, data)
     if not story:
         story = [Paragraph("Нет данных за выбранный период.", styles.body)]
-    return _build(story, styles, "Общая выписка по клиентам", data.subtitle)
-
-
-def build_client_statement_pdf(
-        client,
-        date_from=None,
-        date_to=None,
-        departments=None,
-        sections=None,
-) -> bytes:
-    """Build and render a PDF statement for one client."""
-    data = build_statement_data(
-        client=client,
-        date_from=date_from,
-        date_to=date_to,
-        departments=departments,
-        sections=sections,
+    title = (
+        "Выписка по клиенту" if data.client is not None
+        else "Общая выписка по клиентам"
     )
-    return render_client_statement_pdf(data)
-
-
-def build_all_clients_statement_pdf(
-        date_from=None,
-        date_to=None,
-        departments=None,
-        sections=None,
-        client_ids=None,
-) -> bytes:
-    """Build and render a consolidated PDF statement."""
-    data = build_statement_data(
-        date_from=date_from,
-        date_to=date_to,
-        departments=departments,
-        sections=sections,
-        client_ids=client_ids,
-    )
-    return render_all_clients_statement_pdf(data)
+    return _build(story, styles, title, data.subtitle)

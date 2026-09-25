@@ -1,6 +1,5 @@
-from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
-from rest_framework import status, viewsets
+from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import MultiPartParser
@@ -8,9 +7,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.clients.models import Client
+from apps.common.money import CURRENCY_CODES, DEFAULT_CURRENCY
 from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.sales.access import scope_by_client_department
-from apps.warehouse.models import StockItem
 
 from .models import ClientPrice, Product, ProductAlias
 from .photos import remove_product_photo, set_product_photo
@@ -18,34 +17,31 @@ from .serializers import ProductSerializer
 from .services import archive_product, forget_product_alias, remember_product_alias, restore_product
 
 
-class ProductViewSet(PermViewSetMixin, viewsets.ModelViewSet):
+class ProductViewSet(
+    PermViewSetMixin,
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     serializer_class = ProductSerializer
     required_perms = {
         # Склад добавляет товар на свой склад из каталога, не имея доступа к разделу «Каталог».
         "list": ("catalog.view", "warehouse.adjust"),
         "retrieve": "catalog.view",
         "create": "catalog.create", "update": "catalog.edit",
-        "partial_update": "catalog.edit", "destroy": "catalog.edit",
+        "partial_update": "catalog.edit",
         "archive": "catalog.edit", "restore": "catalog.edit",
         "photo": "catalog.edit",
         "add_alias": "catalog.edit", "remove_alias": "catalog.edit",
     }
 
     def get_queryset(self):
-        qs = Product.objects.prefetch_related(
-            Prefetch(
-                "stock_items",
-                queryset=StockItem.objects.select_related("warehouse"),
-            ),
-            "aliases",
-        )
+        qs = Product.objects.prefetch_related("aliases")
         if self.request.query_params.get("archived") in ("1", "true"):
             return qs.filter(is_active=False)
         return qs.filter(is_active=True)
-
-    def destroy(self, request, *args, **kwargs):
-        archive_product(self.get_object(), request.user)
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _any_product(self, pk):
         obj = get_object_or_404(Product.objects.prefetch_related("aliases"), pk=pk)
@@ -112,7 +108,7 @@ class ClientPricesView(PermAPIViewMixin, APIView):
         except (TypeError, ValueError):
             raise ValidationError({"client": "Некорректный клиент."})
         currency = (request.query_params.get("currency") or "").upper()
-        if currency and currency not in dict(ClientPrice.CURRENCIES):
+        if currency and currency not in CURRENCY_CODES:
             raise ValidationError({"currency": "Выберите KZT или USD."})
         client = get_object_or_404(
             scope_by_client_department(
@@ -124,7 +120,7 @@ class ClientPricesView(PermAPIViewMixin, APIView):
         qs = ClientPrice.objects.filter(client=client)
 
         if not currency:
-            currency = client.currency or "KZT"
+            currency = client.currency or DEFAULT_CURRENCY
 
         qs = qs.filter(currency=currency)
         return Response({

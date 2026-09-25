@@ -12,7 +12,7 @@ pytestmark = pytest.mark.django_db
 
 
 def _shipped_store_order():
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
     s = Store.objects.create(client=c, name="S",
                              payment_schedule_type="monthly", payment_days=[5])
@@ -65,3 +65,14 @@ def test_detect_overdue_ignores_fully_paid_order(boss, settle_payment):
     # Денормализованный признак намеренно «протух»: считать надо по остатку.
     Order.objects.filter(pk=o.pk).update(payment_status="partial")
     assert detect_overdue(s, date(2026, 6, 5)) == 0
+
+
+def test_detect_overdue_notifies_a_store_once_a_day():
+    """Повторная «Проверить просрочки» в тот же день не дублирует напоминание."""
+    from apps.notifications.models import Notification
+    o, s = _shipped_store_order()
+
+    assert detect_overdue(s, date(2026, 6, 5)) == 1
+    assert detect_overdue(s, date(2026, 6, 5)) == 1
+
+    assert Notification.objects.filter(client=s.client, text__icontains="Просрочка").count() == 1

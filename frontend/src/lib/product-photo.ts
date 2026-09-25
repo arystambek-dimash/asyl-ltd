@@ -8,7 +8,7 @@ const KEEP_ORIGINAL_BYTES = 1.5 * 1024 * 1024;
 
 export const PRODUCT_PHOTO_ACCEPT = "image/jpeg,image/png,image/webp";
 
-export async function downscaleImage(file: File): Promise<Blob> {
+async function downscaleImage(file: File): Promise<Blob> {
   if (typeof createImageBitmap !== "function") return file;
   try {
     const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });

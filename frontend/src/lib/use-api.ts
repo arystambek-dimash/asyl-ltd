@@ -30,13 +30,7 @@ export function useApi<T>(url: string | null) {
 
   const reload = useCallback(async () => {
     if (!url) {
-      activeController.current?.abort();
-      activeController.current = null;
-      latestRequest.current += 1;
-      setData(null);
-      setError("");
-      setErrorStatus(null);
-      setLoading(false);
+      commit(null);
       return;
     }
     activeController.current?.abort();
@@ -59,6 +53,29 @@ export function useApi<T>(url: string | null) {
         setLoading(false);
         if (activeController.current === controller) activeController.current = null;
       }
+    }
+  }, [commit, url]);
+
+  /**
+   * Тихое обновление для опроса: без индикатора загрузки, а ошибка не трогает
+   * ни данные, ни `error` — на экране остаётся последний ответ. Идущая
+   * загрузка и так принесёт свежее — тогда пропускаем.
+   */
+  const refresh = useCallback(async () => {
+    if (!url || activeController.current) return;
+    const controller = new AbortController();
+    activeController.current = controller;
+    const requestId = ++latestRequest.current;
+    try {
+      const res = await api.get<T>(url, { signal: controller.signal });
+      if (requestId !== latestRequest.current) return;
+      setData(res.data);
+      setError("");
+      setErrorStatus(null);
+    } catch {
+      // Тихий опрос: последние данные остаются на экране.
+    } finally {
+      if (activeController.current === controller) activeController.current = null;
     }
   }, [url]);
 
@@ -83,6 +100,7 @@ export function useApi<T>(url: string | null) {
     error: isCurrentUrl ? error : "",
     errorStatus: isCurrentUrl ? errorStatus : null,
     reload,
+    refresh,
     setData: commit,
   };
 }

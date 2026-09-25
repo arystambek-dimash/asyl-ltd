@@ -2,18 +2,18 @@
 import re
 from decimal import Decimal
 
+from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.clients.phone import clean_phone
+from apps.common.money import CURRENCY_CHOICES
 from apps.sales.access import scope_by_client_department
 
 from .models import BotMessage, WhatsAppBotSettings
+from .parsing import RAIL_REPORT_MAX_LENGTH, RailReport, parse_rail_report
 from .wagon_report import DELIVERIES, REPORT_MAX_ORDERS, REPORT_TEXT_MAX_LENGTH
-
-# Как сообщение бота (BotMessage.text): отчёт на 12 вагонов — около 400 символов.
-RAIL_REPORT_MAX_LENGTH = 8192
 
 
 class RailReportSerializer(serializers.Serializer):
@@ -49,7 +49,7 @@ class RailClientNameSerializer(RailReportSerializer):
         error_messages={"does_not_exist": "Клиент не найден"},
     )
     currency = serializers.ChoiceField(
-        choices=Client.CURRENCIES, error_messages={"invalid_choice": "Выберите валюту: KZT или USD"},
+        choices=CURRENCY_CHOICES, error_messages={"invalid_choice": "Выберите валюту: KZT или USD"},
     )
 
     def get_fields(self):
@@ -59,6 +59,16 @@ class RailClientNameSerializer(RailReportSerializer):
             # Клиента чужого отдела не выбрать — как в форме заказа.
             fields["client"].queryset = scope_by_client_department(Client.objects.all(), request.user)
         return fields
+
+
+def rail_report_input(view, serializer_class, orders) -> tuple[dict, RailReport, object | None]:
+    """Вход разбора отчёта у грузчика и в журнале бота: данные, разобранный отчёт
+    и заказ «Отгрузить по отчёту» из ``orders`` (области экрана)."""
+    serializer = serializer_class(data=view.request.data, context=view.get_serializer_context())
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    order = get_object_or_404(orders, pk=data["order"]) if data.get("order") is not None else None
+    return data, parse_rail_report(data["text"]), order
 
 
 class WagonReportComposeSerializer(serializers.Serializer):
@@ -101,9 +111,9 @@ class BotMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = BotMessage
         fields = [
-            "id", "kind", "status", "chat_id", "chat_name", "sender_id", "sender_name", "text",
+            "id", "kind", "status", "chat_name", "sender_id", "sender_name", "text",
             "sent_at", "received_at", "parsed", "issues", "draft", "order", "original",
-            "reply", "reply_sent_at", "reply_attempts", "attempts", "error",
+            "reply", "reply_sent_at", "reply_attempts", "error",
             "resolved_by_name", "resolved_at",
         ]
         read_only_fields = fields
@@ -172,11 +182,7 @@ class WhatsAppBotSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WhatsAppBotSettings
-        fields = [
-            "enabled", "allowed_chat_ids", "allowed_sender_ids", "show_amounts_in_reply",
-            "duplicate_window_days", "price_tolerance_pct", "report_recipient_name", "report_recipient_phone",
-            "updated_at", "seen_chats",
-        ]
+        fields = [*WhatsAppBotSettings.SETTINGS_FIELDS, "updated_at", "seen_chats"]
         read_only_fields = ["updated_at", "seen_chats"]
 
     def validate_report_recipient_name(self, value: str) -> str:
@@ -200,6 +206,5 @@ class WhatsAppBotSettingsSerializer(serializers.ModelSerializer):
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.updated_by = self.context["request"].user
-        # Только настройки: состояние номера и опроса пишет процесс бота.
         instance.save(update_fields=list(WhatsAppBotSettings.CONFIG_FIELDS))
         return instance

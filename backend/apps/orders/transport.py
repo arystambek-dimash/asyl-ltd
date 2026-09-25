@@ -6,8 +6,6 @@
 портал клиента сравнивают номера одинаково и не расходятся в правилах.
 """
 
-import re
-
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
@@ -19,18 +17,17 @@ from apps.common.plates import (
     plate_match_key,
     plate_warning,
 )
+from apps.common.wagon_numbers import is_wagon_number
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
+from apps.shipments.services import has_open_ai_session
 
 from .querysets import recent_transport_pairs
-from .services import _has_open_ai_session, can_set_truck_number, lock_live_order
+from .services import can_set_truck_number, lock_live_order
+from .statuses import ENTERED_POST_STATUSES
 
-# Машина заехала: номер уже попал на пост, камеры и накладную. Заменить его
-# нельзя, а пустой — заполнить можно (грузчик дописывает номер при отгрузке).
-TRANSPORT_LOCK_STATUSES = ("arrived", "loading", "loaded", "shipped")
 # Сколько прошлых пар клиента подсказывать чипами «как в прошлый раз».
 TRANSPORT_SUGGESTIONS = 3
-_WAGON_NUMBER_RE = re.compile(r"[0-9]{8}")
 
 
 def clean_transport_number(value, transport_type: str, *, field: str = "truck_number") -> str:
@@ -40,7 +37,7 @@ def clean_transport_number(value, transport_type: str, *, field: str = "truck_nu
     compact = normalize_plate(value)
     if compact and field == "trailer_number":
         raise ValidationError({"trailer_number": "У вагона нет прицепа."})
-    if compact and not _WAGON_NUMBER_RE.fullmatch(compact):
+    if compact and not is_wagon_number(compact):
         raise ValidationError({"truck_number": "Номер вагона должен содержать 8 цифр."})
     return compact
 
@@ -109,10 +106,12 @@ def check_transport_change(
             "detail": _owner_refusal(order, trailer_only=not truck_changed),
             "code": "forbidden",
         })
+    # Заехавшей машине номер не заменить, а пустой — дописать можно
+    # (грузчик вводит номер при отгрузке).
     replaced = any(old and _changed(old, new) for old, new in zip(previous, (truck, trailer)))
     if replaced and (
-        order.status in TRANSPORT_LOCK_STATUSES
-        or (not ignore_ai_session and _has_open_ai_session(order))
+        order.status in ENTERED_POST_STATUSES
+        or (not ignore_ai_session and has_open_ai_session(order))
     ):
         raise ValidationError({
             "detail": f"{_number_label(order)} нельзя изменить после прибытия или начала погрузки",
@@ -212,7 +211,7 @@ def transport_warning(order) -> str | None:
 
 def transport_on_site(order) -> bool:
     """Машина уже на территории (заехала, грузится, отгружена): номер закреплён."""
-    return order.status in TRANSPORT_LOCK_STATUSES
+    return order.status in ENTERED_POST_STATUSES
 
 
 def client_transport_phrase(order, *, joiner: str = ", ") -> str:

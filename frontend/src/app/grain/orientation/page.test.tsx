@@ -1,10 +1,10 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OrientationDatasetPage from "./page";
-import type { GrainOrientationPurgeResult, GrainOrientationSample, GrainOrientationSummary, Me } from "@/lib/types";
+import type { GrainOrientationPurgeResult, GrainOrientationSample, GrainOrientationSummary } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 
 const getMock = vi.hoisted(() => vi.fn());
 const postMock = vi.hoisted(() => vi.fn());
@@ -22,47 +22,11 @@ vi.mock("@/lib/use-visible-polling", () => ({
 vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: auth.me, loading: auth.loading }),
 }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({
-    title,
-    description,
-    actions,
-    children,
-  }: {
-    title: string;
-    description?: string;
-    actions?: ReactNode;
-    children: ReactNode;
-  }) => (
-    <main>
-      <h1>{title}</h1>
-      {description && <p>{description}</p>}
-      {actions}
-      {children}
-    </main>
-  ),
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
 /** Страница только для владельца: права grain.* роли не играют. */
-const owner = {
-  id: 1,
-  username: "owner",
-  is_client: false,
-  is_superuser: true,
-  position: null,
-  client_id: null,
-  sales_department: null,
-
-  permissions: [] as string[],
-} as Me;
-
-const admin = {
-  ...owner,
-  id: 2,
-  username: "admin",
-  is_superuser: false,
-  permissions: ["grain.view", "grain.admin"],
-} as Me;
+const owner = makeMe({ username: "owner", is_superuser: true });
+const admin = makeMe({ id: 2, username: "admin", permissions: ["grain.view", "grain.admin"] });
 
 const tripSample: GrainOrientationSample = {
   id: 5,
@@ -122,13 +86,14 @@ const summary: GrainOrientationSummary = {
   unsent: 2,
   camera_pc: {
     enabled: true,
-    model: { name: "vehicle-orientation.trained.pt" },
+    // Так отдаёт ПК: VehicleOrientationClassifier.info() — id/sha256/… и флаг self_trained.
+    model: { loaded: true, id: "vehicle-orientation", self_trained: true },
     dataset: { front: 40, rear: 33 },
     training: {
       status: "promoted",
       ran_at: "2026-09-05T02:30:00Z",
       promoted: true,
-      samples: 73,
+      samples: { front: 40, rear: 33 },
       baseline: { accuracy: 0.94 },
       candidate: { accuracy: 0.965 },
       reason: "",
@@ -137,13 +102,9 @@ const summary: GrainOrientationSummary = {
   },
 };
 
-function mockList(results: GrainOrientationSample[], summaryData: GrainOrientationSummary | null = summary) {
+function mockList(results: GrainOrientationSample[], summaryData: GrainOrientationSummary = summary) {
   getMock.mockImplementation((url: string) => {
-    if (url.startsWith("/grain/orientation-samples/summary/")) {
-      return summaryData
-        ? Promise.resolve({ data: summaryData })
-        : Promise.reject({ response: { status: 502, data: { detail: "ПК не отвечает" } } });
-    }
+    if (url.startsWith("/grain/orientation-samples/summary/")) return Promise.resolve({ data: summaryData });
     return Promise.resolve({ data: { count: results.length, next: null, previous: null, results } });
   });
 }
@@ -213,10 +174,25 @@ describe("OrientationDatasetPage", () => {
     expect(within(pc).getByText("передом 40 · задом 33")).toBeInTheDocument();
     expect(within(pc).getByText("промотирована")).toBeInTheDocument();
     expect(within(pc).getByText("94% → 96,5%")).toBeInTheDocument();
+    expect(within(pc).getByText("Кадров в обучении").nextElementSibling).toHaveTextContent("73");
     expect(within(pc).getByText("самообученная модель активна")).toBeInTheDocument();
 
     expect(listCalls()).toEqual(["/grain/orientation-samples/?page=1&page_size=48"]);
     expect(pollingMock).toHaveBeenCalledWith(expect.any(Function), 30_000);
+  });
+
+  it("shows the base model until the Camera-PC reports the trained checkpoint as loaded", async () => {
+    // Сразу после промоции current_model уже указывает на trained-файл,
+    // а модель на ПК перезагрузится лениво, при следующей классификации.
+    mockList([], {
+      ...summary,
+      camera_pc: { ...summary.camera_pc!, model: { loaded: true, id: "vehicle-orientation", self_trained: false } },
+    });
+    render(<OrientationDatasetPage />);
+
+    const pc = await screen.findByRole("region", { name: "ПК камер" });
+    expect(within(pc).getByText("базовая модель")).toBeInTheDocument();
+    expect(within(pc).queryByText("самообученная модель активна")).not.toBeInTheDocument();
   });
 
   it("relabels a frame and swaps the card for the returned row", async () => {
@@ -262,14 +238,14 @@ describe("OrientationDatasetPage", () => {
     expect(within(card).getByRole("button", { name: "Исключить" })).toBeInTheDocument();
   });
 
-  it("shows the loading placeholder while the session is being read", () => {
+  it("waits for the session without showing «Нет доступа» or loading frames", () => {
     auth.me = null;
     auth.loading = true;
     mockList([tripSample]);
     render(<OrientationDatasetPage />);
 
     expect(screen.getByRole("heading", { name: "Датасет ориентации" })).toBeInTheDocument();
-    expect(screen.getByText("Загрузка…")).toBeInTheDocument();
+    expect(screen.queryByText("Нет доступа")).not.toBeInTheDocument();
     expect(getMock).not.toHaveBeenCalled();
   });
 
@@ -287,16 +263,54 @@ describe("OrientationDatasetPage", () => {
     expect(pollingMock).not.toHaveBeenCalled();
   });
 
-  it("lets the superuser edit labels and purge the dataset", async () => {
-    mockList([tripSample, excludedSample]);
+  it("polls quietly and keeps the pages loaded with «Показать ещё»", async () => {
+    const user = userEvent.setup();
+    getMock.mockImplementation((url: string) => {
+      if (url.startsWith("/grain/orientation-samples/summary/")) return Promise.resolve({ data: summary });
+      const page2 = url.includes("page=2");
+      return Promise.resolve({
+        data: {
+          count: 2,
+          next: page2 ? null : "next",
+          previous: null,
+          results: [page2 ? conflictSample : tripSample],
+        },
+      });
+    });
     render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+    await user.click(screen.getByRole("button", { name: "Показать ещё" }));
+    await screen.findByRole("article", { name: "Кадр unassigned-6" });
 
-    const card = await screen.findByRole("article", { name: "Кадр weighing-5" });
-    expect(within(card).getByRole("button", { name: "Передом" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Задом" })).toBeInTheDocument();
-    expect(within(card).getByRole("button", { name: "Исключить" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Вернуть" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Очистить датасет…" })).toBeInTheDocument();
+    const before = listCalls().length;
+    const poll = pollingMock.mock.calls.at(-1)![0] as () => Promise<unknown>;
+    await act(async () => void (await poll()));
+
+    // Опрос перечитал обе показанные страницы, сетка не схлопнулась до первой.
+    expect(listCalls().slice(before)).toEqual([
+      "/grain/orientation-samples/?page=1&page_size=48",
+      "/grain/orientation-samples/?page=2&page_size=48",
+    ]);
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Обновить" })).toBeEnabled();
+  });
+
+  it("marks a failed poll without dropping the grid", async () => {
+    mockList([tripSample]);
+    render(<OrientationDatasetPage />);
+    await screen.findByRole("article", { name: "Кадр weighing-5" });
+
+    getMock.mockImplementation((url: string) =>
+      url.startsWith("/grain/orientation-samples/summary/")
+        ? Promise.resolve({ data: summary })
+        : Promise.reject({ response: { status: 502 } }),
+    );
+    const poll = pollingMock.mock.calls.at(-1)![0] as () => Promise<unknown>;
+    await act(async () => void (await poll()));
+
+    expect(screen.getByText(/Не удалось обновить/)).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Кадр weighing-5" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("maps the filters to query params and restarts from the first page", async () => {

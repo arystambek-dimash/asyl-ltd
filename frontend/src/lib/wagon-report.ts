@@ -13,7 +13,7 @@ export type WagonReportDelivery = "bot" | "link";
  */
 export type WagonReportStatus = "queued" | "sending" | "sent" | "failed" | "unknown" | "link";
 
-export interface WagonReportRecipient {
+interface WagonReportRecipient {
   /** Как в настройках бота: «Динара». */
   name: string;
   /** В дательном падеже — для «Отправить Динаре». */
@@ -30,7 +30,6 @@ export interface WagonReportDraft {
   order_ids: number[];
   recipient: WagonReportRecipient;
   delivery: WagonReportDelivery;
-  link?: string;
 }
 
 /** Ответ «Отправить»: экран применяет его к строкам истории. */
@@ -41,7 +40,6 @@ export interface WagonReportSent {
   order_ids: number[];
   recipient: WagonReportRecipient;
   error: string;
-  link?: string;
 }
 
 /** Одна отгрузка из истории или вся история с фильтрами экрана. */
@@ -56,13 +54,8 @@ export function composeUrl(scope: WagonReportScope): string {
   return `${WAGON_REPORT_API}/compose/?${query}`;
 }
 
-/** Ссылка wa.me с текстом — как на сервере: на номер или, без номера, с выбором чата. */
-export function whatsappLink(phone: string, text: string): string {
-  return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-}
-
 /** «+7 701 123-45-67» из цифр номера. */
-export function phoneLabel(digits: string): string {
+function phoneLabel(digits: string): string {
   return digits ? composePhone(parsePhone(`+${digits}`, null)) : "";
 }
 
@@ -96,7 +89,7 @@ export function withReportSent(rows: LoaderOrder[], sent: WagonReportSent): Load
   );
 }
 
-export interface ReportMark {
+interface ReportMark {
   tone: "success" | "muted" | "destructive";
   text: string;
 }

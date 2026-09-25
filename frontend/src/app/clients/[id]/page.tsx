@@ -5,28 +5,26 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatCard } from "@/components/ui/stat-card";
+import { OtherCurrencyRows } from "@/components/ui/currency-amounts";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
+import { PaymentStageBadge } from "@/components/payment-chain";
+import { OrderRef } from "@/components/orders/order-ref";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
-import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { SortableHeader, useSortState } from "@/components/ui/sortable-header";
 import { DataGate } from "@/components/ui/data-state";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select-ui";
+import { Select } from "@/components/ui/select";
 import { useApi } from "@/lib/use-api";
+import { onlyDigits } from "@/lib/phone";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
-import { finiteMoney } from "@/lib/currency-map";
-import { formatCurrency, formatDateTime, sumMoneyByCurrency } from "@/lib/utils";
+import { fieldByCurrency, finiteMoney } from "@/lib/currency-map";
+import type { ClientHistory } from "@/lib/types";
+import { formatCurrency, formatDateTime, sumMoneyByCurrency, toLocalIsoDate } from "@/lib/utils";
 import { StatementExportModal } from "@/components/statement-export-modal";
-import {
-  ORDER_STATUS_LABELS,
-  PAYMENT_METHOD_LABELS,
-  PAYMENT_STAGE_LABELS,
-  PAYMENT_STAGE_TONE,
-  orderStatusGroup,
-} from "@/lib/constants";
+import { ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
 import {
   AlertCircle,
   ArrowLeft,
@@ -40,51 +38,41 @@ import {
   FileSpreadsheet,
 } from "lucide-react";
 
-interface SaleRow {
-  id: number;
-  date: string;
-  status: string;
-  payment_status: string;
-  settlement_intent: string;
-  items: { label: string; qty: number }[];
-  bags: number;
-  amount: string;
-  paid: string;
-  currency: string;
-}
-interface PaymentRow {
-  id: number;
-  order_id: number;
-  date: string;
-  employee: string | null;
-  method: string;
-  status: string;
-  amount: string;
-  currency: string;
-}
-interface DebtRow {
-  id: number;
-  date: string;
-  bags: number;
-  amount: string;
-  paid: string;
-  remaining: string;
-  currency: string;
-}
-type SummaryMoney = { revenue: string; paid: string; debt: string };
-interface History {
-  client: { id: number; name: string; phone: string; country: string; currency: "KZT" | "USD" };
-  summary: SummaryMoney & {
-    currency: string;
-    by_currency: Record<string, SummaryMoney>;
-    orders_count: number;
-  };
-  sales: SaleRow[];
-  payments: PaymentRow[];
-  debts: DebtRow[];
-}
-
 const SETTLEMENT_LABELS: Record<string, string> = { debt: "В долг", instant: "Сразу" };
+// Только для ячейки таблицы: «ещё не выбрал» — не вариант фильтра «Оплата».
+const SETTLEMENT_CELL_LABELS: Record<string, string> = { ...SETTLEMENT_LABELS, pending: "Не выбран" };
+
+type ClientTab = "analytics" | "sales" | "payments" | "debts";
+
+const TAB_META: Record<ClientTab, { label: string; title: string; caption: string; totalLabel?: string }> = {
+  analytics: {
+    label: "Аналитика клиента",
+    title: "Аналитика клиента",
+    caption: "Общая картина по продажам, оплатам и текущей задолженности.",
+  },
+  sales: {
+    label: "Продажи",
+    title: "История продаж",
+    caption: "Заказы и отгрузки клиента; заявки, отказы и отмены в итог не входят",
+  },
+  payments: {
+    label: "Погашения",
+    title: "История погашений",
+    caption: "Все платежи; в итог входят подтверждённые за вычетом возвратов",
+  },
+  debts: {
+    label: "Долги",
+    title: "Текущие долги",
+    caption: "Заказы с непогашенным остатком",
+    totalLabel: "Остаток",
+  },
+};
+
+// Вкладочные фильтры — сбрасываются при переключении вкладки.
+const TAB_FILTERS = { product: "all", pay: "all", status: "all", employee: "all" };
+// Общие фильтры (период, документ, сумма, валюта) переживают смену вкладки.
+const DEFAULT_FILTERS = { from: "", to: "", doc: "", min: "", max: "", currency: "all", ...TAB_FILTERS };
+type Filters = typeof DEFAULT_FILTERS;
 
 /** Общие для всех вкладок поля строки — по ним работает единый фильтр. */
 interface CommonRow {
@@ -98,17 +86,44 @@ function uniq(values: (string | null | undefined)[]): string[] {
   return [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => a.localeCompare(b, "ru"));
 }
 
-function itemsText(items: { label: string; qty: number }[]): string {
-  return items.map((i) => `${i.label} × ${i.qty}`).join(", ");
+type FilterOption = { value: string; label: string };
+
+/** Варианты фильтра: подпись из словаря, без неё — само значение. */
+function filterOptions(values: string[], labels?: Record<string, string>): FilterOption[] {
+  return values.map((value) => ({ value, label: labels?.[value] ?? value }));
 }
 
-function DocLink({ orderId, enabled, children }: { orderId: number; enabled: boolean; children: React.ReactNode }) {
-  if (!enabled) return <span className="font-medium">{children}</span>;
+/** Список в панели фильтров: подпись, «Все…» (значение "all") и варианты. */
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  allLabel,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  allLabel: string;
+  options: FilterOption[];
+}) {
   return (
-    <Link href={`/orders/${orderId}`} className="font-medium text-[var(--ring)] hover:underline">
-      {children}
-    </Link>
+    <label className="grid gap-1.5">
+      <span className="text-xs font-medium text-[var(--muted-foreground)]">{label}</span>
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="all">{allLabel}</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </Select>
+    </label>
   );
+}
+
+function itemsText(items: { label: string; qty: number }[]): string {
+  return items.map((i) => `${i.label} × ${i.qty}`).join(", ");
 }
 
 function EmptyRow({ colSpan, filtered, onReset }: { colSpan: number; filtered: boolean; onReset: () => void }) {
@@ -141,28 +156,6 @@ function Money({ value, currency, muted }: { value: string; currency: string; mu
   return <>{formatCurrency(value, currency)}</>;
 }
 
-function CurrencyBreakdown({
-  values,
-  primary,
-  field,
-}: {
-  values: Record<string, SummaryMoney>;
-  primary: string;
-  field: keyof SummaryMoney;
-}) {
-  const rows = Object.entries(values).filter(
-    ([currency, summary]) => currency !== primary && finiteMoney(summary[field]) !== 0,
-  );
-  if (rows.length === 0) return null;
-  return (
-    <div className="grid gap-0.5 text-xs text-[var(--muted-foreground)]">
-      {rows.map(([currency, summary]) => (
-        <span key={currency}>Также {formatCurrency(summary[field], currency)}</span>
-      ))}
-    </div>
-  );
-}
-
 function formatMoneyTotals(totals: Record<string, number>): string {
   return Object.entries(totals)
     .map(([currency, amount]) => formatCurrency(amount, currency))
@@ -174,23 +167,11 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const { me } = useAuth();
   const canExport = can(me, "reports.export");
   const canViewOrders = can(me, "orders.view");
-  const { data, loading, error, reload } = useApi<History>(`/clients/${id}/history/`);
+  const { data, loading, error, reload } = useApi<ClientHistory>(`/clients/${id}/history/`);
 
-  const [tab, setTab] = useState("analytics");
-  // Общие фильтры — переживают смену вкладки.
-  const [fFrom, setFFrom] = useState("");
-  const [fTo, setFTo] = useState("");
-  const [fDoc, setFDoc] = useState("");
-  const [fMin, setFMin] = useState("");
-  const [fMax, setFMax] = useState("");
-  const [fCurrency, setFCurrency] = useState("all");
-  // Вкладочные фильтры — сбрасываются при переключении.
-  const [fProduct, setFProduct] = useState("all");
-  const [fPay, setFPay] = useState("all");
-  const [fStatus, setFStatus] = useState("all");
-  const [fEmployee, setFEmployee] = useState("all");
-  const [sortKey, setSortKey] = useState("date");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [tab, setTab] = useState<ClientTab>("analytics");
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const { sortKey, sortDir, toggleSort } = useSortState("date", "desc", "desc");
   const [statementOpen, setStatementOpen] = useState(false);
 
   if (!data) {
@@ -202,10 +183,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const { client, summary } = data;
-  const summaryCurrency = summary.currency || client.currency;
-  const summaryByCurrency = summary.by_currency ?? {
-    [summaryCurrency]: { revenue: summary.revenue, paid: summary.paid, debt: summary.debt },
-  };
+  const summaryCurrency = summary.currency;
+  const summaryByCurrency = summary.by_currency;
   const hasDebt = Object.values(summaryByCurrency).some((row) => finiteMoney(row.debt) > 0);
   const initials =
     client.name
@@ -215,58 +194,42 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
       .map((part) => part[0])
       .join("")
       .toUpperCase() || "К";
-  const tabs = [
-    { key: "analytics", label: "Аналитика клиента" },
-    { key: "sales", label: `Продажи · ${data.sales.length}` },
-    { key: "payments", label: `Погашения · ${data.payments.length}` },
-    { key: "debts", label: `Долги · ${data.debts.length}` },
-  ];
+  const tabs = (Object.keys(TAB_META) as ClientTab[]).map((key) => ({
+    key,
+    label: TAB_META[key].label,
+    count: key === "analytics" ? undefined : data[key].length,
+  }));
+  const meta = TAB_META[tab];
 
-  const switchTab = (k: string) => {
-    setTab(k);
-    setFProduct("all");
-    setFPay("all");
-    setFStatus("all");
-    setFEmployee("all");
+  const setFilter = (key: keyof Filters, value: string) => setFilters((prev) => ({ ...prev, [key]: value }));
+  const switchTab = (key: string) => {
+    setTab(key as ClientTab);
+    setFilters((prev) => ({ ...prev, ...TAB_FILTERS }));
   };
-  const hasFilters =
-    !!fFrom ||
-    !!fTo ||
-    !!fDoc ||
-    !!fMin ||
-    !!fMax ||
-    fCurrency !== "all" ||
-    fProduct !== "all" ||
-    fPay !== "all" ||
-    fStatus !== "all" ||
-    fEmployee !== "all";
-  const resetFilters = () => {
-    setFFrom("");
-    setFTo("");
-    setFDoc("");
-    setFMin("");
-    setFMax("");
-    setFCurrency("all");
-    setFProduct("all");
-    setFPay("all");
-    setFStatus("all");
-    setFEmployee("all");
-  };
+  const hasFilters = (Object.keys(DEFAULT_FILTERS) as (keyof Filters)[]).some(
+    (key) => filters[key] !== DEFAULT_FILTERS[key],
+  );
+  const resetFilters = () => setFilters(DEFAULT_FILTERS);
 
   const currencies = uniq([
     ...data.sales.map((row) => row.currency),
     ...data.payments.map((row) => row.currency),
     ...data.debts.map((row) => row.currency),
   ]);
-  const amountFilterEnabled = currencies.length <= 1 || fCurrency !== "all";
+  const amountFilterEnabled = currencies.length <= 1 || filters.currency !== "all";
 
-  const matches = (r: CommonRow) =>
-    (!fFrom || r.date.slice(0, 10) >= fFrom) &&
-    (!fTo || r.date.slice(0, 10) <= fTo) &&
-    (!fDoc.trim() || String(r.id).includes(fDoc.replace(/\D/g, ""))) &&
-    (fCurrency === "all" || r.currency === fCurrency) &&
-    (!amountFilterEnabled || !fMin || finiteMoney(r.amount) >= Number(fMin)) &&
-    (!amountFilterEnabled || !fMax || finiteMoney(r.amount) <= Number(fMax));
+  // Бэк отдаёт время в UTC: календарный день берём местный — тот, что в таблице.
+  const matches = (r: CommonRow) => {
+    const day = toLocalIsoDate(new Date(r.date));
+    return (
+      (!filters.from || day >= filters.from) &&
+      (!filters.to || day <= filters.to) &&
+      (!filters.doc.trim() || String(r.id).includes(onlyDigits(filters.doc))) &&
+      (filters.currency === "all" || r.currency === filters.currency) &&
+      (!amountFilterEnabled || !filters.min || finiteMoney(r.amount) >= Number(filters.min)) &&
+      (!amountFilterEnabled || !filters.max || finiteMoney(r.amount) <= Number(filters.max))
+    );
+  };
 
   const sortRows = <T extends CommonRow>(rows: T[]) =>
     [...rows].sort((a, b) => {
@@ -274,21 +237,13 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
       const cmp = sortKey === "amount" ? finiteMoney(a.amount) - finiteMoney(b.amount) : a.date.localeCompare(b.date);
       return sortDir === "asc" ? cmp : -cmp;
     });
-  const toggleSort = (k: string) => {
-    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      setSortDir("desc");
-    }
-  };
-
   const sales = sortRows(
     data.sales.filter(
       (r) =>
         matches(r) &&
-        (fProduct === "all" || r.items.some((i) => i.label === fProduct)) &&
-        (fPay === "all" || r.settlement_intent === fPay) &&
-        (fStatus === "all" || orderStatusGroup(r.status) === fStatus),
+        (filters.product === "all" || r.items.some((i) => i.label === filters.product)) &&
+        (filters.pay === "all" || r.settlement_intent === filters.pay) &&
+        (filters.status === "all" || orderStatusGroup(r.status) === filters.status),
     ),
   );
   // № документа у погашения — заказ, к которому оно привязано.
@@ -296,9 +251,9 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
     data.payments.filter(
       (r) =>
         matches({ ...r, id: r.order_id }) &&
-        (fPay === "all" || r.method === fPay) &&
-        (fStatus === "all" || r.status === fStatus) &&
-        (fEmployee === "all" || r.employee === fEmployee),
+        (filters.pay === "all" || r.method === filters.pay) &&
+        (filters.status === "all" || r.status === filters.status) &&
+        (filters.employee === "all" || r.employee === filters.employee),
     ),
   );
   const debts = sortRows(data.debts.filter(matches));
@@ -306,38 +261,33 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const products = uniq(data.sales.flatMap((r) => r.items.map((i) => i.label)));
   const saleStatuses = uniq(data.sales.map((r) => orderStatusGroup(r.status)));
   const paymentStatuses = uniq(data.payments.map((r) => r.status));
+  const paymentMethods = uniq(data.payments.map((r) => r.method));
+  // Подписи вариантов фильтра — из самих строк (labels.py на бэке).
+  const paymentStatusLabels = Object.fromEntries(data.payments.map((r) => [r.status, r.status_label]));
+  const paymentMethodLabels = Object.fromEntries(data.payments.map((r) => [r.method, r.method_label]));
   const employees = uniq(data.payments.map((r) => r.employee));
 
-  const shownCount =
-    tab === "analytics" ? 0 : tab === "sales" ? sales.length : tab === "payments" ? payments.length : debts.length;
-  const shownTotals =
-    tab === "analytics"
-      ? {}
-      : tab === "sales"
-        ? sumMoneyByCurrency(
-            sales,
-            (row) => row.amount,
-            (row) => row.currency,
-          )
-        : tab === "payments"
-          ? sumMoneyByCurrency(
-              payments,
-              (row) => row.amount,
-              (row) => row.currency,
-            )
-          : sumMoneyByCurrency(
-              debts,
-              (row) => row.remaining,
-              (row) => row.currency,
-            );
-  const shownTotalLabel = formatMoneyTotals(shownTotals);
-  const activeTitle = tab === "sales" ? "История продаж" : tab === "payments" ? "История погашений" : "Текущие долги";
-  const activeCaption =
-    tab === "sales"
-      ? "Заказы и отгрузки клиента"
-      : tab === "payments"
-        ? "Все поступившие платежи"
-        : "Заказы с непогашенным остатком";
+  const shownCount = { analytics: 0, sales: sales.length, payments: payments.length, debts: debts.length }[tab];
+  const shownTotalLabel = formatMoneyTotals(
+    {
+      analytics: {},
+      sales: sumMoneyByCurrency(
+        sales.filter((row) => row.is_financial),
+        (row) => row.amount,
+        (row) => row.currency,
+      ),
+      payments: sumMoneyByCurrency(
+        payments,
+        (row) => row.counted_amount,
+        (row) => row.currency,
+      ),
+      debts: sumMoneyByCurrency(
+        debts,
+        (row) => row.remaining,
+        (row) => row.currency,
+      ),
+    }[tab],
+  );
 
   return (
     <AppShell title="Клиент" section="Работа">
@@ -390,10 +340,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
           {tab === "analytics" ? (
             <div className="p-4 sm:p-5">
               <div className="mb-4">
-                <h3 className="font-semibold">Аналитика клиента</h3>
-                <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">
-                  Общая картина по продажам, оплатам и текущей задолженности.
-                </p>
+                <h3 className="font-semibold">{meta.title}</h3>
+                <p className="mt-0.5 text-sm text-[var(--muted-foreground)]">{meta.caption}</p>
               </div>
               <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                 <StatCard label="Продаж" value={String(summary.orders_count)} caption="всего заказов" icon={FileText} />
@@ -404,7 +352,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                   icon={TrendingUp}
                   accent
                 >
-                  <CurrencyBreakdown values={summaryByCurrency} primary={summaryCurrency} field="revenue" />
+                  <OtherCurrencyRows
+                    byCurrency={fieldByCurrency(summaryByCurrency, "revenue")}
+                    primary={summaryCurrency}
+                  />
                 </StatCard>
                 <StatCard
                   label="Оплачено"
@@ -412,7 +363,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                   caption="получено от клиента"
                   icon={Wallet}
                 >
-                  <CurrencyBreakdown values={summaryByCurrency} primary={summaryCurrency} field="paid" />
+                  <OtherCurrencyRows
+                    byCurrency={fieldByCurrency(summaryByCurrency, "paid")}
+                    primary={summaryCurrency}
+                  />
                 </StatCard>
                 <StatCard
                   label="Текущий долг"
@@ -421,7 +375,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                   icon={AlertCircle}
                   className={hasDebt ? "border-[var(--destructive)]/25 bg-[var(--destructive)]/6" : undefined}
                 >
-                  <CurrencyBreakdown values={summaryByCurrency} primary={summaryCurrency} field="debt" />
+                  <OtherCurrencyRows
+                    byCurrency={fieldByCurrency(summaryByCurrency, "debt")}
+                    primary={summaryCurrency}
+                  />
                 </StatCard>
               </div>
             </div>
@@ -450,146 +407,103 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
                       <Input
                         type="date"
-                        value={fFrom}
-                        onChange={(e) => setFFrom(e.target.value)}
+                        value={filters.from}
+                        onChange={(e) => setFilter("from", e.target.value)}
                         aria-label="Период с"
                       />
                       <span className="text-[var(--muted-foreground)]">—</span>
-                      <Input type="date" value={fTo} onChange={(e) => setFTo(e.target.value)} aria-label="Период по" />
+                      <Input
+                        type="date"
+                        value={filters.to}
+                        onChange={(e) => setFilter("to", e.target.value)}
+                        aria-label="Период по"
+                      />
                     </div>
                   </div>
                   {currencies.length > 1 && (
-                    <div className="grid gap-1.5">
-                      <span className="text-xs font-medium text-[var(--muted-foreground)]">Валюта</span>
-                      <Select
-                        value={fCurrency}
-                        onValueChange={(value) => {
-                          setFCurrency(value);
-                          if (value === "all") {
-                            setFMin("");
-                            setFMax("");
-                          }
-                        }}
-                      >
-                        <SelectTrigger className="h-10">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Все валюты</SelectItem>
-                          {currencies.map((currency) => (
-                            <SelectItem key={currency} value={currency}>
-                              {currency}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <FilterSelect
+                      label="Валюта"
+                      value={filters.currency}
+                      onChange={(currency) =>
+                        setFilters((prev) =>
+                          currency === "all" ? { ...prev, currency, min: "", max: "" } : { ...prev, currency },
+                        )
+                      }
+                      allLabel="Все валюты"
+                      options={filterOptions(currencies)}
+                    />
                   )}
                   {tab === "sales" && (
-                    <div className="grid gap-1.5">
-                      <span className="text-xs font-medium text-[var(--muted-foreground)]">Товар</span>
-                      <Select value={fProduct} onValueChange={setFProduct}>
-                        <SelectTrigger className="h-10">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Все товары</SelectItem>
-                          {products.map((p) => (
-                            <SelectItem key={p} value={p}>
-                              {p}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <FilterSelect
+                      label="Товар"
+                      value={filters.product}
+                      onChange={(value) => setFilter("product", value)}
+                      allLabel="Все товары"
+                      options={filterOptions(products)}
+                    />
                   )}
                   {tab !== "debts" && (
-                    <div className="grid gap-1.5">
-                      <span className="text-xs font-medium text-[var(--muted-foreground)]">Оплата</span>
-                      <Select value={fPay} onValueChange={setFPay}>
-                        <SelectTrigger className="h-10">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Любой тип</SelectItem>
-                          {tab === "sales"
-                            ? Object.entries(SETTLEMENT_LABELS).map(([k, v]) => (
-                                <SelectItem key={k} value={k}>
-                                  {v}
-                                </SelectItem>
-                              ))
-                            : ["cash", "card", "kaspi"].map((m) => (
-                                <SelectItem key={m} value={m}>
-                                  {PAYMENT_METHOD_LABELS[m]}
-                                </SelectItem>
-                              ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <FilterSelect
+                      label="Оплата"
+                      value={filters.pay}
+                      onChange={(value) => setFilter("pay", value)}
+                      allLabel="Любой тип"
+                      options={
+                        tab === "sales"
+                          ? filterOptions(Object.keys(SETTLEMENT_LABELS), SETTLEMENT_LABELS)
+                          : filterOptions(paymentMethods, paymentMethodLabels)
+                      }
+                    />
                   )}
                   {tab !== "debts" && (
-                    <div className="grid gap-1.5">
-                      <span className="text-xs font-medium text-[var(--muted-foreground)]">Статус</span>
-                      <Select value={fStatus} onValueChange={setFStatus}>
-                        <SelectTrigger className="h-10">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Любой статус</SelectItem>
-                          {(tab === "sales" ? saleStatuses : paymentStatuses).map((s) => (
-                            <SelectItem key={s} value={s}>
-                              {(tab === "sales" ? ORDER_STATUS_LABELS : PAYMENT_STAGE_LABELS)[s] ?? s}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <FilterSelect
+                      label="Статус"
+                      value={filters.status}
+                      onChange={(value) => setFilter("status", value)}
+                      allLabel="Любой статус"
+                      options={
+                        tab === "sales"
+                          ? filterOptions(saleStatuses, ORDER_STATUS_LABELS)
+                          : filterOptions(paymentStatuses, paymentStatusLabels)
+                      }
+                    />
                   )}
                   {tab === "payments" && employees.length > 0 && (
-                    <div className="grid gap-1.5">
-                      <span className="text-xs font-medium text-[var(--muted-foreground)]">Принял</span>
-                      <Select value={fEmployee} onValueChange={setFEmployee}>
-                        <SelectTrigger className="h-10">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">Все сотрудники</SelectItem>
-                          {employees.map((e) => (
-                            <SelectItem key={e} value={e}>
-                              {e}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <FilterSelect
+                      label="Принял"
+                      value={filters.employee}
+                      onChange={(value) => setFilter("employee", value)}
+                      allLabel="Все сотрудники"
+                      options={filterOptions(employees)}
+                    />
                   )}
                   <label className="grid gap-1.5">
                     <span className="text-xs font-medium text-[var(--muted-foreground)]">Номер документа</span>
                     <Input
                       placeholder="Например, 54"
                       inputMode="numeric"
-                      value={fDoc}
-                      onChange={(e) => setFDoc(e.target.value)}
+                      value={filters.doc}
+                      onChange={(e) => setFilter("doc", e.target.value)}
                     />
                   </label>
                   <div className="grid gap-1.5">
                     <span className="text-xs font-medium text-[var(--muted-foreground)]">
-                      Сумма{fCurrency !== "all" ? `, ${fCurrency}` : ""}
+                      Сумма{filters.currency !== "all" ? `, ${filters.currency}` : ""}
                     </span>
                     <div className="grid grid-cols-2 gap-1.5">
                       <Input
                         placeholder={amountFilterEnabled ? "От" : "Выберите валюту"}
                         inputMode="numeric"
                         disabled={!amountFilterEnabled}
-                        value={fMin}
-                        onChange={(e) => setFMin(e.target.value.replace(/\D/g, ""))}
+                        value={filters.min}
+                        onChange={(e) => setFilter("min", onlyDigits(e.target.value))}
                       />
                       <Input
                         placeholder={amountFilterEnabled ? "До" : "Выберите валюту"}
                         inputMode="numeric"
                         disabled={!amountFilterEnabled}
-                        value={fMax}
-                        onChange={(e) => setFMax(e.target.value.replace(/\D/g, ""))}
+                        value={filters.max}
+                        onChange={(e) => setFilter("max", onlyDigits(e.target.value))}
                       />
                     </div>
                   </div>
@@ -598,8 +512,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
 
               <div className="flex flex-wrap items-end justify-between gap-3 border-b px-4 py-4 sm:px-5">
                 <div>
-                  <h3 className="font-semibold">{activeTitle}</h3>
-                  <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{activeCaption}</p>
+                  <h3 className="font-semibold">{meta.title}</h3>
+                  <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{meta.caption}</p>
                 </div>
                 <span className="text-sm text-[var(--muted-foreground)]">
                   {shownCount > 0 && (
@@ -645,9 +559,14 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       sales.map((r) => (
                         <TR key={r.id}>
                           <TD>
-                            <DocLink orderId={r.id} enabled={canViewOrders}>
+                            <OrderRef
+                              id={r.id}
+                              canOpen={canViewOrders}
+                              className="font-medium"
+                              linkClassName="text-[var(--ring)]"
+                            >
                               № {r.id}
-                            </DocLink>
+                            </OrderRef>
                           </TD>
                           <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                           <TD>
@@ -662,7 +581,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                           <TD className="text-right tabular-nums">
                             <Money value={r.paid} currency={r.currency} muted />
                           </TD>
-                          <TD>{SETTLEMENT_LABELS[r.settlement_intent] ?? r.settlement_intent}</TD>
+                          <TD>{SETTLEMENT_CELL_LABELS[r.settlement_intent] ?? r.settlement_intent}</TD>
                           <TD>
                             <StatusBadge status={r.status} dot />
                           </TD>
@@ -705,20 +624,23 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       payments.map((r) => (
                         <TR key={r.id}>
                           <TD>
-                            <DocLink orderId={r.order_id} enabled={canViewOrders}>
+                            <OrderRef
+                              id={r.order_id}
+                              canOpen={canViewOrders}
+                              className="font-medium"
+                              linkClassName="text-[var(--ring)]"
+                            >
                               № {r.order_id}
-                            </DocLink>
+                            </OrderRef>
                           </TD>
                           <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                           <TD className="text-right tabular-nums font-medium">
                             {formatCurrency(r.amount, r.currency)}
                           </TD>
-                          <TD>{PAYMENT_METHOD_LABELS[r.method] ?? r.method}</TD>
+                          <TD>{r.method_label}</TD>
                           <TD>{r.employee ?? "—"}</TD>
                           <TD>
-                            <Badge tone={PAYMENT_STAGE_TONE[r.status] ?? "muted"} dot>
-                              {PAYMENT_STAGE_LABELS[r.status] ?? r.status}
-                            </Badge>
+                            <PaymentStageBadge payment={r} />
                           </TD>
                         </TR>
                       ))
@@ -759,9 +681,14 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                       debts.map((r) => (
                         <TR key={r.id}>
                           <TD>
-                            <DocLink orderId={r.id} enabled={canViewOrders}>
+                            <OrderRef
+                              id={r.id}
+                              canOpen={canViewOrders}
+                              className="font-medium"
+                              linkClassName="text-[var(--ring)]"
+                            >
                               № {r.id}
-                            </DocLink>
+                            </OrderRef>
                           </TD>
                           <TD className="tabular-nums text-[var(--muted-foreground)]">{formatDateTime(r.date)}</TD>
                           <TD className="text-right tabular-nums">{r.bags || "—"}</TD>
@@ -783,7 +710,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                 <div className="flex items-center justify-between border-t bg-[var(--muted)]/20 px-4 py-3 text-[13px] sm:px-5">
                   <span className="text-[var(--muted-foreground)]">Документов: {shownCount}</span>
                   <span className="tabular-nums font-semibold">
-                    {tab === "debts" ? "Остаток" : "Итого"}: {shownTotalLabel}
+                    {meta.totalLabel ?? "Итого"}: {shownTotalLabel}
                   </span>
                 </div>
               )}
@@ -796,9 +723,9 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
         open={statementOpen}
         onClose={() => setStatementOpen(false)}
         endpoint={`/clients/${id}/statement/`}
-        filename={`client-${id}-statement.xlsx`}
+        filenameStem={`client-${id}-statement`}
         title="Выписка клиента"
-        description="Полная финансовая история выбранного клиента по отдельным листам Excel."
+        description="Полная финансовая история выбранного клиента в Excel или PDF."
         scopeLabel={`${client.name}: все заказы и движения`}
       />
     </AppShell>

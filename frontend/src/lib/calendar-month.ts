@@ -1,7 +1,7 @@
 /** Сетка месяца для календаря: недели с понедельника, полные ряды по 7 дней. */
 import { toLocalIsoDate } from "@/lib/utils";
 
-export const MONTH_NAMES = [
+const MONTH_NAMES = [
   "Январь",
   "Февраль",
   "Март",
@@ -51,7 +51,7 @@ export function shiftMonth(month: string, delta: number): string {
   return toLocalIsoDate(shifted).slice(0, 7);
 }
 
-export interface MonthDay {
+interface MonthDay {
   iso: string;
   day: number;
   /** День соседнего месяца, добивающий неделю. */

@@ -1,175 +1,37 @@
-"""HTTP adapters for order-bound camera AI counting."""
+"""HTTP adapters for the camera AI counting line."""
 
 from typing import ClassVar
 
 from django.http import HttpResponse
 from django.http.response import HttpResponseBase
-from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff, IsSuperUser
-from apps.orders.models import Order
-from apps.sales.access import scope_by_client_department
+from apps.common.permissions import IsSuperUser
 
-from .. import ai, counting, services, sessions
-from ..models import AiCountingSession
-from ..serializers import CameraAiActionSerializer
-
-
-def _hidden_busy_metadata() -> dict:
-    """Expose that a camera is occupied without leaking its foreign owner."""
-    return {
-        "available": False,
-        "busy": True,
-        "owned_by_order": False,
-    }
-
-
-def _session_is_visible(session_id: int, user) -> bool:
-    sessions_qs = scope_by_client_department(
-        AiCountingSession.objects.filter(pk=session_id),
-        user,
-        client_path="order__client",
-    )
-    return sessions_qs.exists()
-
-
-def _busy_response(session, user=None) -> Response:
-    if user is not None and not _session_is_visible(session.pk, user):
-        return Response(
-            {
-                "detail": "AI-подсчёт занят другой отгрузкой",
-                "code": "ai_busy",
-                **_hidden_busy_metadata(),
-                "running": False,
-            },
-            status=status.HTTP_409_CONFLICT,
-        )
-    return Response(
-        {
-            "detail": f"AI-подсчёт занят заказом #{session.order_id}",
-            "code": "ai_busy",
-            **counting.metadata(session, None, "", user),
-            "running": False,
-        },
-        status=status.HTTP_409_CONFLICT,
-    )
-
-
-def _ai_response(fn, user=None):
-    """Map failures from the camera AI client to the existing public API."""
-    if not ai.enabled():
-        return Response(
-            {"detail": "AI-подсчёт не настроен на сервере", "code": "ai_disabled"},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-    try:
-        return Response(fn())
-    except ai.AiUnavailable:
-        return Response(
-            {"detail": "AI-сервис камер недоступен", "code": "ai_unavailable"},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    except ai.AiError as exc:
-        http_status = (
-            exc.status
-            if exc.status in (400, 401, 404, 409, 503)
-            else status.HTTP_502_BAD_GATEWAY
-        )
-        return Response(
-            {"detail": exc.detail, "code": "ai_error"},
-            status=http_status,
-        )
-    except sessions.AiSessionBusy as exc:
-        return _busy_response(exc.session, user)
+from .. import ai, services
+from .responses import error_response
 
 
 def _ai_proxy_response(fn):
     """Return an AI response body/status intact without exposing credentials."""
     if not ai.enabled():
-        return Response(
-            {"detail": "AI-подсчёт не настроен на сервере", "code": "ai_disabled"},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        return error_response(
+            "AI-подсчёт не настроен на сервере", "ai_disabled", status.HTTP_503_SERVICE_UNAVAILABLE
         )
     try:
         result = fn()
     except ai.AiUnavailable:
-        return Response(
-            {"detail": "AI-сервис камер недоступен", "code": "ai_unavailable"},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
+        return error_response("AI-сервис камер недоступен", "ai_unavailable", status.HTTP_502_BAD_GATEWAY)
     except ai.AiError as exc:
-        return Response(
-            {"detail": exc.detail, "code": "ai_error"},
-            status=exc.status if exc.status in (400, 401, 404, 503) else 502,
+        return error_response(
+            exc.detail, "ai_error", exc.status if exc.status in (400, 401, 404, 503) else 502
         )
     if isinstance(result, HttpResponseBase):
         return result
     upstream_status, payload = result
     return Response(payload, status=upstream_status)
-
-
-def _order_id(request) -> int | None:
-    """Read order_id with the legacy query, header, body precedence."""
-    raw = (
-        request.query_params.get("order_id")
-        or request.headers.get("X-Order-Id")
-        or request.data.get("order_id")
-    )
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _loading_order(request) -> Order | None:
-    order_id = _order_id(request)
-    if order_id is None:
-        return None
-    orders = scope_by_client_department(
-        Order.objects.all(),
-        request.user,
-        client_path="client",
-    )
-    return get_object_or_404(orders, pk=order_id)
-
-
-def _complete_order(request) -> bool:
-    raw = request.data.get(
-        "complete_order",
-        request.query_params.get("complete_order"),
-    )
-    return raw is True or str(raw).lower() in ("1", "true")
-
-
-def _action_input(
-    request,
-    *,
-    missing_order_detail: str,
-    include_complete_order: bool = False,
-) -> tuple[Order, dict]:
-    """Validate canonical action values after preserving legacy input parsing."""
-    order = _loading_order(request)
-    if order is None:
-        raise ai.AiError(400, missing_order_detail)
-
-    data: dict[str, object] = {"order_id": order.pk}
-    raw_session_id = request.query_params.get("session_id")
-    if raw_session_id is None:
-        raw_session_id = request.headers.get("X-AI-Session-Id")
-    if raw_session_id is None:
-        raw_session_id = request.data.get("session_id")
-    if raw_session_id not in (None, ""):
-        data["session_id"] = raw_session_id
-    if include_complete_order:
-        # Normalize only the two truthy spellings accepted by the old view;
-        # DRF's BooleanField intentionally accepts a broader vocabulary.
-        data["complete_order"] = _complete_order(request)
-    serializer = CameraAiActionSerializer(data=data)
-    serializer.is_valid(raise_exception=True)
-    return order, serializer.validated_data
 
 
 class CameraCountingLineView(APIView):
@@ -222,87 +84,3 @@ class CameraCountingLineFrameView(APIView):
             return response
 
         return _ai_proxy_response(frame)
-
-
-class CameraAiView(APIView):
-    """Read, start, or stop one order-bound AI counter."""
-
-    def get_permissions(self):
-        if self.request.method in ("GET", "HEAD", "OPTIONS"):
-            return [IsStaff()]
-        # Погрузка и её AI-подсчёт — работа грузчика.
-        return [HasPerm("loader.confirm")]
-
-    def get(self, request, cam: str):
-        order_id = _order_id(request)
-        if order_id is not None:
-            order_id = _loading_order(request).pk
-
-        def get_status():
-            payload = counting.get_status(cam, order_id, request.user)
-            session_id = payload.get("session_id")
-            if session_id is not None and not _session_is_visible(
-                session_id,
-                request.user,
-            ):
-                return {"running": False, **_hidden_busy_metadata()}
-            return payload
-
-        return _ai_response(
-            get_status,
-            request.user,
-        )
-
-    def post(self, request, cam: str):
-        def start():
-            order, validated = _action_input(
-                request,
-                missing_order_detail="Укажите заказ для AI-подсчёта",
-            )
-            return counting.start(
-                cam,
-                order,
-                request.user,
-                expected_session_id=validated.get("session_id"),
-            )
-
-        return _ai_response(start, request.user)
-
-    def delete(self, request, cam: str):
-        def stop():
-            order, validated = _action_input(
-                request,
-                missing_order_detail="Укажите заказ для завершения AI-сессии",
-                include_complete_order=True,
-            )
-            return counting.stop(
-                cam,
-                order,
-                request.user,
-                complete_order=validated["complete_order"],
-                expected_session_id=validated.get("session_id"),
-            )
-
-        return _ai_response(stop, request.user)
-
-
-class CameraAiResetView(APIView):
-    """Reset the counter of one owned, running AI session."""
-
-    def get_permissions(self):
-        return [HasPerm("loader.confirm")]
-
-    def post(self, request, cam: str):
-        def reset():
-            order, validated = _action_input(
-                request,
-                missing_order_detail="Укажите заказ для сброса AI-счётчика",
-            )
-            return counting.reset(
-                cam,
-                order,
-                request.user,
-                expected_session_id=validated.get("session_id"),
-            )
-
-        return _ai_response(reset, request.user)

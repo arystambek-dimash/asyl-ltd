@@ -1,42 +1,42 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Me } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
+import { useAuth } from "@/store/auth";
 
 import LoginPage from "./page";
 
-const mocks = vi.hoisted(() => ({
-  completeInitialPasswordChange: vi.fn(),
-  loadMe: vi.fn(),
-  login: vi.fn(),
-  replace: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const replace = vi.fn();
+  return {
+    completeInitialPasswordChange: vi.fn(),
+    loadMe: vi.fn(),
+    login: vi.fn(),
+    replace,
+    // Как в Next.js, роутер стабилен между рендерами.
+    router: { replace },
+  };
+});
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace: mocks.replace }),
+  useRouter: () => mocks.router,
 }));
 
-vi.mock("next/image", () => ({
-  default: ({ priority, alt, ...props }: ComponentProps<"img"> & { priority?: boolean }) => {
-    void priority;
-    return (
-      // The optimized Next.js image behavior is unrelated to the login flow.
-      // eslint-disable-next-line @next/next/no-img-element
-      <img alt={alt ?? ""} {...props} />
-    );
-  },
-}));
+vi.mock("next/image", () => import("@/test-utils/next-image"));
 
-vi.mock("@/store/auth", () => ({
-  useAuth: () => ({
-    completeInitialPasswordChange: mocks.completeInitialPasswordChange,
-    loadMe: mocks.loadMe,
-    login: mocks.login,
-    me: null,
-  }),
-}));
+vi.mock("@/store/auth", async () => {
+  const { create } = await import("zustand");
+  return {
+    useAuth: create(() => ({
+      completeInitialPasswordChange: mocks.completeInitialPasswordChange,
+      loadMe: mocks.loadMe,
+      login: mocks.login,
+      me: null as Me | null,
+    })),
+  };
+});
 
 const passwordChangeRequired = {
   response: {
@@ -48,19 +48,13 @@ const passwordChangeRequired = {
   },
 };
 
-const client: Me = {
+const client = makeMe({
   id: 7,
   username: "client-7",
   first_name: "Алия",
   last_name: "Серикова",
   is_client: true,
-  is_superuser: false,
-
-  permissions: [],
-  position: null,
-  client_id: 7,
-  sales_department: null,
-};
+});
 
 async function requestInitialPasswordChange() {
   const user = userEvent.setup();
@@ -79,6 +73,7 @@ describe("LoginPage initial password change", () => {
     mocks.login.mockReset();
     mocks.replace.mockReset();
     mocks.login.mockRejectedValue(passwordChangeRequired);
+    useAuth.setState({ me: null });
   });
 
   it("shows the personal-password fields when login requires a password change", async () => {
@@ -102,7 +97,11 @@ describe("LoginPage initial password change", () => {
   });
 
   it("changes the password and routes the client into the portal", async () => {
-    mocks.completeInitialPasswordChange.mockResolvedValue(client);
+    // Как настоящий стор: успешный вход кладёт me, редирект делает страница.
+    mocks.completeInitialPasswordChange.mockImplementation(async () => {
+      useAuth.setState({ me: client });
+      return client;
+    });
     const user = await requestInitialPasswordChange();
     await user.type(screen.getByLabelText("Новый пароль"), "personal-password");
     await user.type(screen.getByLabelText("Повторите новый пароль"), "personal-password");
@@ -116,7 +115,8 @@ describe("LoginPage initial password change", () => {
         "personal-password",
       ),
     );
-    expect(mocks.replace).toHaveBeenCalledWith("/portal/catalog");
+    await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith("/portal/catalog"));
+    expect(mocks.replace).toHaveBeenCalledTimes(1);
   });
 
   it("leaves forced-change mode and clears passwords when the username changes", async () => {

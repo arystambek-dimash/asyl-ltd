@@ -1,6 +1,6 @@
 import { formatPlatePair } from "@/lib/plates";
 import type { ShipmentWagon } from "@/lib/types";
-import { pluralRu } from "@/lib/utils";
+import { formatTons, pluralRu } from "@/lib/utils";
 
 export const wagonsWord = (count: number) => pluralRu(count, ["вагон", "вагона", "вагонов"]);
 
@@ -41,5 +41,5 @@ export function orderTransportLabel(order: OrderTransport, emptyTruck: string): 
 
 /** Вес вагона в тоннах: «68», «67,5». */
 export function wagonTons(wagon: Pick<ShipmentWagon, "weight_kg">): string {
-  return (Number(wagon.weight_kg) / 1000).toLocaleString("ru-RU", { maximumFractionDigits: 3 });
+  return formatTons(wagon.weight_kg);
 }

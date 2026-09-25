@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 
 from django.conf import settings
 from django.db.models import Prefetch
@@ -14,6 +14,7 @@ from apps.catalog.models import Product
 from apps.warehouse.models import StockItem, Warehouse
 
 from . import ai
+from .analytics import color_payload
 from .color_resolution import (
     PENDING_COLORS,
     effective_brand,
@@ -23,6 +24,7 @@ from .color_resolution import (
     resolved_day_runs,
     with_inferred,
 )
+from .event_protocol import normalize_brand
 from .models import (
     ANALYTICS_SCOPE_AI247,
     AlwaysOnColorProductMapping,
@@ -34,41 +36,28 @@ from .models import (
 )
 from .production_catalog import (
     BASE_COLORS,
-    _compatibility_warehouse,
-    _effective_stock_warehouse_id,
     _warehouse_for_camera,
 )
 from .production_runs import (
     CLOSE_TIME,
     _day_totals,
-    _default_timezone,
     _iso,
     business_day_for,
     effective_ended_at,
+    local_day_window,
     scheduled_for,
 )
 
 RUN_SMOOTHING_N_MIN = 10
-NON_DOMINANT_BRANDS = frozenset({"unclassified", "unknown"})
 
 
-def _product_payload(
-    product: Product,
-    *,
-    stock_item: StockItem | None = None,
-    warehouse_ids: set[int] | None = None,
-    compatibility_warehouse: Warehouse | None = None,
-) -> dict:
-    effective_warehouse = None
-    if stock_item is not None:
-        effective_warehouse = stock_item.warehouse or compatibility_warehouse
+def _product_payload(product: Product, *, warehouse_ids: set[int] | None = None) -> dict:
     return {
         "id": product.pk,
         "label": str(product),
         "color": product.color,
-        "color_label": dict(Product.COLORS).get(product.color, product.color),
+        "color_label": product.get_color_display(),
         "weight_kg": str(product.weight_kg),
-        "warehouse": effective_warehouse.pk if effective_warehouse else None,
         "warehouse_ids": sorted(warehouse_ids or ()),
     }
 
@@ -86,11 +75,13 @@ def _run_payload(
     row: AlwaysOnProductionRun,
     *,
     now: datetime,
-    selected_start: datetime | None = None,
-    selected_end: datetime | None = None,
+    selected_start: datetime,
+    selected_end: datetime,
 ) -> dict:
     ended_at = effective_ended_at(row, now)
-    result = {
+    starts_before_day = row.started_at < selected_start
+    ends_after_day = row.last_counted_at >= selected_end
+    return {
         "id": row.pk,
         "camera": row.camera,
         "business_day": row.business_day.isoformat(),
@@ -101,18 +92,10 @@ def _run_payload(
         "model_bags": row.model_bags,
         "is_approximate": row.is_approximate,
         "status": "active" if ended_at is None else "closed",
+        "starts_before_day": starts_before_day,
+        "ends_after_day": ends_after_day,
+        "is_partial_for_day": starts_before_day or ends_after_day,
     }
-    if selected_start is not None and selected_end is not None:
-        starts_before_day = row.started_at < selected_start
-        ends_after_day = row.last_counted_at >= selected_end
-        result.update(
-            {
-                "starts_before_day": starts_before_day,
-                "ends_after_day": ends_after_day,
-                "is_partial_for_day": starts_before_day or ends_after_day,
-            }
-        )
-    return result
 
 
 def _is_run_smoothing_barrier(run: dict) -> bool:
@@ -174,17 +157,14 @@ def _coalesce_algorithm_runs(runs: list[dict]) -> list[dict]:
     return result
 
 
-def smooth_day_runs(
-    raw_runs: list[dict],
-    *,
-    n_min: int = RUN_SMOOTHING_N_MIN,
-) -> list[dict]:
+def smooth_day_runs(raw_runs: list[dict]) -> list[dict]:
     """Return the supplied sandwich smoother as a read-only display view.
 
     Normal runs follow the operator-provided algorithm exactly: adjacent equal
-    colours are first coalesced; then the smallest unlocked run below ``n_min``
-    is recoloured only when both neighbours have the same other colour.  A run
-    at an edge or party boundary is locked and retained.
+    colours are first coalesced; then the smallest unlocked run below
+    ``RUN_SMOOTHING_N_MIN`` is recoloured only when both neighbours have the
+    same other colour.  A run at an edge or party boundary is locked and
+    retained.
 
     The durable production rows remain the raw audit/warehouse source.  This
     helper works on copies and additionally treats partial/approximate legacy
@@ -199,7 +179,7 @@ def smooth_day_runs(
             index
             for index, run in enumerate(runs)
             if not _is_run_smoothing_barrier(run)
-            and int(run["model_bags"]) < n_min
+            and int(run["model_bags"]) < RUN_SMOOTHING_N_MIN
             and (index, run.get("color"), int(run["model_bags"])) not in locked
         ]
         if not candidates:
@@ -242,28 +222,19 @@ def _run_smoothing_payload(raw_runs: list[dict]) -> tuple[list[dict], dict]:
     raw_per_color = _run_color_totals(raw_runs)
     algorithm_per_color = _run_color_totals(algorithm_runs)
 
-    # Reuse the analytics endpoint's largest-remainder rounding so toggling the
-    # selected-day cards cannot produce a different percentage convention.
-    from .analytics import _color_payload
-
     def cards(per_color: dict[str, int], runs: list[dict]) -> list[dict]:
         # Resolved bags keep their «по соседям»/«по голосам» marker on the
         # selected-day colour cards, exactly as on their run rows.
         return with_inferred(
-            _color_payload(per_color),
+            color_payload(per_color),
             "color",
             [{str(run["color"]): run["inferred"]} for run in runs if run.get("inferred")],
         )
 
     metadata = {
         "n_min": RUN_SMOOTHING_N_MIN,
-        "changed": algorithm_runs != raw_runs,
-        "raw_run_count": len(raw_runs),
-        "algorithm_run_count": len(algorithm_runs),
         "raw_model_total": sum(raw_per_color.values()),
         "algorithm_model_total": sum(algorithm_per_color.values()),
-        "raw_model_per_color": raw_per_color,
-        "algorithm_model_per_color": algorithm_per_color,
         "raw_colors": cards(raw_per_color, raw_runs),
         "algorithm_colors": cards(algorithm_per_color, algorithm_runs),
     }
@@ -294,7 +265,7 @@ def _batch_payload(row: AlwaysOnStockBatch) -> dict:
         "id": row.pk,
         "camera": row.camera,
         "warehouse": row.warehouse_id,
-        "warehouse_name": row.warehouse.name if row.warehouse_id else None,
+        "warehouse_name": row.warehouse.name,
         "business_day": row.business_day.isoformat(),
         "scheduled_for": _iso(row.scheduled_for),
         "status": row.status,
@@ -303,7 +274,6 @@ def _batch_payload(row: AlwaysOnStockBatch) -> dict:
         "pending_bags": row.pending_bags,
         "last_error": row.last_error,
         "attempts": row.attempts,
-        "posted_at": _iso(row.posted_at),
         "items": [_posting_payload(item) for item in items],
     }
 
@@ -329,9 +299,9 @@ def _selected_day(value: date | str | None) -> date | None:
 
 def _dominant_brand_by_color(
     camera: str,
-    selected_day: date | None,
-    selected_start: datetime | None,
-    selected_end: datetime | None,
+    selected_day: date,
+    selected_start: datetime,
+    selected_end: datetime,
 ) -> dict[str, str | None]:
     """Return the classified brand seen most often for each event colour.
 
@@ -346,16 +316,13 @@ def _dominant_brand_by_color(
     regardless of database order.
     """
 
-    if selected_day is None or selected_start is None or selected_end is None:
-        return {}
-
     daily = (
         AlwaysOnDailyAnalytics.objects.filter(
             camera=camera,
             day=selected_day,
             archived_at__isnull=True,
         )
-        .only("camera", "day", "model_total", "model_per_color", "model_per_brand")
+        .only("camera", "day", "model_total", "model_per_color")
         .first()
     )
     if daily is None:
@@ -423,13 +390,11 @@ def _dominant_brand_by_color(
         consumed[color] += 1
         remaining_events -= 1
 
-        # Keep this compatible with event_sync._event_brand.  Explicit
-        # ``unknown`` and legacy ``unclassified`` values are evidence that no
-        # brand was identified, so they cannot become a dominant brand.
-        if classified_brand is not None:
-            brand = " ".join(classified_brand.split()).lower()
-            if brand and len(brand) <= 100 and brand not in NON_DOMINANT_BRANDS:
-                brand_counts[color][brand] += 1
+        # Explicit ``unknown`` and legacy ``unclassified`` values are evidence
+        # that no brand was identified, so they cannot become a dominant brand.
+        brand = normalize_brand(classified_brand)
+        if brand is not None:
+            brand_counts[color][brand] += 1
         if remaining_events == 0:
             break
 
@@ -443,6 +408,65 @@ def _dominant_brand_by_color(
             else None
         )
         for color in sorted(active_counts)
+    }
+
+
+def _selected_day_section(
+    camera: str, selected_day: date | None, *, now: datetime
+) -> dict:
+    """Runs of one calendar day behind a chart bar; empty without a day."""
+
+    if selected_day is None:
+        return {
+            "dominant_brand_by_color": {},
+            "day_runs": [],
+            "algorithm_day_runs": [],
+            "run_smoothing": _run_smoothing_payload([])[1],
+        }
+    selected_start, selected_end = local_day_window(selected_day)
+    day_runs = list(
+        AlwaysOnProductionRun.objects.filter(
+            camera=camera,
+            # Analytics chart days are calendar dates.  ``business_day``
+            # is a warehouse shift marker and changes at 19:00, so using
+            # it here would put a 20:00 interval under tomorrow's bar.
+            # Overlap also preserves legacy rows created before runs were
+            # split at local midnight.  ``gte`` keeps a legitimate first
+            # bag counted exactly at 00:00 in the new calendar day.
+            started_at__lt=selected_end,
+            last_counted_at__gte=selected_start,
+        ).order_by("started_at", "id")
+    )
+    # Bags the camera left as ``unknown`` show their resolved colour with a
+    # marker; the stored run ledger keeps the camera's answer.
+    raw_day_runs = resolved_day_runs(
+        camera,
+        day_runs,
+        [
+            _run_payload(
+                row,
+                now=now,
+                selected_start=selected_start,
+                selected_end=selected_end,
+            )
+            for row in day_runs
+        ],
+        start=selected_start,
+        end=selected_end,
+    )
+    algorithm_day_runs, run_smoothing = _run_smoothing_payload(raw_day_runs)
+    return {
+        "dominant_brand_by_color": _dominant_brand_by_color(
+            camera,
+            selected_day,
+            selected_start,
+            selected_end,
+        ),
+        # The exact journal remains visible and backward-compatible.  The
+        # algorithm view is derived only for selected-day analytics.
+        "day_runs": raw_day_runs,
+        "algorithm_day_runs": algorithm_day_runs,
+        "run_smoothing": run_smoothing,
     }
 
 
@@ -465,23 +489,15 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
             "name", "color", "weight_kg", "id"
         )
     )
-    compatibility_warehouse = _compatibility_warehouse()
-    compatibility_warehouse_id = compatibility_warehouse.pk
-    stock_rows = list(
-        StockItem.objects.filter(product_id__in=[p.pk for p in products])
-        .select_related("warehouse")
-        .order_by("warehouse_id", "id")
-    )
-    stock_by_product: dict[int, StockItem] = {}
+    stock_rows = StockItem.objects.filter(
+        product_id__in=[p.pk for p in products]
+    ).values_list("product_id", "warehouse_id")
+    stocked_products: set[int] = set()
     warehouses_by_product: dict[int, set[int]] = defaultdict(set)
-    for row in stock_rows:
-        effective_warehouse_id = _effective_stock_warehouse_id(
-            row,
-            compatibility_warehouse_id=compatibility_warehouse_id,
-        )
-        warehouses_by_product[row.product_id].add(effective_warehouse_id)
-        if effective_warehouse_id == warehouse.pk:
-            stock_by_product[row.product_id] = row
+    for product_id, warehouse_id in stock_rows:
+        warehouses_by_product[product_id].add(warehouse_id)
+        if warehouse_id == warehouse.pk:
+            stocked_products.add(product_id)
     mapping_rows = list(
         AlwaysOnColorProductMapping.objects.filter(camera=camera)
         .select_related("product")
@@ -489,16 +505,10 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     )
     mapping_by_color = {row.color: row for row in mapping_rows}
 
-    def mapping_matches_warehouse(mapping: AlwaysOnColorProductMapping) -> bool:
-        stock_item = stock_by_product.get(mapping.product_id)
-        return (
-            stock_item is not None
-            and _effective_stock_warehouse_id(
-                stock_item,
-                compatibility_warehouse_id=compatibility_warehouse_id,
-            )
-            == warehouse.pk
-        )
+    def is_configured(mapping: AlwaysOnColorProductMapping | None) -> bool:
+        # ``stocked_products`` holds only active products stocked in the
+        # camera's warehouse.
+        return mapping is not None and mapping.product_id in stocked_products
 
     observed_colors = set(
         AlwaysOnProductionRun.objects.filter(camera=camera)
@@ -531,60 +541,16 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
     preview = []
     for color in preview_colors:
         mapping = mapping_by_color.get(color)
-        configured = bool(
-            mapping and mapping.product.is_active and mapping_matches_warehouse(mapping)
-        )
         preview.append(
             {
                 "color": color,
                 **totals[color],
                 "product": mapping.product_id if mapping else None,
                 "product_label": str(mapping.product) if mapping else None,
-                "configured": configured,
+                "configured": is_configured(mapping),
             }
         )
 
-    runs = list(
-        AlwaysOnProductionRun.objects.filter(camera=camera).order_by(
-            "-started_at", "-id"
-        )[:100]
-    )
-    # ``runs`` remains the compact recent journal used by the settings view.
-    # A selected analytics day must not silently lose intervals merely because
-    # more than 100 newer runs exist, so it has a separate complete query.
-    selected_start = (
-        timezone.make_aware(
-            datetime.combine(selected_day, time.min),
-            _default_timezone(),
-        )
-        if selected_day is not None
-        else None
-    )
-    selected_end = (
-        timezone.make_aware(
-            datetime.combine(selected_day + timedelta(days=1), time.min),
-            _default_timezone(),
-        )
-        if selected_day is not None
-        else None
-    )
-    day_runs = (
-        list(
-            AlwaysOnProductionRun.objects.filter(
-                camera=camera,
-                # Analytics chart days are calendar dates.  ``business_day``
-                # is a warehouse shift marker and changes at 19:00, so using
-                # it here would put a 20:00 interval under tomorrow's bar.
-                # Overlap also preserves legacy rows created before runs were
-                # split at local midnight.  ``gte`` keeps a legitimate first
-                # bag counted exactly at 00:00 in the new calendar day.
-                started_at__lt=selected_end,
-                last_counted_at__gte=selected_start,
-            ).order_by("started_at", "id")
-        )
-        if selected_day is not None
-        else []
-    )
     batches = list(
         AlwaysOnStockBatch.objects.filter(camera=camera)
         .select_related("warehouse")
@@ -597,30 +563,6 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         )
         .order_by("-business_day", "-id")[:31]
     )
-    raw_day_runs = [
-        _run_payload(
-            row,
-            now=now,
-            selected_start=selected_start,
-            selected_end=selected_end,
-        )
-        for row in day_runs
-    ]
-    # Bags the camera left as ``unknown`` show their resolved colour with a
-    # marker; the stored run ledger keeps the camera's answer.
-    raw_day_runs, color_resolution_summary = (
-        resolved_day_runs(
-            camera,
-            day_runs,
-            raw_day_runs,
-            start=selected_start,
-            end=selected_end,
-            iso=_iso,
-        )
-        if selected_start is not None and selected_end is not None
-        else (raw_day_runs, None)
-    )
-    algorithm_day_runs, run_smoothing = _run_smoothing_payload(raw_day_runs)
     return {
         "camera": camera,
         "warehouse": warehouse.pk,
@@ -636,31 +578,13 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
             for row in warehouses
         ],
         "selected_day": selected_day.isoformat() if selected_day else None,
-        "dominant_brand_by_color": _dominant_brand_by_color(
-            camera,
-            selected_day,
-            selected_start,
-            selected_end,
-        ),
-        # The exact journal remains visible and backward-compatible.  The
-        # algorithm view is derived only for selected-day analytics.
-        "day_runs": raw_day_runs,
-        "algorithm_day_runs": algorithm_day_runs,
-        "run_smoothing": run_smoothing,
-        **(
-            {"color_resolution": color_resolution_summary}
-            if color_resolution_summary is not None
-            else {}
-        ),
+        **_selected_day_section(camera, selected_day, now=now),
         "timezone": settings.TIME_ZONE,
         "close_time": CLOSE_TIME.strftime("%H:%M"),
         "current_business_day": current_day.isoformat(),
         "next_run_at": _iso(scheduled_for(current_day)),
         "fully_configured": all(
-            color in mapping_by_color
-            and mapping_by_color[color].product.is_active
-            and mapping_matches_warehouse(mapping_by_color[color])
-            for color in available_colors
+            is_configured(mapping_by_color.get(color)) for color in available_colors
         ),
         "available_colors": available_colors,
         "mappings": [
@@ -670,13 +594,10 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         "products": [
             _product_payload(
                 product,
-                stock_item=stock_by_product.get(product.pk),
                 warehouse_ids=warehouses_by_product.get(product.pk),
-                compatibility_warehouse=compatibility_warehouse,
             )
             for product in products
         ],
-        "runs": [_run_payload(row, now=now) for row in runs],
         "preview": preview,
         # Current shift bags still without a colour: posted later, never
         # blocking. «Указать цвет» assigns them (production.assign_unknown_color).

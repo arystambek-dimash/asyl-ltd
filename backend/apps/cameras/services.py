@@ -35,19 +35,23 @@ CAMERA_HOST = settings.CAMERA_HOST
 CAMERA_PORT = settings.CAMERA_PORT
 CAMERA_USER = settings.CAMERA_USER
 CAMERA_PASS = settings.CAMERA_PASS
-GO2RTC_API = settings.GO2RTC_API_URL
 
-# Столько camN-слотов захардкожено в go2rtc.yaml (вместе с camNai);
+# Столько camN-слотов захардкожено в go2rtc.yaml (вместе с camNmain);
 # он же — верхняя граница резервного перебора.
 MAX_CAMERAS = 32
 PROBE_TIMEOUT = 12  # сек; on-demand источник у MediaMTX поднимается 2–10 с
+# Снимок последнего обновления (реальный список или офлайн-вид при сбое)
+# живёт долго, а его свежесть — отдельным ключом: протухший снимок отдаётся
+# как есть, пока фон обновляет его (stale-while-revalidate). Простое
+# истечение срока — не сбой связи и не должно гасить всю стену.
 CACHE_KEY = "cameras:discovered:v6"
-CACHE_TTL = 240  # сек; инвентарь на ПК обновляется раз в ~5 мин
+FRESH_KEY = "cameras:discovered-fresh:v6"
+CACHE_TTL = 240  # сек свежести; инвентарь на ПК обновляется раз в ~5 мин
 LAST_GOOD_CACHE_KEY = "cameras:last-good:v6"
 LAST_GOOD_TTL = 7 * 24 * 3600
-EMPTY_CACHE_TTL = 15  # полный сбой не должен приклеить пустую стену на 4 минуты
+EMPTY_CACHE_TTL = 15  # сбой перепроверяется часто, чтобы стена быстро ожила
 # Один воркер за раз выполняет дорогое обнаружение. Остальные сразу получают
-# last-known-good, поэтому недоступный ПК цеха не превращается в очередь
+# последний снимок, поэтому недоступный ПК цеха не превращается в очередь
 # gunicorn-воркеров, ждущих сетевых таймаутов.
 REFRESH_LOCK_KEY = "cameras:discovering:v6"
 # Пробы (до 2 волн по 12 с) плюс запрос инвентаря; замок снимается сам, если
@@ -107,10 +111,7 @@ def update_cached_counting_line(camera: str, payload: dict) -> None:
     ):
         return
 
-    for key, timeout in (
-        (CACHE_KEY, CACHE_TTL),
-        (LAST_GOOD_CACHE_KEY, LAST_GOOD_TTL),
-    ):
+    for key in (CACHE_KEY, LAST_GOOD_CACHE_KEY):
         snapshot = cache.get(key)
         if not isinstance(snapshot, list):
             continue
@@ -123,7 +124,7 @@ def update_cached_counting_line(camera: str, payload: dict) -> None:
             else:
                 updated.append(item)
         if changed:
-            cache.set(key, updated, timeout)
+            cache.set(key, updated, LAST_GOOD_TTL)
 
 
 def _offline_view(cameras: list[dict]) -> list[dict]:
@@ -137,20 +138,63 @@ def _offline_view(cameras: list[dict]) -> list[dict]:
     ]
 
 
+def _merge_probe_status(last_good: list[dict], probed: list[dict]) -> list[dict]:
+    """Живой статус NVR-каналов из проб поверх топологии инвентаря.
+
+    Пробы знают только cam1..camN с id по номеру канала, без direct/locked
+    камер и линий подсчёта, поэтому топологию не заменяют: берётся только
+    online по src, остальные камеры инвентаря показываются как потерявшие связь.
+    """
+    online = {camera["src"]: camera["online"] for camera in probed}
+    return [
+        {**camera, "online": online[camera.get("src")]}
+        if camera.get("src") in online
+        else _offline_view([camera])[0]
+        for camera in last_good
+    ]
+
+
+def _store_snapshot(cameras: list[dict], fresh_ttl: int) -> list[dict]:
+    cache.set(CACHE_KEY, cameras, LAST_GOOD_TTL)
+    cache.set(FRESH_KEY, True, fresh_ttl)
+    return cameras
+
+
 def _refresh_cameras() -> list[dict]:
     """Дорогое обнаружение: запрос инвентаря и/или RTSP-пробы."""
+    last_good = cache.get(LAST_GOOD_CACHE_KEY) or []
     cameras = _discover_by_inventory()
+    # Last-good пишется только из инвентаря или из проб, когда инвентаря нет
+    # вовсе. Пока настроенный инвентарь временно недоступен, урезанный
+    # результат проб не должен затирать топологию по MAC.
+    authoritative = cameras is not None or not ai.enabled()
     if cameras is None:
         cameras = _discover_by_probe()
+        if cameras and not authoritative and last_good:
+            cameras = _merge_probe_status(last_good, cameras)
 
     if cameras:
-        cache.set(LAST_GOOD_CACHE_KEY, cameras, LAST_GOOD_TTL)
-        cache.set(CACHE_KEY, cameras, CACHE_TTL)
-        return cameras
+        if authoritative:
+            cache.set(LAST_GOOD_CACHE_KEY, cameras, LAST_GOOD_TTL)
+        return _store_snapshot(cameras, CACHE_TTL)
 
-    cameras = _offline_view(cache.get(LAST_GOOD_CACHE_KEY) or [])
-    cache.set(CACHE_KEY, cameras, EMPTY_CACHE_TTL)
-    return cameras
+    return _store_snapshot(_offline_view(last_good), EMPTY_CACHE_TTL)
+
+
+def _refresh_in_background() -> None:
+    """Одно фоновое обновление за раз: параллельные запросы не множат пробы."""
+    if not cache.add(REFRESH_LOCK_KEY, "1", REFRESH_LOCK_TTL):
+        return
+
+    def refresh() -> None:
+        try:
+            _refresh_cameras()
+        except Exception:  # фоновая изоляция
+            log.exception("Фоновое обновление списка камер не удалось")
+        finally:
+            cache.delete(REFRESH_LOCK_KEY)
+
+    threading.Thread(target=refresh, name="camera-discovery", daemon=True).start()
 
 
 def discover_cameras() -> list[dict]:
@@ -162,34 +206,24 @@ def discover_cameras() -> list[dict]:
     зависала бы на «Загрузка…» каждый раз, когда цех офлайн.
 
     Поэтому ожидание сети допускается только когда показать вообще нечего.
-    Если известна прошлая топология, ответ отдаётся мгновенно, а обновление
-    выполняется в фоне: плитки живут с ``online=False``, плееры сами
-    переподключаются и оживают сразу после восстановления связи.
+    Иначе отдаётся последний снимок как есть — реальный список или офлайн-вид
+    после сбоя, — а протухший обновляется в фоне. Если снимок потерян
+    (сброс кэша), известная топология показывается с ``online=False``:
+    плееры сами переподключаются и оживают после обновления.
     """
-    cached = cache.get(CACHE_KEY)
-    if cached is not None:
-        return cached
+    snapshot = cache.get(CACHE_KEY)
+    if snapshot is not None and cache.get(FRESH_KEY):
+        return snapshot
 
-    last_good = cache.get(LAST_GOOD_CACHE_KEY)
-    if not last_good:
-        # Первый запуск: показать нечего, приходится дождаться обнаружения.
-        return _refresh_cameras()
+    if snapshot is None:
+        last_good = cache.get(LAST_GOOD_CACHE_KEY)
+        if not last_good:
+            # Первый запуск: показать нечего, приходится дождаться обнаружения.
+            return _refresh_cameras()
+        snapshot = _offline_view(last_good)
 
-    # Обновляем в фоне и не даём параллельным запросам множить сетевые пробы.
-    if cache.add(REFRESH_LOCK_KEY, "1", REFRESH_LOCK_TTL):
-        def refresh() -> None:
-            try:
-                _refresh_cameras()
-            except Exception:  # pragma: no cover - фоновая изоляция
-                log.exception("Фоновое обновление списка камер не удалось")
-            finally:
-                cache.delete(REFRESH_LOCK_KEY)
-
-        threading.Thread(
-            target=refresh, name="camera-discovery", daemon=True
-        ).start()
-
-    return _offline_view(last_good)
+    _refresh_in_background()
+    return snapshot
 
 
 # --- основной путь: инвентарь ai_service -----------------------------------
@@ -259,7 +293,7 @@ def _natural(s: str) -> tuple:
 
 
 def _static_slot(path: str) -> bool:
-    """cam1..cam32 (и их camNai/camNmain) уже прописаны в go2rtc.yaml."""
+    """cam1..cam32 (и их camNmain) уже прописаны в go2rtc.yaml."""
     m = re.fullmatch(r"cam(\d+)", path)
     if m is None:
         return False
@@ -277,14 +311,13 @@ def _sync_go2rtc(pairs: list[tuple[str, str]]) -> None:
     ffmpeg-источник go2rtc поднимет сам, только если кодек консюмеру не
     подошёл (та же схема, что у статик-слотов в go2rtc.yaml).
     """
-    if not GO2RTC_API:
+    if not ai.GO2RTC_API:
         return
     base = f"rtsp://{CAMERA_USER}:{CAMERA_PASS}@{CAMERA_HOST}:{CAMERA_PORT}"
     for path, sub in pairs:
         if _static_slot(path):
             continue
         _go2rtc_put(path, f"{base}/{sub}", f"ffmpeg:{path}#video=h264")
-        _go2rtc_put(f"{path}ai", f"{base}/{path}ai")
         if ai.CAM_RE.fullmatch(path):
             # MediaMTX inventory's path is the main stream; sub is a separate
             # path. OCR and its preview must use the same full-resolution frame.
@@ -295,7 +328,7 @@ def _sync_go2rtc(pairs: list[tuple[str, str]]) -> None:
 
 def _go2rtc_put(name: str, *srcs: str) -> None:
     q = urllib.parse.urlencode([("name", name), *(("src", s) for s in srcs)])
-    req = urllib.request.Request(f"{GO2RTC_API}/api/streams?{q}", method="PUT")
+    req = urllib.request.Request(f"{ai.GO2RTC_API}/api/streams?{q}", method="PUT")
     try:
         urllib.request.urlopen(req, timeout=3).close()
     except OSError as e:

@@ -12,9 +12,11 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("@/components/camera-stream", () => ({
   CameraStream: ({ src }: { src: string }) => <div data-testid="number-preview">{src}</div>,
-  ensureCameraStreamToken: vi.fn(),
 }));
-vi.mock("@/lib/use-video-box", () => ({ useVideoBox: () => ({ left: 0, top: 0, width: 640, height: 360 }) }));
+vi.mock("@/lib/use-video-box", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/use-video-box")>()),
+  useVideoBox: () => ({ left: 0, top: 0, width: 640, height: 360 }),
+}));
 
 const url = "/cameras/cam1/transport-camera/";
 const unset: ShippingTransportCameraSettings = {

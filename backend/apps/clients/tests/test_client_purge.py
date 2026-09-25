@@ -13,7 +13,7 @@ pytestmark = pytest.mark.django_db
 
 def _client_with_history():
     product = Product.objects.create(
-        name="Мука", color="Red", weight_kg="50", price="1000")
+        name="Мука", color="Red", weight_kg="50")
     client = Client.objects.create_with_user(
         first_name="Тест", last_name="Клиент", phone="x")
     client.user.is_active = True
@@ -26,14 +26,11 @@ def _client_with_history():
     return client
 
 
-def test_superadmin_purges_client_with_orders(auth_client, make_user):
+def test_superadmin_purges_client_with_orders(auth_client, admin_user):
     client = _client_with_history()
     portal_user = client.user
-    root = make_user(username="root")
-    root.is_superuser = True
-    root.save(update_fields=["is_superuser"])
 
-    resp = auth_client(root).post(f"/api/clients/{client.id}/purge/")
+    resp = auth_client(admin_user).post(f"/api/clients/{client.id}/purge/")
 
     assert resp.status_code == 204
     assert not Client.objects.filter(pk=client.pk).exists()
@@ -55,7 +52,8 @@ def test_purge_denied_for_non_superadmin(auth_client, user_with_perms):
 
 
 def test_superadmin_cannot_purge_client_with_open_ai_session(
-    auth_client, make_user,
+    auth_client,
+    admin_user,
 ):
     client = _client_with_history()
     order = Order.objects.get(client=client)
@@ -67,11 +65,8 @@ def test_superadmin_cannot_purge_client_with_open_ai_session(
         camera="cam2",
         status=AiCountingSession.ACTIVE,
     )
-    root = make_user(username="active-purge-root")
-    root.is_superuser = True
-    root.save(update_fields=["is_superuser"])
 
-    response = auth_client(root).post(f"/api/clients/{client.id}/purge/")
+    response = auth_client(admin_user).post(f"/api/clients/{client.id}/purge/")
 
     assert response.status_code == 400
     assert response.data["code"] == "active_loading"

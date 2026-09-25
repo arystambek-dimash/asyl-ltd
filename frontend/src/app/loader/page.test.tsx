@@ -1,12 +1,26 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AxiosError, AxiosHeaders } from "axios";
 import type { LoaderOrder } from "@/lib/loader";
+import { pagedState } from "@/test-utils/api";
+import { makeLoaderOrder } from "@/test-utils/factories";
 import { formatTime, todayLocalIsoDate } from "@/lib/utils";
 import type { WagonReportScope, WagonReportSent } from "@/lib/wagon-report";
 
 import LoaderPage from "./page";
+
+function blobError(detail: string): AxiosError {
+  const error = new AxiosError("failed");
+  error.response = {
+    status: 400,
+    statusText: "",
+    data: new Blob([JSON.stringify({ detail })], { type: "application/json" }),
+    headers: new AxiosHeaders(),
+    config: { headers: new AxiosHeaders() },
+  };
+  return error;
+}
 
 const ALL_AREAS = ["loader.view", "loader.confirm", "loader.trucks", "loader.wagons"];
 
@@ -20,7 +34,6 @@ const mocks = vi.hoisted(() => ({
   applyItems: vi.fn(),
   polling: [] as { poll: () => Promise<unknown>; interval: number; active: boolean }[],
   apiUrls: [] as (string | null)[],
-  showToast: vi.fn(),
   railRow: null as LoaderOrder | null,
   reportSent: null as WagonReportSent | null,
 }));
@@ -46,12 +59,16 @@ vi.mock("@/lib/use-visible-polling", () => ({
     mocks.polling.push({ poll, interval, active });
   },
 }));
-vi.mock("@/lib/api", () => ({ api: { post: mocks.post }, apiError: (e: Error) => e.message }));
+vi.mock("@/lib/api", async (importOriginal) => ({
+  // blobApiError настоящий: накладная приходит Blob-ом, и ошибка сервера тоже.
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  api: { post: mocks.post },
+  apiError: (e: Error) => e.message,
+}));
 vi.mock("@/lib/loader", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/loader")>()),
   openWaybill: mocks.openWaybill,
 }));
-vi.mock("@/lib/toast", () => ({ showToast: mocks.showToast }));
 // Лист отчёта проверен своими тестами; здесь — как страница его открывает и применяет ответ.
 vi.mock("@/components/loader/rail-report-sheet", () => ({
   RailReportSheet: ({ orderId, onApplied }: { orderId: number | null; onApplied: (row: LoaderOrder) => void }) => (
@@ -74,59 +91,39 @@ vi.mock("@/components/loader/wagon-report-modal", () => ({
     </div>
   ),
 }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({
-    children,
-    tabs,
-    actions,
-    footer,
-  }: {
-    children: ReactNode;
-    tabs?: ReactNode;
-    actions?: ReactNode;
-    footer?: ReactNode;
-  }) => (
-    <main>
-      {actions}
-      {tabs}
-      {children}
-      <footer>{footer}</footer>
-    </main>
-  ),
-}));
-
-const order = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder => ({
-  id,
-  status: "confirmed",
-  transport_type: "truck",
-  truck_number: "",
-  currency: "KZT",
-  arrival_date: null,
-  created_at: "2026-09-16T10:00:00+05:00",
-  client_name: "ИП Мурат",
-  items: [{ label: "Д1с · Красный 50 кг", quantity: 2, weight_kg: "50.00", unit_price: "10000.00" }],
-  bags: 2,
-  total_kg: "100.00",
-  total_amount: "20000.00",
-  shipped_at: null,
-  ...fields,
+// Окно настроек накладной — со своим черновиком; здесь важно, что каждое открытие начинается заново.
+vi.mock("@/components/loader/waybill-settings-modal", async () => {
+  const { useState } = await import("react");
+  return {
+    WaybillSettingsModal: function WaybillSettingsStub({ onClose }: { onClose: () => void }) {
+      const [draft, setDraft] = useState("");
+      return (
+        <div role="dialog" aria-label="Накладная">
+          <input aria-label="Точка в шапке" value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <button type="button" onClick={onClose}>
+            Отмена
+          </button>
+        </div>
+      );
+    },
+  };
 });
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+
+/** Заказ ИП Мурат: два мешка «Д1с · Красный 50 кг» на 20 000 ₸. */
+const order = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder =>
+  makeLoaderOrder(id, {
+    client_name: "ИП Мурат",
+    items: [{ label: "Д1с · Красный 50 кг", quantity: 2, weight_kg: "50.00", unit_price: "10000.00" }],
+    bags: 2,
+    total_kg: "100.00",
+    total_amount: "20000.00",
+    remaining_amount: "20000.00",
+    ...fields,
+  });
 
 function paged(items: LoaderOrder[], fields: { refreshError?: string; applyItems?: typeof mocks.applyItems } = {}) {
-  return {
-    items,
-    count: items.length,
-    hasMore: false,
-    loading: false,
-    loadingMore: false,
-    error: "",
-    refreshError: "",
-    reload: mocks.reload,
-    refresh: mocks.refresh,
-    loadMore: vi.fn(),
-    applyItems: mocks.applyItems,
-    ...fields,
-  };
+  return pagedState(items, { reload: mocks.reload, refresh: mocks.refresh, applyItems: mocks.applyItems, ...fields });
 }
 
 const queueUrls = () =>
@@ -143,7 +140,6 @@ describe("LoaderPage", () => {
     mocks.applyItems.mockReset();
     mocks.polling = [];
     mocks.apiUrls = [];
-    mocks.showToast.mockReset();
     mocks.railRow = null;
     mocks.reportSent = null;
     localStorage.clear();
@@ -316,7 +312,7 @@ describe("LoaderPage", () => {
     const historyApply = vi.fn();
     mocks.paged.mockImplementation((url: string | null) => {
       if (url?.startsWith("/loader/queue/"))
-        return paged([order(624, { truck_number: "111 AAA 01", arrival_date: today })], { applyItems: queueApply });
+        return paged([order(624, { truck_number: "111 AAA 01", planned_on: today })], { applyItems: queueApply });
       if (url?.startsWith("/loader/history/"))
         return paged([order(620, { status: "shipped", shipped_at: "2026-09-18T11:31:00+05:00", can_rollback: true })], {
           applyItems: historyApply,
@@ -325,10 +321,10 @@ describe("LoaderPage", () => {
     });
     mocks.post.mockImplementation(async (url: string) => {
       if (url === "/loader/orders/624/dispatch/")
-        return { data: order(624, { status: "shipped", can_rollback: true, arrival_date: today }) };
-      if (url === "/loader/orders/624/rollback/") return { data: order(624, { arrival_date: today }) };
+        return { data: order(624, { status: "shipped", can_rollback: true, planned_on: today }) };
+      if (url === "/loader/orders/624/rollback/") return { data: order(624, { planned_on: today }) };
       // Заказ 620 ждали на прошлой неделе: под «Сегодня» он в очередь не встаёт.
-      return { data: order(620, { arrival_date: "2000-01-01" }) };
+      return { data: order(620, { planned_on: "2000-01-01" }) };
     });
     render(<LoaderPage />);
 
@@ -340,7 +336,7 @@ describe("LoaderPage", () => {
     expect(await screen.findByText(/Отгрузка заказа №624 отменена/)).toBeInTheDocument();
     // Ответ отмены — строка очереди: заказ встаёт на своё место без перезагрузки.
     const [putBack] = queueApply.mock.calls.at(-1)!;
-    expect(putBack([order(626, { arrival_date: today })]).map((row: LoaderOrder) => row.id)).toEqual([624, 626]);
+    expect(putBack([order(626, { planned_on: today })]).map((row: LoaderOrder) => row.id)).toEqual([624, 626]);
 
     await user.click(screen.getByRole("tab", { name: /История/ }));
     await user.click(screen.getByRole("button", { name: /Отменить$/ }));
@@ -348,7 +344,7 @@ describe("LoaderPage", () => {
     const [fromHistory] = historyApply.mock.calls.at(-1)!;
     expect(fromHistory([order(620), order(621)]).map((row: LoaderOrder) => row.id)).toEqual([621]);
     const [notShown] = queueApply.mock.calls.at(-1)!;
-    expect(notShown([order(626, { arrival_date: today })]).map((row: LoaderOrder) => row.id)).toEqual([626]);
+    expect(notShown([order(626, { planned_on: today })]).map((row: LoaderOrder) => row.id)).toEqual([626]);
     expect(mocks.reload).not.toHaveBeenCalled();
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
@@ -362,7 +358,7 @@ describe("LoaderPage", () => {
         return paged([order(620, { status: "shipped", shipped_at: "2026-09-18T11:31:00+05:00", can_rollback: true })]);
       return paged([]);
     });
-    mocks.post.mockResolvedValue({ data: order(620, { arrival_date: todayLocalIsoDate() }) });
+    mocks.post.mockResolvedValue({ data: order(620, { planned_on: todayLocalIsoDate() }) });
     render(<LoaderPage />);
 
     await user.click(screen.getByRole("tab", { name: /История/ }));
@@ -384,14 +380,18 @@ describe("LoaderPage", () => {
             order(700, {
               truck_number: "111 AAA 01",
               payment_status: "settled",
-              paid_total: "20000.00",
               remaining_amount: "0.00",
             }),
             order(701, {
               truck_number: "222 BBB 02",
               payment_status: "unpaid",
-              paid_total: "0.00",
               remaining_amount: "20000.00",
+            }),
+            // Заказ без суммы: остатка нет, но бэкенд считает его не оплаченным.
+            order(702, {
+              truck_number: "333 CCC 03",
+              payment_status: "unpaid",
+              remaining_amount: "0.00",
             }),
           ])
         : paged([]),
@@ -400,6 +400,7 @@ describe("LoaderPage", () => {
 
     expect(screen.getByText("Оплачен")).toBeInTheDocument();
     expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
+    expect(screen.getByText(/Не оплачен · 0 ₸/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /№701/ }));
     expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
@@ -415,7 +416,7 @@ describe("LoaderPage", () => {
 
     // Очередь спрашивается за сегодня; параллельный вызов истории с null не мешает.
     const lastQueueUrl = () => queueUrls().at(-1);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayLocalIsoDate();
     expect(lastQueueUrl()).toBe(`/loader/queue/?transport=truck&day=${today}`);
     expect(screen.getByRole("button", { name: "Сегодня" })).toHaveAttribute("aria-pressed", "true");
 
@@ -429,10 +430,7 @@ describe("LoaderPage", () => {
   it("группирует очередь по дням: просрочка отдельно от сегодняшних", async () => {
     mocks.paged.mockImplementation((url: string | null) => {
       if (url?.startsWith("/loader/queue/"))
-        return paged([
-          order(700, { arrival_date: "2000-01-01" }),
-          order(701, { arrival_date: new Date().toISOString().slice(0, 10) }),
-        ]);
+        return paged([order(700, { planned_on: "2000-01-01" }), order(701, { planned_on: todayLocalIsoDate() })]);
       return paged([]);
     });
     render(<LoaderPage />);
@@ -453,6 +451,17 @@ describe("LoaderPage", () => {
     );
     await user.click(screen.getByRole("button", { name: /Накладная/ }));
     expect(mocks.openWaybill).toHaveBeenCalledWith(620);
+  });
+
+  it("накладная не открылась — показывает причину сервера, а не общую ошибку", async () => {
+    mocks.openWaybill.mockRejectedValue(blobError("Накладная печатается после отгрузки"));
+    const user = userEvent.setup();
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("tab", { name: /История/ }));
+    await user.click(screen.getByRole("button", { name: /Накладная/ }));
+
+    expect(await screen.findByText("Накладная печатается после отгрузки")).toBeInTheDocument();
   });
 
   it("вкладки «Фуры | Вагоны» по областям: запросы с транспортом, выбор запоминается", async () => {
@@ -544,6 +553,20 @@ describe("LoaderPage", () => {
     expect(lastPoll().active).toBe(true);
     await user.click(screen.getByRole("button", { name: "Настройки накладной" }));
     expect(lastPoll().active).toBe(false);
+  });
+
+  it("настройки накладной при повторном открытии не показывают отменённый черновик", async () => {
+    const user = userEvent.setup();
+    mocks.permissions = [...ALL_AREAS, "sys_permissions.manage"];
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("button", { name: "Настройки накладной" }));
+    await user.type(screen.getByLabelText("Точка в шапке"), "отменённая правка");
+    await user.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(screen.queryByRole("dialog", { name: "Накладная" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Настройки накладной" }));
+    expect(screen.getByLabelText("Точка в шапке")).toHaveValue("");
   });
 
   it("свою отгрузку не выдаёт за чужую, даже если опрос вернулся раньше её ответа", async () => {
@@ -734,7 +757,7 @@ describe("LoaderPage", () => {
     const [marked] = historyApply.mock.calls.at(-1)!;
     const rows = marked([order(366, { shipped_at: sentAt }), order(360)]);
     expect(rows[0]).toMatchObject({ report_status: "queued", report_sent_to: "Динаре", report_sent_at: sentAt });
-    expect(rows[1].report_sent_at).toBeUndefined();
+    expect(rows[1].report_sent_at).toBeNull();
     expect(mocks.reload).not.toHaveBeenCalled();
   });
 

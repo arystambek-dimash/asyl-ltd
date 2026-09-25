@@ -1,6 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCartStore } from "@/store/cart";
 
@@ -11,12 +10,8 @@ const mocks = vi.hoisted(() => ({ useApi: vi.fn(), post: vi.fn(), reload: vi.fn(
 vi.mock("@/lib/use-api", () => ({ useApi: mocks.useApi }));
 vi.mock("@/lib/api", () => ({ api: { post: mocks.post }, apiError: (e: Error) => e.message }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { id: 7, is_client: true } }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main>,
-}));
-vi.mock("next/link", () => ({
-  default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("next/link", () => import("@/test-utils/next-link"));
 
 const products = [
   { id: 1, label: "Красный 25 кг", weight_kg: "25.00", price: "25000.00", currency: "KZT", available_bags: 4321 },
@@ -51,8 +46,9 @@ describe("PortalCartPage", () => {
 
     expect(screen.getByText("25 000 ₸ × 2")).toBeInTheDocument();
     expect(screen.getByText("Товар больше недоступен")).toBeInTheDocument();
-    expect(screen.getByText("3 мешка")).toBeInTheDocument();
-    expect(screen.getByText("100 000 ₸")).toBeInTheDocument();
+    const page = within(screen.getByRole("main"));
+    expect(page.getByText("3 мешка")).toBeInTheDocument();
+    expect(page.getByText("100 000 ₸")).toBeInTheDocument();
     expect(screen.queryByText(/4321|4 321|в наличии|остаток/i)).not.toBeInTheDocument();
 
     const stepper = screen.getByRole("group", { name: "Количество: Красный 25 кг" });
@@ -60,7 +56,7 @@ describe("PortalCartPage", () => {
     await user.click(within(stepper).getByRole("button", { name: /Больше/ }));
 
     expect(screen.getByText("25 000 ₸ × 3")).toBeInTheDocument();
-    expect(screen.getByText("125 000 ₸")).toBeInTheDocument();
+    expect(page.getByText("125 000 ₸")).toBeInTheDocument();
   });
 
   it("оформляет заказ из доступных позиций, показывает номер и очищает корзину", async () => {

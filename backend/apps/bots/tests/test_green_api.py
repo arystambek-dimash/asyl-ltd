@@ -3,42 +3,20 @@ import io
 import json
 import socket
 import urllib.error
-from datetime import UTC, datetime
 
 import pytest
 
+from apps.bots.models import BotMessage
 from apps.bots.providers.green_api import (
-    DELETED,
-    EDITED,
-    MESSAGE,
     GreenApiClient,
     GreenApiError,
-    GreenApiNotConfigured,
     GreenApiOutcomeUnknown,
     incoming_message,
     state_change,
 )
+from apps.bots.tests.whatsapp_fakes import GROUP, JIN, SENT_AT, text_webhook, webhook
 
-GROUP = "120363043968066561@g.us"
 TOKEN = "secret-token-123"
-
-
-def webhook(message_data, *, id_message="BAE5F4886F6F2D05", type_webhook="incomingMessageReceived", **extra):
-    return {
-        "typeWebhook": type_webhook,
-        "instanceData": {"idInstance": 1101000001, "wid": "77010000000@c.us", "typeInstance": "whatsapp"},
-        "timestamp": 1758268800,
-        "idMessage": id_message,
-        "senderData": {
-            "chatId": GROUP,
-            "chatName": "Отгрузка вагонов",
-            "sender": "998901112233@c.us",
-            "senderName": "Jin",
-            "senderContactName": "Джин-Син",
-        },
-        "messageData": message_data,
-        **extra,
-    }
 
 
 class FakeResponse(io.BytesIO):
@@ -76,12 +54,12 @@ def client(*responses):
 
 
 def test_text_message_is_read_with_sender_and_time():
-    message = incoming_message(webhook({"typeMessage": "textMessage", "textMessageData": {"textMessage": "отчёт"}}))
+    message = incoming_message(text_webhook("отчёт"))
 
-    assert message.kind == MESSAGE
-    assert (message.message_id, message.chat_id, message.chat_name) == ("BAE5F4886F6F2D05", GROUP, "Отгрузка вагонов")
-    assert (message.sender_id, message.sender_name, message.text) == ("998901112233@c.us", "Джин-Син", "отчёт")
-    assert message.sent_at == datetime(2025, 9, 19, 8, 0, tzinfo=UTC)
+    assert message.kind == BotMessage.MESSAGE
+    assert (message.message_id, message.chat_id, message.chat_name) == ("MSG1", GROUP, "Отгрузка вагонов")
+    assert (message.sender_id, message.sender_name, message.text) == (JIN, "Джин-Син", "отчёт")
+    assert message.sent_at == SENT_AT
     assert message.target_id == ""
 
 
@@ -101,16 +79,15 @@ def test_edit_and_delete_point_to_the_original_message():
         "typeMessage": "deletedMessage", "deletedMessageData": {"stanzaId": "ORIGINAL"},
     }, id_message="DELETE"))
 
-    assert (edited.kind, edited.target_id, edited.text) == (EDITED, "ORIGINAL", "исправленный отчёт")
-    assert (deleted.kind, deleted.target_id, deleted.text) == (DELETED, "ORIGINAL", "")
+    assert (edited.kind, edited.target_id, edited.text) == (BotMessage.EDITED, "ORIGINAL", "исправленный отчёт")
+    assert (deleted.kind, deleted.target_id, deleted.text) == (BotMessage.DELETED, "ORIGINAL", "")
 
 
 @pytest.mark.parametrize(
     "body",
     [
         webhook({"typeMessage": "imageMessage", "fileMessageData": {"caption": "фото отчёта"}}),
-        webhook({"typeMessage": "textMessage", "textMessageData": {"textMessage": "моё"}},
-                type_webhook="outgoingAPIMessageReceived"),
+        text_webhook("моё", type_webhook="outgoingAPIMessageReceived"),
         {"typeWebhook": "outgoingMessageStatus", "status": "read"},
         webhook({"typeMessage": "textMessage"}, id_message=""),
         "not a dict",
@@ -122,7 +99,7 @@ def test_other_notifications_are_not_messages(body):
 
 
 def test_private_chat_sender_defaults_to_chat():
-    body = webhook({"typeMessage": "textMessage", "textMessageData": {"textMessage": "привет"}})
+    body = text_webhook("привет")
     body["senderData"] = {"chatId": "77011234567@c.us"}
 
     message = incoming_message(body)
@@ -202,12 +179,16 @@ def test_failures_never_leak_the_token(failure):
     assert raised.value.__cause__ is None and raised.value.__suppress_context__
 
 
-@pytest.mark.parametrize("payload", [b"<html>", {"stateInstance": ""}, {"receiptId": "x"}])
-def test_unexpected_answers_are_errors(payload):
-    api, _ = client(payload, payload)
+@pytest.mark.parametrize(
+    ("method", "payload"),
+    [("get_state_instance", b"<html>"), ("get_state_instance", {"stateInstance": ""}),
+     ("receive_notification", {"receiptId": "x"})],
+)
+def test_unexpected_answers_are_errors(method, payload):
+    api, _ = client(payload)
 
     with pytest.raises(GreenApiError):
-        api.get_state_instance() if payload != {"receiptId": "x"} else api.receive_notification()
+        getattr(api, method)()
 
 
 @pytest.mark.parametrize(
@@ -252,5 +233,5 @@ def test_unanswered_requests_may_have_sent(failure):
 
 
 def test_missing_credentials_are_reported():
-    with pytest.raises(GreenApiNotConfigured):
+    with pytest.raises(GreenApiError, match="WHATSAPP_BOT_INSTANCE_ID"):
         GreenApiClient(api_url="https://api.green-api.com", instance_id="", token="", receive_timeout=20)

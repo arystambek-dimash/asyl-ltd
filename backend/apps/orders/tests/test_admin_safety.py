@@ -23,13 +23,9 @@ pytestmark = pytest.mark.django_db
         StockMovement,
     ],
 )
-def test_operational_admin_is_read_only(model, make_user):
-    root = make_user(username=f"readonly-{model._meta.model_name}")
-    root.is_staff = True
-    root.is_superuser = True
-    root.save(update_fields=["is_staff", "is_superuser"])
+def test_operational_admin_is_read_only(model, admin_user):
     request = RequestFactory().get("/admin/")
-    request.user = root
+    request.user = admin_user
     model_admin = admin.site._registry[model]
 
     assert model_admin.has_view_permission(request) is True

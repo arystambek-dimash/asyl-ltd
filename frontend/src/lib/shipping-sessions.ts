@@ -34,7 +34,6 @@ export interface ShippingSession {
 
 export interface ShippingSessionsPage {
   results: ShippingSession[];
-  next_cursor: string | number | null;
   /** Список дня упёрся в лимит сервера — показаны не все сессии. */
   truncated?: boolean;
 }

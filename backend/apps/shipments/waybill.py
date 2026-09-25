@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from html import escape
 from io import BytesIO
 
 from django.utils import timezone
@@ -20,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from apps.orders.invoices import _register_fonts
+from apps.common.pdf import money_text, para_text, register_fonts
 from apps.orders.models import Order
 from apps.orders.transport import order_wagons, transport_number_text
 
@@ -29,14 +28,11 @@ from .models import WaybillSettings
 CURRENCY_WORDS = {"KZT": "в тенге", "USD": "в долларах"}
 
 
-def _text(value: object) -> str:
-    return escape(str(value), quote=True)
-
-
 def _money(value: Decimal | None) -> str:
+    """На бланке целые суммы без «.00»; неизвестная цена — прочерк."""
     if value is None:
         return "—"
-    return f"{value:,.2f}".replace(",", " ").replace(".00", "")
+    return money_text(value).removesuffix(".00")
 
 
 def _kg(value: Decimal) -> str:
@@ -64,8 +60,8 @@ def _wagons_table(wagons, width, *, head, cell, number, center) -> Table:
     ]]
     for index, wagon in enumerate(wagons, 1):
         rows.append([
-            Paragraph(str(index), center), Paragraph(_text(wagon.number), cell),
-            Paragraph(_text(wagon.product_label), cell), Paragraph(str(wagon.bags), number),
+            Paragraph(str(index), center), Paragraph(para_text(wagon.number), cell),
+            Paragraph(para_text(wagon.product_label), cell), Paragraph(str(wagon.bags), number),
             Paragraph(_kg(wagon.weight_kg), number),
         ])
     rows.append([
@@ -83,7 +79,7 @@ def _wagons_table(wagons, width, *, head, cell, number, center) -> Table:
 
 
 def build_waybill_pdf(order: Order) -> bytes:
-    _register_fonts()
+    register_fonts()
     settings = WaybillSettings.load()
     shipment = getattr(order, "shipment", None)
     shipped_at = shipment.shipped_at if shipment else None
@@ -107,7 +103,7 @@ def build_waybill_pdf(order: Order) -> bytes:
     width = A5[0] - 20 * mm
 
     header = Table(
-        [[Paragraph("Накладная на отпуск товаров", title), Paragraph(_text(settings.point_name), right)]],
+        [[Paragraph("Накладная на отпуск товаров", title), Paragraph(para_text(settings.point_name), right)]],
         colWidths=[width * 0.62, width * 0.38],
     )
     buyer = order.client.display_name
@@ -117,7 +113,7 @@ def build_waybill_pdf(order: Order) -> bytes:
     else:
         transport_label = "№ Вагона:" if order.transport_type == "train" else "№ Автомашины:"
         transport_value = transport_number_text(order) or ("—" if order.transport_type == "truck" else "вагон")
-        transport_line = f"{transport_label} {_text(transport_value)}"
+        transport_line = f"{transport_label} {para_text(transport_value)}"
     detail_rows = [
         [Paragraph(f"№ {order.pk}", ParagraphStyle("WaybillNumberTitle", parent=bold, fontSize=11, leading=14)), "", ""],
         [
@@ -128,8 +124,8 @@ def build_waybill_pdf(order: Order) -> bytes:
         [Paragraph(transport_line, base), "", ""],
     ]
     if order.transport_type == "train" and order.rail_station:
-        detail_rows.append([Paragraph(f"Станция назначения: {_text(order.rail_station)}", base), "", ""])
-    detail_rows.append([Paragraph(f"Покупатель: {_text(buyer)}", base), "", ""])
+        detail_rows.append([Paragraph(f"Станция назначения: {para_text(order.rail_station)}", base), "", ""])
+    detail_rows.append([Paragraph(f"Покупатель: {para_text(buyer)}", base), "", ""])
     details = Table(detail_rows, colWidths=[width * 0.36, width * 0.36, width * 0.28])
     details.setStyle(TableStyle([
         ("SPAN", (0, 0), (-1, 0)),
@@ -158,7 +154,7 @@ def build_waybill_pdf(order: Order) -> bytes:
         total_kg += kg
         total_amount += line_total or Decimal("0")
         rows.append([
-            Paragraph(str(index), center), Paragraph(_text(item.product_label), cell),
+            Paragraph(str(index), center), Paragraph(para_text(item.product_label), cell),
             Paragraph(str(item.quantity), number), Paragraph(_kg(kg), number),
             Paragraph(_money(price), number), Paragraph(_money(per_kg), number),
             Paragraph(_money(line_total), number),
@@ -176,7 +172,10 @@ def build_waybill_pdf(order: Order) -> bytes:
     table.setStyle(_GRID_STYLE)
 
     signer_rows = [
-        [Paragraph(f"{_text(signer.get('role', ''))}:", base), "", Paragraph(_text(signer.get("name", "")), base)]
+        [
+            Paragraph(f"{para_text(signer.get('role', ''))}:", base), "",
+            Paragraph(para_text(signer.get("name", "")), base),
+        ]
         for signer in settings.signers
         if signer.get("role") or signer.get("name")
     ]

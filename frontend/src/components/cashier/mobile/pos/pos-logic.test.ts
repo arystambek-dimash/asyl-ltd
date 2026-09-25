@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Order, Payment } from "@/lib/types";
+import { makeOrder } from "@/test-utils/factories";
 import {
   INITIAL_POS_STATE,
-  appendDigit,
-  eraseDigit,
   paymentOutcome,
   posOrderBlock,
   posReducer,
@@ -11,21 +10,16 @@ import {
   type PosState,
 } from "./pos-logic";
 
-function order(patch: Record<string, unknown> = {}): Order {
-  return {
+const order = (fields: Partial<Order> = {}) =>
+  makeOrder({
     id: 130,
-    client: 1,
-    currency: "KZT",
     status: "shipped",
-    truck_number: "",
-    items: [],
     total_amount: "195840.50",
     paid_total: "0",
     remaining_amount: "195840.50",
     pending_payments: [],
-    ...patch,
-  } as unknown as Order;
-}
+    ...fields,
+  });
 
 function payment(patch: Record<string, unknown> = {}): Payment {
   return {
@@ -36,26 +30,18 @@ function payment(patch: Record<string, unknown> = {}): Payment {
     method: "kaspi",
     status: "requested",
     paid_at: "2026-09-12T10:00:00",
-    recorded_by: 1,
     provider: null,
     ...patch,
   } as unknown as Payment;
 }
 
 describe("amount keypad", () => {
-  it("never starts with zero and never exceeds the limit", () => {
-    expect(appendDigit("", "0", 1000)).toBe("");
-    expect(appendDigit("", "5", 1000)).toBe("5");
-    expect(appendDigit("12", "3", 1000)).toBe("123");
-    expect(appendDigit("999", "9", 1000)).toBe("999");
-    expect(appendDigit("12", "x", 1000)).toBe("12");
-    expect(eraseDigit("123")).toBe("12");
-    expect(eraseDigit("")).toBe("");
-  });
-
   it("splits what QR can take into whole tenge and leftover tiyn", () => {
     expect(wholeTengeLimit(order())).toEqual({ max: 195840, tiyn: 50 });
-    expect(wholeTengeLimit(order({ pending_payments: [{ amount: "195840.50" }] }))).toEqual({ max: 0, tiyn: 0 });
+    expect(wholeTengeLimit(order({ pending_payments: [payment({ amount: "195840.50" })] }))).toEqual({
+      max: 0,
+      tiyn: 0,
+    });
   });
 });
 
@@ -66,8 +52,8 @@ describe("posOrderBlock", () => {
       posOrderBlock(order({ store: 5 }), [
         { id: 5, name: "Мерей", payment_schedule_type: "weekly", payment_days: [1], window_open: false },
       ]),
-    ).toBe("Оплата для магазина «Мерей» сегодня недоступна");
-    expect(posOrderBlock(order({ pending_payments: [{ amount: "195840.50" }] }), [])).toBe(
+    ).toBe("Магазин «Мерей» платит по расписанию: Дни: Пн");
+    expect(posOrderBlock(order({ pending_payments: [payment({ amount: "195840.50" })] }), [])).toBe(
       "Всё уже ожидает подтверждения",
     );
     expect(posOrderBlock(order({ remaining_amount: "0.40" }), [])).toBe("Нечего оплачивать");

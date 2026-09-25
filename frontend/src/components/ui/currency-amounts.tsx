@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { finiteMoney } from "@/lib/currency-map";
+import { finiteMoney, otherCurrencyAmounts } from "@/lib/currency-map";
 import { cn, formatCurrency } from "@/lib/utils";
 
 type MoneyValue = string | number;
@@ -70,5 +70,24 @@ export function CurrencyAmounts({
         </span>
       ))}
     </span>
+  );
+}
+
+/** Строки «Также {сумма}» под итогом в основной валюте: прочие ненулевые валюты, без сложения. */
+export function OtherCurrencyRows({
+  byCurrency,
+  primary,
+}: {
+  byCurrency: Readonly<Record<string, MoneyValue>>;
+  primary: string;
+}) {
+  const rows = otherCurrencyAmounts(byCurrency, primary);
+  if (rows.length === 0) return null;
+  return (
+    <div className="grid gap-0.5 text-xs text-[var(--muted-foreground)]">
+      {rows.map(([currency, amount]) => (
+        <span key={currency}>Также {formatCurrency(amount, currency)}</span>
+      ))}
+    </div>
   );
 }

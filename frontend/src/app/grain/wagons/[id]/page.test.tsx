@@ -1,9 +1,11 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Suspense, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { GrainUnassignedWeighing, GrainWagon, PassageWeightCapture } from "@/lib/types";
+import { apiState } from "@/test-utils/api";
+import { makeGrainWagon } from "@/test-utils/grain";
+import { renderRoutePage } from "@/test-utils/route-page";
 import GrainWagonPage from "./page";
 import PassagePage from "../../passages/[id]/page";
 
@@ -15,7 +17,8 @@ const useApiMock = vi.hoisted(() => vi.fn());
 const wagonReloadMock = vi.hoisted(() => vi.fn());
 const timelineReloadMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: { post: postMock, delete: deleteMock },
   apiError: () => "Весовой аппарат недоступен",
 }));
@@ -35,63 +38,20 @@ vi.mock("@/store/auth", () => ({
     },
   }),
 }));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: ReactNode }) => children,
-}));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children, actions }: { children: ReactNode; actions?: ReactNode }) => (
-    <main>
-      {actions}
-      {children}
-    </main>
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/grain/live-scale-status", () => ({
+  LiveScaleStatus: ({ scaleKey, label }: { scaleKey: "truck" | "wagon"; label: string }) => (
+    <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} />
   ),
 }));
-vi.mock("@/components/grain/live-scale-status", () => ({
-  LiveScaleStatus: ({ active, scaleKey, label }: { active: boolean; scaleKey: "truck"; label: string }) =>
-    active ? <div aria-label={`Весы ${label}`} data-scale-key={scaleKey} /> : null,
-}));
-vi.mock("next/link", () => ({
-  default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a>,
-}));
+vi.mock("next/link", () => import("@/test-utils/next-link"));
 
 let activeWagon: GrainWagon;
 let unassignedWeighings: Partial<GrainUnassignedWeighing>[];
 
 function wagon(overrides: Partial<GrainWagon> = {}): GrainWagon {
-  return {
-    id: 7,
-    supply: null,
-    number: "123 ABC",
-    number_source: "manual",
-    workflow: "simple",
-    direction: "passage",
-    cargo_name: "Отруби",
-    status: "arrived",
-    status_label: "Прибыл",
-    unplanned: false,
-    supplier: "",
-    culture: "",
-    grain_class: "",
-    grain_type: null,
-    grain_type_name: "",
-    document_weight_kg: null,
-    expected_weight_kg: null,
-    arrived_at: null,
-    gross_weight_kg: null,
-    tare_weight_kg: null,
-    net_weight_kg: null,
-    entry_weight_kg: null,
-    exit_weight_kg: null,
-    weight_difference_kg: null,
-    weight_difference_percent: null,
-    weight_matches: null,
-    assigned_silo: null,
-    assigned_silo_name: null,
-    silo_arrived_at: null,
-    exited_at: null,
-    created_at: "2026-08-12T00:00:00Z",
-    ...overrides,
-  };
+  return makeGrainWagon({ id: 7, number: "123 ABC", direction: "passage", cargo_name: "Отруби", ...overrides });
 }
 
 function processingCapture(overrides: Partial<PassageWeightCapture> = {}): PassageWeightCapture {
@@ -120,49 +80,43 @@ function processingCapture(overrides: Partial<PassageWeightCapture> = {}): Passa
   };
 }
 
-describe("StageAction automatic scale capture", () => {
-  beforeEach(() => {
-    sessionStorage.clear();
-    postMock.mockReset();
-    postMock.mockResolvedValue({ data: {} });
-    deleteMock.mockReset();
-    deleteMock.mockResolvedValue({ data: { reverted_kg: 0 } });
-    replaceMock.mockReset();
-    authState.permissions = ["grain.weigh"];
-    wagonReloadMock.mockReset();
-    timelineReloadMock.mockReset();
-    activeWagon = wagon();
-    unassignedWeighings = [];
-    useApiMock.mockReset();
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/grain/unassigned-weighings/") {
-        return { data: unassignedWeighings, loading: false, error: "", reload: vi.fn(), setData: vi.fn() };
-      }
-      if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
-        return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() };
-      }
-      if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
-        return { data: [], loading: false, error: "", reload: timelineReloadMock };
-      }
-      return { data: null, loading: false, error: "", reload: vi.fn(), setData: vi.fn() };
-    });
+beforeEach(() => {
+  sessionStorage.clear();
+  postMock.mockReset();
+  postMock.mockResolvedValue({ data: {} });
+  deleteMock.mockReset();
+  deleteMock.mockResolvedValue({ data: { reverted_kg: 0 } });
+  replaceMock.mockReset();
+  authState.permissions = ["grain.weigh"];
+  wagonReloadMock.mockReset();
+  timelineReloadMock.mockReset();
+  activeWagon = wagon();
+  unassignedWeighings = [];
+  useApiMock.mockReset();
+  useApiMock.mockImplementation((url: string | null) => {
+    if (url === "/grain/unassigned-weighings/") {
+      return apiState(unassignedWeighings);
+    }
+    if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
+      return apiState(activeWagon, { reload: wagonReloadMock });
+    }
+    if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
+      return apiState([], { reload: timelineReloadMock });
+    }
+    return apiState(null);
   });
+});
 
-  async function renderStage(value: GrainWagon) {
-    activeWagon = value;
-    const params = Promise.resolve({ id: "7" });
-    await act(async () => {
-      render(
-        <Suspense fallback={<p>Загрузка…</p>}>
-          {activeWagon.direction === "passage" ? <PassagePage params={params} /> : <GrainWagonPage params={params} />}
-        </Suspense>,
-      );
-      await params;
-    });
-  }
+/** Открывает карточку рейса по его направлению: вывоз — /grain/passages/7, приход — /grain/wagons/7. */
+async function renderTrip(value: GrainWagon, permissions = ["grain.weigh"]) {
+  activeWagon = value;
+  authState.permissions = permissions;
+  await renderRoutePage(value.direction === "passage" ? PassagePage : GrainWagonPage, "7");
+}
 
+describe("StageAction automatic scale capture", () => {
   it("shows outbound weight semantics and a link back to outbound trips", async () => {
-    await renderStage(wagon({ entry_weight_kg: 3620, gross_weight_kg: 3620, status: "at_silo" }));
+    await renderTrip(wagon({ entry_weight_kg: 3620, gross_weight_kg: 3620, status: "at_silo" }));
     expect(screen.getByRole("link", { name: "К вывозам" })).toHaveAttribute("href", "/grain/passages");
     expect(screen.getByText("Вес пустой · въезд")).toBeInTheDocument();
     expect(screen.getByText("Вес гружёной · выезд")).toBeInTheDocument();
@@ -174,12 +128,12 @@ describe("StageAction automatic scale capture", () => {
   });
 
   it("offers no release note while the outbound truck is still loading", async () => {
-    await renderStage(wagon({ status: "at_silo", entry_weight_kg: 3_680, gross_weight_kg: 3_680 }));
+    await renderTrip(wagon({ status: "at_silo", entry_weight_kg: 3_680, gross_weight_kg: 3_680 }));
     expect(screen.queryByRole("link", { name: "Накладная" })).not.toBeInTheDocument();
   });
 
   it("opens the release note of a completed outbound truck in a new tab", async () => {
-    await renderStage(
+    await renderTrip(
       wagon({
         status: "completed",
         status_label: "Завершён",
@@ -210,7 +164,7 @@ describe("StageAction automatic scale capture", () => {
           finish = () => resolve({ data: {} });
         }),
     );
-    await renderStage(wagon({ number: "996BKC13", status: "at_silo", entry_weight_kg: 3_980, gross_weight_kg: 3_980 }));
+    await renderTrip(wagon({ number: "996BKC13", status: "at_silo", entry_weight_kg: 3_980, gross_weight_kg: 3_980 }));
 
     await userEvent.click(screen.getByRole("button", { name: "Выбрать этот вес" }));
     await userEvent.click(screen.getByRole("button", { name: "Записать выезд и завершить рейс" }));
@@ -223,15 +177,7 @@ describe("StageAction automatic scale capture", () => {
   });
 
   it("redirects a legacy wagon URL by the actual record direction before exposing commands", async () => {
-    const params = Promise.resolve({ id: "7" });
-    await act(async () => {
-      render(
-        <Suspense>
-          <GrainWagonPage params={params} />
-        </Suspense>,
-      );
-      await params;
-    });
+    await renderRoutePage(GrainWagonPage, "7");
     expect(replaceMock).toHaveBeenCalledWith("/grain/passages/7");
     expect(screen.queryByRole("button", { name: /Получить вес/ })).not.toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalled();
@@ -240,10 +186,10 @@ describe("StageAction automatic scale capture", () => {
   it("shows history errors instead of reporting an empty journal", async () => {
     useApiMock.mockImplementation((url: string) =>
       url.endsWith("/timeline/")
-        ? { data: null, loading: false, error: "История недоступна", reload: timelineReloadMock }
-        : { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() },
+        ? apiState(null, { error: "История недоступна", reload: timelineReloadMock })
+        : apiState(activeWagon, { reload: wagonReloadMock }),
     );
-    await renderStage(wagon());
+    await renderTrip(wagon());
     expect(screen.getByRole("alert")).toHaveTextContent("История недоступна");
     expect(screen.queryByText("Событий пока нет.")).not.toBeInTheDocument();
   });
@@ -258,7 +204,7 @@ describe("StageAction automatic scale capture", () => {
     ],
   ])("sends an empty POST for %s", async (_name, value, buttonName, endpoint) => {
     const user = userEvent.setup();
-    await renderStage(value as GrainWagon);
+    await renderTrip(value as GrainWagon);
 
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(screen.queryByText(/Причина ручного ввода/)).not.toBeInTheDocument();
@@ -284,10 +230,8 @@ describe("StageAction automatic scale capture", () => {
   it.each([
     ["simple entry", wagon({ direction: "intake" })],
     ["simple exit", wagon({ direction: "intake", status: "at_silo", status_label: "На разгрузке" })],
-    ["legacy gross", wagon({ workflow: "legacy", direction: "intake" })],
-    ["legacy tare", wagon({ workflow: "legacy", direction: "intake", status: "unloading_completed" })],
   ])("keeps %s intake weighing disabled until wagon scales exist", async (_name, value) => {
-    await renderStage(value as GrainWagon);
+    await renderTrip(value as GrainWagon);
 
     expect(screen.getByText("Вагонные весы пока не подключены")).toBeInTheDocument();
     expect(screen.getByText(/Весы машин вывоза здесь не используются/)).toBeInTheDocument();
@@ -296,14 +240,14 @@ describe("StageAction automatic scale capture", () => {
   });
 
   it("shows the truck scale only for an export trip", async () => {
-    await renderStage(wagon({ direction: "passage" }));
+    await renderTrip(wagon({ direction: "passage" }));
 
     expect(screen.getByLabelText("Весы Вывоз")).toHaveAttribute("data-scale-key", "truck");
     expect(screen.queryAllByLabelText(/^Весы /)).toHaveLength(1);
   });
 
   it("does not show a scale widget for intake wagons", async () => {
-    await renderStage(wagon({ direction: "intake" }));
+    await renderTrip(wagon({ direction: "intake" }));
 
     expect(screen.queryByLabelText(/^Весы /)).not.toBeInTheDocument();
   });
@@ -316,7 +260,7 @@ describe("StageAction automatic scale capture", () => {
       }),
     );
     const user = userEvent.setup();
-    await renderStage(wagon());
+    await renderTrip(wagon());
 
     await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
     expect(screen.getByRole("button", { name: "Фиксирую показание весов…" })).toBeDisabled();
@@ -332,7 +276,7 @@ describe("StageAction automatic scale capture", () => {
   it("reuses the same idempotency key after a lost response", async () => {
     postMock.mockRejectedValueOnce(new Error("connection reset")).mockResolvedValueOnce({ data: {} });
     const user = userEvent.setup();
-    await renderStage(wagon());
+    await renderTrip(wagon());
 
     await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
     await screen.findByRole("button", { name: "Проверить результат повторно" });
@@ -349,7 +293,7 @@ describe("StageAction automatic scale capture", () => {
   it("recovers the processing request id from the server after session storage was lost", async () => {
     const requestId = "d38deba1-5ee8-47ee-8308-332096b76ccc";
     const user = userEvent.setup();
-    await renderStage(
+    await renderTrip(
       wagon({
         vehicle_recognition_captures: [processingCapture({ request_id: requestId })],
       }),
@@ -370,7 +314,7 @@ describe("StageAction automatic scale capture", () => {
     const requestId = "5d066ef4-fe98-40ea-97ae-fbd67a758189";
     sessionStorage.setItem("asyl:passage-weight-capture:v1:1:7:entry-weight", requestId);
     const user = userEvent.setup();
-    await renderStage(wagon());
+    await renderTrip(wagon());
 
     await user.click(await screen.findByRole("button", { name: "Проверить результат повторно" }));
 
@@ -384,7 +328,7 @@ describe("StageAction automatic scale capture", () => {
   it("clears a stored request after the server reports that capture as terminal", async () => {
     const requestId = "1dbb1f4f-ea16-4867-b9ef-449cf6f460f5";
     sessionStorage.setItem("asyl:passage-weight-capture:v1:1:7:entry-weight", requestId);
-    await renderStage(
+    await renderTrip(
       wagon({
         vehicle_recognition_captures: [
           processingCapture({
@@ -417,7 +361,7 @@ describe("StageAction automatic scale capture", () => {
       })
       .mockResolvedValueOnce({ data: {} });
     const user = userEvent.setup();
-    await renderStage(wagon());
+    await renderTrip(wagon());
 
     await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
     await user.click(await screen.findByRole("button", { name: "Проверить результат повторно" }));
@@ -429,7 +373,7 @@ describe("StageAction automatic scale capture", () => {
   it("retains the same idempotency key for a proxy 502 without a retryability body", async () => {
     postMock.mockRejectedValueOnce({ response: { status: 502, data: {} } }).mockResolvedValueOnce({ data: {} });
     const user = userEvent.setup();
-    await renderStage(wagon());
+    await renderTrip(wagon());
 
     await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
     const firstKey = postMock.mock.calls[0][2].headers["Idempotency-Key"];
@@ -444,7 +388,7 @@ describe("StageAction automatic scale capture", () => {
       .mockRejectedValueOnce({ response: { status: 503, data: { retryable: false } } })
       .mockResolvedValueOnce({ data: {} });
     const user = userEvent.setup();
-    await renderStage(wagon());
+    await renderTrip(wagon());
 
     await user.click(await screen.findByRole("button", { name: /Получить вес пустой/ }));
     const firstKey = postMock.mock.calls[0][2].headers["Idempotency-Key"];
@@ -456,54 +400,21 @@ describe("StageAction automatic scale capture", () => {
 });
 
 describe("Grain wagon deletion", () => {
-  beforeEach(() => {
-    postMock.mockReset();
-    deleteMock.mockReset();
-    deleteMock.mockResolvedValue({ data: { reverted_kg: 0 } });
-    replaceMock.mockReset();
-    wagonReloadMock.mockReset();
-    timelineReloadMock.mockReset();
-    useApiMock.mockReset();
-    useApiMock.mockImplementation((url: string | null) => {
-      if (url === "/grain/wagons/7/" || url === "/grain/passages/7/") {
-        return { data: activeWagon, loading: false, error: "", reload: wagonReloadMock, setData: vi.fn() };
-      }
-      if (url === "/grain/wagons/7/timeline/" || url === "/grain/passages/7/timeline/") {
-        return { data: [], loading: false, error: "", reload: timelineReloadMock };
-      }
-      return { data: null, loading: false, error: "", reload: vi.fn(), setData: vi.fn() };
-    });
-  });
-
-  async function renderPage(value: GrainWagon, permissions: string[]) {
-    activeWagon = value;
-    authState.permissions = permissions;
-    const params = Promise.resolve({ id: "7" });
-    await act(async () => {
-      render(
-        <Suspense fallback={<p>Загрузка…</p>}>
-          {activeWagon.direction === "passage" ? <PassagePage params={params} /> : <GrainWagonPage params={params} />}
-        </Suspense>,
-      );
-      await params;
-    });
-  }
-
   it("hides the destructive action without grain.delete", async () => {
-    await renderPage(wagon({ status: "completed", status_label: "Завершён" }), ["grain.weigh"]);
+    await renderTrip(wagon({ status: "completed", status_label: "Завершён" }), ["grain.weigh"]);
 
     expect(screen.queryByRole("button", { name: "Удалить рейс" })).not.toBeInTheDocument();
   });
 
   it.each(["expected", "unplanned"])("hides delete for the backend-unsupported %s status", async (status) => {
-    await renderPage(wagon({ status, status_label: status }), ["grain.view", "grain.delete"]);
+    await renderTrip(wagon({ status, status_label: status }), ["grain.view", "grain.delete"]);
 
     expect(screen.queryByRole("button", { name: "Удалить рейс" })).not.toBeInTheDocument();
   });
 
   it("deletes with a required reason and redirects to the grain list", async () => {
     const user = userEvent.setup();
-    await renderPage(wagon({ status: "at_silo", status_label: "У силоса" }), ["grain.view", "grain.delete"]);
+    await renderTrip(wagon({ status: "at_silo", status_label: "У силоса" }), ["grain.view", "grain.delete"]);
 
     await user.click(screen.getByRole("button", { name: "Удалить рейс" }));
     expect(screen.getByRole("button", { name: "Удалить активный рейс" })).toBeDisabled();

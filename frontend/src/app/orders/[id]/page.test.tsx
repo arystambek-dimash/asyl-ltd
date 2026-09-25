@@ -1,44 +1,35 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Suspense } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
+import { makePayment, makeQrRefund } from "@/test-utils/factories";
 import { currentUrl, resetNavigation } from "@/test-utils/next-navigation";
+import { renderRoutePage } from "@/test-utils/route-page";
 import OrderDetailPage from "./page";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
+  delete: vi.fn(),
   order: {} as Record<string, unknown>,
   me: { is_superuser: false, permissions: [] as string[] },
 }));
 
 vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <main>{children}</main>,
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 vi.mock("@/lib/api", () => ({
-  api: { get: (...args: unknown[]) => mocks.get(...args), post: (...args: unknown[]) => mocks.post(...args) },
+  api: {
+    get: (...args: unknown[]) => mocks.get(...args),
+    post: (...args: unknown[]) => mocks.post(...args),
+    delete: (...args: unknown[]) => mocks.delete(...args),
+  },
   apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
   isCanceledRequest: () => false,
 }));
 
-const confirmedPayment = {
-  id: 91,
-  order: 40,
-  currency: "KZT",
-  amount: "100000.00",
-  method: "cash",
-  status: "confirmed",
-  paid_at: "2026-09-20T10:00:00Z",
-  recorded_by: null,
-  refunded_amount: "0.00",
-  available_for_refund: "100000.00",
-};
+const confirmedPayment = makePayment({ id: 91, order: 40, refunded_amount: "0.00" });
 
 /** Подтверждённый, ещё не отгруженный заказ: сервер открыл предоплату деньгами у кассы. */
 const confirmedOrder = {
@@ -60,7 +51,6 @@ const confirmedOrder = {
   payment_request_open: false,
   overpaid_amount: "0.00",
   is_fully_paid: false,
-  debt_override: false,
   payments: [],
   pending_payments: [],
   created_at: "2026-09-20T09:00:00Z",
@@ -72,6 +62,8 @@ beforeEach(() => {
   mocks.order = confirmedOrder;
   mocks.get.mockReset();
   mocks.post.mockReset();
+  mocks.delete.mockReset();
+  mocks.delete.mockResolvedValue({ data: null });
   mocks.post.mockResolvedValue({ data: { method: "cash" } });
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
@@ -81,15 +73,7 @@ beforeEach(() => {
 });
 
 async function renderPage() {
-  const params = Promise.resolve({ id: "40" });
-  await act(async () => {
-    render(
-      <Suspense>
-        <OrderDetailPage params={params} />
-      </Suspense>,
-    );
-    await params;
-  });
+  await renderRoutePage(OrderDetailPage, "40");
   await screen.findByRole("heading", { name: "Заказ #40" });
 }
 
@@ -110,6 +94,43 @@ it("shows the badge of a prepaid order before shipment", async () => {
   await renderPage();
   const heading = screen.getByRole("heading", { name: "Заказ #40" });
   expect(within(heading.parentElement!).getByText("Оплачен")).toBeInTheDocument();
+});
+
+it("links a shipped order to the client debt only when the server calls it a debt", async () => {
+  const user = userEvent.setup();
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "reports.view"] };
+  mocks.order = { ...confirmedOrder, status: "shipped", payment_open: false, is_debt: true };
+  await renderPage();
+  await user.click(screen.getByRole("tab", { name: /Оплата/ }));
+  expect(screen.getByRole("link", { name: /Открыть долг клиента/ })).toHaveAttribute(
+    "href",
+    "/accounting/debts/clients/3",
+  );
+});
+
+it("hides the debt link while the order is not a debt", async () => {
+  const user = userEvent.setup();
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "reports.view"] };
+  mocks.order = { ...confirmedOrder, is_debt: false };
+  await renderPage();
+  await user.click(screen.getByRole("tab", { name: /Оплата/ }));
+  expect(screen.queryByRole("link", { name: /Открыть долг клиента/ })).not.toBeInTheDocument();
+});
+
+it("shows one payment badge in the header and the «Оплата» card", async () => {
+  const user = userEvent.setup();
+  await renderPage();
+  await user.click(screen.getByRole("tab", { name: /Оплата/ }));
+  // Карточка «Оплата» следует тем же правилам, что шапка: до отгрузки «Не оплачен» не показываем.
+  expect(screen.queryByText("Не оплачен")).not.toBeInTheDocument();
+});
+
+it("marks a payment under review in the header and the «Оплата» card", async () => {
+  const user = userEvent.setup();
+  mocks.order = { ...confirmedOrder, pending_payments: [{ ...confirmedPayment, status: "received" }] };
+  await renderPage();
+  await user.click(screen.getByRole("tab", { name: /Оплата/ }));
+  expect(screen.getAllByText("На проверке")).toHaveLength(2);
 });
 
 it("offers to return an overpayment to the client", async () => {
@@ -143,20 +164,13 @@ it("keeps the Kaspi QR refund window open after the overpayment is taken off the
     payment_status: "settled",
     payments: [qrPayment],
   };
-  const qrRefund = {
+  const qrRefund = makeQrRefund({
     id: 5,
-    status: "awaiting_customer",
     amount: "30000.00",
-    refunded_amount: null,
-    client_name: null,
     customer_url: "https://pay.example/refund/5",
     link_expires_at: null,
-    operations: [],
-    receipt_url: null,
-    error_code: null,
-    error_message: null,
     created_at: "2026-09-23T10:00:00Z",
-  };
+  });
   mocks.order = overpaid;
   const baseGet = mocks.get.getMockImplementation()!;
   mocks.get.mockImplementation(async (raw: string) =>
@@ -185,7 +199,7 @@ it("reopens the receive dialog when the prepayment from the order form failed", 
 
   const dialog = await screen.findByRole("dialog", { name: "Принять оплату" });
   expect(within(dialog).getByLabelText("Сумма")).toHaveValue(5000);
-  expect(within(dialog).getByRole("button", { name: /Kaspi-терминал/ })).toHaveAttribute("aria-pressed", "true");
+  expect(within(dialog).getByRole("button", { name: "QR" })).toHaveAttribute("aria-pressed", "true");
   expect(within(dialog).getByRole("alert")).toHaveTextContent("оплата не прошла");
   // Признак повтора уходит из адреса — обновление страницы окно не откроет.
   await waitFor(() => expect(currentUrl()).toBe("/orders/40?back=%2Forders"));
@@ -243,4 +257,86 @@ it("opens the confirmation window without the page notice about the postponed pa
   await user.click(screen.getByRole("button", { name: "Проверить и подтвердить" }));
   const dialog = await screen.findByRole("dialog", { name: "Подтвердить заказ #40" });
   expect(within(dialog).queryByText(notice)).not.toBeInTheDocument();
+});
+
+it("asks how many bags were loaded before shipping the order from its card", async () => {
+  const user = userEvent.setup();
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "orders.edit"] };
+  await renderPage();
+
+  await user.click(screen.getByText("Изменить статус"));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Статус заказа" }), "shipped");
+
+  // Как в списке: без окна подсчёта сервер списал бы склад по числу мешков из заказа.
+  const dialog = await screen.findByRole("dialog", { name: "Сколько мешков отгружено?" });
+  expect(mocks.post).not.toHaveBeenCalled();
+  await user.clear(within(dialog).getByRole("spinbutton"));
+  await user.type(within(dialog).getByRole("spinbutton"), "3");
+  await user.click(within(dialog).getByRole("button", { name: /Завершить · 3 меш\./ }));
+  await waitFor(() =>
+    expect(mocks.post).toHaveBeenCalledWith("/orders/40/set-status/", { status: "shipped", bags_loaded: 3 }),
+  );
+});
+
+it("asks before cancelling the order from its card", async () => {
+  const user = userEvent.setup();
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "orders.edit"] };
+  await renderPage();
+
+  await user.click(screen.getByText("Изменить статус"));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Статус заказа" }), "cancelled");
+
+  expect(await screen.findByRole("dialog", { name: "Отменить заказ?" })).toBeInTheDocument();
+  expect(mocks.post).not.toHaveBeenCalled();
+});
+
+it("sends a status request without the bag count for staff without orders.edit", async () => {
+  const user = userEvent.setup();
+  mocks.post.mockResolvedValue({ data: { applied: false } });
+  await renderPage();
+
+  await user.click(screen.getByText("Изменить статус"));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Статус заказа" }), "cancelled");
+
+  // Запрос на одобрение мешков не несёт — окно подсчёта ему не нужно.
+  await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/orders/40/set-status/", { status: "cancelled" }));
+  expect(await screen.findByText("Запрос на смену статуса отправлен на одобрение.")).toBeInTheDocument();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("opens the confirmation window when the list asked for it", async () => {
+  resetNavigation("/orders/40?confirm=1&back=%2Forders");
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "orders.confirm"] };
+  mocks.order = { ...confirmedOrder, status: "pending", payment_open: false, payment_open_methods: [] };
+  await renderPage();
+
+  expect(await screen.findByRole("dialog", { name: "Подтвердить заказ #40" })).toBeInTheDocument();
+  // Признак уходит из адреса — обновление страницы окно заново не откроет.
+  await waitFor(() => expect(currentUrl()).toBe("/orders/40?back=%2Forders"));
+});
+
+it("archives the order from its card and returns to the list", async () => {
+  const user = userEvent.setup();
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "orders.edit"] };
+  await renderPage();
+
+  await user.click(screen.getByRole("button", { name: "Действия" }));
+  await user.click(screen.getByRole("menuitem", { name: /В архив/ }));
+  const dialog = await screen.findByRole("dialog", { name: "Переместить заказ в архив?" });
+  await user.click(within(dialog).getByRole("button", { name: "В архив" }));
+
+  await waitFor(() => expect(mocks.delete).toHaveBeenCalledWith("/orders/40/"));
+  await waitFor(() => expect(currentUrl()).toBe("/orders"));
+});
+
+it("does not archive the order from its card while the truck is loading", async () => {
+  const user = userEvent.setup();
+  mocks.me = { is_superuser: false, permissions: ["orders.view", "orders.edit"] };
+  mocks.order = { ...confirmedOrder, status: "loading" };
+  await renderPage();
+
+  // Как в списке: сначала погрузку завершают или возвращают.
+  await user.click(screen.getByRole("button", { name: "Действия" }));
+  expect(screen.getByRole("menuitem", { name: /В архив/ })).toBeDisabled();
+  expect(screen.getByText("Сначала завершите или верните текущую погрузку")).toBeInTheDocument();
 });

@@ -4,12 +4,12 @@ Counts do not wait for an order, a photo or OCR. Every source event has one
 mapping; identity only groups adjacent segments and never changes bag totals.
 """
 from datetime import timedelta
-import re
 
 from django.db import transaction
 from django.utils import timezone
 
 from apps.eventlog.services import log_event
+from . import ai
 from .models import (
     ANALYTICS_SCOPE_SHIPPING, AlwaysOnCounterCursor, AlwaysOnImportedEvent,
     ShippingLoadingCursor, ShippingLoadingEvent, ShippingLoadingSegment,
@@ -26,7 +26,7 @@ def _lock_camera(camera):
     upstream = AlwaysOnCounterCursor.objects.select_for_update().filter(camera=camera).first()
     if upstream is None:
         return None, None, None
-    policy, _ = ShippingSessionSettings.objects.get_or_create(singleton=True)
+    policy = ShippingSessionSettings.load()
     projection, _ = ShippingLoadingCursor.objects.select_for_update().get_or_create(
         camera=camera, defaults={"activated_at": policy.activated_at}
     )
@@ -42,7 +42,7 @@ def _close_segment(segment):
 
 
 def _flush_segment(segment):
-    segment.save(update_fields=["total_bags", "last_event", "last_upstream_event_id", "last_counted_at", "ended_at"])
+    segment.save(update_fields=["total_bags", "last_counted_at", "ended_at"])
     segment.session.save(update_fields=["total_bags", "last_counted_at", "status", "ended_at"])
 
 
@@ -59,17 +59,13 @@ def _new_segment(event, binding, policy):
         loading_zone=binding.loading_zone if binding else None,
         started_at=event.occurred_at, last_counted_at=event.occurred_at,
         idle_timeout_seconds=policy.idle_timeout_seconds,
-        first_event=event, last_event=event,
-        first_upstream_event_id=event.upstream_event_id,
-        last_upstream_event_id=event.upstream_event_id,
+        first_event=event, first_upstream_event_id=event.upstream_event_id,
     )
 
 
 @transaction.atomic
-def ingest_camera(camera, *, now=None, limit=MAX_PAGE_SIZE):
-    """Replay committed source rows, returning new segment IDs for photo jobs."""
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_SIZE:
-        raise ValueError("limit must be between 1 and 500")
+def ingest_camera(camera):
+    """Replay one page of committed source rows into loading segments."""
     upstream, projection, policy = _lock_camera(camera)
     result = {"processed": 0, "ignored": 0, "created_segment_ids": [], "last_event_id": 0}
     if upstream is None or upstream.last_event_id is None:
@@ -80,7 +76,7 @@ def ingest_camera(camera, *, now=None, limit=MAX_PAGE_SIZE):
     events = list(AlwaysOnImportedEvent.objects.filter(
         camera=camera, upstream_event_id__gt=projection.last_event_id,
         upstream_event_id__lte=upstream.last_event_id,
-    ).order_by("upstream_event_id")[:limit])
+    ).order_by("upstream_event_id")[:MAX_PAGE_SIZE])
     if not events:
         return result
     already_mapped = set(ShippingLoadingEvent.objects.filter(event_id__in=[e.pk for e in events]).values_list("event_id", flat=True))
@@ -111,7 +107,6 @@ def ingest_camera(camera, *, now=None, limit=MAX_PAGE_SIZE):
                 segment.ended_at = None
             mappings.append(ShippingLoadingEvent(event=event, segment=segment))
             segment.total_bags += 1
-            segment.last_event, segment.last_upstream_event_id = event, event.upstream_event_id
             segment.last_counted_at = max(segment.last_counted_at, event.occurred_at)
             session = segment.session
             session.total_bags += 1
@@ -134,36 +129,17 @@ def close_idle(camera, *, now=None):
     upstream, projection, _ = _lock_camera(camera)
     if upstream is None or upstream.last_event_id is None:
         return None
-    caught_up = upstream.event_caught_up_at
     if (
-        upstream.event_sync_supported is not True or not upstream.event_boundary_validated
-        or upstream.event_sync_error or upstream.event_sync_failed_at
-        or upstream.event_drain_required_at or upstream.event_stop_drain_requested_at
-        or caught_up is None or caught_up > now
-        or now-caught_up > timedelta(seconds=CURSOR_FRESH_SECONDS)
+        not upstream.is_caught_up(now=now, max_age=timedelta(seconds=CURSOR_FRESH_SECONDS))
         or projection.last_event_id < upstream.last_event_id
     ):
         return None
+    caught_up = upstream.event_caught_up_at
     segment = ShippingLoadingSegment.objects.select_related("session").filter(camera=camera, ended_at__isnull=True).first()
     if segment is None or caught_up-segment.last_counted_at < timedelta(seconds=segment.idle_timeout_seconds):
         return None
     _close_segment(segment)
     return segment.pk
-
-
-def normalized_number(number, recognition_model):
-    value = re.sub(r"[\s-]", "", str(number or "").upper())
-    if recognition_model == "wagon_number":
-        if re.fullmatch(r"[0-9]{8}", value):
-            total = sum(sum(int(c) for c in str(int(digit)*(2 if i % 2 == 0 else 1))) for i, digit in enumerate(value[:7]))
-            if int(value[-1]) == (10-total % 10) % 10:
-                return value
-    elif recognition_model == "vehicle_number":
-        if value.startswith("KZ"):
-            value = value[2:]
-        if re.fullmatch(r"(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})", value):
-            return value
-    return ""
 
 
 def _same_identity(left, right):
@@ -231,13 +207,6 @@ def _regroup_locked(camera):
 
 
 @transaction.atomic
-def regroup_camera(camera):
-    upstream, _, _ = _lock_camera(camera)
-    if upstream is not None:
-        _regroup_locked(camera)
-
-
-@transaction.atomic
 def apply_identity(segment_id, number, source, user=None, *, expected_lease=None, recognition_model=None):
     hint = ShippingLoadingSegment.objects.only("camera").get(pk=segment_id)
     upstream, _, _ = _lock_camera(hint.camera)
@@ -254,8 +223,8 @@ def apply_identity(segment_id, number, source, user=None, *, expected_lease=None
     if not model and source == "manual":
         # The two validated formats do not overlap: truck plates contain
         # letters; wagon numbers contain eight digits and a valid checksum.
-        model = next((kind for kind in ("vehicle_number", "wagon_number") if normalized_number(number, kind)), "")
-    normalized = normalized_number(number, model)
+        model = next((kind for kind in ("vehicle_number", "wagon_number") if ai.valid_transport_number(number, kind)), "")
+    normalized = ai.valid_transport_number(number, model)
     if not normalized:
         raise ValueError("invalid_transport_number")
     previous = {"number": segment.number, "recognition_model": segment.recognition_model, "session_id": segment.session_id}

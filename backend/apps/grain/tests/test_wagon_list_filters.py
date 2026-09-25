@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pytest
 from apps.grain import statuses as st
 from apps.grain.models import GrainSupply, Wagon
+from apps.grain.tests.factories import passage_trip
 from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
@@ -24,16 +25,8 @@ def _at(day: int, hour: int = 12, month: int = 9):
     return timezone.make_aware(datetime(2026, month, day, hour, 0))
 
 
-def _passage(number, *, status=st.ARRIVED, arrived_at=None, exited_at=None, cargo="Отруби"):
-    return Wagon.objects.create(
-        number=number,
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name=cargo,
-        status=status,
-        arrived_at=arrived_at,
-        exited_at=exited_at,
-    )
+def _passage(number, *, arrived_at=None, cargo="Отруби", **fields):
+    return passage_trip(number, arrived_at=arrived_at, cargo_name=cargo, **fields)
 
 
 def _intake(number, supplier, *, status=st.ARRIVED, arrived_at=None, exited_at=None):

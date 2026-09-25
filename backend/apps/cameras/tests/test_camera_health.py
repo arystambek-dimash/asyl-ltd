@@ -5,13 +5,16 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
-from apps.cameras import alerts, health
+from apps.cameras import alerts, analytics, health
 from apps.cameras.models import (
+    AiCountingSession,
     AlwaysOnCounterCursor,
     CameraHealthState,
     CameraIncident,
     MonoblockCameraSettings,
 )
+from apps.clients.models import Client
+from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
@@ -39,7 +42,6 @@ def observation(status, online, expected=10):
 def test_probe_healthy_exercises_rtsp_and_real_go2rtc_frame(monkeypatch):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 3)
     monkeypatch.setattr(health, "FRAME_PROBE_COUNT", 3)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
         health,
@@ -68,13 +70,6 @@ def test_probe_healthy_exercises_rtsp_and_real_go2rtc_frame(monkeypatch):
     }
 
 
-def test_expected_stream_override_cannot_reduce_protected_site_baseline(monkeypatch):
-    monkeypatch.setattr(health, "EXPECTED_COUNT", 10)
-    monkeypatch.setenv("CAMERA_EXPECTED_STREAMS", "cam1")
-
-    assert health.expected_streams() == tuple(f"cam{i}" for i in range(1, 11))
-
-
 def test_site_protection_floors_are_not_lower_than_production_baseline():
     assert health.EXPECTED_COUNT >= 10
     assert health.MINIMUM_ONLINE_COUNT >= 5
@@ -83,7 +78,6 @@ def test_site_protection_floors_are_not_lower_than_production_baseline():
 def test_probe_detects_one_missing_go2rtc_browser_stream(monkeypatch):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 3)
     monkeypatch.setattr(health, "MINIMUM_ONLINE_COUNT", 2)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
         health,
@@ -107,7 +101,6 @@ def test_probe_detects_frozen_individual_go2rtc_stream(monkeypatch):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 3)
     monkeypatch.setattr(health, "MINIMUM_ONLINE_COUNT", 2)
     monkeypatch.setattr(health, "FRAME_PROBE_COUNT", 3)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
         health,
@@ -135,7 +128,6 @@ def test_rotating_frame_probe_keeps_recent_failure_until_recheck(monkeypatch):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 3)
     monkeypatch.setattr(health, "MINIMUM_ONLINE_COUNT", 2)
     monkeypatch.setattr(health, "FRAME_PROBE_COUNT", 1)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     now = timezone.now()
     streams = ["cam1", "cam2", "cam3"]
     selected_index = (int(now.timestamp()) // health.FRAME_ROTATION_SECONDS) % 3
@@ -176,7 +168,6 @@ def test_rotating_frame_probe_keeps_recent_failure_until_recheck(monkeypatch):
 def test_probe_one_camera_down_is_degraded_not_full_outage(monkeypatch):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 3)
     monkeypatch.setattr(health, "MINIMUM_ONLINE_COUNT", 2)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
 
     def rtsp(stream):
         return stream, "offline" if stream == "cam2" else "online"
@@ -203,7 +194,6 @@ def test_probe_one_camera_down_is_degraded_not_full_outage(monkeypatch):
 def test_probe_severe_partial_loss_is_treated_as_outage(monkeypatch):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 10)
     monkeypatch.setattr(health, "MINIMUM_ONLINE_COUNT", 5)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(
         health,
         "_probe_rtsp",
@@ -233,7 +223,6 @@ def test_probe_severe_partial_loss_is_treated_as_outage(monkeypatch):
 @pytest.mark.parametrize("api_reachable,frame", [(False, False), (True, False)])
 def test_probe_go2rtc_failure_is_full_outage(monkeypatch, api_reachable, frame):
     monkeypatch.setattr(health, "EXPECTED_COUNT", 2)
-    monkeypatch.delenv("CAMERA_EXPECTED_STREAMS", raising=False)
     monkeypatch.setattr(health, "_probe_rtsp", lambda stream: (stream, "online"))
     monkeypatch.setattr(
         health,
@@ -313,7 +302,7 @@ def test_persistent_single_camera_loss_opens_degraded_incident(monkeypatch):
     assert incident.minimum_online_count == 9
 
     sender = patch.object(
-        alerts, "send", return_value=alerts.Delivery(configured=True, delivered=True)
+        alerts, "send", return_value=alerts.Delivery(delivered=True)
     )
     with sender as send:
         health.deliver_pending_alerts(now + timedelta(seconds=60))
@@ -344,7 +333,7 @@ def test_alert_is_sent_once_per_transition(monkeypatch):
     now = timezone.now()
     health.record_observation(observation(CameraHealthState.OUTAGE, 0), now)
     sender = patch.object(
-        alerts, "send", return_value=alerts.Delivery(configured=True, delivered=True)
+        alerts, "send", return_value=alerts.Delivery(delivered=True)
     )
     with sender as send:
         health.deliver_pending_alerts(now)
@@ -365,7 +354,6 @@ def test_unconfigured_alert_is_throttled_and_kept_pending(monkeypatch):
         alerts,
         "send",
         return_value=alerts.Delivery(
-            configured=False,
             delivered=False,
             errors=("no alert destination configured",),
         ),
@@ -390,9 +378,9 @@ def test_failed_outage_alert_survives_recovery_and_is_retried_in_order(monkeypat
         alerts,
         "send",
         side_effect=[
-            alerts.Delivery(configured=True, delivered=False, errors=("timeout",)),
-            alerts.Delivery(configured=True, delivered=True),
-            alerts.Delivery(configured=True, delivered=True),
+            alerts.Delivery(delivered=False, errors=("timeout",)),
+            alerts.Delivery(delivered=True),
+            alerts.Delivery(delivered=True),
         ],
     )
     with sender as send:
@@ -425,9 +413,7 @@ def test_partial_recovery_does_not_jump_a_failed_outage_alert(monkeypatch):
     sender = patch.object(
         alerts,
         "send",
-        return_value=alerts.Delivery(
-            configured=True, delivered=False, errors=("timeout",)
-        ),
+        return_value=alerts.Delivery(delivered=False, errors=("timeout",)),
     )
     with sender as send:
         health.deliver_pending_alerts(now)
@@ -453,8 +439,8 @@ def test_outage_supersedes_failed_degraded_alert_without_delaying_critical(monke
         alerts,
         "send",
         side_effect=[
-            alerts.Delivery(configured=True, delivered=False, errors=("timeout",)),
-            alerts.Delivery(configured=True, delivered=True),
+            alerts.Delivery(delivered=False, errors=("timeout",)),
+            alerts.Delivery(delivered=True),
         ],
     )
     with sender as send:
@@ -524,7 +510,7 @@ def test_deploy_gate_rejects_heartbeat_from_before_required_start():
     assert health.exit_code(payload) == 2
 
 
-def test_scheduled_monitor_can_fail_on_degraded_without_blocking_deploy_gate():
+def test_degraded_state_does_not_block_deploy_gate():
     now = timezone.now()
     state = CameraHealthState.objects.create(
         status=CameraHealthState.DEGRADED,
@@ -535,38 +521,29 @@ def test_scheduled_monitor_can_fail_on_degraded_without_blocking_deploy_gate():
     )
     payload = health.state_payload(state, now=now, max_age=180)
     assert health.exit_code(payload) == 0
-    assert health.exit_code(payload, fail_on_degraded=True) == 4
 
 
-def test_health_endpoint_reports_staff_state(auth_client, operator):
-    CameraHealthState.objects.create(
-        status=CameraHealthState.DEGRADED,
-        observed_status=CameraHealthState.DEGRADED,
+def test_open_counting_session_does_not_fail_camera_health():
+    # Идущая погрузка — обычная работа, а не сбой видеотракта: раньше любая
+    # открытая AI-сессия давала exit 2, и пост-стартовый гейт деплоя
+    # откатывал уже смигрированный релиз.
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
         expected_count=10,
-        online_count=9,
-        last_checked_at=timezone.now(),
+        online_count=10,
+        last_checked_at=now,
     )
-    response = auth_client(operator).get("/api/cameras/health/")
-    assert response.status_code == 200
-    assert response.data["status"] == CameraHealthState.DEGRADED
-    assert response.data["online_count"] == 9
-
-
-def test_health_endpoint_is_503_for_confirmed_outage(auth_client, operator):
-    CameraHealthState.objects.create(
-        status=CameraHealthState.OUTAGE,
-        observed_status=CameraHealthState.OUTAGE,
-        expected_count=10,
-        online_count=0,
-        last_checked_at=timezone.now(),
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="p")
+    order = Order.objects.create(client=client, status="confirmed")
+    AiCountingSession.objects.create(
+        order=order, camera="cam1", status=AiCountingSession.ACTIVE
     )
-    response = auth_client(operator).get("/api/cameras/health/")
-    assert response.status_code == 503
-    assert response.data["status"] == CameraHealthState.OUTAGE
 
-
-def test_health_endpoint_denies_portal_client(auth_client, client_user):
-    assert auth_client(client_user).get("/api/cameras/health/").status_code == 403
+    payload = health.state_payload(state, now=now, max_age=180)
+    assert health.exit_code(payload) == 0
+    assert "session_cutover" not in payload
 
 
 def test_check_command_uses_contract_exit_code_for_missing_heartbeat():
@@ -588,7 +565,6 @@ def test_camera_health_gate_includes_durable_event_sync_failures():
     cursor = AlwaysOnCounterCursor.objects.create(
         camera="cam3",
         last_event_id=9,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
         event_caught_up_at=now,
@@ -627,6 +603,62 @@ def test_camera_health_gate_includes_durable_event_sync_failures():
     removed_but_not_drained = health.state_payload(state, now=now, max_age=180)
     assert removed_but_not_drained["event_sync"]["cameras"][0]["desired"] is False
     assert removed_but_not_drained["event_sync"]["blocking"] is True
+
+
+def test_health_and_analytics_classify_a_failed_first_probe_as_error():
+    # До общего классификатора гейт показывал такой курсор как «не опрошен»,
+    # а аналитика — как ошибку; теперь оба видят ошибку с её текстом.
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
+        expected_count=10,
+        online_count=10,
+        last_checked_at=now,
+    )
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    cursor = AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        event_sync_supported=None,
+        event_sync_error="AI service unavailable",
+        event_sync_failed_at=now,
+    )
+
+    payload = health.state_payload(state, now=now, max_age=180)
+    row = payload["event_sync"]["cameras"][0]
+    assert row["status"] == "error"
+    assert row["detail"] == "AI service unavailable"
+    assert payload["event_sync"]["blocking"] is True
+    sync = analytics._event_sync_payload(cursor, now=now)
+    assert sync["status"] == "error"
+    assert sync["detail"] == "AI service unavailable"
+
+
+def test_failed_poll_of_a_legacy_camera_is_an_error_not_legacy():
+    # Сбой опроса после явного 404 — это ошибка, как и в аналитике; раньше
+    # гейт без --require-events молча показывал такую камеру как legacy.
+    now = timezone.now()
+    state = CameraHealthState.objects.create(
+        status=CameraHealthState.HEALTHY,
+        observed_status=CameraHealthState.HEALTHY,
+        expected_count=10,
+        online_count=10,
+        last_checked_at=now,
+    )
+    MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam3"])
+    cursor = AlwaysOnCounterCursor.objects.create(
+        camera="cam3",
+        event_sync_supported=False,
+        event_sync_error="AI service unavailable",
+        event_sync_failed_at=now,
+    )
+
+    payload = health.state_payload(state, now=now, max_age=180)
+    row = payload["event_sync"]["cameras"][0]
+    assert row["status"] == "error"
+    assert row["detail"] == "AI service unavailable"
+    assert payload["event_sync"]["blocking"] is True
+    assert analytics._event_sync_payload(cursor, now=now)["status"] == "error"
 
 
 def test_deploy_gate_requires_events_while_default_health_allows_legacy():

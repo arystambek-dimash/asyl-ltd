@@ -1,6 +1,5 @@
 import time
 import sqlite3
-from decimal import Decimal
 from concurrent.futures import Future
 from threading import Event
 from io import BytesIO
@@ -11,13 +10,11 @@ import pytest
 from django.utils import timezone
 
 from apps.cameras import ai
-from apps.grain import outbox_importer, weighing_photos
+from apps.grain import weighing_photos
 from apps.grain.models import WeighingPhotoDelivery
-from apps.grain.scale import ScaleObservation, ScaleReading
+from apps.grain.tests.factories import JPEG, collector_event, outbox_event, scale_observation, scale_reading
 from weighbridge.collector import Collector
 from weighbridge.outbox import Outbox
-
-JPEG = b"\xff\xd8\xff\xe0original capture"
 
 
 @pytest.fixture(autouse=True)
@@ -25,27 +22,10 @@ def config(settings):
     settings.GO2RTC_API_URL = "http://relay.example.test:1984"
 
 
-def event():
-    return {
-        "id": str(uuid4()), "version": 1, "weight_kg": 4200,
-        "camera": "cam1", "stable_weight_at": timezone.now().isoformat(),
-        "scale_age_seconds": "0.1", "scale_updated_at": "sample",
-    }
-
-
-def collector_event(tmp_path):
-    box, value = Outbox(tmp_path), event()
-    box.put(value)
-    collector = Collector(box)
-    collector.current = value["id"]
-    collector.last_good = time.monotonic()
-    return collector, box, value
-
-
 def test_snapshot_retries_transient_relay_failure_for_same_vehicle(tmp_path):
     collector, box, value = collector_event(tmp_path)
     try:
-        with patch("apps.grain.scale._open_request", side_effect=[TimeoutError(), BytesIO(JPEG)]) as read:
+        with patch("apps.grain.scale.open_local_request", side_effect=[TimeoutError(), BytesIO(JPEG)]) as read:
             collector.snapshot(value)
         collector.close()
         box.finish(value["id"], "ocr")
@@ -63,7 +43,7 @@ def test_snapshot_cannot_retry_or_accept_after_vehicle_departure(tmp_path):
         return BytesIO(JPEG)
 
     try:
-        with patch("apps.grain.scale._open_request", side_effect=leaving) as read:
+        with patch("apps.grain.scale.open_local_request", side_effect=leaving) as read:
             collector.snapshot(value)
         collector.close()
         box.finish(value["id"], "ocr")
@@ -80,7 +60,7 @@ def test_slow_previous_ocr_never_skips_next_trucks_photo(tmp_path, previous_phot
     if previous_photo:
         collector.futures["photo:previous"] = Future()
     try:
-        with patch("apps.grain.scale._open_request", return_value=BytesIO(JPEG)):
+        with patch("apps.grain.scale.open_local_request", return_value=BytesIO(JPEG)):
             collector.start_evidence(value)
             collector.futures[f"photo:{value['id']}"].result(timeout=2)
         collector.close()
@@ -93,7 +73,7 @@ def test_slow_previous_ocr_never_skips_next_trucks_photo(tmp_path, previous_phot
 @pytest.mark.parametrize("weight", [4200, 0])
 def test_fresh_moving_truck_retains_photo_episode_until_scale_clears(tmp_path, weight):
     collector, box, value = collector_event(tmp_path)
-    moving = ScaleObservation("unstable", Decimal(weight), True, False, False, Decimal(".1"), "fresh")
+    moving = scale_observation(weight, "fresh", state="unstable")
     try:
         with patch("apps.grain.scale.read_truck_scale_observation", return_value=moving):
             collector.poll()
@@ -117,42 +97,8 @@ def test_failed_ocr_frame_is_bound_only_if_response_precedes_departure(tmp_path,
         collector.close()
         box.finish(value["id"], "photo")
         assert box.next()["recognition_frame_bound"] is (not departed)
-        assert outbox_importer._bound_camera_frame(box.next()) is (not departed)
     finally:
         collector.close()
-
-
-@pytest.mark.django_db(transaction=True)
-@pytest.mark.parametrize("safe", [True, False])
-def test_old_acknowledged_capture_recovers_only_proven_bound_uuid(tmp_path, settings, safe):
-    settings.MEDIA_ROOT = tmp_path / "media"
-    box, value = Outbox(tmp_path), event()
-    box.put(value)
-    box.finish(value["id"], "photo")
-    box.finish(value["id"], "ocr", updates={
-        "orientation": "rear" if safe else "",
-        "recognition_error": "recognition_unavailable",
-    })
-    box.ack(value["id"])
-    job = WeighingPhotoDelivery.objects.create(
-        request_id=value["id"], camera="cam1", status="unavailable",
-        snapshot_attempted=True, error_code="collector_photo_unavailable",
-    )
-    assert outbox_importer.recover_collector_photos(box) == int(safe)
-    job.refresh_from_db()
-    assert job.status == ("pending" if safe else "unavailable")
-    with patch.object(ai, "camera_frame_jpeg") as live, patch.object(
-        ai, "fetch_vehicle_recognition_frame", return_value=JPEG,
-    ) as stored:
-        assert weighing_photos.deliver_photo(job.pk) is safe
-    live.assert_not_called()
-    if safe:
-        stored.assert_called_once_with("cam1", value["id"])
-        job.refresh_from_db()
-        assert job.photo.read() == JPEG
-    else:
-        stored.assert_not_called()
-    assert box.counts()["pending"] == 0  # accounting event is never replayed
 
 
 @pytest.mark.django_db
@@ -203,7 +149,7 @@ def test_outbox_retries_schema_lock_when_setting_full_durability(tmp_path):
     real_connect = sqlite3.connect
     with patch("weighbridge.outbox.sqlite3.connect", side_effect=lambda *args, **kwargs: real_connect(*args, **kwargs, factory=FirstPragmaBusy)):
         box = Outbox(tmp_path)
-        box.put(event())
+        box.put(outbox_event())
     assert failures
     assert box.counts()["total"] == 1
 
@@ -234,14 +180,14 @@ def test_just_read_weight_and_current_photo_survive_busy_database_until_after_de
             raise sqlite3.OperationalError("database is locked")
         return real_put(value)
 
-    ready = ScaleObservation("ready", Decimal(4200), True, True, False, Decimal(".1"), "first")
-    clear = ScaleObservation("ready", Decimal(0), True, True, False, Decimal(".1"), "second")
+    ready = scale_observation(4200, "first")
+    clear = scale_observation(0, "second")
     try:
         with patch.object(box, "put", side_effect=put), patch.object(
             collector.lane, "observe", side_effect=[True, False],
         ), patch("apps.grain.scale.read_truck_scale_observation", side_effect=[ready, clear]), patch(
-            "apps.grain.scale.read_truck_scale", return_value=ScaleReading(Decimal(4200), Decimal(".1"), "first"),
-        ) as strict, patch("apps.grain.scale._open_request", return_value=BytesIO(JPEG)), patch.object(
+            "apps.grain.scale.read_truck_scale", return_value=scale_reading(4200, age=".1", updated_at="first"),
+        ) as strict, patch("apps.grain.scale.open_local_request", return_value=BytesIO(JPEG)), patch.object(
             ai, "recognize_vehicle_from_camera", side_effect=ai.AiError(422, "unreadable"),
         ):
             collector.poll()
@@ -277,7 +223,7 @@ def test_evidence_worker_busy_result_does_not_write_on_hardware_poll_thread(tmp_
 
     try:
         with patch.object(box, "finish", side_effect=slow_finish), patch(
-            "apps.grain.scale._open_request", return_value=BytesIO(JPEG),
+            "apps.grain.scale.open_local_request", return_value=BytesIO(JPEG),
         ):
             before = time.monotonic()
             collector.start_evidence(value)
@@ -293,7 +239,7 @@ def test_evidence_worker_busy_result_does_not_write_on_hardware_poll_thread(tmp_
 
 
 def test_outbox_put_replay_checks_original_fields_without_duplicate_or_overwrite(tmp_path):
-    box, value = Outbox(tmp_path), event()
+    box, value = Outbox(tmp_path), outbox_event()
     box.put(value)
     box.finish(value["id"], "photo", photo=JPEG)
     box.finish(value["id"], "ocr", updates={"recognition_error": "unreadable"})

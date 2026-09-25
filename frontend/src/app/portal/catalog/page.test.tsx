@@ -1,6 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCartStore } from "@/store/cart";
 
@@ -10,17 +9,8 @@ const useApiMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/use-api", () => ({ useApi: useApiMock }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { id: 7, is_client: true } }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children, footer }: { children: ReactNode; footer?: ReactNode }) => (
-    <main>
-      {children}
-      <footer>{footer}</footer>
-    </main>
-  ),
-}));
-vi.mock("next/link", () => ({
-  default: ({ children, ...props }: ComponentProps<"a">) => <a {...props}>{children}</a>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("next/link", () => import("@/test-utils/next-link"));
 
 describe("PortalCatalogPage", () => {
   beforeEach(() => {

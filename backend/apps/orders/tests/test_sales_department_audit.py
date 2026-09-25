@@ -140,21 +140,6 @@ def test_legacy_payment_prevents_department_reassignment(sale, auth_client, mana
     assert order.department == department.code
 
 
-def test_repeat_uses_current_client_department_without_rewriting_source(
-    sale, auth_client, user_with_perms
-):
-    client, department, product = sale
-    source = Order.objects.create(client=client, status="shipped", department="main")
-    OrderItem.objects.create(order=source, product=product, quantity=1, unit_price=100)
-    user = user_with_perms("repeat-department", codes=["orders.view", "orders.create"])
-    response = auth_client(user).post(f"/api/orders/{source.pk}/repeat/")
-    assert response.status_code == 201
-    assert response.data["department"] == department.code
-    source.refresh_from_db()
-    assert source.department == "main"
-    assert response.data["status"] == "pending"
-
-
 def test_department_cannot_be_redirected_by_create_or_patch(sale, auth_client, manager):
     client, department, product = sale
     api = auth_client(manager)
@@ -198,11 +183,8 @@ def test_department_staff_reject_foreign_requests_but_reports_stay_scoped(
     user = user_with_perms(
         "foreign-department",
         codes=["orders.view", "orders.confirm", "orders.confirm_all", "reports.view"],
+        department=Department.objects.create(code="foreign", name="Другой отдел"),
     )
-    user.employee.sales_department = Department.objects.create(
-        code="foreign", name="Другой отдел"
-    )
-    user.employee.save(update_fields=["sales_department"])
     order = Order.objects.create(client=client, department=dept.code, status="pending")
     api = auth_client(user)
     # Заявки всех отделов (orders.confirm_all): отклоняет сотрудник другого отдела.
@@ -218,13 +200,48 @@ def test_department_staff_reject_foreign_requests_but_reports_stay_scoped(
     assert order.department == dept.code
 
 
+def test_order_without_department_counts_in_client_department(sale, auth_client, user_with_perms):
+    """Заказ без своего отдела — в отделе клиента: в отчёте, сводке, списках и кассе."""
+    client, dept, product = sale
+    order = Order.objects.create(
+        client=client, status="shipped", department="", settlement_intent="pending"
+    )
+    OrderItem.objects.create(order=order, product=product, quantity=2, unit_price=100)
+    Shipment.objects.create(order=order, shipped_at=timezone.now())
+    Payment.objects.create(
+        order=order, status="confirmed", method="cash", amount=50, confirmed_at=timezone.now()
+    )
+    api = auth_client(user_with_perms("cashier", codes=[
+        "reports.view", "orders.view", "clients.view",
+        "payments.view", "payments.create", "payments.confirm",
+    ]))
+
+    report = api.get("/api/reports/summary/", {"department": dept.code}).data
+    assert report["shipped"]["revenue"] == "200.00"
+    assert [(row["code"], row["sales_by_currency"]) for row in report["departments"]] == [
+        (dept.code, {"KZT": "200.00"})
+    ]
+    summary = {row["code"]: row for row in api.get("/api/orders/department-summary/").data}
+    assert summary[dept.code]["orders"] == 1
+    assert "__unassigned" not in summary
+    for url in ("/api/orders/", "/api/orders/awaiting-payment/"):
+        assert [row["id"] for row in api.get(url, {"department": dept.code}).data] == [order.pk]
+        assert api.get(url, {"department": "__unassigned"}).data == []
+    transactions = api.get("/api/payment-transactions/", {"department": dept.code}).data
+    assert transactions["count"] == 1
+    debts = api.get("/api/clients/debts/", {"department": dept.code}).data
+    assert [row["client_id"] for row in debts] == [client.pk]
+
+
 def test_report_departments_reconcile_across_periods_currencies_and_refunds(sale):
     client, dept, product = sale
     now = timezone.now()
     old = now - timedelta(days=5)
     a = Order.objects.create(client=client, status="shipped", department=dept.code)
+    # «Нет отдела» — нет отдела ни у заказа, ни у клиента.
+    homeless = Client.objects.create_with_user(first_name="Без отдела", phone="audit-none")
     b = Order.objects.create(
-        client=client, status="shipped", department="", currency="USD"
+        client=homeless, status="shipped", department="", currency="USD"
     )
     for order in (a, b):
         OrderItem.objects.create(

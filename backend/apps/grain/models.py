@@ -1,4 +1,8 @@
-"""Приход зерна вагонами: силосы, поставки, вагоны и неизменяемый леджер.
+"""Зерно: силосы, поставки, приход вагонами и вывоз машинами через автовесы.
+
+Здесь же журнал взвешиваний, память тары, очередь непривязанных взвешиваний
+и проверка номера, захваты распознавания, датасет ориентации машин, остановки
+вагонов под аркой и неизменяемый леджер силосов.
 
 Правила хранения:
 - вес — только целые килограммы (никаких float);
@@ -6,6 +10,8 @@
 - резерв места — отдельные записи ``SiloReservation`` (сумма активных);
 - движения после проведения неизменяемы: правка — обратной операцией.
 """
+
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -27,15 +33,20 @@ PASSAGE_SCALE_DEFAULT_STABLE_WEIGHT_SECONDS = 10
 PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS = 2
 PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS = 60
 
+# Допуск расхождения нетто с документами/ожиданием, %. Сверх него приход
+# останавливается в «Расхождение веса» и ждёт решения оператора.
+WEIGHT_DISCREPANCY_ALLOWED_PERCENT = Decimal("1")
+
 
 class GrainSettings(models.Model):
-    """Единственная строка настроек модуля (порог расхождения и датчиков)."""
+    """Единственная строка настроек модуля (порог расхождения).
+
+    Больше не читается: допуск — ``WEIGHT_DISCREPANCY_ALLOWED_PERCENT``.
+    Таблицу удалить миграцией после сверки значения на проде.
+    """
 
     allowed_discrepancy_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=1
-    )
-    sensor_warning_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=5
     )
 
     class Meta:
@@ -72,8 +83,6 @@ class SiloType(models.Model):
 
 
 class Silo(models.Model):
-    STATUSES = ["active", "blocked", "maintenance"]
-
     name = models.CharField(max_length=100, unique=True)
     total_capacity_kg = models.PositiveBigIntegerField()
     silo_type = models.ForeignKey(
@@ -89,8 +98,6 @@ class Silo(models.Model):
     is_quarantine = models.BooleanField(default=False)
     status = models.CharField(max_length=20, default="active")
     unloading_line = models.CharField(max_length=100, blank=True, default="")
-    # Оценка физического датчика уровня; расчётный остаток она НЕ заменяет.
-    sensor_estimated_kg = models.PositiveBigIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -99,13 +106,19 @@ class Silo(models.Model):
     def __str__(self):
         return self.name
 
+    # silo_overview() кладёт остаток и резерв аннотациями _balance_kg/_reserved_kg.
+    # Команды берут силос заново под select_for_update и считают вживую.
     @property
     def current_balance_kg(self) -> int:
+        if hasattr(self, "_balance_kg"):
+            return self._balance_kg
         last = self.movements.order_by("-id").first()
         return last.balance_after_kg if last else 0
 
     @property
     def reserved_kg(self) -> int:
+        if hasattr(self, "_reserved_kg"):
+            return self._reserved_kg
         return (
             self.reservations.filter(active=True).aggregate(total=Sum("amount_kg"))[
                 "total"
@@ -119,8 +132,6 @@ class Silo(models.Model):
 
 
 class GrainSupply(models.Model):
-    STATUSES = ["draft", "expected", "closed", "cancelled"]
-
     supplier = models.CharField(max_length=200)
     grain_type = models.ForeignKey(
         SiloType,
@@ -137,13 +148,9 @@ class GrainSupply(models.Model):
         related_name="planned_supplies",
     )
     simple_flow = models.BooleanField(default=False)
-    contract = models.CharField(max_length=200, blank=True, default="")
     culture = models.CharField(max_length=100)
     grain_class = models.CharField(max_length=50, blank=True, default="")
-    expected_date = models.DateField(null=True, blank=True)
     expected_total_kg = models.PositiveBigIntegerField(null=True, blank=True)
-    document_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
-    wagons_expected = models.PositiveIntegerField(null=True, blank=True)
     note = models.TextField(blank=True, default="")
     status = models.CharField(max_length=20, default="draft")
     created_by = models.ForeignKey(
@@ -163,8 +170,6 @@ class GrainSupply(models.Model):
 
 
 class Wagon(models.Model):
-    WEIGHT_SOURCES = ["auto", "manual", "scale"]
-
     # Направление рейса. Приход: транспорт въезжает гружёным и оставляет зерно
     # в силосе, нетто = вход − выход. Проход: въезжает пустым, забирает отруби
     # и уезжает гружёным, нетто = выход − вход. Это ровно обратная формула,
@@ -181,7 +186,7 @@ class Wagon(models.Model):
         related_name="wagons",
     )
     number = models.CharField(max_length=30, blank=True, default="")
-    workflow = models.CharField(max_length=20, default="legacy")
+    workflow = models.CharField(max_length=20, default="simple")
     direction = models.CharField(max_length=10, default=INTAKE)
     # Что вывозят на проходе («Отруби», «Мучка»…). Для прихода поле пустое:
     # там культура берётся из типа зерна поставки.
@@ -265,8 +270,12 @@ class Wagon(models.Model):
         ]
 
     def __str__(self):
-        label = "Вывоз" if self.is_passage else "Вагон"
-        return f"{label} {self.number or f'#{self.pk}'}"
+        return f"{'Вывоз' if self.is_passage else 'Вагон'} {self.label}"
+
+    @property
+    def label(self) -> str:
+        """Номер рейса, а пока его нет — #id."""
+        return self.number or f"#{self.pk}"
 
     @property
     def planned_weight_kg(self) -> int | None:
@@ -300,6 +309,30 @@ class Wagon(models.Model):
             return None
         return exit_weight - entry if self.is_passage else entry - exit_weight
 
+    def weight_difference_kg(self) -> int | None:
+        """Нетто минус плановый вес; None — сверять не с чем."""
+        planned = self.planned_weight_kg
+        if planned is None or self.net_weight_kg is None:
+            return None
+        return self.net_weight_kg - planned
+
+    def weight_difference_percent(self) -> Decimal | None:
+        """Отклонение нетто от планового веса в % с точностью до сотых."""
+        difference = self.weight_difference_kg()
+        planned = self.planned_weight_kg
+        if difference is None or not planned:
+            return None
+        percent = Decimal(difference) / Decimal(planned) * 100
+        return percent.quantize(Decimal("0.01"))
+
+    def weight_matches(self) -> bool | None:
+        """Вес в допуске. Единственное место сверки: статус расхождения в
+        сервисах и флаг в API читают его, чтобы не разойтись на границе."""
+        percent = self.weight_difference_percent()
+        if percent is None:
+            return None
+        return abs(percent) <= WEIGHT_DISCREPANCY_ALLOWED_PERCENT
+
 
 def weighing_photo_path(instance, filename: str) -> str:
     return f"grain/weighings/{instance.wagon_id}/{filename}"
@@ -311,8 +344,6 @@ def unassigned_weighing_photo_path(instance, filename: str) -> str:
 
 class WeighingRecord(models.Model):
     """Журнал всех взвешиваний, включая повторные и ручные правки."""
-
-    KINDS = ["gross", "tare"]
 
     wagon = models.ForeignKey(Wagon, on_delete=models.CASCADE, related_name="weighings")
     kind = models.CharField(max_length=10)
@@ -358,11 +389,12 @@ class VehicleTareMemory(models.Model):
 
 
 class UnassignedWeighing(models.Model):
-    """Вес с автовесов, который не удалось привязать к рейсу без оператора.
+    """Вес с автовесов, ещё не привязанный к рейсу.
 
-    Появляется, когда номер не распознан, а на территории уже есть открытые
-    проходы: угадывать, чей это выезд, нельзя. Автоматика не останавливается,
-    вес и фото сохраняются здесь, оператор привязывает их позже.
+    Сюда паркуется каждое стабильное взвешивание автоматики: проверка номера
+    (WeighingIdentityCheck) сама проводит его как заезд или выезд. Если
+    номер, направление или рейс определить нельзя, взвешивание остаётся в
+    очереди, и оператор привязывает его позже. Автоматика не останавливается.
     """
 
     OPEN = "open"
@@ -389,10 +421,14 @@ class UnassignedWeighing(models.Model):
         upload_to=unassigned_weighing_photo_path, null=True, blank=True
     )
     photo_request_id = models.UUIDField(null=True, blank=True, db_index=True)
-    # open_passages_exist — номер не прочитан при открытых рейсах;
+    # Почему вес припаркован:
+    # identity_verification_required — ждёт проверки номера (обычный путь);
+    # plate_unreadable / orientation_unknown — номер или направление не прочитаны;
     # entry_missing — гружёный выезд, которому не нашлось заезда: ни рейса под
     # прочитанным номером, ни припаркованного пустого веса, ни единственного
-    # безымянного рейса, ждущего выезда (при нескольких безымянных не гадаем).
+    # безымянного рейса, ждущего выезда (при нескольких безымянных не гадаем);
+    # passage_state_conflict / automatic_passage_apply_failed или код ошибки
+    # захвата — автоматика не смогла провести вес.
     reason = models.CharField(max_length=64, blank=True, default="")
     vehicle_number = models.CharField(max_length=30, blank=True, default="")
     orientation = models.CharField(
@@ -432,12 +468,22 @@ class UnassignedWeighing(models.Model):
 
 
 class WeighingIdentityCheck(models.Model):
-    """Durable, bounded verification of a saved exit against this visit's entry."""
+    """Durable, bounded automatic identification of one parked weighing.
+
+    Books the weighing as an entry or an exit by its plate and direction
+    (camera OCR first, a single saved frame read by the model as a fallback).
+    """
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    RETRYING = "retrying"
+    REVIEW = "review"
+    MATCHED = "matched"
 
     weighing = models.OneToOneField(
         UnassignedWeighing, on_delete=models.CASCADE, related_name="identity_check"
     )
-    status = models.CharField(max_length=16, default="pending", db_index=True)
+    status = models.CharField(max_length=16, default=PENDING, db_index=True)
     attempts = models.PositiveSmallIntegerField(default=0)
     lease_until = models.DateTimeField(null=True, blank=True)
     next_attempt_at = models.DateTimeField(default=timezone.now)
@@ -457,53 +503,27 @@ class WeighingIdentityCheck(models.Model):
         ]
 
 
-class PassageWeightCapture(models.Model):
-    """Durable weight-first command joining one scale read to one plate result."""
+class RecognitionCapture(models.Model):
+    """Common state of one stable-weight trigger answered by Camera-PC.
 
-    ENTRY = "entry"
-    EXIT = "exit"
-    ACTIONS = [(ENTRY, "Въезд"), (EXIT, "Выезд")]
+    Shared by the operator's weight-first command and the automatic scale
+    lane; status/stage labels and lane-specific columns stay on each model.
+    """
 
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
-    STATUSES = [
-        (PROCESSING, "Выполняется"),
-        (COMPLETED, "Завершено"),
-        (FAILED, "Ошибка"),
-    ]
 
     CLAIMED = "claimed"
     RECOGNIZING = "recognizing"
     APPLYING = "applying"
     DONE = "done"
-    STAGES = [
-        (CLAIMED, "Запрос принят"),
-        (RECOGNIZING, "Распознавание номера"),
-        (APPLYING, "Сохранение результата"),
-        (DONE, "Завершено"),
-    ]
 
     idempotency_key = models.UUIDField(unique=True)
-    wagon = models.ForeignKey(
-        Wagon,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="passage_weight_captures",
-    )
-    # Keep the physical-operation audit addressable even after an explicitly
-    # authorized trip deletion detaches the live FK.
-    wagon_id_snapshot = models.PositiveBigIntegerField(db_index=True)
-    action = models.CharField(max_length=10, choices=ACTIONS)
-    wagon_status_before = models.CharField(max_length=30)
-    status = models.CharField(max_length=12, choices=STATUSES, default=PROCESSING)
-    stage = models.CharField(max_length=16, choices=STAGES, default=CLAIMED)
     camera = models.CharField(max_length=32)
     camera_source = models.CharField(max_length=4, blank=True, default="")
     stable_weight_at = models.DateTimeField(null=True, blank=True)
     weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
-    scale_number = models.CharField(max_length=50, blank=True, default="")
     scale_age_seconds = models.DecimalField(
         max_digits=10,
         decimal_places=3,
@@ -531,6 +551,53 @@ class PassageWeightCapture(models.Model):
     retryable = models.BooleanField(default=False)
     error_code = models.CharField(max_length=64, blank=True, default="")
     error_detail = models.CharField(max_length=300, blank=True, default="")
+    started_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        abstract = True
+        ordering = ["-id"]
+
+
+class PassageWeightCapture(RecognitionCapture):
+    """Durable weight-first command joining one scale read to one plate result."""
+
+    ENTRY = "entry"
+    EXIT = "exit"
+    ACTIONS = [(ENTRY, "Въезд"), (EXIT, "Выезд")]
+
+    STATUSES = [
+        (RecognitionCapture.PROCESSING, "Выполняется"),
+        (RecognitionCapture.COMPLETED, "Завершено"),
+        (RecognitionCapture.FAILED, "Ошибка"),
+    ]
+    STAGES = [
+        (RecognitionCapture.CLAIMED, "Запрос принят"),
+        (RecognitionCapture.RECOGNIZING, "Распознавание номера"),
+        (RecognitionCapture.APPLYING, "Сохранение результата"),
+        (RecognitionCapture.DONE, "Завершено"),
+    ]
+
+    wagon = models.ForeignKey(
+        Wagon,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="passage_weight_captures",
+    )
+    # Keep the physical-operation audit addressable even after an explicitly
+    # authorized trip deletion detaches the live FK.
+    wagon_id_snapshot = models.PositiveBigIntegerField(db_index=True)
+    action = models.CharField(max_length=10, choices=ACTIONS)
+    wagon_status_before = models.CharField(max_length=30)
+    status = models.CharField(
+        max_length=12, choices=STATUSES, default=RecognitionCapture.PROCESSING
+    )
+    stage = models.CharField(
+        max_length=16, choices=STAGES, default=RecognitionCapture.CLAIMED
+    )
+    scale_number = models.CharField(max_length=50, blank=True, default="")
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -538,12 +605,8 @@ class PassageWeightCapture(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
-    started_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
 
-    class Meta:
-        ordering = ["-id"]
+    class Meta(RecognitionCapture.Meta):
         constraints = [
             models.CheckConstraint(
                 name="grain_passage_capture_action_valid",
@@ -567,7 +630,7 @@ class PassageWeightCapture(models.Model):
         ]
 
 
-class AutomaticPassageCapture(models.Model):
+class AutomaticPassageCapture(RecognitionCapture):
     """One durable automatic operation for one observed scale occupancy.
 
     The polling loop commits this row before contacting either the strict
@@ -578,72 +641,34 @@ class AutomaticPassageCapture(models.Model):
     same parked vehicle twice.
     """
 
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
     STATUSES = [
-        (PROCESSING, "Выполняется"),
-        (COMPLETED, "Завершено"),
-        (FAILED, "Нужен оператор"),
+        (RecognitionCapture.PROCESSING, "Выполняется"),
+        (RecognitionCapture.COMPLETED, "Завершено"),
+        (RecognitionCapture.FAILED, "Нужен оператор"),
     ]
-
-    CLAIMED = "claimed"
-    RECOGNIZING = "recognizing"
-    APPLYING = "applying"
-    DONE = "done"
     STAGES = [
-        (CLAIMED, "Весы захвачены"),
-        (RECOGNIZING, "Распознавание номера"),
-        (APPLYING, "Сохранение рейса"),
-        (DONE, "Завершено"),
+        (RecognitionCapture.CLAIMED, "Весы захвачены"),
+        (RecognitionCapture.RECOGNIZING, "Распознавание номера"),
+        (RecognitionCapture.APPLYING, "Сохранение рейса"),
+        (RecognitionCapture.DONE, "Завершено"),
     ]
 
-    idempotency_key = models.UUIDField(unique=True)
     scale_number = models.CharField(max_length=50, default="truck")
-    status = models.CharField(max_length=12, choices=STATUSES, default=PROCESSING)
-    stage = models.CharField(max_length=16, choices=STAGES, default=CLAIMED)
-    camera = models.CharField(max_length=32)
-    camera_source = models.CharField(max_length=4, blank=True, default="")
-    stable_weight_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=12, choices=STATUSES, default=RecognitionCapture.PROCESSING
+    )
+    stage = models.CharField(
+        max_length=16, choices=STAGES, default=RecognitionCapture.CLAIMED
+    )
     trigger_weight_kg = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         null=True,
         blank=True,
     )
-    weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
-    scale_age_seconds = models.DecimalField(
-        max_digits=10,
-        decimal_places=3,
-        null=True,
-        blank=True,
-    )
-    scale_updated_at = models.CharField(max_length=64, blank=True, default="")
-    vehicle_number = models.CharField(max_length=30, blank=True, default="")
-    recognized_at = models.DateTimeField(null=True, blank=True)
-    confirmation_votes = models.PositiveSmallIntegerField(null=True, blank=True)
-    detector_confidence = models.DecimalField(
-        max_digits=7,
-        decimal_places=6,
-        null=True,
-        blank=True,
-    )
-    ocr_confidence = models.DecimalField(
-        max_digits=7,
-        decimal_places=6,
-        null=True,
-        blank=True,
-    )
-    ai_payload_json = models.JSONField(default=dict, blank=True)
-    # Ответ классификатора ориентации Camera-PC: front/rear и его уверенность.
+    # Ответ классификатора ориентации Camera-PC: front/rear.
     orientation = models.CharField(
         max_length=8, blank=True, default="", choices=VEHICLE_ORIENTATIONS
-    )
-    orientation_confidence = models.DecimalField(
-        max_digits=7,
-        decimal_places=6,
-        null=True,
-        blank=True,
     )
     recognition_attempts = models.PositiveSmallIntegerField(default=0)
     final_lookup_attempted = models.BooleanField(default=False)
@@ -664,10 +689,6 @@ class AutomaticPassageCapture(models.Model):
     # Только сбой записи в базу оставляет ленту заблокированной до
     # подтверждения оператором; сбои распознавания не требуют человека.
     requires_acknowledgement = models.BooleanField(default=True)
-    retryable = models.BooleanField(default=False)
-    response_status = models.PositiveSmallIntegerField(null=True, blank=True)
-    error_code = models.CharField(max_length=64, blank=True, default="")
-    error_detail = models.CharField(max_length=300, blank=True, default="")
     processing_started_at = models.DateTimeField(null=True, blank=True)
     vehicle_plate_event = models.OneToOneField(
         "cameras.VehiclePlateEvent",
@@ -692,13 +713,9 @@ class AutomaticPassageCapture(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
-    started_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
     cleared_at = models.DateTimeField(null=True, blank=True)
 
-    class Meta:
-        ordering = ["-id"]
+    class Meta(RecognitionCapture.Meta):
         constraints = [
             models.CheckConstraint(
                 name="grain_auto_capture_status_valid",
@@ -828,13 +845,6 @@ class PassageScaleAutomationState(models.Model):
 
 
 class LabCheck(models.Model):
-    DECISIONS = [
-        "accepted",
-        "accepted_with_restrictions",
-        "rejected",
-        "quarantine",
-    ]
-
     wagon = models.ForeignKey(
         Wagon, on_delete=models.CASCADE, related_name="lab_checks"
     )
@@ -844,10 +854,7 @@ class LabCheck(models.Model):
     impurity = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True
     )
-    nature = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     grain_class = models.CharField(max_length=50, blank=True, default="")
-    infestation = models.BooleanField(default=False)
-    damage = models.CharField(max_length=300, blank=True, default="")
     note = models.TextField(blank=True, default="")
     decision = models.CharField(max_length=30)
     checked_by = models.ForeignKey(
@@ -878,15 +885,7 @@ class SiloReservation(models.Model):
 
 
 class SiloAllocation(models.Model):
-    """Часть разгрузки вагона в конкретный силос (поддержка нескольких)."""
-
-    MEASUREMENT_SOURCES = [
-        "intermediate_weighing",
-        "conveyor_scale",
-        "flow_meter",
-        "weighing_hopper",
-        "manual",
-    ]
+    """Оприходованная часть вагона в конкретном силосе."""
 
     wagon = models.ForeignKey(
         Wagon, on_delete=models.CASCADE, related_name="allocations"
@@ -906,15 +905,6 @@ class SiloAllocation(models.Model):
 
 class GrainMovement(models.Model):
     """Неизменяемый леджер движений зерна по силосам (аналог StockMovement)."""
-
-    TYPES = [
-        "income",
-        "expense",
-        "transfer_in",
-        "transfer_out",
-        "adjustment",
-        "inventory_correction",
-    ]
 
     silo = models.ForeignKey(Silo, on_delete=models.PROTECT, related_name="movements")
     movement_type = models.CharField(max_length=25)
@@ -1053,7 +1043,6 @@ class WagonArchStop(models.Model):
     """
 
     OPEN, CLOSED, ATTENTION, SUPERSEDED = "open", "closed", "attention", "superseded"
-    STATUSES = [OPEN, CLOSED, ATTENTION, SUPERSEDED]
 
     stop_id = models.UUIDField(unique=True)
     camera = models.CharField(max_length=32)

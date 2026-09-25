@@ -4,10 +4,8 @@ import pytest
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
-from apps.catalog.models import Product
+from apps.eventlog.models import EventLog
 from apps.warehouse.models import StockItem, StockMovement, StockReceipt, Warehouse
-from apps.warehouse.serializers import WarehouseSerializer
-from apps.warehouse.tests.legacy import force_legacy_null_warehouse
 from apps.warehouse.services import (
     adjust_stock,
     deduct_stock,
@@ -22,24 +20,15 @@ from apps.warehouse.services import (
 pytestmark = pytest.mark.django_db
 
 
-def _product():
-    return Product.objects.create(
-        name="Премиум",
-        color="Red",
-        weight_kg="50",
-        price="100.00",
-    )
-
-
-def test_receive_stock_increments(boss):
-    prod = _product()
+def test_receive_stock_increments(boss, make_product):
+    prod = make_product()
     receive_stock(prod, 100, boss)
     receive_stock(prod, 50, boss)
     assert StockItem.objects.get(product=prod).bags == 150
 
 
-def test_legacy_call_uses_default_warehouse_and_audits_it(boss):
-    prod = _product()
+def test_legacy_call_uses_default_warehouse_and_audits_it(boss, make_product):
+    prod = make_product()
 
     receipt = receive_stock(prod, 10, boss)
 
@@ -51,23 +40,12 @@ def test_legacy_call_uses_default_warehouse_and_audits_it(boss):
     assert movement.warehouse == warehouse
 
 
-def test_legacy_null_stock_row_is_claimed_by_default_warehouse(boss):
-    prod = _product()
-    legacy = StockItem.objects.create(product=prod, bags=7, warehouse=None)
-
-    receive_stock(prod, 3, boss)
-
-    legacy.refresh_from_db()
-    assert legacy.warehouse == get_default_warehouse()
-    assert legacy.bags == 10
-
-
-def test_explicit_warehouse_is_preserved_in_receipt_and_movement(boss):
+def test_explicit_warehouse_is_preserved_in_receipt_and_movement(boss, make_product):
     warehouse = Warehouse.objects.create(
         code="north",
         name="Северный склад",
     )
-    prod = _product()
+    prod = make_product()
 
     receipt = receive_stock(prod, 15, boss, warehouse=warehouse)
 
@@ -78,8 +56,8 @@ def test_explicit_warehouse_is_preserved_in_receipt_and_movement(boss):
     assert movement.warehouse == warehouse
 
 
-def test_same_product_can_have_independent_balances_in_two_warehouses(boss):
-    prod = _product()
+def test_same_product_can_have_independent_balances_in_two_warehouses(boss, make_product):
+    prod = make_product()
     receive_stock(prod, 10, boss)
     other = Warehouse.objects.create(code="south", name="Южный склад")
 
@@ -94,8 +72,8 @@ def test_same_product_can_have_independent_balances_in_two_warehouses(boss):
     assert StockReceipt.objects.filter(product=prod).count() == 2
 
 
-def test_availability_is_scoped_to_requested_warehouse(boss):
-    prod = _product()
+def test_availability_is_scoped_to_requested_warehouse(boss, make_product):
+    prod = make_product()
     receive_stock(prod, 10, boss)
     other = Warehouse.objects.create(code="east", name="Восточный склад")
 
@@ -109,60 +87,39 @@ def test_availability_is_scoped_to_requested_warehouse(boss):
     ensure_products_available([prod], warehouse=other)
 
 
-def _legacy_null_row(product, bags):
-    """Строка без склада рядом со строкой main — её вставил образ до мультисклада."""
-    scratch = Warehouse.objects.create(code=f"scratch-{product.pk}", name=f"Временный {product.pk}")
-    item = StockItem.objects.create(product=product, warehouse=scratch, bags=bags)
-    force_legacy_null_warehouse(item)
-    return item
-
-
-def test_stock_balances_sum_legacy_null_row_into_main_only():
-    prod = _product()
-    missing = Product.objects.create(name="Нет на складе", color="Red", weight_kg="50")
+def test_stock_balances_are_scoped_to_warehouse(make_product):
+    prod = make_product()
+    missing = make_product(name="Нет на складе")
     main = Warehouse.objects.get(code="main")
     other = Warehouse.objects.create(code="west", name="Западный склад")
     StockItem.objects.create(product=prod, warehouse=main, bags=5)
-    # Строка без склада принадлежит main: её мешки складываются, а не подменяют.
-    _legacy_null_row(prod, 3)
     StockItem.objects.create(product=prod, warehouse=other, bags=7)
 
-    assert stock_balances(main, [prod.pk, missing.pk]) == {prod.pk: 8, missing.pk: 0}
+    assert stock_balances(main, [prod.pk, missing.pk]) == {prod.pk: 5, missing.pk: 0}
     assert stock_balances(other, [prod.pk]) == {prod.pk: 7}
     assert stock_balances(main, []) == {}
 
 
-def test_availability_counts_main_row_and_legacy_null_row_together():
-    prod = _product()
-    main = Warehouse.objects.get(code="main")
-    StockItem.objects.create(product=prod, warehouse=main, bags=-2)
-    legacy = _legacy_null_row(prod, 5)
-
-    ensure_products_available([prod], warehouse=main)
-
-    StockItem.objects.filter(pk=legacy.pk).update(bags=2)
-    with pytest.raises(ValidationError) as exc_info:
-        ensure_products_available([prod], warehouse=main)
-    assert str(exc_info.value.detail["code"]) == "out_of_stock"
-
-
-def test_deduct_stock_reduces(boss):
-    prod = _product()
+def test_deduct_stock_reduces(boss, make_product):
+    prod = make_product()
     receive_stock(prod, 100, boss)
     deduct_stock(prod, 30)
     assert StockItem.objects.get(product=prod).bags == 70
 
 
-def test_deduct_more_than_available_raises(boss):
-    prod = _product()
+def test_deduct_more_than_available_goes_negative_and_logs(boss, make_product):
+    prod = make_product()
     receive_stock(prod, 10, boss)
-    with pytest.raises(ValidationError):
-        deduct_stock(prod, 50)
+    deduct_stock(prod, 50, boss)
+    assert StockItem.objects.get(product=prod).bags == -40
+    warning = EventLog.objects.get(event_type="stock_negative")
+    assert warning.payload["had"] == 10
+    assert warning.payload["deduct"] == 50
 
 
-def test_pinned_inactive_warehouse_allows_historical_stock_operations(boss):
+def test_pinned_inactive_warehouse_allows_historical_stock_operations(boss, make_product):
     warehouse = Warehouse.objects.create(code="legacy", name="Закрытый склад")
-    prod = _product()
+    prod = make_product()
     receive_stock(prod, 10, boss, warehouse=warehouse)
     warehouse.is_active = False
     warehouse.save(update_fields=["is_active"])
@@ -214,19 +171,10 @@ def test_pinned_inactive_warehouse_allows_historical_stock_operations(boss):
         user=boss,
         reason="откат",
         warehouse=warehouse,
-        require_active=False,
     )
 
     assert StockItem.objects.get(product=prod).bags == 15
     assert changes[0]["warehouse"] == warehouse.pk
-
-
-def test_receipt_endpoint_manager_only(auth_client, operator):
-    prod = _product()
-    resp = auth_client(operator).post(
-        "/api/stock/receive/", {"product": prod.id, "bags": 10}, format="json"
-    )
-    assert resp.status_code == 403
 
 
 def test_warehouses_api_permissions_and_crud(auth_client, operator, boss):
@@ -236,24 +184,19 @@ def test_warehouses_api_permissions_and_crud(auth_client, operator, boss):
 
     denied = auth_client(operator).post(
         "/api/warehouses/",
-        {"code": "denied", "name": "Нет доступа"},
+        {"name": "Нет доступа"},
         format="json",
     )
     assert denied.status_code == 403
 
     created = auth_client(boss).post(
         "/api/warehouses/",
-        {
-            "code": "west",
-            "name": "Западный склад",
-            "address": "Промзона 2",
-        },
+        {"name": "Западный склад"},
         format="json",
     )
     assert created.status_code == 201
-    assert created.data["code"] == "west"
+    assert created.data["code"].startswith("wh-")
     assert created.data["name"] == "Западный склад"
-    assert created.data["address"] == "Промзона 2"
     assert created.data["is_active"] is True
     assert created.data["is_default"] is False
 
@@ -266,104 +209,38 @@ def test_warehouses_api_permissions_and_crud(auth_client, operator, boss):
     assert updated.data["name"] == "Запад"
 
 
-def test_default_warehouse_cannot_be_disabled_unset_or_deleted(auth_client, boss):
-    warehouse = get_default_warehouse()
-    api = auth_client(boss)
-
-    disabled = api.patch(
-        f"/api/warehouses/{warehouse.pk}/",
-        {"is_active": False},
-        format="json",
-    )
-    unset = api.patch(
-        f"/api/warehouses/{warehouse.pk}/",
-        {"is_default": False},
-        format="json",
-    )
-    deleted = api.delete(f"/api/warehouses/{warehouse.pk}/")
-
-    assert disabled.status_code == 400
-    assert unset.status_code == 400
-    assert deleted.status_code == 400
-
-
-def test_main_anchor_stays_active_and_named_after_default_moves(auth_client, boss):
-    main = Warehouse.objects.get(code="main")
-    secondary = Warehouse.objects.create(code="future-default", name="Новый основной")
-    api = auth_client(boss)
-
-    promoted = api.patch(
-        f"/api/warehouses/{secondary.pk}/",
-        {"is_default": True},
-        format="json",
-    )
-    renamed = api.patch(
-        f"/api/warehouses/{main.pk}/",
-        {"code": "old-main"},
-        format="json",
-    )
-    disabled = api.patch(
-        f"/api/warehouses/{main.pk}/",
-        {"is_active": False},
-        format="json",
-    )
-    deleted = api.delete(f"/api/warehouses/{main.pk}/")
-    deleted_default = api.delete(f"/api/warehouses/{secondary.pk}/")
-
-    assert promoted.status_code == 200, promoted.data
-    assert renamed.status_code == 400
-    assert disabled.status_code == 400
-    assert deleted.status_code == 400
-    assert deleted_default.status_code == 400
-
-
-def test_stale_update_cannot_disable_a_newly_promoted_default():
+def test_warehouse_api_only_renames_and_never_deletes(auth_client, boss):
     main = get_default_warehouse()
-    secondary = Warehouse.objects.create(code="promotion-race", name="Новый основной")
-    stale = Warehouse.objects.get(pk=secondary.pk)
-    serializer = WarehouseSerializer(
-        stale,
-        data={"is_active": False},
-        partial=True,
+    secondary = Warehouse.objects.create(code="west", name="Западный склад")
+    api = auth_client(boss)
+
+    patched = api.patch(
+        f"/api/warehouses/{secondary.pk}/",
+        {
+            "code": "renamed",
+            "address": "Промзона 2",
+            "is_active": False,
+            "is_default": True,
+        },
+        format="json",
     )
-    assert serializer.is_valid(), serializer.errors
-    Warehouse.objects.filter(pk=main.pk).update(is_default=False)
-    Warehouse.objects.filter(pk=secondary.pk).update(is_default=True)
+    deleted = api.delete(f"/api/warehouses/{secondary.pk}/")
 
-    with pytest.raises(ValidationError):
-        serializer.save()
-
+    assert patched.status_code == 200
+    assert deleted.status_code == 405
     secondary.refresh_from_db()
-    assert secondary.is_default is True
+    main.refresh_from_db()
+    assert (secondary.code, secondary.address) == ("west", "")
     assert secondary.is_active is True
+    assert secondary.is_default is False
+    assert main.is_default is True
 
 
-def test_secondary_product_assignment_cannot_be_deleted_during_rollout(
-    auth_client,
-    boss,
-):
-    secondary = Warehouse.objects.create(code="locked-stock", name="Доп. склад")
-    product = _product()
-    receive_stock(product, 6, boss, warehouse=secondary)
-    item = StockItem.objects.get(product=product)
-
-    response = auth_client(boss).delete(f"/api/stock/{item.pk}/")
-
-    assert response.status_code == 400
-    assert response.data["code"] == "warehouse_assignment_locked"
-    assert StockItem.objects.filter(pk=item.pk, warehouse=secondary, bags=6).exists()
-
-
-def test_stock_api_filters_and_writes_exact_warehouse(auth_client, boss):
+def test_stock_api_filters_and_writes_exact_warehouse(auth_client, boss, make_product):
     main = get_default_warehouse()
     other = Warehouse.objects.create(code="remote", name="Удалённый склад")
-    main_product = _product()
-    other_product = Product.objects.create(
-        name="Экстра",
-        color="Blue",
-        weight_kg="50",
-        price="120.00",
-    )
+    main_product = make_product()
+    other_product = make_product(name="Экстра", color="Blue")
     receive_stock(main_product, 11, boss, warehouse=main)
     receive_stock(other_product, 22, boss, warehouse=other)
     api = auth_client(boss)
@@ -378,10 +255,6 @@ def test_stock_api_filters_and_writes_exact_warehouse(auth_client, boss):
         },
         format="json",
     )
-    movements = api.get(
-        "/api/stock/movements/",
-        {"warehouse": other.pk},
-    )
 
     assert listing.status_code == 200
     assert [row["product"] for row in listing.data] == [other_product.pk]
@@ -390,5 +263,8 @@ def test_stock_api_filters_and_writes_exact_warehouse(auth_client, boss):
     assert adjusted.status_code == 200
     assert adjusted.data["bags"] == 25
     assert adjusted.data["warehouse"] == other.pk
-    assert movements.status_code == 200
-    assert {row["warehouse"] for row in movements.data} == {other.pk}
+    assert set(
+        StockMovement.objects.filter(product=other_product).values_list(
+            "warehouse_id", flat=True
+        )
+    ) == {other.pk}

@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import CashierPage from "@/app/accounting/page";
-import type { TopbarBack } from "@/components/layout/topbar";
+import { CASHIER_DEPARTMENTS, stubPhoneMatchMedia } from "@/test-utils/cashier";
 import { resetNavigation, routerCalls } from "@/test-utils/next-navigation";
 
 const mocks = vi.hoisted(() => ({
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   poll: null as null | (() => Promise<unknown>),
   paymentStatus: "requested",
 }));
+const defaultMe = mocks.me;
 vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: (poll: () => Promise<unknown>, intervalMs: number, active: boolean) => {
@@ -19,43 +20,15 @@ vi.mock("@/lib/use-visible-polling", () => ({
   },
 }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({
-    title,
-    back,
-    children,
-    footer,
-  }: {
-    title: string;
-    back?: TopbarBack;
-    children: React.ReactNode;
-    footer?: React.ReactNode;
-  }) => (
-    <div>
-      <h1>{title}</h1>
-      {back && (
-        <button type="button" onClick={back.onClick}>
-          {back.label}
-        </button>
-      )}
-      {children}
-      <div data-testid="footer">{footer}</div>
-    </div>
-  ),
-}));
-vi.mock("@/components/require-perm", () => ({
-  RequirePerm: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
+vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   api: { get: (...args: unknown[]) => mocks.get(...args), post: (...args: unknown[]) => mocks.post(...args) },
   apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
   isCanceledRequest: () => false,
 }));
-vi.mock("next/image", () => ({
-  // eslint-disable-next-line @next/next/no-img-element
-  default: ({ src, alt }: { src: string; alt: string }) => <img src={src} alt={alt} />,
-}));
+vi.mock("next/image", () => import("@/test-utils/next-image"));
 
 const debtors = [
   {
@@ -104,9 +77,6 @@ const debtOrder = (id: number, currency: string, total: string, department = "ma
 const detail = {
   client: { id: 1, name: "Асан Бекмуратов", phone: "87011234567", currency: "KZT" },
   debt_total: "195840",
-  orders_count: 2,
-  unpaid_count: 2,
-  partial_count: 0,
   stores: [],
   orders: [debtOrder(130, "KZT", "195840"), debtOrder(131, "USD", "500", "field")],
 };
@@ -120,7 +90,6 @@ function qrPayment(status: string) {
     method: "kaspi",
     status,
     paid_at: "2026-09-12T10:00:00",
-    recorded_by: 1,
     provider: {
       invoice_id: 77,
       channel: "qr",
@@ -129,25 +98,16 @@ function qrPayment(status: string) {
       qr_token_url: "https://qr.kaspi.kz/pos",
       qr_image_url: "https://api.apipay.kz/qr/pos.png",
       qr_expires_at: "2026-09-12T10:05:00",
-      total_refunded: "0.00",
-      available_for_refund: "0.00",
-      refunds: [],
     },
   };
 }
 
-beforeAll(() => {
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    writable: true,
-    value: () => ({ matches: true, media: "", addEventListener: () => {}, removeEventListener: () => {} }),
-  });
-});
+beforeAll(stubPhoneMatchMedia);
 
 beforeEach(() => {
   resetNavigation("/accounting?view=pos");
   localStorage.clear();
-  mocks.me = { is_superuser: true, permissions: [] };
+  mocks.me = defaultMe;
   mocks.poll = null;
   mocks.paymentStatus = "requested";
   mocks.get.mockReset();
@@ -155,29 +115,7 @@ beforeEach(() => {
   mocks.post.mockResolvedValue({ data: qrPayment("requested") });
   mocks.get.mockImplementation(async (raw: string) => {
     const url = new URL(raw, "http://localhost");
-    if (url.pathname === "/departments/")
-      return {
-        data: [
-          {
-            id: 1,
-            code: "main",
-            name: "Мельница",
-            color: "#123456",
-            is_active: true,
-            is_default: true,
-            order_count: 0,
-          },
-          {
-            id: 2,
-            code: "field",
-            name: "Нью-Сити",
-            color: "#654321",
-            is_active: true,
-            is_default: false,
-            order_count: 0,
-          },
-        ],
-      };
+    if (url.pathname === "/departments/") return { data: CASHIER_DEPARTMENTS };
     if (url.pathname === "/clients/debts/") return { data: debtors };
     if (url.pathname === "/clients/1/debt-detail/") return { data: detail };
     if (url.pathname === "/orders/130/payments/501/") return { data: qrPayment(mocks.paymentStatus) };
@@ -421,21 +359,6 @@ it("tells the cashier when the payment status cannot be checked", async () => {
   expect(await screen.findByRole("heading", { name: "Оплачено" })).toBeInTheDocument();
 });
 
-it("never shows «Оплачено» when the server did not issue a QR", async () => {
-  const user = userEvent.setup();
-  mocks.post.mockResolvedValue({ data: { ...qrPayment("confirmed"), provider: null } });
-  render(<CashierPage />);
-  await pickFirstOrder(user);
-  const debtorLoads = () => mocks.get.mock.calls.filter(([url]) => String(url).startsWith("/clients/debts/")).length;
-  const before = debtorLoads();
-
-  await user.click(screen.getByRole("button", { name: /Показать QR/ }));
-
-  expect(await screen.findByRole("alert")).toHaveTextContent("Сервер не выдал Kaspi QR");
-  expect(screen.queryByRole("heading", { name: "Оплачено" })).not.toBeInTheDocument();
-  expect(debtorLoads()).toBe(before);
-});
-
 it("explains a reservation left by a failed QR attempt", async () => {
   const user = userEvent.setup();
   let reserved = false;
@@ -466,25 +389,6 @@ it("explains a reservation left by a failed QR attempt", async () => {
   expect(screen.getByRole("alert")).toHaveTextContent("Статус создаваемого счёта ещё уточняется");
   await user.click(screen.getByRole("button", { name: "Открыть «Историю»" }));
   expect(await screen.findByRole("heading", { name: "История" })).toBeInTheDocument();
-});
-
-it("opens POS from the bottom bar only for staff who can take payments", async () => {
-  const user = userEvent.setup();
-  resetNavigation("/accounting");
-  const { unmount } = render(<CashierPage />);
-  await user.click(await screen.findByRole("button", { name: "POS" }));
-  // С главной — с историей: аппаратный «назад» вернёт домой.
-  expect(routerCalls.push).toEqual(["/accounting?view=pos"]);
-  expect(await screen.findByRole("heading", { name: "POS" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Оплата" })).toHaveAttribute("aria-current", "page");
-  unmount();
-
-  resetNavigation("/accounting");
-  mocks.me = { ...mocks.me, is_superuser: false, permissions: ["payments.confirm", "payments.view"] };
-  render(<CashierPage />);
-  expect(await screen.findByRole("heading", { name: "Все отделы" })).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "POS" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("navigation", { name: "Панель кассы" })).not.toBeInTheDocument();
 });
 
 it("offers only the orders of the department chosen in the cashier header", async () => {

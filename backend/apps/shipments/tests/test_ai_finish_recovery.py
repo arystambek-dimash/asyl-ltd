@@ -4,15 +4,14 @@
 без поля total или строкой. Раньше такой ответ ронял finish_ai_counting
 посреди разбора сессии, и заказ застревал в loading с открытой AI-сессией,
 которую не принимали ни ручное завершение, ни откат. Здесь AI закрывает
-только погрузку; склад и отгрузка меняются отдельным шагом ``ship``.
+только погрузку; склад и отгрузка меняются отдельно — кнопкой «Отгружено».
 """
 import pytest
-from decimal import Decimal
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem
-from apps.shipments.services import finish_ai_counting, record_arrival, record_count
+from apps.shipments.services import begin_camera_loading, finish_ai_counting
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import receive_stock
 
@@ -20,13 +19,12 @@ pytestmark = pytest.mark.django_db
 
 
 def _loading_order(boss, operator, qty=50, stock=100):
-    product = Product.objects.create(name="Высший", color="Red", weight_kg="50", price="25000")
+    product = Product.objects.create(name="Высший", color="Red", weight_kg="50")
     receive_stock(product, stock, boss)
     client = Client.objects.create_with_user(first_name="L", last_name="К", phone="x")
     order = Order.objects.create(client=client, status="confirmed", truck_number="01A123")
     OrderItem.objects.create(order=order, product=product, quantity=qty)
-    record_arrival(order, Decimal("8000"), operator)
-    record_count(order, qty, operator)
+    begin_camera_loading(order, "cam2", operator)
     order.refresh_from_db()
     assert order.status == "loading"
     return order, product

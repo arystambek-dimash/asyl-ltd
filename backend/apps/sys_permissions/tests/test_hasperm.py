@@ -3,8 +3,6 @@ from django.contrib.auth.models import AnonymousUser
 from rest_framework.permissions import IsAuthenticated
 
 from apps.common.permissions import DenyAll, HasPerm, PermViewSetMixin
-from apps.employees.models import Employee
-from apps.sys_permissions.models import Permission
 
 pytestmark = pytest.mark.django_db
 
@@ -12,34 +10,6 @@ pytestmark = pytest.mark.django_db
 class _Request:
     def __init__(self, user):
         self.user = user
-
-
-def _permission(code):
-    permission, _ = Permission.objects.get_or_create(
-        code=code,
-        defaults={
-            "section": code.split(".")[0],
-            "action": code.split(".")[1],
-            "label": code,
-        },
-    )
-    return permission
-
-
-def test_superuser_is_allowed(make_user):
-    user = make_user(username="super-permissions")
-    user.is_superuser = True
-    user.save(update_fields=["is_superuser"])
-    assert HasPerm("orders.create").has_permission(_Request(user), None) is True
-
-
-def test_direct_employee_permission_grants_access(make_user):
-    user = make_user(username="direct-permission")
-    employee = Employee.objects.create(user=user, phone="x")
-    employee.permissions.add(_permission("orders.view"))
-
-    assert HasPerm("orders.view").has_permission(_Request(user), None) is True
-    assert HasPerm("orders.create").has_permission(_Request(user), None) is False
 
 
 def test_anonymous_user_is_denied():

@@ -7,6 +7,27 @@ from apps.sales.models import Department
 from .models import Client
 
 
+def log_department_change(
+    client: Client,
+    previous: Department | None,
+    user,
+    message: str,
+) -> None:
+    """Событие «клиент перенесён в отдел»: ``previous`` → ``client.department``."""
+    current = client.department
+    log_event(
+        "client",
+        message,
+        user=user,
+        payload={
+            "client_id": client.pk,
+            "action": "client_department_changed",
+            "department_from": previous.code if previous else None,
+            "department_to": current.code if current else None,
+        },
+    )
+
+
 def assign_client_department(client: Client, department: Department | None, user) -> Client:
     """Закрепить клиента без отдела (саморегистрация) за отделом продаж.
 
@@ -26,15 +47,10 @@ def assign_client_department(client: Client, department: Department | None, user
         raise PermissionDenied("Клиента можно закрепить только за своим отделом")
     client.department = department
     client.save(update_fields=["department"])
-    log_event(
-        "client",
+    log_department_change(
+        client,
+        None,
+        user,
         f"Клиент «{client.name}» закреплён за отделом «{department.name}»",
-        user=user,
-        payload={
-            "client_id": client.pk,
-            "action": "client_department_changed",
-            "department_from": None,
-            "department_to": department.code,
-        },
     )
     return client

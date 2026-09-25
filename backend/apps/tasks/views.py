@@ -1,35 +1,24 @@
-from django.contrib.auth import get_user_model
 from django.core import signing
-from django.db.models import Q
-from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff
-from apps.common.query_params import parse_iso_date
+from apps.common.permissions import HasPerm, IsStaff, PermAPIViewMixin
 from apps.common.signed_media import SignedMediaView
 
 from .attachments import (
     attachment_id_from_token,
     detected_media_type,
 )
-from .models import Task, TaskAttachment, TaskNotification
+from .models import Task, TaskAttachment
 from .serializers import (
     TaskAttachmentSerializer,
-    TaskNotificationSerializer,
     TaskSerializer,
 )
-from .services import (
-    add_attachments,
-    complete_task,
-    create_task,
-    reassign_task,
-    reopen_task,
-)
+from .services import can_delete_task, complete_task, reopen_task, visible_tasks_q
 
 
 class TaskViewSet(viewsets.ModelViewSet):
@@ -45,93 +34,30 @@ class TaskViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
-        user = self.request.user
         queryset = (
-            Task.objects.select_related("assignee", "created_by", "done_by")
+            Task.objects.filter(visible_tasks_q(self.request.user))
+            .select_related("assignee", "created_by", "done_by")
             .prefetch_related("attachments")
         )
-        if not (user.is_superuser or user.has_perm_code("tasks.view")):
-            queryset = queryset.filter(Q(assignee=user) | Q(created_by=user))
-        return self._filtered(queryset)
-
-    def _filtered(self, queryset):
-        params = self.request.query_params
-        status = params.get("status")
+        status = self.request.query_params.get("status")
         if status in Task.STATUSES:
             queryset = queryset.filter(status=status)
-        assignee = params.get("assignee")
-        if assignee and assignee.isdigit():
-            queryset = queryset.filter(assignee_id=int(assignee))
-        if params.get("mine") in ("1", "true", "True"):
-            queryset = queryset.filter(assignee=self.request.user)
         return queryset
 
-    def _require_create(self):
-        user = self.request.user
-        if not (user.is_superuser or user.has_perm_code("tasks.create")):
-            raise PermissionDenied("Недостаточно прав для постановки задач")
-
-    def _resolve_assignee(self, raw):
-        if raw in (None, ""):
-            raise ValidationError({"detail": "Выберите исполнителя",
-                                   "code": "assignee_required"})
-        if isinstance(raw, bool) or not str(raw).isdigit() or len(str(raw)) > 18:
-            raise ValidationError({"assignee": "Укажите идентификатор сотрудника"})
-        user_model = get_user_model()
-        assignee = user_model.objects.filter(pk=raw, is_client=False).first()
-        if assignee is None:
-            raise ValidationError({"detail": "Исполнитель не найден",
-                                   "code": "assignee_not_found"})
-        return assignee
-
-    def create(self, request, *args, **kwargs):
-        self._require_create()
-        task = create_task(
-            title=request.data.get("title"),
-            body=request.data.get("body") or "",
-            assignee=self._resolve_assignee(request.data.get("assignee")),
-            user=request.user,
-            due_date=parse_iso_date(request.data.get("due_date")),
-            attachments=request.FILES.getlist("attachments"),
-        )
-        return Response(self.get_serializer(task).data, status=201)
-
-    def _assert_can_close(self, task):
-        user = self.request.user
-        if not (user.is_superuser
-                or task.assignee_id == user.pk
-                or task.created_by_id == user.pk):
-            raise PermissionDenied("Закрыть задачу может исполнитель или постановщик")
+    def get_permissions(self):
+        if self.action in ("create", "partial_update"):
+            return [HasPerm("tasks.create")]
+        return super().get_permissions()
 
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
         task = self.get_object()
-        self._assert_can_close(task)
         return Response(self.get_serializer(complete_task(task, request.user)).data)
 
     @action(detail=True, methods=["post"], url_path="reopen")
     def reopen(self, request, pk=None):
         task = self.get_object()
-        self._assert_can_close(task)
         return Response(self.get_serializer(reopen_task(task, request.user)).data)
-
-    @action(detail=True, methods=["post"], url_path="reassign")
-    def reassign(self, request, pk=None):
-        self._require_create()
-        task = self.get_object()
-        assignee = self._resolve_assignee(request.data.get("assignee"))
-        return Response(self.get_serializer(reassign_task(task, assignee, request.user)).data)
-
-    @action(detail=True, methods=["post"], url_path="attachments")
-    def upload(self, request, pk=None):
-        task = self.get_object()
-        self._assert_can_close(task)
-        uploads = request.FILES.getlist("attachments") or request.FILES.getlist("file")
-        if not uploads:
-            raise ValidationError({"detail": "Файл не приложен", "code": "no_file"})
-        add_attachments(task, uploads, request.user)
-        task.refresh_from_db()
-        return Response(self.get_serializer(task).data)
 
     @action(
         detail=True,
@@ -152,42 +78,16 @@ class TaskViewSet(viewsets.ModelViewSet):
         )
         return Response({"url": serializer.data["url"]})
 
-    def perform_update(self, serializer):
-        self._require_create()
-        serializer.save()
-
     def perform_destroy(self, instance):
-        user = self.request.user
-        if not (user.is_superuser or instance.created_by_id == user.pk):
+        if not can_delete_task(instance, self.request.user):
             raise PermissionDenied("Удалить задачу может только её постановщик")
         instance.delete()
 
 
-class TaskNotificationView(APIView):
-    """Уведомления сотрудника о задачах: список и отметка о прочтении."""
-
-    permission_classes = [IsStaff]
-
-    def get(self, request):
-        rows = (TaskNotification.objects.filter(user=request.user)
-                .select_related("task")[:50])
-        return Response({
-            "unread": TaskNotification.objects.filter(
-                user=request.user, is_read=False).count(),
-            "results": TaskNotificationSerializer(rows, many=True).data,
-        })
-
-    def post(self, request):
-        TaskNotification.objects.filter(user=request.user, is_read=False).update(
-            is_read=True)
-        return Response({"unread": 0})
-
-
-class TaskAssigneeListView(APIView):
+class TaskAssigneeListView(PermAPIViewMixin, APIView):
     """Кому можно поручить задачу — активные сотрудники."""
 
-    def get_permissions(self):
-        return [HasPerm("tasks.create", "employees.view")]
+    required_perms = {"get": ("tasks.create", "employees.view")}
 
     def get(self, request):
         from apps.employees.models import Employee
@@ -197,10 +97,10 @@ class TaskAssigneeListView(APIView):
         return Response([
             {
                 "id": row.user_id,
-                "name": row.user.get_full_name() or row.user.username,
+                "name": row.name,
                 "position": row.position,
             }
-            for row in rows if row.user_id
+            for row in rows
         ])
 
 
@@ -224,12 +124,9 @@ class TaskAttachmentDownloadView(SignedMediaView):
 
         detected = detected_media_type(file_handle)
         content_type = detected[1] if detected is not None else "application/octet-stream"
-        response = FileResponse(
+        return self.file_response(
             file_handle,
             content_type=content_type,
             as_attachment=detected is None,
             filename=attachment.original_name or None,
         )
-        response["Cache-Control"] = "private, no-store"
-        response["X-Content-Type-Options"] = "nosniff"
-        return response

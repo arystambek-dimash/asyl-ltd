@@ -7,7 +7,8 @@ import pytest
 from apps.cameras import ai as camera_ai
 from apps.grain import scale, vehicle_weight_capture
 from apps.grain import statuses as st
-from apps.grain.models import PassageWeightCapture, Wagon, WeighingRecord
+from apps.grain.models import PassageWeightCapture, WeighingRecord
+from apps.grain.tests.factories import passage_trip, recognized, scale_reading
 from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
@@ -15,7 +16,6 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture(autouse=True)
 def weight_first_settings(settings):
-    settings.VEHICLE_PLATE_AUTO_EXPORT_ENABLED = False
     settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED = True
     settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA = "cam1"
     settings.VEHICLE_PLATE_WEIGHT_FIRST_TIMEOUT_SECONDS = 12
@@ -29,43 +29,17 @@ def gate_operator(user_with_perms):
     )
 
 
-def _passage(*, number="", status=st.ARRIVED, entry_weight=None):
-    return Wagon.objects.create(
-        number=number,
-        number_source="manual",
-        direction=Wagon.PASSAGE,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=status,
-        gross_weight_kg=entry_weight,
-        arrived_at=timezone.now(),
+def _entry_capture(wagon, request_id, **fields):
+    """Захват веса заезда, который уже начат для ``request_id``."""
+    return PassageWeightCapture.objects.create(
+        idempotency_key=request_id,
+        wagon=wagon,
+        wagon_id_snapshot=wagon.pk,
+        action=PassageWeightCapture.ENTRY,
+        wagon_status_before=wagon.status,
+        camera="cam1",
+        **fields,
     )
-
-
-def _reading(weight="12000"):
-    return scale.ScaleReading(
-        weight_kg=Decimal(weight),
-        age_seconds=Decimal("0.400"),
-        updated_at="2026-08-30T10:21:14Z",
-    )
-
-
-def _recognized(request_id, stable_weight_at, *, number="123ABC02"):
-    return {
-        "ok": True,
-        "status": "recognized",
-        "request_id": str(request_id),
-        "camera": "cam1",
-        "source": "main",
-        "stable_weight_at": stable_weight_at,
-        "recognized_at": timezone.now().isoformat(),
-        "vehicle_number": number,
-        "confirmation": {
-            "votes": 3,
-            "detector_confidence": 0.91,
-            "ocr_confidence": 0.96,
-        },
-    }
 
 
 def _post(auth_client, user, wagon, action, request_id=None):
@@ -83,14 +57,14 @@ def test_entry_reads_scale_then_recognizes_and_atomically_saves_plate_weight_sta
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip(number_source="manual")
 
     def recognize(camera, request_id, stable_weight_at):
         assert camera == "cam1"
-        return _recognized(request_id, stable_weight_at)
+        return recognized(camera, request_id, stable_weight_at)
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -127,17 +101,14 @@ def test_exit_requires_same_plate_and_completes_net_weight(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage(number="123ABC02", status=st.AT_SILO, entry_weight=12_000)
-
-    def recognize(_camera, request_id, stable_weight_at):
-        return _recognized(request_id, stable_weight_at)
+    wagon = passage_trip(number="123ABC02", status=st.AT_SILO, entry=12_000)
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading("30000")),
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("30000")),
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=recognize,
+            side_effect=recognized,
         ),
     ):
         response, _request_id = _post(auth_client, gate_operator, wagon, "exit")
@@ -152,26 +123,19 @@ def test_stable_timestamp_is_fixed_before_scale_network_call(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     observed: dict[str, object] = {}
 
     def read_scale(_scale_key):
         observed["read_started_at"] = timezone.now()
-        return scale.ScaleReading(
-            weight_kg=Decimal("12000"),
-            age_seconds=Decimal("0"),
-            updated_at="2026-08-30T10:21:14Z",
-        )
-
-    def recognize(_camera, request_id, stable_weight_at):
-        return _recognized(request_id, stable_weight_at)
+        return scale_reading("12000", age="0")
 
     with (
         patch.object(scale, "read_truck_scale", side_effect=read_scale),
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=recognize,
+            side_effect=recognized,
         ),
     ):
         response, request_id = _post(auth_client, gate_operator, wagon, "entry")
@@ -185,18 +149,15 @@ def test_completed_same_key_is_replayed_without_scale_or_camera(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
 
-    def recognize(_camera, key, stable_weight_at):
-        return _recognized(key, stable_weight_at)
-
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=recognize,
+            side_effect=recognized,
         ) as recognize_call,
     ):
         first, _ = _post(auth_client, gate_operator, wagon, "entry", request_id)
@@ -212,13 +173,11 @@ def test_lost_camera_response_retries_same_cv_request_without_second_scale_read(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
-    def replay(_camera, key, stable_weight_at):
-        return _recognized(key, stable_weight_at)
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -227,7 +186,7 @@ def test_lost_camera_response_retries_same_cv_request_without_second_scale_read(
         patch.object(
             camera_ai,
             "retry_vehicle_recognition_from_camera",
-            side_effect=replay,
+            side_effect=recognized,
         ) as retry_call,
     ):
         first, _ = _post(auth_client, gate_operator, wagon, "entry", request_id)
@@ -246,7 +205,7 @@ def test_retry_never_creates_cv_claim_when_initial_post_was_not_delivered(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     missing_payload = {
         "ok": False,
@@ -259,7 +218,7 @@ def test_retry_never_creates_cv_claim_when_initial_post_was_not_delivered(
     }
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -296,13 +255,11 @@ def test_gateway_502_without_retry_hint_reuses_saved_scale_sample(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
-    def replay(_camera, key, stable_weight_at):
-        return _recognized(key, stable_weight_at)
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -311,7 +268,7 @@ def test_gateway_502_without_retry_hint_reuses_saved_scale_sample(
         patch.object(
             camera_ai,
             "retry_vehicle_recognition_from_camera",
-            side_effect=replay,
+            side_effect=recognized,
         ) as retry_call,
     ):
         first, _ = _post(auth_client, gate_operator, wagon, "entry", request_id)
@@ -330,7 +287,7 @@ def test_terminal_no_match_keeps_wagon_untouched_and_same_key_is_cached(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     payload = {
         "ok": False,
@@ -339,7 +296,7 @@ def test_terminal_no_match_keeps_wagon_untouched_and_same_key_is_cached(
         "retryable": False,
     }
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -365,7 +322,7 @@ def test_processing_response_retries_same_post_without_second_scale_read(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     processing_payload = {
         "ok": False,
@@ -374,11 +331,8 @@ def test_processing_response_retries_same_post_without_second_scale_read(
         "retryable": True,
     }
 
-    def replay(_camera, key, stable_weight_at):
-        return _recognized(key, stable_weight_at)
-
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -389,7 +343,7 @@ def test_processing_response_retries_same_post_without_second_scale_read(
         patch.object(
             camera_ai,
             "retry_vehicle_recognition_from_camera",
-            side_effect=replay,
+            side_effect=recognized,
         ) as retry_call,
     ):
         first, _ = _post(auth_client, gate_operator, wagon, "entry", request_id)
@@ -408,17 +362,14 @@ def test_plate_mismatch_rolls_back_weight_and_number(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage(number="777XYZ01")
-
-    def recognize(_camera, key, stable_weight_at):
-        return _recognized(key, stable_weight_at, number="123ABC02")
+    wagon = passage_trip(number="777XYZ01")
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()),
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")),
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=recognize,
+            side_effect=recognized,
         ),
     ):
         response, request_id = _post(auth_client, gate_operator, wagon, "entry")
@@ -439,17 +390,14 @@ def test_exit_weight_rule_rolls_back_weighing_record(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage(number="123ABC02", status=st.AT_SILO, entry_weight=20_000)
-
-    def recognize(_camera, key, stable_weight_at):
-        return _recognized(key, stable_weight_at)
+    wagon = passage_trip(number="123ABC02", status=st.AT_SILO, entry=20_000)
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading("19000")),
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("19000")),
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
-            side_effect=recognize,
+            side_effect=recognized,
         ),
     ):
         response, _request_id = _post(auth_client, gate_operator, wagon, "exit")
@@ -466,7 +414,7 @@ def test_missing_or_noncanonical_idempotency_key_fails_before_hardware(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     client = auth_client(gate_operator)
     with (
         patch.object(scale, "read_truck_scale") as read_scale,
@@ -500,16 +448,12 @@ def test_new_browser_request_is_told_to_resume_the_server_capture(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     active_request_id = uuid4()
-    PassageWeightCapture.objects.create(
-        idempotency_key=active_request_id,
-        wagon=wagon,
-        wagon_id_snapshot=wagon.pk,
-        action=PassageWeightCapture.ENTRY,
-        wagon_status_before=wagon.status,
+    _entry_capture(
+        wagon,
+        active_request_id,
         stage=PassageWeightCapture.RECOGNIZING,
-        camera="cam1",
         stable_weight_at=timezone.now(),
         weight_kg=12_000,
         retryable=True,
@@ -539,7 +483,7 @@ def test_upstream_service_auth_error_is_terminal_502_not_user_401(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     payload = {
         "ok": False,
@@ -548,7 +492,7 @@ def test_upstream_service_auth_error_is_terminal_502_not_user_401(
         "retryable": False,
     }
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -570,10 +514,10 @@ def test_malformed_success_is_terminal_and_never_replays_hardware(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -594,7 +538,7 @@ def test_failure_stores_only_bounded_ai_diagnostics(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     payload = {
         "ok": False,
@@ -608,7 +552,7 @@ def test_failure_stores_only_bounded_ai_diagnostics(
         "private_frame_dump": "must-not-be-stored",
     }
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()),
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")),
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",
@@ -630,20 +574,16 @@ def test_wagon_detail_limits_capture_audit_to_latest_ten(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_ids = []
     for index in range(12):
         request_id = uuid4()
         request_ids.append(str(request_id))
-        PassageWeightCapture.objects.create(
-            idempotency_key=request_id,
-            wagon=wagon,
-            wagon_id_snapshot=wagon.pk,
-            action=PassageWeightCapture.ENTRY,
-            wagon_status_before=wagon.status,
+        _entry_capture(
+            wagon,
+            request_id,
             status=PassageWeightCapture.FAILED,
             stage=PassageWeightCapture.DONE,
-            camera="cam1",
             error_code=f"failure_{index}",
             completed_at=timezone.now(),
         )
@@ -661,16 +601,9 @@ def test_stale_claim_without_scale_sample_becomes_terminal_without_hardware(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
-    capture = PassageWeightCapture.objects.create(
-        idempotency_key=request_id,
-        wagon=wagon,
-        wagon_id_snapshot=wagon.pk,
-        action=PassageWeightCapture.ENTRY,
-        wagon_status_before=wagon.status,
-        camera="cam1",
-    )
+    capture = _entry_capture(wagon, request_id)
     PassageWeightCapture.objects.filter(pk=capture.pk).update(
         updated_at=timezone.now() - timedelta(minutes=3)
     )
@@ -692,17 +625,13 @@ def test_stale_recognition_resumes_saved_sample_without_second_scale_read(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
     stable_weight_at = timezone.now()
-    capture = PassageWeightCapture.objects.create(
-        idempotency_key=request_id,
-        wagon=wagon,
-        wagon_id_snapshot=wagon.pk,
-        action=PassageWeightCapture.ENTRY,
-        wagon_status_before=wagon.status,
+    capture = _entry_capture(
+        wagon,
+        request_id,
         stage=PassageWeightCapture.RECOGNIZING,
-        camera="cam1",
         stable_weight_at=stable_weight_at,
         weight_kg=12_000,
     )
@@ -710,15 +639,12 @@ def test_stale_recognition_resumes_saved_sample_without_second_scale_read(
         updated_at=timezone.now() - timedelta(minutes=3)
     )
 
-    def recognize(_camera, key, trigger):
-        return _recognized(key, trigger)
-
     with (
         patch.object(scale, "read_truck_scale") as read_scale,
         patch.object(
             camera_ai,
             "retry_vehicle_recognition_from_camera",
-            side_effect=recognize,
+            side_effect=recognized,
         ) as recognize_call,
     ):
         response, _ = _post(auth_client, gate_operator, wagon, "entry", request_id)
@@ -733,16 +659,12 @@ def test_applying_resume_skips_scale_and_ocr(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
-    capture = PassageWeightCapture.objects.create(
-        idempotency_key=request_id,
-        wagon=wagon,
-        wagon_id_snapshot=wagon.pk,
-        action=PassageWeightCapture.ENTRY,
-        wagon_status_before=wagon.status,
+    capture = _entry_capture(
+        wagon,
+        request_id,
         stage=PassageWeightCapture.APPLYING,
-        camera="cam1",
         camera_source="main",
         stable_weight_at=timezone.now(),
         weight_kg=12_000,
@@ -773,7 +695,7 @@ def test_concurrent_completion_wins_over_local_camera_error(
     auth_client,
     gate_operator,
 ):
-    wagon = _passage()
+    wagon = passage_trip()
     request_id = uuid4()
 
     def complete_elsewhere(capture_id, **_kwargs):
@@ -801,7 +723,7 @@ def test_concurrent_completion_wins_over_local_camera_error(
         return PassageWeightCapture.objects.get(pk=capture_id)
 
     with (
-        patch.object(scale, "read_truck_scale", return_value=_reading()) as read_scale,
+        patch.object(scale, "read_truck_scale", return_value=scale_reading("12000")) as read_scale,
         patch.object(
             camera_ai,
             "recognize_vehicle_from_camera",

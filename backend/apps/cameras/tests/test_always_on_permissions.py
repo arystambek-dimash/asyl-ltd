@@ -3,12 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from apps.cameras import ai
-from apps.cameras.models import (
-    ANALYTICS_SCOPE_AI247,
-    ContinuousCameraRole,
-    MonoblockCameraSettings,
-    RetiredMonoblockAccount,
-)
+from apps.cameras.models import MonoblockCameraSettings
 from apps.catalog.models import Product
 from apps.warehouse.models import Warehouse
 from apps.warehouse.services import receive_stock
@@ -20,7 +15,6 @@ READ_ENDPOINTS = (
     "/api/cameras/always-on-settings/",
     "/api/cameras/always-on-detections/",
     "/api/cameras/always-on-analytics/",
-    "/api/cameras/always-on-analytics/archives/",
     "/api/cameras/always-on-production/?camera=cam3",
 )
 SHIPPING_READ_ENDPOINTS = (
@@ -36,15 +30,7 @@ def disable_camera_pc(monkeypatch):
 
 
 @pytest.fixture
-def read_ai_status():
-    MonoblockCameraSettings.objects.update_or_create(
-        singleton=True,
-        defaults={"always_on_camera_sources": ["cam3"]},
-    )
-    ContinuousCameraRole.objects.update_or_create(
-        camera="cam3",
-        defaults={"analytics_scope": ANALYTICS_SCOPE_AI247},
-    )
+def read_ai_status(ai247_camera):
     with patch.object(
         ai,
         "always_on_detections_cached",
@@ -107,26 +93,8 @@ def test_ai_247_monitoring_get_denies_unprivileged_client_and_anonymous_users(
         assert api_client.get(endpoint).status_code == 401
 
 
-def test_technical_monoblock_account_cannot_get_ai_247_monitoring(
-    auth_client,
-    make_user,
-    read_ai_status,
-):
-    user = make_user(username="ai-technical-monoblock")
-    RetiredMonoblockAccount.objects.create(
-        user=user,
-        name="Технический моноблок",
-        camera_source="cam9",
-    )
-    assert user.has_perm_code("monoblock.view") is False
-
-    for endpoint in READ_ENDPOINTS:
-        assert auth_client(user).get(endpoint).status_code == 403
-
-
 def test_shipping_continuous_endpoints_require_employee_permissions(
     auth_client,
-    make_user,
     user_with_perms,
     read_ai_status,
 ):
@@ -138,34 +106,15 @@ def test_shipping_continuous_endpoints_require_employee_permissions(
         "ai247-only-reader",
         codes=["loader.confirm"],
     )
-    device_user = make_user(username="shipping-continuous-device")
-    RetiredMonoblockAccount.objects.create(
-        user=device_user,
-        name="Моноблок cam9",
-        camera_source="cam9",
-    )
 
     for endpoint in SHIPPING_READ_ENDPOINTS:
         assert auth_client(shipping_user).get(endpoint).status_code == 200
         assert auth_client(ai247_only).get(endpoint).status_code == 403
-        assert auth_client(device_user).get(endpoint).status_code == 403
 
 
 MUTATION_REQUESTS = (
     ("put", "/api/cameras/always-on-settings/", {"camera_sources": []}),
-    (
-        "post",
-        "/api/cameras/always-on-analytics/cam3/subtract/",
-        {"amount": 1, "color": "red", "reason": "Проверка доступа"},
-    ),
-    (
-        "post",
-        "/api/cameras/always-on-analytics/cam3/archive/",
-        {"note": "Проверка доступа"},
-    ),
-    ("delete", "/api/cameras/always-on-analytics/archives/999/", None),
     ("put", "/api/cameras/always-on-production/", {"camera": "cam3", "mappings": []}),
-    ("patch", "/api/cameras/always-on-production/", {"camera": "cam3", "mappings": []}),
     ("post", "/api/cameras/always-on-production/batches/999/retry/", {}),
 )
 
@@ -192,11 +141,9 @@ def test_only_superuser_can_mutate_ai_247(
 
 def test_superuser_can_change_ai_247_settings(
     auth_client,
-    django_user_model,
+    admin_user,
 ):
-    manager = django_user_model.objects.create_superuser("ai-settings-manager", password="pass12345")
-
-    response = auth_client(manager).put(
+    response = auth_client(admin_user).put(
         "/api/cameras/always-on-settings/",
         {"camera_sources": ["cam3"]},
         format="json",
@@ -205,4 +152,4 @@ def test_superuser_can_change_ai_247_settings(
     assert response.status_code == 202
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.always_on_camera_sources == ["cam3"]
-    assert row.updated_by == manager
+    assert row.updated_by == admin_user

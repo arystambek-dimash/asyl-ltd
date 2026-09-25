@@ -6,31 +6,14 @@ from django.contrib.auth import get_user_model
 from apps.employees.models import Employee
 from apps.eventlog.models import EventLog
 from apps.sales.models import Department
-from apps.sys_permissions.models import Permission
 
 pytestmark = pytest.mark.django_db
 User = get_user_model()
 
 
 @pytest.fixture
-def admin_client(auth_client, make_user):
-    user = make_user(username="employee-root")
-    user.is_superuser = True
-    user.is_staff = True
-    user.save(update_fields=["is_superuser", "is_staff"])
-    return auth_client(user)
-
-
-def _permission(code):
-    permission, _ = Permission.objects.get_or_create(
-        code=code,
-        defaults={
-            "section": code.split(".")[0],
-            "action": code.split(".")[1],
-            "label": code,
-        },
-    )
-    return permission
+def admin_client(auth_client, admin_user):
+    return auth_client(admin_user)
 
 
 def _create_employee(client, **overrides):
@@ -68,9 +51,9 @@ def test_password_is_required_on_create(admin_client):
     assert response.status_code == 400
 
 
-def test_create_with_direct_permissions(admin_client):
-    _permission("warehouse.view")
-    _permission("warehouse.adjust")
+def test_create_with_direct_permissions(admin_client, get_permission):
+    get_permission("warehouse.view")
+    get_permission("warehouse.adjust")
     response = _create_employee(
         admin_client,
         username="anna",
@@ -84,8 +67,8 @@ def test_create_with_direct_permissions(admin_client):
     assert user.has_perm_code("orders.view") is False
 
 
-def test_profile_security_and_password_have_separate_endpoints(admin_client):
-    _permission("clients.view")
+def test_profile_security_and_password_have_separate_endpoints(admin_client, get_permission):
+    get_permission("clients.view")
     response = _create_employee(admin_client, username="petr")
     employee_id = response.data["id"]
 
@@ -122,8 +105,8 @@ def test_profile_security_and_password_have_separate_endpoints(admin_client):
     assert "Another-safe-pass-2026!" not in str(event.payload)
 
 
-def test_security_change_rolls_back_when_audit_log_fails(admin_client):
-    permission = _permission("clients.view")
+def test_security_change_rolls_back_when_audit_log_fails(admin_client, get_permission):
+    permission = get_permission("clients.view")
     department = Department.objects.create(
         code="atomic-department",
         name="Атомарный отдел",
@@ -288,6 +271,7 @@ def test_permission_manager_cannot_grant_permission_they_do_not_have(
     auth_client,
     user_with_perms,
     make_user,
+    get_permission,
 ):
     manager = user_with_perms(
         "permission-manager",
@@ -297,7 +281,7 @@ def test_permission_manager_cannot_grant_permission_they_do_not_have(
             "sys_permissions.manage",
         ],
     )
-    _permission("payments.confirm")
+    get_permission("payments.confirm")
     target_user = make_user(username="permission-target")
     target = Employee.objects.create(user=target_user, phone="x")
 
@@ -316,6 +300,7 @@ def test_permission_manager_cannot_reset_more_privileged_account(
     auth_client,
     user_with_perms,
     make_user,
+    get_permission,
 ):
     manager = user_with_perms(
         "password-manager",
@@ -329,7 +314,7 @@ def test_permission_manager_cannot_reset_more_privileged_account(
         password="Original-safe-pass-2026!",
     )
     target = Employee.objects.create(user=target_user, phone="x")
-    target.permissions.add(_permission("payments.confirm"))
+    target.permissions.add(get_permission("payments.confirm"))
 
     response = auth_client(manager).post(
         f"/api/employees/{target.pk}/password/",

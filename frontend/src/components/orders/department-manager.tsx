@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { PasswordInput } from "@/components/ui/password-input";
 import { api, apiError } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import type { Department } from "@/lib/types";
@@ -33,13 +34,12 @@ export function DepartmentManager({ onChanged }: { onChanged: () => void }) {
     setError("");
   }
 
-  async function save() {
+  async function run(request: () => Promise<unknown>, after?: () => void) {
     setSaving(true);
     setError("");
     try {
-      if (editing) await api.patch(`/departments/${editing.id}/`, { name, color });
-      else await api.post("/departments/", { name, color });
-      begin();
+      await request();
+      after?.();
       await reload();
       onChanged();
     } catch (cause) {
@@ -49,18 +49,18 @@ export function DepartmentManager({ onChanged }: { onChanged: () => void }) {
     }
   }
 
-  async function update(department: Department, payload: Partial<Department>) {
-    setSaving(true);
-    setError("");
-    try {
-      await api.patch(`/departments/${department.id}/`, payload);
-      await reload();
-      onChanged();
-    } catch (cause) {
-      setError(apiError(cause));
-    } finally {
-      setSaving(false);
-    }
+  function save() {
+    return run(
+      () =>
+        editing
+          ? api.patch(`/departments/${editing.id}/`, { name, color })
+          : api.post("/departments/", { name, color }),
+      begin,
+    );
+  }
+
+  function update(department: Department, payload: Partial<Department>) {
+    return run(() => api.patch(`/departments/${department.id}/`, payload));
   }
 
   return (
@@ -279,7 +279,7 @@ function ApiPayBlock({ department, onSaved }: { department: Department; onSaved:
           </code>
           <button
             type="button"
-            onClick={() => void navigator.clipboard?.writeText(webhookUrl)}
+            onClick={() => void copyText(webhookUrl)}
             className="font-medium text-[var(--foreground)] underline-offset-2 hover:underline"
           >
             Скопировать

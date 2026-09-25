@@ -5,6 +5,7 @@ import { ArrowDownUp, Camera, Crosshair, Plus, RefreshCw, RotateCcw, ScanSearch,
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { CameraStream } from "@/components/camera-stream";
 import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { api, blobApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -19,9 +20,6 @@ import {
   type NormalizedLine,
   type VerificationLine,
 } from "@/lib/camera-counting-line";
-
-export { defaultCountingLine, validCountingLine } from "@/lib/camera-counting-line";
-export type { LineDirection, NormalizedLine, VerificationLine } from "@/lib/camera-counting-line";
 
 /** «Подключение…» that never ends must not leave the operator without a picture. */
 export const LIVE_FALLBACK_MS = 6_000;
@@ -145,7 +143,6 @@ export function CameraLineEditor({
   src,
   line,
   direction,
-  ready,
   disabled = false,
   verificationLines,
   verificationSupported,
@@ -156,7 +153,6 @@ export function CameraLineEditor({
   src: string;
   line: NormalizedLine;
   direction: LineDirection;
-  ready: boolean;
   disabled?: boolean;
   verificationLines: VerificationLine[];
   /** False on an AI service that cannot store verification lines yet. */
@@ -193,7 +189,7 @@ export function CameraLineEditor({
   return (
     <div className="space-y-4">
       <div className="group/line relative aspect-video overflow-hidden rounded-xl bg-[#111318] shadow-[0_20px_55px_-24px_rgba(15,23,42,.8)]">
-        {live && ready && (
+        {live && (
           <CameraStream
             src={src}
             onStateChange={frame.reportOnline}
@@ -280,9 +276,7 @@ export function CameraLineEditor({
             Снимок кадра недоступен: {frame.error}
           </p>
         ) : (
-          <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {frame.error}
-          </p>
+          <FormError message={frame.error} className="rounded-lg px-4 py-3" />
         ))}
 
       <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">

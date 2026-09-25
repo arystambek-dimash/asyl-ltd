@@ -1,12 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 
-export interface VideoBox {
+interface VideoBox {
   left: number;
   top: number;
   width: number;
   height: number;
+}
+
+/** Clamp a normalized frame coordinate into 0..1. */
+export function clampUnit(value: number) {
+  return Math.max(0, Math.min(1, value));
+}
+
+/** Pin an ``absolute inset-0`` overlay to the pixels the video really occupies. */
+export function videoBoxStyle(box: VideoBox | null): CSSProperties | undefined {
+  return box
+    ? { left: box.left, top: box.top, width: box.width, height: box.height, right: "auto", bottom: "auto" }
+    : undefined;
 }
 
 /** A still frame (``<img data-video-box-source>``) can stand in for live video. */

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GrainUnassignedWeighing, GrainWagon } from "@/lib/types";
+import { fillManualEntry } from "@/test-utils/grain";
 import { ManualPassageEntryDialog } from "./manual-passage-entry-dialog";
 import { ExitWeightCorrectionDialog } from "./exit-weight-correction-dialog";
 
@@ -37,10 +38,7 @@ function fill(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 function fillEntry(extra: { time?: string; weight?: string } = {}) {
-  fill("Номер машины", "904wly13");
-  fill("Начальный вес пустой машины, кг", extra.weight ?? "4100");
-  fill("Фактическое время заезда", extra.time ?? ENTRY_TIME);
-  fill("Причина ручного ввода", REASON);
+  fillManualEntry({ number: "904wly13", time: ENTRY_TIME, reason: REASON, ...extra });
 }
 function fillCorrection(weight = "9200") {
   fill("Выездной вес, кг", weight);

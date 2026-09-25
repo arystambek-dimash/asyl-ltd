@@ -1,7 +1,6 @@
 import uuid
 
 from django.db import transaction
-from django.db.models import F, Q, Sum
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
@@ -10,11 +9,6 @@ from apps.eventlog.services import log_event
 from .models import StockItem, StockMovement, StockReceipt, Warehouse
 
 DEFAULT_WAREHOUSE_CODE = "main"
-# Compatibility release gate. Phase A deploys readers/writers that understand
-# multiple stock rows while application paths still reject creation of the
-# second row. Phase B flips this only after Phase A is finalized and safe to
-# roll back to with multi-warehouse data already present.
-MULTI_WAREHOUSE_STOCK_WRITES_ENABLED = True
 
 
 def get_default_warehouse():
@@ -30,21 +24,32 @@ def get_default_warehouse():
     return warehouse
 
 
-def get_compatibility_warehouse():
-    """Return the stable owner of rows written without a warehouse."""
-    warehouse = Warehouse.objects.filter(code=DEFAULT_WAREHOUSE_CODE).first()
+def get_main_warehouse(*, lock=False):
+    """Return the stable ``main`` warehouse.
+
+    It owns camera stock without an explicit route and is the first row in the
+    global warehouse lock order. NO KEY UPDATE still serializes warehouse
+    edits/deletes, while remaining compatible with the KEY SHARE lock
+    PostgreSQL takes when another stock operation inserts a movement/receipt
+    referencing the same warehouse; a full FOR UPDATE here can deadlock with
+    that operation's Product lock.
+    """
+    warehouses = Warehouse.objects.filter(code=DEFAULT_WAREHOUSE_CODE)
+    if lock:
+        warehouses = warehouses.select_for_update(no_key=True)
+    warehouse = warehouses.first()
     if warehouse is None:
         raise ValidationError(
             {
-                "detail": "Склад совместимости не настроен",
-                "code": "compatibility_warehouse_missing",
+                "detail": "Системный склад не настроен",
+                "code": "main_warehouse_missing",
             }
         )
     return warehouse
 
 
 def resolve_warehouse(warehouse=None, *, require_active=True):
-    """Normalize a Warehouse instance/id; omitted means the legacy default."""
+    """Normalize a Warehouse instance/id; omitted means the business default."""
     if warehouse is None:
         resolved = get_default_warehouse()
     else:
@@ -74,90 +79,45 @@ def resolve_warehouse(warehouse=None, *, require_active=True):
     return resolved
 
 
-def _product_in_other_warehouse(product, current):
-    raise ValidationError(
-        {
-            "detail": (
-                f"Товар «{product}» уже закреплён за складом "
-                f"«{current.name}». Поддержка нескольких складов "
-                "завершает безопасное обновление"
-            ),
-            "code": "product_in_other_warehouse",
-            "warehouse": current.pk,
-        }
-    )
-
-
 def _locked_stock_item(product, warehouse, *, create):
     """Return one warehouse/product row under deterministic locks."""
-    # Product is the global mutex for all stock rows of this product. Lock all
-    # rows too so this Phase-A image remains a safe rollback target after Phase
-    # B has created balances in several warehouses.
+    # Product is the global mutex for all stock rows of this product.
     type(product).objects.select_for_update().only("pk").get(pk=product.pk)
-    items = list(
+    item = (
         StockItem.objects.select_for_update(of=("self",))
-        .filter(product=product)
+        .filter(product=product, warehouse=warehouse)
         .select_related("warehouse")
-        .order_by("warehouse_id", "pk")
+        .first()
     )
-    matching = [
-        row
-        for row in items
-        if row.warehouse_id == warehouse.pk
-        or (
-            row.warehouse_id is None
-            and warehouse.code == DEFAULT_WAREHOUSE_CODE
-        )
-    ]
-    if len(matching) > 1:
-        raise ValidationError(
-            {
-                "detail": "Для товара найдены дубли складской карточки",
-                "code": "duplicate_stock_assignment",
-            }
-        )
-    item = matching[0] if matching else None
-    if item is None:
-        if not create:
-            return None
-        if not MULTI_WAREHOUSE_STOCK_WRITES_ENABLED and items:
-            current = items[0]
-            _product_in_other_warehouse(
-                product,
-                current.warehouse or get_compatibility_warehouse(),
-            )
-        return StockItem.objects.create(
-            product=product,
-            warehouse=warehouse,
-            bags=0,
-        )
-
-    if item.warehouse_id is None:
-        # Rows inserted by the rollback image remain valid because the column
-        # is nullable.  Claim them lazily for the deterministic main warehouse.
-        item.warehouse = warehouse
-        item.save(update_fields=["warehouse"])
+    if item is None and create:
+        item = StockItem.objects.create(product=product, warehouse=warehouse, bags=0)
     return item
 
 
-def lock_stock_item(
-    product,
-    warehouse=None,
-    *,
-    create=True,
-    require_active=True,
-):
-    """Lock/claim one stock row inside the caller's atomic transaction.
-
-    This is shared with shipment code so a row inserted by the rollback image
-    with ``warehouse=NULL`` is claimed by the main warehouse before use.
-    """
+def lock_stock_item(product, warehouse=None, *, require_active=True):
+    """Lock one stock row inside the caller's atomic transaction."""
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
-    return _locked_stock_item(product, warehouse, create=create)
+    return _locked_stock_item(product, warehouse, create=True)
 
 
-def _apply(item, delta, reason, user, note="", *, transfer_id=None):
-    """Записать движение склада. item.bags уже обновлён и refresh'нут."""
+def lock_stock_items(products, warehouse):
+    """Lock one warehouse's stock rows in the global product order.
+
+    Without a deterministic order, two mixed-product operations taking A/B and
+    B/A would deadlock while each waits for the other's row. Missing rows are
+    created at zero, so allow-negative writers stay deterministic too.
+    """
+    by_id = {product.pk: product for product in products}
+    return {
+        product_id: _locked_stock_item(by_id[product_id], warehouse, create=True)
+        for product_id in sorted(by_id)
+    }
+
+
+def _post_movement(item, delta, reason, user, note="", *, transfer_id=None):
+    """Изменить остаток заблокированной строки и записать движение склада."""
+    item.bags += delta
+    item.save(update_fields=["bags"])
     StockMovement.objects.create(
         warehouse=item.warehouse,
         product=item.product,
@@ -173,22 +133,13 @@ def _apply(item, delta, reason, user, note="", *, transfer_id=None):
 def stock_balances(warehouse, product_ids) -> dict[int, int]:
     """Остаток мешков на складе по товарам: {product_id: мешков}.
 
-    Товар без складской карточки — 0. Строка без склада (её вставил образ до
-    мультисклада и ещё не забрал ``main``) принадлежит складу ``main`` — её
-    мешки складываются с его строкой, а не подменяют её.
+    Товар без складской карточки — 0.
     """
     product_ids = set(product_ids)
-    stock_scope = Q(warehouse=warehouse)
-    if warehouse.code == DEFAULT_WAREHOUSE_CODE:
-        stock_scope |= Q(warehouse__isnull=True)
     balances = dict.fromkeys(product_ids, 0)
-    rows = (
-        StockItem.objects.filter(stock_scope, product_id__in=product_ids)
-        .order_by()
-        .values("product_id")
-        .annotate(total=Sum("bags"))
-        .values_list("product_id", "total")
-    )
+    rows = StockItem.objects.filter(
+        warehouse=warehouse, product_id__in=product_ids
+    ).values_list("product_id", "bags")
     balances.update(rows)
     return balances
 
@@ -251,10 +202,7 @@ def adjust_stock(
                 "code": "insufficient_stock",
             }
         )
-    item.bags = F("bags") + delta
-    item.save()
-    item.refresh_from_db()
-    _apply(item, delta, "adjustment", user, note)
+    _post_movement(item, delta, "adjustment", user, note)
     sign = "+" if delta > 0 else ""
     log_event(
         "stock_adjust",
@@ -270,27 +218,6 @@ def adjust_stock(
         },
     )
     return item
-
-
-@transaction.atomic
-def delete_stock_item(item, user):
-    """Reject ownership deletion while StockItem is the assignment record."""
-    # All stock mutations lock Product before StockItem. Keeping one order
-    # avoids a Product/StockItem deadlock with concurrent receipts or writes.
-    product = Product.objects.select_for_update().get(pk=item.product_id)
-    StockItem.objects.select_for_update(of=("self",)).get(
-        pk=item.pk,
-        product_id=product.pk,
-    )
-    raise ValidationError(
-        {
-            "detail": (
-                "Товар закреплён за складом. Чтобы убрать остаток, "
-                "проведите корректировку до нуля"
-            ),
-            "code": "warehouse_assignment_locked",
-        }
-    )
 
 
 @transaction.atomic
@@ -312,16 +239,13 @@ def receive_stock(
         )
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
     item = _locked_stock_item(product, warehouse, create=True)
-    item.bags = F("bags") + bags
-    item.save()
-    item.refresh_from_db()
     receipt = StockReceipt.objects.create(
         warehouse=warehouse,
         product=product,
         bags=bags,
         received_by=user,
     )
-    _apply(item, bags, "receipt", user, note)
+    _post_movement(item, bags, "receipt", user, note)
     log_event(
         "receipt",
         f"Приёмка {bags} мешков",
@@ -348,12 +272,6 @@ def transfer_stock(
     note="",
 ):
     """Atomically move part of one product balance between warehouses."""
-    if isinstance(bags, bool):
-        bags = 0
-    try:
-        bags = int(bags)
-    except (TypeError, ValueError):
-        bags = 0
     if bags <= 0:
         raise ValidationError(
             {
@@ -375,21 +293,13 @@ def transfer_stock(
     # Match warehouse configuration's global lock order: stable main anchor,
     # then exact warehouse ids. Re-reading under lock closes a concurrent
     # deactivate/delete race before any balance is changed.
-    # NO KEY UPDATE still serializes warehouse edits/deletes, while remaining
-    # compatible with the KEY SHARE lock PostgreSQL takes when another stock
-    # operation inserts a movement/receipt referencing the same warehouse.
-    # A full FOR UPDATE here can deadlock with that operation's Product lock.
-    compatibility = Warehouse.objects.select_for_update(no_key=True).get(
-        code=DEFAULT_WAREHOUSE_CODE
-    )
+    get_main_warehouse(lock=True)
     locked_warehouses = {
         row.pk: row
         for row in Warehouse.objects.select_for_update(no_key=True)
         .filter(pk__in=[source_warehouse.pk, destination_warehouse.pk])
         .order_by("pk")
     }
-    if compatibility.pk in (source_warehouse.pk, destination_warehouse.pk):
-        locked_warehouses[compatibility.pk] = compatibility
     source_warehouse = locked_warehouses.get(source_warehouse.pk)
     destination_warehouse = locked_warehouses.get(destination_warehouse.pk)
     if source_warehouse is None or destination_warehouse is None:
@@ -430,11 +340,6 @@ def transfer_stock(
         )
     destination = _locked_stock_item(product, destination_warehouse, create=True)
 
-    source.bags -= bags
-    source.save(update_fields=["bags"])
-    destination.bags += bags
-    destination.save(update_fields=["bags"])
-
     transfer_id = uuid.uuid4()
     movement_note = (
         f"Перемещение {source_warehouse.name} → {destination_warehouse.name}"
@@ -442,7 +347,7 @@ def transfer_stock(
     if note:
         movement_note = f"{movement_note}: {note.strip()}"
     movement_note = movement_note[:300]
-    _apply(
+    _post_movement(
         source,
         -bags,
         "transfer_out",
@@ -450,7 +355,7 @@ def transfer_stock(
         movement_note,
         transfer_id=transfer_id,
     )
-    _apply(
+    _post_movement(
         destination,
         bags,
         "transfer_in",
@@ -492,33 +397,14 @@ def deduct_stock(
     product,
     bags,
     user=None,
-    allow_negative=False,
     warehouse=None,
     *,
     require_active=True,
 ):
+    """Списание по факту отгрузки: остаток может уйти в минус."""
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
-    item = _locked_stock_item(product, warehouse, create=allow_negative)
-    if item is None:
-        if not allow_negative:
-            raise ValidationError(
-                {
-                    "detail": f"Недостаточно мешков на складе (есть 0, нужно {bags})",
-                    "code": "insufficient_stock",
-                }
-            )
-        item = _locked_stock_item(product, warehouse, create=True)
-    if item.bags < bags and not allow_negative:
-        raise ValidationError(
-            {
-                "detail": (
-                    "Недостаточно мешков на складе "
-                    f"(есть {item.bags}, нужно {bags})"
-                ),
-                "code": "insufficient_stock",
-            }
-        )
-    if item.bags < bags and allow_negative:
+    item = _locked_stock_item(product, warehouse, create=True)
+    if item.bags < bags:
         log_event(
             "stock_negative",
             f"Списание в минус: {product} — было {item.bags}, списано {bags}",
@@ -531,10 +417,7 @@ def deduct_stock(
                 "deduct": bags,
             },
         )
-    item.bags = F("bags") - bags
-    item.save()
-    item.refresh_from_db()
-    _apply(item, -bags, "shipment", user)
+    _post_movement(item, -bags, "shipment", user)
     return item
 
 
@@ -546,7 +429,6 @@ def reconcile_shipment_stock(
     user,
     reason,
     warehouse=None,
-    require_active=True,
 ):
     """Apply net stock deltas caused by correcting a shipped order.
 
@@ -559,6 +441,8 @@ def reconcile_shipment_stock(
     original shipment, so an additional deduction is allowed to take stock
     negative.  The negative balance is still made prominent in the event log.
     The caller must hold the parent Order lock for the whole transaction.
+    Like the original shipment, it stays pinned to the order's warehouse even
+    after that warehouse is deactivated.
     """
     normalized = {
         int(product_id): int(delta)
@@ -568,12 +452,8 @@ def reconcile_shipment_stock(
     if not normalized:
         return []
 
-    warehouse = resolve_warehouse(warehouse, require_active=require_active)
-    rows = {}
-    for product_id in sorted(normalized):
-        product = Product.objects.get(pk=product_id)
-        item = _locked_stock_item(product, warehouse, create=True)
-        rows[product_id] = item
+    warehouse = resolve_warehouse(warehouse, require_active=False)
+    rows = lock_stock_items(Product.objects.filter(pk__in=normalized), warehouse)
 
     movement_note = (f"Корректировка отгрузки заказа #{order.pk}: {reason}")[:300]
     changes = []
@@ -599,10 +479,7 @@ def reconcile_shipment_stock(
                     "action": "shipment_correction",
                 },
             )
-        item.bags = F("bags") + delta
-        item.save(update_fields=["bags"])
-        item.refresh_from_db(fields=["bags"])
-        _apply(
+        _post_movement(
             item,
             delta,
             "shipment_correction",

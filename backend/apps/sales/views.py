@@ -1,7 +1,5 @@
 from django.db.models import Count
-from django.db.models.deletion import ProtectedError
 from rest_framework import viewsets
-from rest_framework.exceptions import ValidationError
 
 from apps.common.permissions import HasPerm, IsStaff
 from apps.orders.models import Order
@@ -12,8 +10,12 @@ from .serializers import DepartmentSerializer
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    """Динамические отделы продаж, используемые сотрудниками и заказами."""
+    """Динамические отделы продаж, используемые сотрудниками и заказами.
 
+    Отдел не удаляется, а отключается через PATCH ``is_active``.
+    """
+
+    http_method_names = ["get", "post", "patch", "head", "options"]
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
 
@@ -30,8 +32,9 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
+        # Счётчик «N заказов» — как в отчётах: заказы из корзины не считаем.
         orders = scope_by_client_department(
-            Order.all_objects.all(),
+            Order.objects.all(),
             self.request.user,
             client_path="client",
         )
@@ -41,37 +44,3 @@ class DepartmentViewSet(viewsets.ModelViewSet):
             .values_list("department", "total")
         )
         return context
-
-    def perform_destroy(self, instance):
-        if instance.clients.exists():
-            raise ValidationError(
-                {
-                    "detail": (
-                        "Отдел закреплён за клиентами. "
-                        "Перенесите клиентов или отключите отдел."
-                    ),
-                    "code": "department_in_use",
-                }
-            )
-        if Order.all_objects.filter(department=instance.code).exists():
-            raise ValidationError(
-                {
-                    "detail": (
-                        "Отдел используется в заказах. Отключите его вместо удаления."
-                    ),
-                    "code": "department_in_use",
-                }
-            )
-        if instance.is_default:
-            raise ValidationError(
-                {
-                    "detail": "Сначала назначьте другой основной отдел",
-                    "code": "default_department",
-                }
-            )
-        try:
-            instance.delete()
-        except ProtectedError as exc:
-            raise ValidationError(
-                {"detail": "Отдел используется", "code": "department_in_use"}
-            ) from exc

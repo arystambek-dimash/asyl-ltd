@@ -4,7 +4,6 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Camera, Save, ScanLine, Trash2, VideoOff } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
 import { VehicleRoiOverlay, type NormalizedRoiPoint } from "@/components/grain/vehicle-roi-overlay";
-import { playableCameras, type CameraFeed } from "@/components/camera-wall";
 import { Button } from "@/components/ui/button";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { Field } from "@/components/ui/field";
@@ -12,11 +11,13 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
 import type {
+  CameraFeed,
   ShippingTransportCameraSettings,
   ShippingLoadingZone,
   ShippingTransportRecognition,
   TransportRecognitionModel,
 } from "@/lib/types";
+import { isLogicalCamera, playableCameras } from "@/lib/shipping-cameras";
 import { useApi } from "@/lib/use-api";
 import { formatDateTime } from "@/lib/utils";
 
@@ -135,7 +136,7 @@ function TransportCameraForm({ conveyorCamera }: { conveyorCamera: string }) {
     selection.recognition_model !== (saved?.recognition_model ?? "") ||
     JSON.stringify(selection.loading_zone) !== JSON.stringify(saved?.loading_zone ?? null);
   const cameras = playableCameras(inventory.data).filter(
-    (camera) => /^cam[1-9]\d*$/.test(camera.src) && camera.src !== conveyorCamera,
+    (camera) => isLogicalCamera(camera.src) && camera.src !== conveyorCamera,
   );
   const selectedCamera = cameras.find((camera) => camera.src === selection.number_camera);
   const validSelection = !!selectedCamera && !!selection.recognition_model && validZone(selection.loading_zone);

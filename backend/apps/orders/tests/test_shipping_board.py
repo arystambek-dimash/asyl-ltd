@@ -50,15 +50,15 @@ def test_post_board_uses_admin_completed_days(auth_client, operator):
     assert old.id not in ids
 
 
-def test_post_board_is_available_to_train_loader(
+def test_post_board_needs_only_monoblock_view(
     auth_client, user_with_perms
 ):
     loader = user_with_perms(
-        "board-train-loader",
+        "board-monoblock-viewer",
         codes=["monoblock.view"],
     )
     client = Client.objects.create_with_user(
-        first_name="Train", last_name="Loader", phone="3"
+        first_name="Board", last_name="Viewer", phone="3"
     )
     active = _order(client, "confirmed")
 
@@ -237,7 +237,7 @@ def test_dashboard_operational_returns_authoritative_data(
     today = timezone.localdate().isoformat()
 
     response = auth_client(operator).get(
-        f"/api/orders/dashboard-operational/?from={today}&to={today}"
+        f"/api/orders/dashboard-operational/?date_from={today}&date_to={today}"
     )
 
     assert response.status_code == 200
@@ -245,7 +245,6 @@ def test_dashboard_operational_returns_authoritative_data(
     assert response.data["attention"] == {
         "pending_payments": 0,
         "awaiting_review": 1,
-        "stuck_in_loading": 1,
     }
     assert response.data["days"] == [
         {"date": today, "bags": 12, "orders": 1}
@@ -262,3 +261,24 @@ def test_post_board_search_matches_the_trailer(auth_client, operator):
 
     assert response.status_code == 200
     assert _ids(response) == {trailer.id}
+
+
+def test_client_search_is_the_same_in_order_list_post_board_and_transactions(
+    auth_client, user_with_perms,
+):
+    from apps.orders.models import Payment
+
+    company = Client.objects.create_with_user(
+        first_name="Иван", last_name="Петров", phone="87015550011", company_name="ТОО Зерно-Трейд"
+    )
+    other = Client.objects.create_with_user(first_name="Другой", phone="87770000000")
+    order = _order(company, "loading")
+    _order(other, "loading")
+    Payment.objects.create(order=order, amount="10.00", method="cash", status="received")
+    api = auth_client(user_with_perms("searcher", codes=["orders.view", "payments.view"]))
+
+    for search in ("Зерно-Трейд", "Иван Петров", "5550011"):
+        assert _ids(api.get("/api/orders/", {"search": search})) == {order.id}
+        assert _ids(api.get("/api/orders/", {"post_board": "1", "search": search})) == {order.id}
+        transactions = api.get("/api/payment-transactions/", {"search": search}).data
+        assert [row["order"] for row in transactions["results"]] == [order.id]

@@ -9,6 +9,21 @@ def _normalized_name(value) -> str:
     return " ".join(str(value or "").split())
 
 
+def sync_user_names(user, names: dict, using=None) -> None:
+    """Записать имя и фамилию клиента в его ``User``, схлопнув лишние пробелы.
+
+    ``names`` — только переданные поля (частичный PATCH меняет одно из них).
+    """
+    update_fields = []
+    for field, value in names.items():
+        value = _normalized_name(value)
+        if getattr(user, field) != value:
+            setattr(user, field, value)
+            update_fields.append(field)
+    if update_fields:
+        user.save(using=using, update_fields=update_fields)
+
+
 def _username_candidate(base: str, number: int, max_length: int) -> str:
     suffix = "" if number == 1 else f"-{number}"
     stem = base[: max_length - len(suffix)].rstrip("-._")
@@ -84,15 +99,10 @@ class ClientManager(models.Manager):
                     raise ValueError("Client user must not be a staff account")
                 if getattr(user, "employee", None) is not None:
                     raise ValueError("Client user must not have an employee profile")
-                update_fields = []
-                for field, value in (
-                    ("first_name", first_name),
-                    ("last_name", last_name),
-                ):
-                    if getattr(user, field) != value:
-                        setattr(user, field, value)
-                        update_fields.append(field)
-                if update_fields:
-                    user.save(using=self.db, update_fields=update_fields)
+                sync_user_names(
+                    user,
+                    {"first_name": first_name, "last_name": last_name},
+                    using=self.db,
+                )
 
             return self.create(user=user, **fields)

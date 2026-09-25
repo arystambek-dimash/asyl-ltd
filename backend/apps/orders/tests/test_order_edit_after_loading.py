@@ -3,7 +3,6 @@
 from decimal import Decimal
 
 import pytest
-from rest_framework.test import APIClient
 
 from apps.cameras.models import AiCountingSession
 from apps.catalog.models import Product
@@ -24,7 +23,6 @@ def _product(*, stock=100):
         name=f"Safe edit product {_sequence[0]}",
         color="Red",
         weight_kg="50",
-        price="100.00",
     )
     if stock is not None:
         StockItem.objects.create(product=product, bags=stock)
@@ -48,13 +46,7 @@ def _order(*, status, rows):
     return order
 
 
-def _api(user):
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
-
-
-def _patch_items(user, order, rows, *, reason=None):
+def _patch_items(api, order, rows, *, reason=None):
     payload = {
         "items": [
             {"product": product.id, "quantity": quantity}
@@ -67,14 +59,14 @@ def _patch_items(user, order, rows, *, reason=None):
     }
     if reason is not None:
         payload["edit_reason"] = reason
-    return _api(user).patch(
+    return api.patch(
         f"/api/orders/{order.id}/",
         payload,
         format="json",
     )
 
 
-def test_shipped_correction_reconciles_product_net_deltas_and_audits(manager):
+def test_shipped_correction_reconciles_product_net_deltas_and_audits(manager, api_as):
     first = _product(stock=90)
     removed = _product(stock=46)
     added = _product(stock=30)
@@ -88,7 +80,7 @@ def test_shipped_correction_reconciles_product_net_deltas_and_audits(manager):
     Shipment.objects.create(order=order, bags_loaded=14)
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(first, 6, "100.00"), (added, 7, "100.00")],
         reason="Исправлена накладная",
@@ -120,7 +112,7 @@ def test_shipped_correction_reconciles_product_net_deltas_and_audits(manager):
     assert Shipment.objects.get(order=order).bags_loaded == 14
 
 
-def test_shipped_correction_requires_reason_and_is_atomic(manager):
+def test_shipped_correction_requires_reason_and_is_atomic(manager, api_as):
     product = _product(stock=90)
     order = _order(
         status="shipped",
@@ -128,7 +120,7 @@ def test_shipped_correction_requires_reason_and_is_atomic(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 5, "100.00")],
     )
@@ -140,7 +132,7 @@ def test_shipped_correction_requires_reason_and_is_atomic(manager):
     assert not StockMovement.objects.filter(reason="shipment_correction").exists()
 
 
-def test_shipped_correction_allows_negative_stock_and_logs_warning(manager):
+def test_shipped_correction_allows_negative_stock_and_logs_warning(manager, api_as):
     product = _product(stock=0)
     order = _order(
         status="shipped",
@@ -148,7 +140,7 @@ def test_shipped_correction_allows_negative_stock_and_logs_warning(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 6, "100.00")],
         reason="Уточнён реальный объём",
@@ -164,7 +156,7 @@ def test_shipped_correction_allows_negative_stock_and_logs_warning(manager):
     assert warning.payload["balance"] == -5
 
 
-def test_active_payment_exposure_blocks_shipped_edit_atomically(manager):
+def test_active_payment_exposure_blocks_shipped_edit_atomically(manager, api_as):
     product = _product(stock=90)
     order = _order(
         status="shipped",
@@ -177,7 +169,7 @@ def test_active_payment_exposure_blocks_shipped_edit_atomically(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 5, "100.00")],
         reason="Исправлено количество",
@@ -190,7 +182,7 @@ def test_active_payment_exposure_blocks_shipped_edit_atomically(manager):
     assert not StockMovement.objects.filter(reason="shipment_correction").exists()
 
 
-def test_confirmed_overpayment_is_preserved_after_shipped_edit(manager):
+def test_confirmed_overpayment_is_preserved_after_shipped_edit(manager, api_as):
     product = _product(stock=90)
     order = _order(
         status="shipped",
@@ -203,7 +195,7 @@ def test_confirmed_overpayment_is_preserved_after_shipped_edit(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 5, "100.00")],
         reason="Исправлено количество",
@@ -219,7 +211,7 @@ def test_confirmed_overpayment_is_preserved_after_shipped_edit(manager):
     assert StockItem.objects.get(product=product).bags == 95
 
 
-def test_open_ai_session_blocks_item_edits(manager):
+def test_open_ai_session_blocks_item_edits(manager, api_as):
     product = _product(stock=100)
     order = _order(
         status="confirmed",
@@ -233,7 +225,7 @@ def test_open_ai_session_blocks_item_edits(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 5, "100.00")],
     )
@@ -244,7 +236,7 @@ def test_open_ai_session_blocks_item_edits(manager):
     assert AiCountingSession.objects.filter(pk=session.pk).exists()
 
 
-def test_loaded_order_can_be_corrected_without_rewriting_ai_snapshot(manager):
+def test_loaded_order_can_be_corrected_without_rewriting_ai_snapshot(manager, api_as):
     product = _product(stock=100)
     order = _order(
         status="loaded",
@@ -261,7 +253,7 @@ def test_loaded_order_can_be_corrected_without_rewriting_ai_snapshot(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 3, "100.00")],
     )
@@ -280,6 +272,7 @@ def test_loaded_order_can_be_corrected_without_rewriting_ai_snapshot(manager):
 def test_closed_unshipped_order_can_be_corrected_without_stock_movement(
     manager,
     status,
+    api_as,
 ):
     product = _product(stock=100)
     order = _order(
@@ -288,7 +281,7 @@ def test_closed_unshipped_order_can_be_corrected_without_stock_movement(
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 3, "100.00")],
     )
@@ -299,7 +292,7 @@ def test_closed_unshipped_order_can_be_corrected_without_stock_movement(
     assert not StockMovement.objects.filter(reason="shipment_correction").exists()
 
 
-def test_loading_order_remains_locked_without_ai_session(manager):
+def test_loading_order_remains_locked_without_ai_session(manager, api_as):
     product = _product(stock=100)
     order = _order(
         status="loading",
@@ -307,7 +300,7 @@ def test_loading_order_remains_locked_without_ai_session(manager):
     )
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(product, 3, "100.00")],
     )
@@ -317,7 +310,7 @@ def test_loading_order_remains_locked_without_ai_session(manager):
     assert order.items.get().quantity == 2
 
 
-def test_shipped_edit_with_deleted_historical_product_is_blocked(manager):
+def test_shipped_edit_with_deleted_historical_product_is_blocked(manager, api_as):
     deleted_product = _product(stock=90)
     order = _order(
         status="shipped",
@@ -327,7 +320,7 @@ def test_shipped_edit_with_deleted_historical_product_is_blocked(manager):
     replacement = _product(stock=100)
 
     response = _patch_items(
-        manager,
+        api_as(manager),
         order,
         [(replacement, 10, "100.00")],
         reason="Исправлен удалённый товар",

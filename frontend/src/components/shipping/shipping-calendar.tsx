@@ -2,29 +2,27 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, PackageCheck, Search, Truck } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { ChevronLeft, ChevronRight, PackageCheck, Truck } from "lucide-react";
+import { StatusBadge } from "@/components/status-badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TransportNumberBadge } from "@/components/ui/transport-number";
+import { SearchInput } from "@/components/ui/search-input";
+import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { MONTH_NAMES_OF, WEEKDAY_NAMES, monthGrid, monthOf, monthTitle, shiftMonth } from "@/lib/calendar-month";
-import { ORDER_STATUS_LABELS, ORDER_STATUS_TONE } from "@/lib/constants";
 import { orderedBagCount } from "@/lib/orders";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import type { Order } from "@/lib/types";
-import { cn, formatDateTime, formatIsoDate, formatTime, pluralRu } from "@/lib/utils";
+import { bagsWord, cn, formatDateTime, formatIsoDate, formatTime, pluralRu } from "@/lib/utils";
 
-export interface ShippingCalendarDay {
+interface ShippingCalendarDay {
   day: string;
   waiting: number;
-  waiting_bags: number;
   shipped: number;
-  shipped_bags: number;
 }
 
 /** Заказы дня приходят обычной очередью поста, итоги месяца — календарём. */
-export interface ShippingCalendarProps {
+interface ShippingCalendarProps {
   /** Заказы выбранного дня; null — первая загрузка. */
   orders: Order[] | null;
   /** «ГГГГ-ММ-ДД» выбранного дня. */
@@ -38,10 +36,7 @@ export interface ShippingCalendarProps {
   canOpenOrder: boolean;
 }
 
-/**
- * Календарь отгрузки вместо таблицы заказов: грузчик смотрит по дням, что
- * нужно погрузить и что уже уехало, и открывает день одним нажатием.
- */
+/** Календарь отгрузки Моноблока: итоги месяца и заказы выбранного дня. */
 export function ShippingCalendar({
   orders,
   day,
@@ -83,17 +78,14 @@ export function ShippingCalendar({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-56 flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input
-            aria-label="Поиск"
-            className="h-10 pl-9"
-            placeholder="Номер машины, клиент или № заказа"
-            value={search}
-            onChange={(event) => onSearchChange(event.target.value)}
-          />
-        </div>
-        {/* Быстрый переход к дате: поиск временно отменяет правило дня, как и раньше. */}
+        <SearchInput
+          wrapperClassName="min-w-56 flex-1"
+          aria-label="Поиск"
+          placeholder="Номер машины, клиент или № заказа"
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+        />
+        {/* Быстрый переход к дате: поиск временно отменяет правило дня. */}
         <Input
           type="date"
           aria-label="День"
@@ -216,20 +208,12 @@ export function ShippingCalendar({
             {list.map((order) => (
               <li key={order.id} className="flex flex-col gap-2 rounded-xl border bg-[var(--card)] p-3.5 shadow-card">
                 <div className="flex items-start justify-between gap-2">
-                  <TransportNumberBadge
-                    value={order.truck_number ?? ""}
-                    transportType={order.transport_type}
-                    trailer={order.trailer_number}
-                  />
-                  <Badge tone={ORDER_STATUS_TONE[order.status] ?? "muted"} dot>
-                    {ORDER_STATUS_LABELS[order.status] ?? order.status}
-                  </Badge>
+                  <OrderTransportBadge order={order} />
+                  <StatusBadge status={order.status} dot />
                 </div>
                 <div className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-xl font-bold tabular-nums">{orderedBagCount(order)}</span>
-                  <span className="text-sm text-[var(--muted-foreground)]">
-                    {pluralRu(orderedBagCount(order), ["мешок", "мешка", "мешков"])}
-                  </span>
+                  <span className="text-sm text-[var(--muted-foreground)]">{bagsWord(orderedBagCount(order))}</span>
                   {order.status === "shipped" && order.shipped_at && (
                     <span className="ml-auto inline-flex items-center gap-1 text-xs text-[var(--success)]">
                       <PackageCheck className="size-3.5" /> {formatTime(order.shipped_at)}

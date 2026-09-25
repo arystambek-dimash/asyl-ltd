@@ -1,7 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 from django.core.management import call_command
@@ -13,27 +13,24 @@ from apps.clients.models import Client
 from apps.orders.apipay import (
     ApiPayAPIError,
     create_invoice,
-    recover_qr_invoice_mapping,
+    recover_invoice_issue_mapping,
 )
 from apps.orders.management.commands.reconcile_apipay_invoices import (
-    _backoff_delay,
+    backoff_delay,
 )
 from apps.orders.models import ApiPayInvoice, Order, OrderItem, Payment
 from apps.orders.reconciliation import (
     ReconciliationStats,
     reconcile_apipay_invoices,
 )
-from apps.orders.reconciliation_runner import _request_budget_per_iteration
+from apps.orders.reconciliation_runner import (
+    ApiPayReconciliationOptions,
+    run_apipay_reconciliation_iteration,
+)
 from apps.orders.refund_reconciliation import RefundReconciliationStats
 from apps.sales.models import Department
 
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def _department_key(apipay_department):
-    """Ключ ApiPay берётся из отдела ``main`` заказа, а не из настроек."""
-    return apipay_department
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
 
 def _invoice(invoice_id: int, status: str = "pending") -> ApiPayInvoice:
@@ -45,7 +42,6 @@ def _invoice(invoice_id: int, status: str = "pending") -> ApiPayInvoice:
         name=f"Товар {invoice_id}",
         color="Red",
         weight_kg="50",
-        price="5000",
     )
     order = Order.objects.create(
         client=client,
@@ -85,6 +81,22 @@ def _set_observation_time(
     ApiPayInvoice.objects.filter(pk=record.pk).update(
         created_at=created_at,
         updated_at=updated_at,
+    )
+    record.refresh_from_db()
+    return record
+
+
+def _ambiguous_qr(invoice_id: int, *, created_at, updated_at) -> ApiPayInvoice:
+    """QR-счёт завис в ``creating`` без ``invoice_id``: выставление могло дойти до ApiPay."""
+    record = _set_observation_time(
+        _invoice(invoice_id, "pending"),
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+    ApiPayInvoice.objects.filter(pk=record.pk).update(
+        invoice_id=None,
+        channel="qr",
+        status="creating",
     )
     record.refresh_from_db()
     return record
@@ -133,6 +145,7 @@ def test_reconcile_polls_stale_active_and_recent_closed_invoices(check_statuses)
     }
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         batch_size=100,
         stale_after=timedelta(seconds=30),
         lookback=timedelta(hours=72),
@@ -169,26 +182,18 @@ def test_ambiguous_qr_no_match_before_grace_stays_reserved(
     api_request,
 ):
     now = timezone.now().replace(microsecond=0)
-    record = _set_observation_time(
-        _invoice(151, "pending"),
+    record = _ambiguous_qr(
+        151,
         created_at=now - timedelta(minutes=10),
         updated_at=now - timedelta(minutes=5),
     )
-    ApiPayInvoice.objects.filter(pk=record.pk).update(
-        invoice_id=None,
-        channel="qr",
-        status="creating",
-    )
-    record.payment.status = "received"
-    record.payment.save(update_fields=["status"])
-    record.refresh_from_db()
     api_request.return_value = {
         "current_page": 1,
         "data": [],
         "total": 0,
     }
 
-    recovered = recover_qr_invoice_mapping(record, checked_at=now)
+    recovered = recover_invoice_issue_mapping(record, checked_at=now)
 
     assert recovered is None
     record.refresh_from_db()
@@ -205,19 +210,11 @@ def test_ambiguous_qr_complete_no_match_after_grace_is_released(
     api_request,
 ):
     now = timezone.now().replace(microsecond=0)
-    record = _set_observation_time(
-        _invoice(152, "pending"),
+    record = _ambiguous_qr(
+        152,
         created_at=now - timedelta(minutes=31),
         updated_at=now - timedelta(minutes=5),
     )
-    ApiPayInvoice.objects.filter(pk=record.pk).update(
-        invoice_id=None,
-        channel="qr",
-        status="creating",
-    )
-    record.payment.status = "received"
-    record.payment.save(update_fields=["status"])
-    record.refresh_from_db()
     # Prove that all pages, not just page 1, are exhausted before release.
     first_page = [
         {"id": value, "external_order_id": f"unrelated-{value}"}
@@ -236,7 +233,7 @@ def test_ambiguous_qr_complete_no_match_after_grace_is_released(
         },
     ]
 
-    recovered = recover_qr_invoice_mapping(record, checked_at=now)
+    recovered = recover_invoice_issue_mapping(record, checked_at=now)
 
     assert recovered is None
     assert api_request.call_count == 2
@@ -252,19 +249,11 @@ def test_ambiguous_qr_complete_no_match_after_grace_is_released(
 @patch("apps.orders.apipay.api_request")
 def test_existing_ambiguous_qr_is_searched_and_never_posted(api_request):
     now = timezone.now().replace(microsecond=0)
-    record = _set_observation_time(
-        _invoice(153, "pending"),
+    record = _ambiguous_qr(
+        153,
         created_at=now - timedelta(minutes=5),
         updated_at=now - timedelta(minutes=1),
     )
-    ApiPayInvoice.objects.filter(pk=record.pk).update(
-        invoice_id=None,
-        channel="qr",
-        status="creating",
-    )
-    record.payment.status = "received"
-    record.payment.save(update_fields=["status"])
-    record.refresh_from_db()
     api_request.return_value = {
         "current_page": 1,
         "data": [],
@@ -301,6 +290,7 @@ def test_reconcile_continues_after_one_provider_batch_fails(check_statuses):
     ]
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         batch_size=2,
         stale_after=timedelta(seconds=30),
         lookback=timedelta(hours=72),
@@ -335,7 +325,6 @@ def test_reconcile_honors_hard_provider_request_budget(check_statuses):
 
     stats = reconcile_apipay_invoices(
         batch_size=2,
-        limit=999,
         request_budget=1,
         stale_after=timedelta(seconds=30),
         lookback=timedelta(hours=72),
@@ -356,18 +345,11 @@ def test_qr_recovery_never_exceeds_monitor_request_budget(
     check_statuses,
 ):
     now = timezone.now().replace(microsecond=0)
-    record = _set_observation_time(
-        _invoice(231, "pending"),
+    record = _ambiguous_qr(
+        231,
         created_at=now - timedelta(minutes=31),
         updated_at=now - timedelta(minutes=5),
     )
-    ApiPayInvoice.objects.filter(pk=record.pk).update(
-        invoice_id=None,
-        channel="qr",
-        status="creating",
-    )
-    record.payment.status = "received"
-    record.payment.save(update_fields=["status"])
     api_request.return_value = {
         "current_page": 1,
         "data": [
@@ -379,7 +361,6 @@ def test_qr_recovery_never_exceeds_monitor_request_budget(
 
     stats = reconcile_apipay_invoices(
         batch_size=100,
-        limit=100,
         request_budget=1,
         stale_after=timedelta(seconds=30),
         now=now,
@@ -418,6 +399,7 @@ def test_reconcile_continues_after_one_payload_cannot_be_applied(
     apply_status.side_effect = [ValueError("bad amount"), True]
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         stale_after=timedelta(seconds=30),
         lookback=timedelta(hours=72),
         now=now,
@@ -445,6 +427,7 @@ def test_reconcile_throttles_omitted_ids_and_ignores_unexpected_ids(
     }
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         stale_after=timedelta(seconds=30),
         lookback=timedelta(hours=72),
         now=now,
@@ -474,6 +457,7 @@ def test_reconcile_is_idempotent_when_status_is_unchanged(check_statuses):
     }
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         stale_after=timedelta(seconds=30),
         lookback=timedelta(hours=72),
         now=now,
@@ -490,7 +474,7 @@ def test_reconcile_is_idempotent_when_status_is_unchanged(check_statuses):
     "apps.orders.management.commands.reconcile_apipay_invoices."
     "replay_pending_apipay_webhooks"
 )
-@patch("apps.orders.management.commands.reconcile_apipay_invoices._write_heartbeat")
+@patch("apps.orders.management.commands.reconcile_apipay_invoices.write_heartbeat")
 @patch(
     "apps.orders.management.commands.reconcile_apipay_invoices.reconcile_apipay_refunds"
 )
@@ -527,10 +511,10 @@ def test_reconcile_command_exposes_interval_staleness_and_batch_options(
         stdout=stdout,
     )
 
+    # 40 запросов: 30 на возвраты, 5 на QR-возвраты, 5 батчей по 25 счетов.
     run.assert_called_once_with(
         batch_size=25,
-        limit=250,
-        request_budget=10,
+        request_budget=5,
         stale_after=timedelta(seconds=45),
         lookback=timedelta(hours=96),
     )
@@ -565,7 +549,7 @@ def test_reconcile_command_exposes_interval_staleness_and_batch_options(
     "apps.orders.management.commands.reconcile_apipay_invoices."
     "replay_pending_apipay_webhooks"
 )
-@patch("apps.orders.management.commands.reconcile_apipay_invoices._write_heartbeat")
+@patch("apps.orders.management.commands.reconcile_apipay_invoices.write_heartbeat")
 @patch(
     "apps.orders.management.commands.reconcile_apipay_invoices.reconcile_apipay_refunds"
 )
@@ -602,7 +586,7 @@ def test_reconcile_command_reads_refund_budget_and_grace_from_environment(
     "apps.orders.management.commands.reconcile_apipay_invoices."
     "replay_pending_apipay_webhooks"
 )
-@patch("apps.orders.management.commands.reconcile_apipay_invoices._write_heartbeat")
+@patch("apps.orders.management.commands.reconcile_apipay_invoices.write_heartbeat")
 @patch(
     "apps.orders.management.commands.reconcile_apipay_invoices.reconcile_apipay_refunds"
 )
@@ -635,11 +619,13 @@ def test_reconcile_command_clamps_monitor_to_half_provider_rate_limit(
     )
 
     # 25 requests per 15-second cycle = 100/minute maximum. One request is
-    # reserved for a batch of up to 500 invoice IDs; 24 remain for refunds.
+    # reserved for a batch of up to 500 invoice IDs, five for QR refund
+    # sessions; 19 remain for refunds.
     run.assert_called_once()
-    assert run.call_args.kwargs["limit"] == 500
+    assert run.call_args.kwargs["batch_size"] == 500
+    assert run.call_args.kwargs["request_budget"] == 1
     refund_run.assert_called_once()
-    assert refund_run.call_args.kwargs["limit"] == 24
+    assert refund_run.call_args.kwargs["limit"] == 19
     assert heartbeat.call_count == 2
 
 
@@ -647,7 +633,7 @@ def test_reconcile_command_clamps_monitor_to_half_provider_rate_limit(
     "apps.orders.management.commands.reconcile_apipay_invoices."
     "replay_pending_apipay_webhooks"
 )
-@patch("apps.orders.management.commands.reconcile_apipay_invoices._write_heartbeat")
+@patch("apps.orders.management.commands.reconcile_apipay_invoices.write_heartbeat")
 @patch(
     "apps.orders.management.commands.reconcile_apipay_invoices.reconcile_apipay_refunds"
 )
@@ -679,31 +665,28 @@ def test_reconcile_command_marks_reported_failures_unhealthy(
     ]
 
 
-def test_monitor_budget_and_backoff_helpers_enforce_hard_caps():
-    assert (
-        _request_budget_per_iteration(
-            requests_per_minute=10_000,
-            interval_seconds=15,
-        )
-        == 25
-    )
-    assert (
-        _request_budget_per_iteration(
-            requests_per_minute=80,
-            interval_seconds=30,
-        )
-        == 40
-    )
-    assert (
-        _request_budget_per_iteration(
-            requests_per_minute=100,
-            interval_seconds=3_600,
-        )
-        == 50
+def _options(*, requests_per_minute: int, interval_seconds: int) -> ApiPayReconciliationOptions:
+    return ApiPayReconciliationOptions.build(
+        interval_seconds=interval_seconds,
+        stale_seconds=30,
+        lookback_hours=72,
+        batch_size=100,
+        refund_limit=500,
+        refund_orphan_grace_seconds=0,
+        refund_sweep_stale_seconds=0,
+        requests_per_minute=requests_per_minute,
+        max_backoff_seconds=300,
+        heartbeat_file="/tmp/apipay-monitor-heartbeat-test",
     )
 
+
+def test_monitor_budget_and_backoff_helpers_enforce_hard_caps():
+    assert _options(requests_per_minute=10_000, interval_seconds=15).request_budget == 25
+    assert _options(requests_per_minute=80, interval_seconds=30).request_budget == 40
+    assert _options(requests_per_minute=100, interval_seconds=3_600).request_budget == 50
+
     assert (
-        _backoff_delay(
+        backoff_delay(
             interval_seconds=30,
             max_backoff_seconds=300,
             failure_streak=0,
@@ -711,7 +694,7 @@ def test_monitor_budget_and_backoff_helpers_enforce_hard_caps():
         == 30
     )
     assert (
-        _backoff_delay(
+        backoff_delay(
             interval_seconds=30,
             max_backoff_seconds=300,
             failure_streak=2,
@@ -719,7 +702,7 @@ def test_monitor_budget_and_backoff_helpers_enforce_hard_caps():
         == 60
     )
     assert (
-        _backoff_delay(
+        backoff_delay(
             interval_seconds=30,
             max_backoff_seconds=300,
             failure_streak=10,
@@ -733,12 +716,13 @@ def test_reconciliation_batches_per_department(check_statuses):
     city = Department.objects.create(code="city", name="Нью-Сити")
     city.set_apipay_api_key("city-key")
     city.save()
-    first = _invoice(901)
+    _invoice(901)
     second = _invoice(902)
     Order.all_objects.filter(pk=second.payment.order_id).update(department="city")
     check_statuses.return_value = {"invoices": []}
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         stale_after=timedelta(seconds=30),
         now=timezone.now() + timedelta(minutes=5),
     )
@@ -749,7 +733,6 @@ def test_reconciliation_batches_per_department(check_statuses):
     )
     assert calls == [("city-key", [902]), ("server-only-key", [901])]
     assert stats.batches == 2
-    assert first.pk != second.pk
 
 
 @patch("apps.orders.reconciliation.check_invoice_statuses")
@@ -760,6 +743,7 @@ def test_reconciliation_skips_department_without_key(check_statuses):
     before = ApiPayInvoice.objects.get(pk=record.pk).updated_at
 
     stats = reconcile_apipay_invoices(
+        request_budget=10,
         stale_after=timedelta(seconds=30),
         now=timezone.now() + timedelta(minutes=5),
     )
@@ -771,3 +755,36 @@ def test_reconciliation_skips_department_without_key(check_statuses):
     assert stats.unconfigured == 1
     assert stats.batches == 0
     assert ApiPayInvoice.objects.get(pk=record.pk).updated_at == before
+
+
+@pytest.mark.parametrize(
+    ("requests_per_minute", "interval_seconds"),
+    [(10_000, 15), (80, 30), (10, 15)],
+)
+def test_qr_refund_sessions_are_part_of_the_request_budget(
+    requests_per_minute, interval_seconds
+):
+    options = _options(
+        requests_per_minute=requests_per_minute,
+        interval_seconds=interval_seconds,
+    )
+    invoices = Mock(return_value=ReconciliationStats())
+    refunds = Mock(return_value=RefundReconciliationStats())
+    qr_refunds = Mock(return_value={"selected": 0, "checked": 0, "failed": 0})
+
+    run_apipay_reconciliation_iteration(
+        options,
+        invoice_reconciler=invoices,
+        refund_reconciler=refunds,
+        webhook_replayer=Mock(return_value={"failed": 0}),
+        heartbeat_writer=Mock(),
+        qr_refund_reconciler=qr_refunds,
+    )
+
+    invoice_requests = invoices.call_args.kwargs["request_budget"]
+    refund_requests = refunds.call_args.kwargs["limit"]
+    qr_requests = qr_refunds.call_args.kwargs["limit"]
+    # Каждая сессия QR-возврата — минимум один GET: окно покупателя короткое,
+    # поэтому хоть одна сессия проверяется в каждой итерации.
+    assert min(invoice_requests, refund_requests, qr_requests) >= 1
+    assert invoice_requests + refund_requests + qr_requests == options.request_budget

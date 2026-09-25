@@ -9,22 +9,9 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.apipay import ApiPayAPIError
 from apps.orders.models import Order, OrderItem, Payment
+from apps.orders.tests.apipay_fakes import ProviderResponse
 
 pytestmark = pytest.mark.django_db
-
-
-class ProviderResponse:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def read(self):
-        return json.dumps(self.payload).encode("utf-8")
 
 
 QR_RESPONSE = {
@@ -49,7 +36,6 @@ def _debt_order(*, total="1000.00", currency="KZT"):
         name="POS товар",
         color="Red",
         weight_kg="50",
-        defaults={"price": total},
     )
     order = Order.objects.create(
         client=client,
@@ -74,10 +60,10 @@ def apipay(settings, apipay_department):
         yield urlopen
 
 
-def _pos_qr(auth_client, user, order, amount="1000"):
+def _pos_qr(auth_client, user, order, amount="1000", channel="qr"):
     return auth_client(user).post(
         f"/api/orders/{order.id}/payments/",
-        {"method": "kaspi", "channel": "qr", "amount": amount},
+        {"method": "kaspi", "channel": channel, "amount": amount},
         format="json",
     )
 
@@ -101,39 +87,23 @@ def test_pos_qr_issues_an_apipay_qr_and_keeps_the_debt(auth_client, accountant, 
     assert order.is_debt
 
 
-def test_pos_qr_is_tenge_only(auth_client, accountant, apipay):
-    order = _debt_order(currency="USD")
+@pytest.mark.parametrize(
+    ("currency", "channel", "amount", "code"),
+    [
+        ("USD", "qr", "1000", "apipay_kzt_only"),
+        ("KZT", "qr", "10.50", "qr_whole_tenge"),
+        ("KZT", "phone", "100", "invalid_payment_channel"),
+    ],
+)
+def test_pos_qr_rejects_invalid_requests(
+    auth_client, accountant, apipay, currency, channel, amount, code,
+):
+    order = _debt_order(currency=currency)
 
-    response = _pos_qr(auth_client, accountant, order)
-
-    assert response.status_code == 400
-    assert response.data["code"] == "apipay_kzt_only"
-    assert not Payment.objects.filter(order=order).exists()
-    apipay.assert_not_called()
-
-
-def test_pos_qr_rejects_tiyn(auth_client, accountant, apipay):
-    order = _debt_order()
-
-    response = _pos_qr(auth_client, accountant, order, amount="10.50")
-
-    assert response.status_code == 400
-    assert response.data["code"] == "qr_whole_tenge"
-    assert not Payment.objects.filter(order=order).exists()
-    apipay.assert_not_called()
-
-
-def test_pos_rejects_unknown_kaspi_channels(auth_client, accountant, apipay):
-    order = _debt_order()
-
-    response = auth_client(accountant).post(
-        f"/api/orders/{order.id}/payments/",
-        {"method": "kaspi", "channel": "phone", "amount": "100"},
-        format="json",
-    )
+    response = _pos_qr(auth_client, accountant, order, amount=amount, channel=channel)
 
     assert response.status_code == 400
-    assert response.data["code"] == "invalid_payment_channel"
+    assert response.data["code"] == code
     assert not Payment.objects.filter(order=order).exists()
     apipay.assert_not_called()
 

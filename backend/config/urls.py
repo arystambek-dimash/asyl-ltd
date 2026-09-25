@@ -1,22 +1,12 @@
-from apps.accounts.serializers import PasswordChangeAwareTokenObtainPairSerializer
 from apps.accounts.views import (
     InitialPasswordView,
     MeView,
     RevocableTokenRefreshView,
+    ThrottledTokenObtainPairView,
 )
 from apps.orders.webhooks import apipay_webhook
 from django.contrib import admin
 from django.urls import include, path
-from rest_framework_simplejwt.views import TokenObtainPairView
-
-from config.throttles import LoginRateThrottle
-
-
-class ThrottledTokenObtainPairView(TokenObtainPairView):
-    """Логин под отдельным жёстким лимитом (защита от подбора пароля)."""
-    throttle_classes = [LoginRateThrottle]
-    serializer_class = PasswordChangeAwareTokenObtainPairSerializer
-
 
 urlpatterns = [
     path("admin/", admin.site.urls),

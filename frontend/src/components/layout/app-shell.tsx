@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
 import { homeFor } from "@/lib/can";
 import { hasAuthTokens, isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
@@ -37,7 +37,6 @@ export function AppShell({
 }) {
   const { me, loading, loadMe, refreshMe, logout, syncExternalSession } = useAuth();
   const router = useRouter();
-  const pathname = usePathname();
   const [navOpen, setNavOpen] = useState(false);
   const sessionRetryDelay = useRef(INITIAL_SESSION_RETRY_MS);
   const closeNav = useCallback(() => setNavOpen(false), []);
@@ -101,11 +100,8 @@ export function AppShell({
 
   useEffect(() => {
     if (!loading && !me && !hasAuthTokens()) router.replace("/login");
-    if (!loading && me) {
-      if (portal && !me.is_client) router.replace(homeFor(me));
-      if (!portal && me.is_client) router.replace("/portal/catalog");
-    }
-  }, [loading, me, pathname, portal, router]);
+    if (!loading && me && portal !== me.is_client) router.replace(homeFor(me));
+  }, [loading, me, portal, router]);
 
   if (loading || !me)
     return (

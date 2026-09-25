@@ -1,34 +1,32 @@
 "use client";
 import { useState } from "react";
 import Image from "next/image";
-import { ArrowLeft, Clock, FileText, QrCode, Smartphone } from "lucide-react";
+import { ArrowLeft, Clock, FileText, QrCode, Smartphone, Wallet, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { invoiceIsActive, invoiceIsPayable, invoiceStatusLabel } from "@/lib/apipay-invoice";
+import type { BadgeTone } from "@/lib/constants";
 import type { PortalOrder } from "@/lib/types";
-import { currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
+import { formatCurrency, formatDateTime } from "@/lib/utils";
 
 export type PortalPaymentPart = PortalOrder["payment_parts"][number];
 
-export const PAYABLE_PROVIDER_STATUSES = new Set(["creating", "processing", "pending"]);
-
-const PROVIDER_STATUS_LABELS: Record<string, string> = {
-  creating: "Создаётся",
-  processing: "Ожидает оплаты",
-  pending: "Ожидает оплаты",
-  paid: "Оплачен",
-  cancelling: "Отменяется",
-  cancelled: "Отменён",
-  expired: "Истёк",
-  superseded: "Заменён",
-  error: "Ошибка",
-};
-
-function providerStatusTone(status: string): "muted" | "success" | "warning" | "destructive" {
+function providerStatusTone(status: string): BadgeTone {
   if (status === "paid") return "success";
-  if (PAYABLE_PROVIDER_STATUSES.has(status) || status === "cancelling") return "warning";
+  if (status === "partially_refunded") return "primary";
+  if (invoiceIsActive(status)) return "warning";
   if (status === "error") return "destructive";
   return "muted";
 }
+
+/** Способ оплаты словами терминала кабинета: так же подписаны плитки «Kaspi QR» и «Счёт в Kaspi». */
+const PART_METHODS: Record<PortalPaymentPart["method"], { label: string; icon: LucideIcon; iconClass: string }> = {
+  kaspi: { label: "Kaspi QR", icon: QrCode, iconClass: "text-[var(--primary)]" },
+  invoice: { label: "Счёт в Kaspi", icon: FileText, iconClass: "text-[var(--primary)]" },
+  // Удалённую оплату сотрудник отмечает уже полученной — к наличным она отношения не имеет.
+  remote: { label: "Удалённая оплата", icon: Wallet, iconClass: "text-[var(--primary)]" },
+  cash: { label: "Наличными", icon: Clock, iconClass: "text-[var(--warning)]" },
+};
 
 /** Начатые оплаты заказа: живой Kaspi QR крупно, счёт на телефон — статусом. */
 export function PortalPaymentParts({
@@ -41,15 +39,20 @@ export function PortalPaymentParts({
   onRelease: (part: PortalPaymentPart) => void;
 }) {
   const [failedQrImages, setFailedQrImages] = useState<Set<number>>(() => new Set());
-  const symbol = currencySymbol(order.currency);
 
   return (
     <>
       {order.payment_parts.map((part) => {
         const provider = part.apipay_invoice;
-        const providerIsPayable = provider != null && PAYABLE_PROVIDER_STATUSES.has(provider.status);
+        const providerIsPayable = provider != null && invoiceIsPayable(provider.status);
         const qrIsPayable = part.status !== "confirmed" && provider?.channel === "qr" && providerIsPayable;
         const qrImageFailed = failedQrImages.has(part.id);
+        // Легаси-способы (card) в кабинете не выбираются, но старые оплаты могут их нести.
+        const method = PART_METHODS[part.method] ?? {
+          label: part.method_label,
+          icon: FileText,
+          iconClass: "text-[var(--muted-foreground)]",
+        };
         const paymentState =
           part.status === "confirmed"
             ? "Оплата подтверждена"
@@ -68,20 +71,12 @@ export function PortalPaymentParts({
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-start gap-2.5">
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--card)] shadow-sm">
-                  {part.method === "kaspi" ? (
-                    <QrCode className="size-4 text-[var(--primary)]" />
-                  ) : part.method === "invoice" ? (
-                    <FileText className="size-4 text-[var(--primary)]" />
-                  ) : (
-                    <Clock className="size-4 text-[var(--warning)]" />
-                  )}
+                  <method.icon className={`size-4 ${method.iconClass}`} />
                 </span>
                 <div className="min-w-0">
-                  <div className="font-semibold tabular-nums">
-                    {formatMoney(part.amount)} {symbol}
-                  </div>
+                  <div className="font-semibold tabular-nums">{formatCurrency(part.amount, order.currency)}</div>
                   <div className="text-xs text-[var(--muted-foreground)]">
-                    {part.method === "kaspi" ? "Kaspi QR" : part.method === "invoice" ? "Счёт в Kaspi" : "Наличными"}
+                    {method.label}
                     {" · "}
                     {paymentState}
                   </div>
@@ -98,7 +93,7 @@ export function PortalPaymentParts({
             {provider && (
               <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-xs text-[var(--muted-foreground)]">
                 <Badge tone={providerStatusTone(provider.status)} dot>
-                  {PROVIDER_STATUS_LABELS[provider.status] ?? provider.status}
+                  {invoiceStatusLabel(provider.status)}
                 </Badge>
                 {provider.channel === "phone" && provider.phone_number && (
                   <span>Счёт отправлен на {provider.phone_number}</span>

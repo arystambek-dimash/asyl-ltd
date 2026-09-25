@@ -3,46 +3,35 @@ import { ReactNode } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/store/auth";
-import { can } from "@/lib/can";
+import { canAny, type Perm } from "@/lib/can";
 import { ShieldOff } from "lucide-react";
 
 /**
  * Оборачивает страницу: если у текущего пользователя нет нужного права —
  * показывает заглушку «Нет доступа» вместо содержимого.
- * perm — строка или массив (нужно ЛЮБОЕ из прав).
+ * perm — строка или массив (нужно ЛЮБОЕ из прав); superuser — страница только
+ * для владельца, права ролей не играют.
  */
 export function RequirePerm({
-  perm,
   title = "Раздел",
   children,
-}: {
-  perm: string | string[];
+  ...access
+}: ({ perm: Perm; superuser?: never } | { superuser: true; perm?: never }) & {
   title?: string;
   children: ReactNode;
 }) {
   const { me, loading } = useAuth();
-  const codes = Array.isArray(perm) ? perm : [perm];
-  const allowed = !!me && codes.some((c) => can(me, c));
+  const allowed = access.superuser ? !!me?.is_superuser : canAny(me, access.perm);
 
-  if (loading) {
-    return (
-      <AppShell title={title}>
-        <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
-      </AppShell>
-    );
-  }
-  if (!allowed) {
-    return (
-      <AppShell title={title}>
-        <NoAccessCard />
-      </AppShell>
-    );
+  // Пока профиль грузится, AppShell сам показывает «Загрузка…» и содержимое не рисует.
+  if (loading || !allowed) {
+    return <AppShell title={title}>{loading ? null : <NoAccessCard />}</AppShell>;
   }
   return <>{children}</>;
 }
 
-/** Заглушка «Нет доступа» — общая для RequirePerm и страниц с собственной проверкой. */
-export function NoAccessCard() {
+/** Заглушка «Нет доступа». */
+function NoAccessCard() {
   return (
     <Card>
       <CardContent className="flex flex-col items-center gap-3 py-16 text-center">

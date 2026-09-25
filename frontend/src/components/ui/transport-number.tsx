@@ -1,15 +1,8 @@
-import { Badge } from "@/components/ui/badge";
+import { TrainFront } from "lucide-react";
 import { countryFlag } from "@/lib/countries";
-import { detectPlateCountry, formatPlate, formatPlatePair, type PlateCountry } from "@/lib/plates";
-import type { Order } from "@/lib/types";
+import { detectPlateCountry, formatPlate, type PlateCountry } from "@/lib/plates";
 import { cn } from "@/lib/utils";
-
-type TransportType = Order["transport_type"];
-
-/** Wagon numbers are identifiers: preserve all eight digits and leading zeros. */
-export function formatTransportNumber(value: string, transportType: TransportType, trailer = ""): string {
-  return transportType === "truck" ? formatPlatePair(value, trailer) : value;
-}
+import { orderTransportText, type OrderTransport } from "@/lib/wagons";
 
 // Полоса страны слева на табличке — цвет флага страны.
 const STRIP_COLORS: Record<PlateCountry, string> = {
@@ -82,18 +75,36 @@ export function PlatePair({
   );
 }
 
-export function TransportNumberBadge({
-  value,
-  transportType,
-  trailer = "",
-}: {
-  value: string;
-  transportType: TransportType;
-  trailer?: string;
-}) {
-  if (transportType === "train") {
-    return <Badge tone="outline">{value ? `Вагон ${value}` : "Вагон · без номера"}</Badge>;
+/**
+ * Транспорт заказа крупно: у фуры — тягач и прицеп табличками, как на самих
+ * машинах; у вагона — номер или «12 вагонов · ст. Раустан» у отгрузки по отчёту.
+ */
+export function OrderTransportBadge({ order, size = "md" }: { order: OrderTransport; size?: "md" | "lg" }) {
+  const lg = size === "lg";
+  if (order.transport_type === "train") {
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md border-2 border-neutral-800 bg-white px-2 py-1 font-bold tabular-nums text-neutral-900",
+          lg ? "text-xl" : "text-sm",
+        )}
+      >
+        <TrainFront className={lg ? "size-5" : "size-4"} />
+        {orderTransportText(order) || "без номера"}
+      </span>
+    );
   }
-  if (!transportType) return <span className="font-medium tabular-nums">{value || "Без номера"}</span>;
-  return value || trailer ? <PlatePair truck={value} trailer={trailer} /> : <Badge tone="muted">Без номера</Badge>;
+  if (!order.truck_number) {
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center rounded-md border-2 border-dashed border-[var(--border)] px-2 py-1 font-semibold text-[var(--muted-foreground)]",
+          lg ? "text-lg" : "text-sm",
+        )}
+      >
+        Без номера
+      </span>
+    );
+  }
+  return <PlatePair truck={order.truck_number} trailer={order.trailer_number} size={size} />;
 }

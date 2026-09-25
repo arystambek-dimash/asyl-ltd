@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { shippingNumberSource, type ShippingSegmentDetail } from "@/lib/shipping-sessions";
 import { useApi } from "@/lib/use-api";
+import { formatCount, loadErrorText } from "@/lib/utils";
 
 // A document keeps the captured count unchanged until the operator explicitly
 // refreshes it. Background polling would change the number as print opens.
@@ -85,9 +86,7 @@ export function ShippingSegmentDocument({ segment }: { segment: ShippingSegmentD
         </dl>
         <div className="flex items-center justify-between border-y border-black/20 py-4">
           <span className="font-medium">Количество в этом отрезке</span>
-          <strong className="text-2xl tabular-nums">
-            {new Intl.NumberFormat("ru-RU").format(segment.total_bags)} меш.
-          </strong>
+          <strong className="text-2xl tabular-nums">{formatCount(segment.total_bags)} меш.</strong>
         </div>
         <figure className="space-y-2">
           {segment.photo_url && !photoFailed ? (
@@ -120,7 +119,7 @@ export function ShippingSegmentDocument({ segment }: { segment: ShippingSegmentD
 export function ShippingSegmentPrintPage({ segmentId }: { segmentId: number }) {
   const valid = Number.isSafeInteger(segmentId) && segmentId > 0;
   const detail = useApi<ShippingSegmentDetail>(valid ? `/cameras/shipping-segments/${segmentId}/` : null);
-  const error = detail.error || (detail.errorStatus ? "Накладная недоступна. Проверьте права доступа." : "");
+  const error = loadErrorText(detail, "Накладная недоступна. Проверьте права доступа.");
   return (
     <main className="shipping-segment-print-page mx-auto max-w-4xl p-6">
       <style>{`

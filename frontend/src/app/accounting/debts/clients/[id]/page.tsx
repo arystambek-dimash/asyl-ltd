@@ -4,9 +4,9 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
+import { OtherCurrencyRows } from "@/components/ui/currency-amounts";
 import { buttonVariants } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { PaymentHistoryTable, type HistoryPayment } from "@/components/payment-history-table";
+import { PaymentHistoryTable } from "@/components/payment-history-table";
 import { Tabs } from "@/components/ui/tabs";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
@@ -14,42 +14,58 @@ import { LoadMore } from "@/components/ui/load-more";
 import { useApi } from "@/lib/use-api";
 import { useIsMobile } from "@/lib/use-media-query";
 import { withBack } from "@/lib/navigation";
-import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
-import { cn, formatCompactCurrency, formatCurrency, formatDateTime } from "@/lib/utils";
+import { amountForCurrency, fieldByCurrency, primaryMoneyCurrency } from "@/lib/currency-map";
+import { cn, formatCompactCurrency, formatCurrency, formatDateTime, toggledSet } from "@/lib/utils";
 import { orderTransportText } from "@/lib/wagons";
 import { can } from "@/lib/can";
-import { PaidMethodBreakdown } from "@/components/payment-chain";
+import { PaymentStageBadge, paidByMethod, paymentNetAmount } from "@/components/payment-chain";
+import { PaidMethodSummary } from "@/components/transactions/paid-method-summary";
 import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
+import { OrderPaymentBadge } from "@/components/payments/order-payment-badge";
 import { useAuth } from "@/store/auth";
-import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE, PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE } from "@/lib/constants";
 import { ArrowLeft, ChevronDown, ExternalLink, Info, Phone } from "lucide-react";
-import type { Me, Order } from "@/lib/types";
-import { formatPaymentSchedule } from "@/app/stores/schedule-validation";
-import { blockingStore, pendingSum, remainingOf, type ClientDebtDetail, type DebtStore } from "@/lib/debt-orders";
+import type { ClientHistory, Me, Order } from "@/lib/types";
+import {
+  blockingStore,
+  pendingSum,
+  remainingOf,
+  storeBlockReason,
+  type ClientDebtDetail,
+  type DebtStore,
+} from "@/lib/debt-orders";
 
-const money = formatCurrency;
-const compactMoney = formatCompactCurrency;
-
-function CurrencyRows({ totals, primary }: { totals: Record<string, string | number>; primary: string }) {
-  const rows = otherCurrencyAmounts(totals, primary);
-  if (rows.length === 0) return null;
+/* Денежная плитка шапки: сокращённая сумма в основной валюте, точная — в подсказке, прочие валюты строками ниже. */
+function MoneyStat({
+  label,
+  amount,
+  currency,
+  byCurrency,
+  className,
+}: {
+  label: string;
+  amount: string | number;
+  currency: string;
+  byCurrency: Record<string, string>;
+  className?: string;
+}) {
   return (
-    <div className="grid gap-0.5 text-xs text-[var(--muted-foreground)]">
-      {rows.map(([currency, amount]) => (
-        <span key={currency}>Также {money(amount, currency)}</span>
-      ))}
+    <div className="min-w-0">
+      <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
+      <div
+        title={formatCurrency(amount, currency)}
+        className={cn("mt-1 truncate text-lg font-semibold leading-none tabular-nums", className)}
+      >
+        {formatCompactCurrency(amount, currency)}
+      </div>
+      <OtherCurrencyRows byCurrency={byCurrency} primary={currency} />
     </div>
   );
-}
-
-interface ClientHistory {
-  payments: HistoryPayment[];
 }
 
 /* ── Счёт по заказу: зафиксированные клиентские цены ───────────────────── */
 function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full" | "compact" }) {
   const lines = order.items.map((it) => {
-    const price = Number(it.price ?? 0);
+    const price = Number(it.unit_price ?? 0);
     return {
       key: it.id ?? `${it.product}`,
       label: it.product_label ?? `Товар #${it.product}`,
@@ -70,10 +86,10 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
               <div>
                 <div className="font-medium">{l.label}</div>
                 <div className="text-xs tabular-nums text-[var(--muted-foreground)]">
-                  {l.qty} × {money(l.price, order.currency)}
+                  {l.qty} × {formatCurrency(l.price, order.currency)}
                 </div>
               </div>
-              <div className="font-medium tabular-nums">{money(l.total, order.currency)}</div>
+              <div className="font-medium tabular-nums">{formatCurrency(l.total, order.currency)}</div>
             </li>
           ))}
         </ul>
@@ -92,8 +108,8 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
               <TR key={l.key}>
                 <TD className="font-medium">{l.label}</TD>
                 <TD className="text-right tabular-nums">{l.qty}</TD>
-                <TD className="text-right tabular-nums">{money(l.price, order.currency)}</TD>
-                <TD className="text-right tabular-nums font-medium">{money(l.total, order.currency)}</TD>
+                <TD className="text-right tabular-nums">{formatCurrency(l.price, order.currency)}</TD>
+                <TD className="text-right tabular-nums font-medium">{formatCurrency(l.total, order.currency)}</TD>
               </TR>
             ))}
           </TBody>
@@ -107,17 +123,17 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
       >
         <div className="flex justify-between text-[var(--muted-foreground)]">
           <span>Сумма заказа</span>
-          <span className="tabular-nums">{money(total, order.currency)}</span>
+          <span className="tabular-nums">{formatCurrency(total, order.currency)}</span>
         </div>
         {paid > 0 && (
           <div className="flex justify-between text-[var(--success)]">
             <span>Уже оплачено</span>
-            <span className="tabular-nums">−{money(paid, order.currency)}</span>
+            <span className="tabular-nums">−{formatCurrency(paid, order.currency)}</span>
           </div>
         )}
         <div className="flex justify-between text-base font-semibold">
           <span>Остаток к оплате</span>
-          <span className="tabular-nums">{money(toPay, order.currency)}</span>
+          <span className="tabular-nums">{formatCurrency(toPay, order.currency)}</span>
         </div>
       </div>
     </div>
@@ -132,35 +148,47 @@ function WriteOffList({ order }: { order: Order }) {
   }
   return (
     <div className="flex flex-col divide-y">
-      {rows.map((p) => (
-        <div key={p.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="tabular-nums">{formatDateTime(p.paid_at)}</span>
-              <span className="text-[var(--muted-foreground)]">{p.method_label ?? p.method}</span>
-              <Badge tone={PAYMENT_STAGE_TONE[p.status] ?? "muted"}>{PAYMENT_STAGE_LABELS[p.status] ?? p.status}</Badge>
-            </div>
-            {(p.recorded_by_name || p.note) && (
-              <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
-                {[p.recorded_by_name, p.note].filter(Boolean).join(" · ")}
+      {rows.map((p) => {
+        // Как в «Уже оплачено» и истории клиента: чистая сумма (без возврата)
+        // и день признания оплаты — подтверждение, а не приём.
+        const currency = p.currency ?? order.currency;
+        const refunded = Number(p.refunded_amount ?? 0);
+        return (
+          <div key={p.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="tabular-nums">{formatDateTime(p.confirmed_at ?? p.paid_at)}</span>
+                <span className="text-[var(--muted-foreground)]">{p.method_label}</span>
+                <PaymentStageBadge payment={p} />
               </div>
-            )}
+              {(p.recorded_by_name || p.note) && (
+                <div className="mt-0.5 truncate text-xs text-[var(--muted-foreground)]">
+                  {[p.recorded_by_name, p.note].filter(Boolean).join(" · ")}
+                </div>
+              )}
+            </div>
+            <div className="shrink-0 text-right">
+              <span
+                className={cn(
+                  "tabular-nums font-semibold",
+                  p.status === "confirmed" ? "text-[var(--success)]" : "text-[var(--muted-foreground)]",
+                )}
+              >
+                +{formatCurrency(paymentNetAmount(p), currency)}
+              </span>
+              {refunded > 0 && (
+                <div className="text-xs tabular-nums text-[var(--muted-foreground)]">
+                  из {formatCurrency(p.amount, currency)}, возврат {formatCurrency(refunded, currency)}
+                </div>
+              )}
+            </div>
           </div>
-          <span
-            className={cn(
-              "shrink-0 tabular-nums font-semibold",
-              p.status === "confirmed" ? "text-[var(--success)]" : "text-[var(--muted-foreground)]",
-            )}
-          >
-            +{money(p.amount, p.currency ?? order.currency)}
-          </span>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-/* ── Карточка заказа в долге ────────────────────────────────────────────── */
 /* Детали раскрытой строки: резерв, позиции счёта и списание. */
 function DebtOrderDetails({ order, layout = "full" }: { order: Order; layout?: "full" | "compact" }) {
   const [tab, setTab] = useState("invoice");
@@ -168,12 +196,12 @@ function DebtOrderDetails({ order, layout = "full" }: { order: Order; layout?: "
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--muted-foreground)]">
-        {order.department && <span>{order.department_name ?? order.department}</span>}
+        {order.department && <span>{order.department_name}</span>}
         {orderTransportText(order) && <span className="tabular-nums">{orderTransportText(order)}</span>}
         <span>
-          Сумма заказа: <b className="tabular-nums">{money(order.total_amount, order.currency)}</b>
+          Сумма заказа: <b className="tabular-nums">{formatCurrency(order.total_amount, order.currency)}</b>
         </span>
-        <PaidMethodBreakdown order={order} className="text-xs" />
+        <PaidMethodSummary parts={paidByMethod(order)} className="text-xs" />
       </div>
       {pending > 0 && (
         <div className="flex items-center justify-between rounded-lg border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-sm">
@@ -181,7 +209,9 @@ function DebtOrderDetails({ order, layout = "full" }: { order: Order; layout?: "
             <Info className="size-4" />
             Уже зарезервировано и ожидает оплаты либо подтверждения
           </span>
-          <span className="tabular-nums font-semibold text-[var(--warning)]">{money(pending, order.currency)}</span>
+          <span className="tabular-nums font-semibold text-[var(--warning)]">
+            {formatCurrency(pending, order.currency)}
+          </span>
         </div>
       )}
       <Tabs
@@ -217,9 +247,7 @@ function DebtOrderActions({ order, ctx }: { order: Order; ctx: DebtOrderContext 
         order={order}
         me={ctx.me}
         clientPhone={ctx.clientPhone}
-        blockedReason={
-          store ? `Магазин «${store.name}» платит по расписанию: ${formatPaymentSchedule(store, "payment")}` : null
-        }
+        blockedReason={store ? storeBlockReason(store) : null}
         onChanged={ctx.onPaid}
       />
       {ctx.canViewOrder && (
@@ -258,12 +286,7 @@ function DebtOrdersTable({
   const visible = orders.slice(0, limit);
 
   function toggle(id: number) {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpanded((current) => toggledSet(current, id));
   }
 
   const loadMore = (
@@ -281,7 +304,6 @@ function DebtOrdersTable({
         <ul className="flex flex-col gap-3">
           {visible.map((order) => {
             const open = expanded.has(order.id);
-            const status = order.payment_status ?? "unpaid";
             const detailsId = `debt-order-${order.id}-details`;
             return (
               <li
@@ -298,13 +320,9 @@ function DebtOrdersTable({
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-[15px] font-semibold">#{order.id}</span>
-                      <span className="text-xs text-[var(--muted-foreground)]">
-                        {order.department_name ?? order.department}
-                      </span>
+                      <span className="text-xs text-[var(--muted-foreground)]">{order.department_name}</span>
                     </div>
-                    <Badge tone={PAYMENT_STATUS_TONE[status] ?? "muted"} dot>
-                      {PAYMENT_STATUS_LABELS[status] ?? status}
-                    </Badge>
+                    <OrderPaymentBadge order={order} dot />
                   </div>
                   <div className="text-xs text-[var(--muted-foreground)]">
                     Создан {formatDateTime(order.created_at)} · Отгружен{" "}
@@ -314,13 +332,13 @@ function DebtOrdersTable({
                     <div>
                       <div className="text-[11px] text-[var(--muted-foreground)]">Оплачено</div>
                       <div className="tabular-nums text-[var(--success)]">
-                        {money(order.paid_total, order.currency)}
+                        {formatCurrency(order.paid_total, order.currency)}
                       </div>
                     </div>
                     <div>
                       <div className="text-[11px] text-[var(--muted-foreground)]">Остаток</div>
                       <div className="font-semibold tabular-nums text-[var(--destructive)]">
-                        {money(remainingOf(order), order.currency)}
+                        {formatCurrency(remainingOf(order), order.currency)}
                       </div>
                     </div>
                   </div>
@@ -360,7 +378,6 @@ function DebtOrdersTable({
         <TBody>
           {visible.map((order) => {
             const open = expanded.has(order.id);
-            const status = order.payment_status ?? "unpaid";
             const detailsId = `debt-order-${order.id}-details`;
             return (
               <Fragment key={order.id}>
@@ -375,15 +392,13 @@ function DebtOrdersTable({
                   <TD className="tabular-nums">{formatDateTime(order.created_at)}</TD>
                   <TD className="tabular-nums">{order.shipped_at ? formatDateTime(order.shipped_at) : "—"}</TD>
                   <TD>
-                    <Badge tone={PAYMENT_STATUS_TONE[status] ?? "muted"} dot>
-                      {PAYMENT_STATUS_LABELS[status] ?? status}
-                    </Badge>
+                    <OrderPaymentBadge order={order} dot />
                   </TD>
                   <TD className="text-right tabular-nums text-[var(--success)]">
-                    {money(order.paid_total, order.currency)}
+                    {formatCurrency(order.paid_total, order.currency)}
                   </TD>
                   <TD className="text-right tabular-nums font-semibold text-[var(--destructive)]">
-                    {money(remainingOf(order), order.currency)}
+                    {formatCurrency(remainingOf(order), order.currency)}
                   </TD>
                   <TD className="text-right">
                     <button
@@ -448,22 +463,12 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
     );
   }
 
-  const debtByCurrency = data.debt_by_currency ?? {};
-  const debtCurrency = primaryMoneyCurrency(debtByCurrency, data.debt_currency ?? data.client.currency);
-  const debtTotal = amountForCurrency(debtByCurrency, data.debt_total, debtCurrency);
-  const lifetimeTotalByCurrency = Object.fromEntries(
-    Object.entries(data.lifetime_by_currency ?? {}).map(([currency, totals]) => [currency, totals.total]),
-  );
-  const lifetimePaidByCurrency = Object.fromEntries(
-    Object.entries(data.lifetime_by_currency ?? {}).map(([currency, totals]) => [currency, totals.paid]),
-  );
-  const lifetimeCurrency = primaryMoneyCurrency(lifetimeTotalByCurrency, debtCurrency);
-  const paidCurrency = primaryMoneyCurrency(lifetimePaidByCurrency, lifetimeCurrency);
-  const lifetimeTotal = amountForCurrency(lifetimeTotalByCurrency, data.lifetime_total ?? "0", lifetimeCurrency);
-  const lifetimePaid = amountForCurrency(lifetimePaidByCurrency, data.lifetime_paid ?? "0", paidCurrency);
-  const overdueByCurrency = data.overdue_by_currency ?? {};
-  const overdueCurrency = primaryMoneyCurrency(overdueByCurrency, debtCurrency);
-  const overdueTotal = amountForCurrency(overdueByCurrency, data.overdue_total ?? "0", overdueCurrency);
+  // Итоги «за всё время» — та же сводка, что в карточке клиента (/history/).
+  const summary = history?.summary;
+  // Для просрочки сервер не выбирает валюту — выбираем здесь тем же правилом.
+  const overdueByCurrency = data.overdue_by_currency;
+  const overdueCurrency = primaryMoneyCurrency(overdueByCurrency, data.debt_currency);
+  const overdueTotal = amountForCurrency(overdueByCurrency, overdueCurrency);
 
   function refresh() {
     void reload();
@@ -510,53 +515,51 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               <div className="text-sm text-[var(--muted-foreground)]">Телефон не указан</div>
             )}
           </div>
-          <div className="text-sm text-[var(--muted-foreground)]">
-            Заказов в долге: <b className="tabular-nums text-[var(--foreground)]">{data.orders.length}</b>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <div className="text-sm text-[var(--muted-foreground)]">
+              Заказов в долге: <b className="tabular-nums text-[var(--foreground)]">{data.orders.length}</b>
+            </div>
+            {canViewReports && (
+              <Link href={`/clients/${id}`} className={buttonVariants({ size: "sm", variant: "ghost" })}>
+                Карточка клиента <ExternalLink className="size-3.5" />
+              </Link>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap items-start gap-x-10 gap-y-3 border-t pt-4">
-          <div className="min-w-0">
-            <div className="text-xs text-[var(--muted-foreground)]">Текущий долг</div>
-            <div
-              title={money(debtTotal, debtCurrency)}
-              className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--destructive)]"
-            >
-              {compactMoney(debtTotal, debtCurrency)}
-            </div>
-            <CurrencyRows totals={debtByCurrency} primary={debtCurrency} />
-          </div>
+          <MoneyStat
+            label="Текущий долг"
+            amount={data.debt_total}
+            currency={data.debt_currency}
+            byCurrency={data.debt_by_currency}
+            className="text-[var(--destructive)]"
+          />
           {canViewReports && (
             <>
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--muted-foreground)]">Просрочено</div>
-                <div
-                  title={money(overdueTotal, overdueCurrency)}
-                  className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--destructive)]"
-                >
-                  {compactMoney(overdueTotal, overdueCurrency)}
-                </div>
-                <CurrencyRows totals={overdueByCurrency} primary={overdueCurrency} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--muted-foreground)]">Оплачено за всё время</div>
-                <div
-                  title={money(lifetimePaid, paidCurrency)}
-                  className="mt-1 truncate text-lg font-semibold leading-none tabular-nums text-[var(--success)]"
-                >
-                  {compactMoney(lifetimePaid, paidCurrency)}
-                </div>
-                <CurrencyRows totals={lifetimePaidByCurrency} primary={paidCurrency} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-xs text-[var(--muted-foreground)]">Задолженность за всё время</div>
-                <div
-                  title={money(lifetimeTotal, lifetimeCurrency)}
-                  className="mt-1 truncate text-lg font-semibold leading-none tabular-nums"
-                >
-                  {compactMoney(lifetimeTotal, lifetimeCurrency)}
-                </div>
-                <CurrencyRows totals={lifetimeTotalByCurrency} primary={lifetimeCurrency} />
-              </div>
+              <MoneyStat
+                label="Просрочено"
+                amount={overdueTotal}
+                currency={overdueCurrency}
+                byCurrency={overdueByCurrency}
+                className="text-[var(--destructive)]"
+              />
+              {summary && (
+                <>
+                  <MoneyStat
+                    label="Оплачено за всё время"
+                    amount={summary.paid}
+                    currency={summary.currency}
+                    byCurrency={fieldByCurrency(summary.by_currency, "paid")}
+                    className="text-[var(--success)]"
+                  />
+                  <MoneyStat
+                    label="Сумма продаж за всё время"
+                    amount={summary.revenue}
+                    currency={summary.currency}
+                    byCurrency={fieldByCurrency(summary.by_currency, "revenue")}
+                  />
+                </>
+              )}
             </>
           )}
         </div>
@@ -571,55 +574,51 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
         </p>
       )}
 
-      <div className="grid grid-cols-1 items-start gap-5">
-        <div className="flex flex-col gap-4">
-          <Tabs
-            className="overflow-x-auto whitespace-nowrap"
-            active={tab}
-            onChange={setTab}
-            tabs={[
-              { key: "orders", label: "Заказы в долге", count: data.orders.length },
-              ...(canViewReports
-                ? [
-                    { key: "history", label: "История платежей", count: payments.length },
-                    { key: "invoices", label: "Счета", count: invoices.length },
-                  ]
-                : []),
-            ]}
-          />
+      <div className="flex flex-col gap-4">
+        <Tabs
+          className="overflow-x-auto whitespace-nowrap"
+          active={tab}
+          onChange={setTab}
+          tabs={[
+            { key: "orders", label: "Заказы в долге", count: data.orders.length },
+            ...(canViewReports
+              ? [
+                  { key: "history", label: "История платежей", count: payments.length },
+                  { key: "invoices", label: "Счета", count: invoices.length },
+                ]
+              : []),
+          ]}
+        />
 
-          {tab !== "orders" && historyError && (
-            <ErrorAlert message={historyError} onRetry={() => void reloadHistory()} />
-          )}
-          {tab === "orders" &&
-            (data.orders.length === 0 ? (
-              <Card>
-                <CardContent className="py-10 text-center text-sm text-[var(--muted-foreground)]">
-                  Долгов нет.
-                </CardContent>
-              </Card>
-            ) : (
-              <DebtOrdersTable orders={data.orders} layout={mobile ? "cards" : "table"} ctx={orderContext} />
-            ))}
-          {tab === "history" && (
-            <PaymentHistoryTable
-              rows={payments}
-              emptyText="Платежей пока нет."
-              canViewOrders={canViewOrders}
-              canManagePayments={can(me, "payments.confirm")}
-              onChanged={refresh}
-            />
-          )}
-          {tab === "invoices" && (
-            <PaymentHistoryTable
-              rows={invoices}
-              emptyText="Выставленных счетов нет."
-              canViewOrders={canViewOrders}
-              canManagePayments={can(me, "payments.confirm")}
-              onChanged={refresh}
-            />
-          )}
-        </div>
+        {tab !== "orders" && historyError && <ErrorAlert message={historyError} onRetry={() => void reloadHistory()} />}
+        {tab === "orders" &&
+          (data.orders.length === 0 ? (
+            <Card>
+              <CardContent className="py-10 text-center text-sm text-[var(--muted-foreground)]">
+                Долгов нет.
+              </CardContent>
+            </Card>
+          ) : (
+            <DebtOrdersTable orders={data.orders} layout={mobile ? "cards" : "table"} ctx={orderContext} />
+          ))}
+        {tab === "history" && (
+          <PaymentHistoryTable
+            rows={payments}
+            emptyText="Платежей пока нет."
+            canViewOrders={canViewOrders}
+            canManagePayments={can(me, "payments.confirm")}
+            onChanged={refresh}
+          />
+        )}
+        {tab === "invoices" && (
+          <PaymentHistoryTable
+            rows={invoices}
+            emptyText="Выставленных счетов нет."
+            canViewOrders={canViewOrders}
+            canManagePayments={can(me, "payments.confirm")}
+            onChanged={refresh}
+          />
+        )}
       </div>
     </AppShell>
   );

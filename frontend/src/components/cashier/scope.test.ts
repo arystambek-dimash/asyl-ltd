@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Department, Me } from "@/lib/types";
+import type { Department } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 import {
   ALL_DEPARTMENTS,
-  DEPARTMENT_STORAGE_KEY,
   canOpenQueueOrder,
   cashierName,
   departmentScope,
@@ -18,31 +18,13 @@ const departments = [
   { id: 2, code: "bran", name: "Отруби", color: "#654321", is_active: true, is_default: false, order_count: 0 },
 ] as Department[];
 
-function me(patch: Partial<Me> = {}): Me {
-  return {
-    id: 1,
-    username: "kassa",
-    is_client: false,
-    is_superuser: false,
-    permissions: [],
-    position: null,
-    client_id: null,
-    sales_department: null,
-    ...patch,
-  };
-}
-
 describe("departmentScope", () => {
   it("locks a cashier to the department from the employee card", () => {
-    expect(departmentScope(me({ sales_department: mill }))).toEqual({ assigned: mill, switchable: false });
+    expect(departmentScope(makeMe({ sales_department: mill }))).toEqual({ assigned: mill });
   });
-  it("lets staff without a department and superusers switch, starting from their own department", () => {
-    expect(departmentScope(me())).toEqual({ assigned: null, switchable: true });
-    expect(departmentScope(me({ is_superuser: true, sales_department: mill }))).toEqual({
-      assigned: null,
-      switchable: true,
-    });
-    expect(departmentScope(null).switchable).toBe(true);
+  it("lets staff without a department switch", () => {
+    expect(departmentScope(makeMe())).toEqual({ assigned: null });
+    expect(departmentScope(null)).toEqual({ assigned: null });
   });
 });
 
@@ -57,12 +39,12 @@ describe("scopeLabel", () => {
 
 describe("queueDepartment", () => {
   it("never narrows the shared queue to the department from the employee card", () => {
-    expect(queueDepartment({ assigned: mill, switchable: false }, "main")).toBeNull();
-    expect(queueDepartment({ assigned: mill, switchable: false }, "bran")).toBeNull();
+    expect(queueDepartment({ assigned: mill }, "main")).toBeNull();
+    expect(queueDepartment({ assigned: mill }, "bran")).toBeNull();
   });
   it("keeps the department explicitly chosen by staff without one", () => {
-    expect(queueDepartment({ assigned: null, switchable: true }, "bran")).toBe("bran");
-    expect(queueDepartment({ assigned: null, switchable: true }, ALL_DEPARTMENTS)).toBeNull();
+    expect(queueDepartment({ assigned: null }, "bran")).toBe("bran");
+    expect(queueDepartment({ assigned: null }, ALL_DEPARTMENTS)).toBeNull();
   });
 });
 
@@ -76,8 +58,8 @@ describe("canOpenQueueOrder", () => {
 
 describe("cashierName", () => {
   it("prefers the full name and falls back to the login", () => {
-    expect(cashierName(me({ first_name: "Асель", last_name: "Нурланова" }))).toBe("Асель Нурланова");
-    expect(cashierName(me({ first_name: "", last_name: "" }))).toBe("kassa");
+    expect(cashierName(makeMe({ first_name: "Асель", last_name: "Нурланова" }))).toBe("Асель Нурланова");
+    expect(cashierName(makeMe({ username: "kassa", first_name: "", last_name: "" }))).toBe("kassa");
     expect(cashierName(null)).toBe("");
   });
 });
@@ -87,10 +69,10 @@ describe("stored department", () => {
   it("round-trips through localStorage, separately per user", () => {
     expect(readStoredDepartment()).toBeNull();
     storeDepartment("bran");
-    expect(localStorage.getItem(DEPARTMENT_STORAGE_KEY)).toBe("bran");
+    expect(localStorage.getItem("asyl_cashier_department")).toBe("bran");
     expect(readStoredDepartment()).toBe("bran");
     storeDepartment("main", 7);
-    expect(localStorage.getItem(`${DEPARTMENT_STORAGE_KEY}:7`)).toBe("main");
+    expect(localStorage.getItem("asyl_cashier_department:7")).toBe("main");
     expect(readStoredDepartment(7)).toBe("main");
     expect(readStoredDepartment(8)).toBeNull();
   });

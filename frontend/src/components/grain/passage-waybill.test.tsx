@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GrainWagon } from "@/lib/types";
+import { makeGrainWagon } from "@/test-utils/grain";
 import { PassageWaybill, PassageWaybillPage } from "./passage-waybill";
 
 const mocks = vi.hoisted(() => ({ trip: null as GrainWagon | null, urls: [] as (string | null)[] }));
@@ -20,41 +21,25 @@ vi.mock("@/lib/use-api", () => ({
 }));
 
 function trip(overrides: Partial<GrainWagon> = {}): GrainWagon {
-  return {
+  return makeGrainWagon({
     id: 124,
-    supply: null,
     number: "904WLY13",
-    number_source: "manual",
-    workflow: "simple",
     direction: "passage",
     cargo_name: "Отруби",
     status: "completed",
     status_label: "Завершён",
-    unplanned: false,
-    supplier: "",
-    culture: "",
-    grain_class: "",
-    grain_type: null,
-    grain_type_name: "",
-    document_weight_kg: null,
-    expected_weight_kg: null,
     arrived_at: "2026-09-10T04:07:00Z",
     gross_weight_kg: 3680,
     tare_weight_kg: 8640,
     net_weight_kg: 4960,
     entry_weight_kg: 3680,
     exit_weight_kg: 8640,
-    weight_difference_kg: null,
-    weight_difference_percent: null,
-    weight_matches: null,
-    assigned_silo: null,
-    assigned_silo_name: null,
     silo_arrived_at: "2026-09-10T04:07:00Z",
     // 09:59 in Almaty: the release note is dated by the plant's calendar day.
     exited_at: "2026-09-10T04:59:23Z",
     created_at: "2026-09-11T03:36:09Z",
     ...overrides,
-  };
+  });
 }
 
 function field(name: string) {

@@ -5,12 +5,19 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, apiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import { can } from "@/lib/can";
-import { formatKg } from "@/lib/grain";
+import {
+  DEFAULT_PASSAGE_CARGO,
+  MANUAL_REASON_MAX_LENGTH,
+  formatKg,
+  isManualReasonValid,
+  passageNetKg,
+} from "@/lib/grain";
 import { formatDateTime } from "@/lib/utils";
 import type { GrainUnassignedWeighing } from "@/lib/types";
 import { useAuth } from "@/store/auth";
+import { useWeighingDialog } from "./use-weighing-dialog";
 
 export function ManualPassageEntryDialog({
   item,
@@ -24,14 +31,12 @@ export function ManualPassageEntryDialog({
   disabled?: boolean;
 }) {
   const { me } = useAuth();
-  const [open, setOpen] = useState(false);
+  const dialog = useWeighingDialog(onBusyChange);
   const [number, setNumber] = useState("");
-  const [cargo, setCargo] = useState("Отруби");
+  const [cargo, setCargo] = useState(DEFAULT_PASSAGE_CARGO);
   const [weight, setWeight] = useState("");
   const [arrivedAt, setArrivedAt] = useState("");
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const allowed = can(me, "grain.correct_weighing");
   const entryKg = Number(weight);
   const entryAt = new Date(arrivedAt).getTime();
@@ -44,35 +49,23 @@ export function ManualPassageEntryDialog({
     Number.isFinite(entryAt) &&
     entryAt <= Date.now() &&
     (!item || (entryKg < item.weight_kg && entryAt < new Date(item.stable_weight_at).getTime())) &&
-    reason.trim().length >= 5,
+    isManualReasonValid(reason),
   );
 
-  function close() {
-    if (busy) return;
-    setOpen(false);
-    onBusyChange?.(false);
-  }
-  async function save() {
-    if (!allowed || !valid || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.post("/grain/passages/manual-entry/", {
-        number: number.trim(),
-        cargo_name: cargo.trim(),
-        entry_weight_kg: entryKg,
-        arrived_at: new Date(arrivedAt).toISOString(),
-        reason: reason.trim(),
-        ...(item ? { unassigned_weighing: item.id } : {}),
-      });
-      setOpen(false);
-      onBusyChange?.(false);
-      onChanged();
-    } catch (cause) {
-      setError(apiError(cause));
-    } finally {
-      setBusy(false);
-    }
+  function save() {
+    if (!valid) return;
+    void dialog.submit(
+      () =>
+        api.post("/grain/passages/manual-entry/", {
+          number: number.trim(),
+          cargo_name: cargo.trim(),
+          entry_weight_kg: entryKg,
+          arrived_at: new Date(arrivedAt).toISOString(),
+          reason: reason.trim(),
+          ...(item ? { unassigned_weighing: item.id } : {}),
+        }),
+      onChanged,
+    );
   }
   if (!allowed) return null;
   return (
@@ -83,20 +76,18 @@ export function ManualPassageEntryDialog({
         disabled={disabled}
         onClick={() => {
           setNumber(item?.vehicle_number || "");
-          setCargo("Отруби");
+          setCargo(DEFAULT_PASSAGE_CARGO);
           setWeight("");
           setArrivedAt("");
           setReason("");
-          setError("");
-          setOpen(true);
-          onBusyChange?.(true);
+          dialog.show();
         }}
       >
         {item ? "Указать начальный вес" : "Заезд вручную"}
       </Button>
       <ConfirmDialog
-        open={open}
-        onClose={close}
+        open={dialog.open}
+        onClose={dialog.close}
         title="Заезд без фото"
         description={
           item
@@ -105,17 +96,17 @@ export function ManualPassageEntryDialog({
         }
         confirmLabel={item ? "Создать и завершить рейс" : "Создать заезд"}
         confirmVariant="default"
-        busy={busy}
-        error={error}
-        confirmDisabled={!allowed || !valid}
-        onConfirm={() => void save()}
+        busy={dialog.busy}
+        error={dialog.error}
+        confirmDisabled={!valid}
+        onConfirm={save}
       >
         <div>
           <Label htmlFor="manual-entry-number">Номер машины</Label>
           <Input
             id="manual-entry-number"
             value={number}
-            disabled={busy}
+            disabled={dialog.busy}
             maxLength={30}
             onChange={(e) => setNumber(e.target.value.toUpperCase())}
           />
@@ -125,7 +116,7 @@ export function ManualPassageEntryDialog({
           <Input
             id="manual-entry-cargo"
             value={cargo}
-            disabled={busy}
+            disabled={dialog.busy}
             maxLength={100}
             onChange={(e) => setCargo(e.target.value)}
           />
@@ -136,7 +127,7 @@ export function ManualPassageEntryDialog({
             id="manual-entry-weight"
             inputMode="numeric"
             value={weight}
-            disabled={busy}
+            disabled={dialog.busy}
             onChange={(e) => setWeight(e.target.value)}
           />
         </div>
@@ -146,14 +137,16 @@ export function ManualPassageEntryDialog({
             id="manual-entry-time"
             type="datetime-local"
             value={arrivedAt}
-            disabled={busy}
+            disabled={dialog.busy}
             onChange={(e) => setArrivedAt(e.target.value)}
           />
         </div>
         {item && (
           <p className="rounded-lg border p-3 text-sm">
             Сохранённый выезд: {formatKg(item.weight_kg)} · {formatDateTime(item.stable_weight_at)}
-            {valid && <span className="mt-1 block font-semibold">Нетто: {formatKg(item.weight_kg - entryKg)}</span>}
+            {valid && (
+              <span className="mt-1 block font-semibold">Нетто: {formatKg(passageNetKg(item.weight_kg, entryKg))}</span>
+            )}
           </p>
         )}
         <div>
@@ -161,8 +154,8 @@ export function ManualPassageEntryDialog({
           <Input
             id="manual-entry-reason"
             value={reason}
-            disabled={busy}
-            maxLength={300}
+            disabled={dialog.busy}
+            maxLength={MANUAL_REASON_MAX_LENGTH}
             placeholder="Например: заезд пропущен, вес из журнала весов"
             onChange={(e) => setReason(e.target.value)}
           />

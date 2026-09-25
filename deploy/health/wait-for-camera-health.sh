@@ -6,46 +6,14 @@ set -eu
 # the public Internet.
 APP_DIR="${APP_DIR:-/home/ubuntu/asyl-ltd}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
-GO2RTC_WAIT_SECONDS="${GO2RTC_WAIT_SECONDS:-120}"
-CAMERA_HEALTH_WAIT_SECONDS="${CAMERA_HEALTH_WAIT_SECONDS:-210}"
-CAMERA_HEALTH_POLL_SECONDS="${CAMERA_HEALTH_POLL_SECONDS:-10}"
-CAMERA_HEALTH_MAX_AGE="${CAMERA_HEALTH_MAX_AGE:-180}"
+GO2RTC_WAIT_SECONDS=120
+CAMERA_HEALTH_WAIT_SECONDS=210
+CAMERA_HEALTH_POLL_SECONDS=10
 CAMERA_HEALTH_REQUIRE_SINCE_EPOCH="${CAMERA_HEALTH_REQUIRE_SINCE_EPOCH:-}"
-CAMERA_HEALTH_REQUIRE_EVENTS="${CAMERA_HEALTH_REQUIRE_EVENTS:-0}"
-
-case "$GO2RTC_WAIT_SECONDS:$CAMERA_HEALTH_WAIT_SECONDS:$CAMERA_HEALTH_POLL_SECONDS:$CAMERA_HEALTH_MAX_AGE" in
-  *[!0-9:]* | *::* | :* | *:)
-    echo "Camera health timeouts must be positive integer seconds." >&2
-    exit 64
-    ;;
-esac
-
-if [ "$GO2RTC_WAIT_SECONDS" -eq 0 ] || \
-   [ "$CAMERA_HEALTH_WAIT_SECONDS" -eq 0 ] || \
-   [ "$CAMERA_HEALTH_POLL_SECONDS" -eq 0 ] || \
-   [ "$CAMERA_HEALTH_MAX_AGE" -eq 0 ]; then
-  echo "Camera health timeouts must be greater than zero." >&2
-  exit 64
-fi
 
 case "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" in
-  "") ;;
-  *[!0-9]*)
+  "" | 0 | *[!0-9]*)
     echo "CAMERA_HEALTH_REQUIRE_SINCE_EPOCH must be a positive Unix timestamp." >&2
-    exit 64
-    ;;
-  *)
-    if [ "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" -eq 0 ]; then
-      echo "CAMERA_HEALTH_REQUIRE_SINCE_EPOCH must be a positive Unix timestamp." >&2
-      exit 64
-    fi
-    ;;
-esac
-
-case "$CAMERA_HEALTH_REQUIRE_EVENTS" in
-  0 | 1) ;;
-  *)
-    echo "CAMERA_HEALTH_REQUIRE_EVENTS must be 0 or 1." >&2
     exit 64
     ;;
 esac
@@ -92,17 +60,11 @@ wait_for_monitor() {
   last_rc=2
   last_output=""
 
-  set -- python manage.py check_camera_health --human --max-age "$CAMERA_HEALTH_MAX_AGE"
-  if [ -n "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" ]; then
-    set -- "$@" --require-since-epoch "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH"
-  fi
-  if [ "$CAMERA_HEALTH_REQUIRE_EVENTS" -eq 1 ]; then
-    set -- "$@" --require-events
-  fi
-
   while [ "$attempt" -le "$attempts" ]; do
     set +e
-    output="$(compose exec -T camera-monitor "$@" 2>&1)"
+    output="$(compose exec -T camera-monitor \
+      python manage.py check_camera_health --human --require-events \
+      --require-since-epoch "$CAMERA_HEALTH_REQUIRE_SINCE_EPOCH" 2>&1)"
     rc=$?
     set -e
     last_rc=$rc

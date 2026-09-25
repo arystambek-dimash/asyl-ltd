@@ -6,7 +6,6 @@ import { HandCoins } from "lucide-react";
 import { OptionToggle } from "@/components/orders/option-toggle";
 import {
   ReceiveMethodPicker,
-  paymentAmountProblem,
   receiveMethods,
   receivePayment,
   type PaymentAutoOpen,
@@ -14,11 +13,12 @@ import {
 } from "@/components/payments/order-payment-actions";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { paymentAmountError } from "@/lib/payment-amount";
 import type { Order } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 
 /** «Оплата сразу» в форме заказа: способ и сумма предоплаты. */
-export interface PayNow {
+interface PayNow {
   method: ReceiveMethod;
   amount: string;
 }
@@ -36,7 +36,7 @@ export function payRetryHref(orderId: number, payment: PayNow, { check = false }
 }
 
 /** Повтор «Оплаты сразу» на карточке заказа. */
-export interface PayRetry extends PaymentAutoOpen {
+interface PayRetry extends PaymentAutoOpen {
   /** Ответа об оплате нет — окно само не открывается, карточка просит проверить оплаченное. */
   check: boolean;
 }
@@ -130,13 +130,13 @@ export function usePayNow(currency: string, totalCents: number, initial?: PayNow
     followsTotal: typed === null,
     totalCents,
     currency,
-    problem: paymentAmountProblem(amount, totalCents),
+    problem: paymentAmountError(amount, totalCents),
     payment: { method, amount } satisfies PayNow,
     draft,
   };
 }
 
-export type PayNowState = ReturnType<typeof usePayNow>;
+type PayNowState = ReturnType<typeof usePayNow>;
 
 export function PayNowFields({ payNow }: { payNow: PayNowState }) {
   return (
@@ -153,12 +153,7 @@ export function PayNowFields({ payNow }: { payNow: PayNowState }) {
         {payNow.methods.length > 1 && (
           <div className="grid gap-1.5">
             <Label>Способ</Label>
-            <ReceiveMethodPicker
-              methods={payNow.methods}
-              value={payNow.method}
-              onChange={payNow.setMethod}
-              prepayment
-            />
+            <ReceiveMethodPicker methods={payNow.methods} value={payNow.method} onChange={payNow.setMethod} />
           </div>
         )}
         <div className="grid gap-1.5">

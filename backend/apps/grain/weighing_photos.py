@@ -1,8 +1,7 @@
 """Durable evidence delivery independent of OCR success and trip assignment.
 
-Only UUID-bound frames are retried. A live snapshot is allowed once, immediately
-after a new sample, and fenced against observed departure. Never photograph a
-later truck to fill an earlier truck's missing photo.
+Only UUID-bound frames are retried. Never photograph a later truck to fill an
+earlier truck's missing photo.
 """
 
 from datetime import timedelta
@@ -16,7 +15,6 @@ from django.utils import timezone
 from apps.cameras import ai as camera_ai
 
 from .models import (
-    PassageScaleAutomationState,
     UnassignedWeighing,
     WeighingPhotoDelivery,
     WeighingRecord,
@@ -25,7 +23,7 @@ from .models import (
 EMPTY_PHOTO = Q(photo="") | Q(photo__isnull=True)
 
 
-def queue_photo(camera, request_id, *, capture=None):
+def queue_photo(camera, request_id):
     if not request_id or not camera:
         return None
     try:
@@ -34,12 +32,12 @@ def queue_photo(camera, request_id, *, capture=None):
         return None
     job, _ = WeighingPhotoDelivery.objects.get_or_create(
         request_id=key,
-        defaults={"camera": camera, "capture": capture},
+        defaults={"camera": camera},
     )
     return job
 
 
-def _link_photo(job):
+def link_photo(job):
     if not job.photo:
         return
     # Assignment may have happened during network I/O. Update only evidence.
@@ -49,11 +47,34 @@ def _link_photo(job):
         )
 
 
+def store_collector_evidence(job, event):
+    """Keep the frame a weighbridge collector shipped with its outbox event.
+
+    Collector captures are never live-retried: without a shipped photo only a
+    frame Camera-PC bound to the recognition UUID may still be fetched.
+    """
+    if event.get("photo") and not job.photo:
+        name = f"grain/evidence/{job.request_id}.jpg"
+        if not job.photo.storage.exists(name):
+            name = job.photo.storage.save(name, ContentFile(event["photo"]))
+        job.photo.name = name
+    job.snapshot_attempted = True
+    if job.photo:
+        job.status, job.error_code = "saved", ""
+    elif event.get("recognition_frame_bound") is True:
+        job.status, job.error_code = "pending", "collector_frame_pending"
+        job.next_attempt_at = timezone.now()
+    else:
+        job.status, job.error_code = "unavailable", "collector_photo_unavailable"
+    job.save()
+    link_photo(job)
+
+
 @transaction.atomic
 def _claim(job_id, now):
     job = WeighingPhotoDelivery.objects.select_for_update().get(pk=job_id)
     if job.photo:
-        _link_photo(job)
+        link_photo(job)
         return None
     if job.status == "unavailable" or job.next_attempt_at > now:
         return None
@@ -65,18 +86,6 @@ def _claim(job_id, now):
     return job
 
 
-def _snapshot_allowed(capture, now):
-    return (
-        capture is not None
-        and capture.departure_observed_at is None
-        and capture.cleared_at is None
-        and capture.recognition_valid_until is None
-        and capture.stable_weight_at is not None
-        and 0 <= (now - capture.stable_weight_at).total_seconds() <= 5
-        and PassageScaleAutomationState.objects.filter(current_capture=capture).exists()
-    )
-
-
 def deliver_photo(job_id, *, now=None):
     now = now or timezone.now()
     job = _claim(job_id, now)
@@ -84,36 +93,15 @@ def deliver_photo(job_id, *, now=None):
         return False
     frame = None
     error = "frame_not_available"
-    capture = job.capture
     if not job.snapshot_attempted:
+        # First attempts go ahead of retries (see retry_due_photos).
         WeighingPhotoDelivery.objects.filter(pk=job.pk).update(snapshot_attempted=True)
-        if _snapshot_allowed(capture, timezone.now()):
-            frame = camera_ai.camera_frame_jpeg(f"{job.camera}main")
-            capture.refresh_from_db()
-            if not _snapshot_allowed(capture, timezone.now()):
-                frame = None
-    if frame is None:
-        try:
-            frame = camera_ai.fetch_vehicle_recognition_frame(
-                job.camera, str(job.request_id)
-            )
-        except (camera_ai.AiUnavailable, camera_ai.AiError, ValueError):
-            error = "camera_unavailable"
-        if frame and capture:
-            capture.refresh_from_db()
-            cutoffs = [
-                value
-                for value in (
-                    capture.departure_observed_at,
-                    capture.recognition_valid_until,
-                )
-                if value
-            ]
-            if cutoffs and (
-                capture.recognized_at is None or capture.recognized_at >= min(cutoffs)
-            ):
-                frame = None
-                error = "frame_after_occupancy_gap"
+    try:
+        frame = camera_ai.fetch_vehicle_recognition_frame(
+            job.camera, str(job.request_id)
+        )
+    except (camera_ai.AiUnavailable, camera_ai.AiError, ValueError):
+        error = "camera_unavailable"
     fallback = None
     if not frame and job.capture_id:
         fallback = (
@@ -147,7 +135,6 @@ def deliver_photo(job_id, *, now=None):
                 "unavailable"
                 if now - locked.created_at >= timedelta(days=7)
                 or (error == "frame_not_available" and locked.attempts >= 3)
-                or error == "frame_after_occupancy_gap"
                 else "retrying"
             )
             locked.error_code = error
@@ -157,7 +144,7 @@ def deliver_photo(job_id, *, now=None):
             )
         locked.lease_until = None
         locked.save()
-        _link_photo(locked)
+        link_photo(locked)
         return bool(locked.photo)
 
 
@@ -187,15 +174,9 @@ def attach_photo(camera, request_id):
     if job is None:
         return False
     if job.photo:
-        _link_photo(job)
+        link_photo(job)
         return True
     return deliver_photo(job.pk)
-
-
-def link_available_photo(camera, request_id):
-    job = queue_photo(camera, request_id)
-    if job is not None:
-        _link_photo(job)
 
 
 def photo_delivery_status(record):

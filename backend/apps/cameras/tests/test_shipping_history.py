@@ -8,6 +8,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.cameras import ai, shipping_history
+from apps.cameras.event_protocol import event_color_delta
 from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
     ANALYTICS_SCOPE_SHIPPING,
@@ -48,7 +49,6 @@ def camera():
     AlwaysOnCounterCursor.objects.create(
         camera="cam1",
         last_event_id=0,
-        event_compat_total=0,
         event_sync_supported=True,
         event_boundary_validated=True,
         event_caught_up_at=NOW,
@@ -96,7 +96,7 @@ def add_events(
 def set_total(events, *, day=DAY, camera="cam1", legacy=False, adjustment=0):
     colors = Counter()
     for event in events:
-        colors.update(shipping_history._event_color(event))
+        colors.update(event_color_delta(event))
     model = AlwaysOnDailyAnalytics if legacy else ShippingDailyAnalytics
     return model.objects.create(
         camera=camera,
@@ -339,10 +339,7 @@ def test_manual_adjustment_is_not_an_invented_model_event(camera):
     assert result["run_smoothing"]["raw_model_total"] == 3
 
 
-def test_pending_bootstrap_and_uninitialized_or_legacy_cursor_are_honest(camera):
-    ShippingAnalyticsBootstrap.objects.create(camera=camera)
-    assert payload()["history_status"] == "pending"
-    ShippingAnalyticsBootstrap.objects.all().delete()
+def test_uninitialized_or_legacy_cursor_is_honest(camera):
     AlwaysOnCounterCursor.objects.filter(camera=camera).update(
         event_boundary_validated=False
     )
@@ -373,16 +370,12 @@ def test_completed_bootstrap_can_prove_legacy_events_and_continuous_session_tail
     current = add_events(["blue"] * 3)
     set_total(original + tail, legacy=True)
     set_total(original + tail + current)
-    ShippingAnalyticsBootstrap.objects.create(
-        camera=camera, scope_confirmed_at=NOW, completed_at=NOW
-    )
+    ShippingAnalyticsBootstrap.objects.create(camera=camera, completed_at=NOW)
     result = payload()
     assert result["history_status"] == "complete"
-    assert result["run_smoothing"]["raw_model_per_color"] == {
-        "red": 4,
-        "white": 2,
-        "blue": 3,
-    }
+    assert {
+        item["color"]: item["total"] for item in result["run_smoothing"]["raw_colors"]
+    } == {"red": 4, "white": 2, "blue": 3}
 
 
 @pytest.mark.parametrize(

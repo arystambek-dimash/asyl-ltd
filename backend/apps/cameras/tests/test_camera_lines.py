@@ -39,13 +39,8 @@ def ai_key(monkeypatch):
 
 
 @pytest.fixture
-def superuser(django_user_model):
-    return django_user_model.objects.create_superuser(username="lines-root", password="pass12345")
-
-
-@pytest.fixture
-def root_client(api_client, superuser):
-    api_client.force_authenticate(superuser)
+def root_client(api_client, admin_user):
+    api_client.force_authenticate(admin_user)
     return api_client
 
 
@@ -70,13 +65,51 @@ def test_get_passes_verification_lines_through(root_client):
 
 
 def test_get_from_older_ai_defaults_to_no_lines_and_reports_missing_support(root_client):
-    with patch.object(ai, "_request", return_value=(200, SAVED)):
+    with patch.object(ai, "_request", return_value=(200, SAVED)) as request:
         response = root_client.get(URL)
 
     assert response.status_code == 200
-    assert response.data["verification_lines"] == []
-    assert response.data["verification_lines_supported"] is False
-    assert response.data["line"] == COUNT_LINE
+    assert response.data == {**SAVED, "verification_lines": [], "verification_lines_supported": False}
+    request.assert_called_once_with("GET", "/cameras/cam3/line")
+
+
+@pytest.mark.parametrize("upstream_status", [400, 401, 404])
+def test_get_passes_upstream_error_status_and_body(root_client, upstream_status):
+    upstream = {"detail": "upstream detail", "marker": upstream_status}
+    with patch.object(ai, "_request", return_value=(upstream_status, upstream)):
+        response = root_client.get(URL)
+
+    assert response.status_code == upstream_status
+    assert response.data == upstream
+
+
+def test_get_maps_unavailable_ai_to_502(root_client):
+    with patch.object(ai, "_request", side_effect=ai.AiUnavailable("network")):
+        response = root_client.get(URL)
+
+    assert response.status_code == 502
+    assert response.data == {"detail": "AI-сервис камер недоступен", "code": "ai_unavailable"}
+
+
+@pytest.mark.parametrize("bad_camera", ["2", "cam0", "cam02", "cam2/line"])
+def test_noncanonical_camera_id_is_rejected_without_calling_ai(root_client, bad_camera):
+    with patch.object(ai, "_request") as request:
+        response = root_client.get(f"/api/cameras/{bad_camera}/counting-line")
+
+    assert response.status_code in (400, 404)
+    request.assert_not_called()
+
+
+def test_ai_key_is_header_only_and_never_returned(root_client):
+    upstream = _Upstream(body=b'{"cam":"cam3","configured":false}', content_type="application/json")
+    with patch("urllib.request.urlopen", return_value=upstream) as urlopen:
+        response = root_client.get(URL)
+
+    request = urlopen.call_args.args[0]
+    assert request.get_header("X-api-key") == "test-key"
+    assert "test-key" not in request.full_url
+    assert "test-key" not in response.content.decode()
+    assert urlopen.call_args.kwargs["timeout"] == ai.TIMEOUT
 
 
 # --- GET ?applied=1: is the running processor on the saved lines? -------------
@@ -155,6 +188,29 @@ def test_background_poll_does_not_ask_the_processor(root_client):
 # --- PUT: absent vs [] ---------------------------------------------------------
 
 
+def test_put_forwards_line_and_refreshes_every_line_cache(root_client):
+    body = {"line": COUNT_LINE, "direction": "down"}
+    upstream = {"ok": True, "saved": True, "applied_to_processor": True, **SAVED}
+    old_line = {**SAVED, "line": {"x1": 0, "y1": 0.5, "x2": 1, "y2": 0.5}}
+    inventory = [{"src": "cam3", "line_config": old_line}, {"src": "cam2", "line_config": None}]
+    cache.set(services.CACHE_KEY, inventory, services.CACHE_TTL)
+    cache.set(services.LAST_GOOD_CACHE_KEY, inventory, services.LAST_GOOD_TTL)
+    cache.set(ai.ALWAYS_ON_CACHE_KEY, {"processors": [{"cam": "cam3", "line": "old"}]}, 30)
+    cache.set(ai.DETECTIONS_CACHE_KEY, {"processors": [{"cam": "cam3", "line": "old"}]}, 30)
+    with patch.object(ai, "_request", return_value=(200, upstream)) as request:
+        response = _put(root_client, body)
+
+    assert response.status_code == 200
+    assert response.data == {**upstream, "verification_lines": [], "verification_lines_supported": False}
+    request.assert_called_once_with("PUT", "/cameras/cam3/line", body)
+    assert cache.get(ai.ALWAYS_ON_CACHE_KEY) is None
+    assert cache.get(ai.DETECTIONS_CACHE_KEY) is None
+    for key in (services.CACHE_KEY, services.LAST_GOOD_CACHE_KEY):
+        refreshed = cache.get(key)
+        assert refreshed[0]["line_config"] == SAVED
+        assert refreshed[1]["line_config"] is None
+
+
 def test_put_without_field_keeps_ai_side_verification_lines_untouched(root_client):
     upstream = {"ok": True, "saved": True, "applied_to_processor": True, **SAVED, "verification_lines": [BEFORE]}
     with patch.object(ai, "_request", return_value=(200, upstream)) as request:
@@ -204,6 +260,47 @@ def test_put_to_older_ai_reports_that_verification_lines_were_not_stored(root_cl
 
 
 # --- PUT: server-side validation mirrors the camera PC --------------------------
+
+
+@pytest.mark.parametrize("coordinate", [-0.01, 1.01])
+def test_count_line_coordinate_outside_normalized_range_is_rejected(root_client, coordinate):
+    with patch.object(ai, "_request") as request:
+        response = _put(root_client, _body(line=[coordinate, 0.2, 0.8, 0.9]))
+
+    assert response.status_code == 400
+    assert "от 0 до 1" in response.data["detail"]
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("coordinate", [float("inf"), float("nan"), True, "0.2"])
+def test_count_line_non_finite_or_non_numeric_coordinate_is_rejected(coordinate):
+    with pytest.raises(ai.AiError) as error:
+        ai.validate_counting_line(_body(line=[coordinate, 0.2, 0.8, 0.9]))
+    assert error.value.status == 400
+
+
+def test_count_line_identical_points_are_rejected(root_client):
+    with patch.object(ai, "_request") as request:
+        response = _put(root_client, _body(line=[0.25, 0.75, 0.25, 0.75], direction="positive"))
+
+    assert response.status_code == 400
+    assert "не должны совпадать" in response.data["detail"]
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("direction", ["any", "up", "down", "positive", "negative"])
+def test_count_line_accepts_all_documented_directions(direction):
+    body = {"line": [0.1, 0.2, 0.8, 0.9], "direction": direction}
+    assert ai.validate_counting_line(body) == body
+
+
+def test_count_line_unknown_direction_is_rejected(root_client):
+    with patch.object(ai, "_request") as request:
+        response = _put(root_client, _body(line=[0.1, 0.2, 0.8, 0.9], direction="sideways"))
+
+    assert response.status_code == 400
+    assert "direction" in response.data["detail"]
+    request.assert_not_called()
 
 
 def _line(identifier="check-1", name="Проверка 1", line=None, **extra):
@@ -297,17 +394,25 @@ def test_saved_but_not_applied_is_a_readable_partial_success(root_client):
     }
     inventory = [{"src": "cam3", "line_config": None}]
     cache.set(services.CACHE_KEY, inventory, services.CACHE_TTL)
+    cache.set(services.LAST_GOOD_CACHE_KEY, inventory, services.LAST_GOOD_TTL)
+    cache.set(ai.ALWAYS_ON_CACHE_KEY, {"processors": [{"cam": "cam3", "line": "old"}]}, 30)
+    cache.set(ai.DETECTIONS_CACHE_KEY, {"processors": [{"cam": "cam3", "line": "old"}]}, 30)
     with patch.object(ai, "_request", return_value=(503, upstream)) as request:
         response = _put(root_client, _body(verification_lines=[BEFORE]))
 
     request.assert_called_once()
     assert response.status_code == 503
-    assert response.data["code"] == "saved_not_applied"
-    assert response.data["detail"] == "Сохранено, но не применено к камере — обновите статус"
-    assert response.data["saved"] is True
-    assert response.data["verification_lines"] == [BEFORE]
-    assert response.data["error"] == upstream["error"]
-    assert cache.get(services.CACHE_KEY)[0]["line_config"]["verification_lines"] == [BEFORE]
+    # Returned once, without losing any field the camera PC sent.
+    assert response.data == {
+        **upstream,
+        "code": "saved_not_applied",
+        "detail": "Сохранено, но не применено к камере — обновите статус",
+        "verification_lines_supported": True,
+    }
+    assert cache.get(ai.ALWAYS_ON_CACHE_KEY) is None
+    assert cache.get(ai.DETECTIONS_CACHE_KEY) is None
+    for key in (services.CACHE_KEY, services.LAST_GOOD_CACHE_KEY):
+        assert cache.get(key)[0]["line_config"]["verification_lines"] == [BEFORE]
 
 
 def test_rejected_ai_save_is_not_marked_as_saved(root_client):
@@ -414,11 +519,16 @@ def test_frame_proxy_reports_missing_ai_configuration(root_client, monkeypatch):
     urlopen.assert_not_called()
 
 
-def test_frame_proxy_uses_the_line_editor_permission(api_client, operator, boss, client_user, superuser):
+def test_line_editor_and_frame_proxy_are_superuser_only(api_client, operator, boss, client_user, admin_user):
+    assert _put(api_client, _body()).status_code == 401
     assert api_client.get(FRAME_URL).status_code == 401
     for user in (operator, boss, client_user):
         api_client.force_authenticate(user)
+        assert api_client.get(URL).status_code == 403
+        assert _put(api_client, _body()).status_code == 403
         assert api_client.get(FRAME_URL).status_code == 403
-    api_client.force_authenticate(superuser)
+    api_client.force_authenticate(admin_user)
+    with patch.object(ai, "_request", return_value=(200, SAVED)):
+        assert api_client.get(URL).status_code == 200
     with patch("urllib.request.urlopen", return_value=_Upstream()):
         assert api_client.get(FRAME_URL).status_code == 200

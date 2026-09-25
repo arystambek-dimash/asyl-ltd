@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/dashboard",
   useRouter: () => ({ replace: mocks.replace }),
 }));
 
@@ -38,7 +37,6 @@ vi.mock("./topbar", () => ({ Topbar: () => null }));
 describe("AppShell cross-tab authentication", () => {
   beforeEach(() => {
     localStorage.clear();
-    vi.clearAllMocks();
     mocks.auth.me = { is_client: false };
     mocks.auth.loading = false;
   });

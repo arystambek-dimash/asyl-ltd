@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Me, Order } from "@/lib/types";
+import { makeMe, makeOrder } from "@/test-utils/factories";
 import MonoblockPage from "./page";
 
 function openOrders() {
@@ -28,11 +29,9 @@ vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: mocks.me, loading: false }),
 }));
 
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
 
 vi.mock("@/lib/use-visible-polling", () => ({
   useVisiblePolling: () => undefined,
@@ -53,16 +52,6 @@ vi.mock("@/lib/use-api", () => ({
       data = {
         camera_sources: mocks.shippingSources,
         blocked_camera_sources: mocks.alwaysOnSources,
-        continuous_camera_sources: mocks.shippingSources,
-        continuous_source: "sub",
-        continuous_sync_status: "synced",
-        continuous_detail: "",
-        camera_readiness: Object.fromEntries(
-          mocks.shippingSources.map((source) => [source, { status: "synced", detail: "" }]),
-        ),
-        locked: false,
-        device_id: null,
-        device_name: null,
         updated_at: null,
       };
     }
@@ -70,8 +59,6 @@ vi.mock("@/lib/use-api", () => ({
       data = {
         camera_sources: mocks.alwaysOnSources,
         analytics_scope: "ai_247",
-        automatic_camera_sources: [],
-        manual_camera_sources: mocks.alwaysOnSources,
         blocked_camera_sources: mocks.shippingSources,
         source: "sub",
         processors: [],
@@ -112,19 +99,10 @@ vi.mock("@/lib/use-api", () => ({
         day: "2026-08-17",
         total: 0,
         all_time_total: 0,
-        model_all_time_total: 0,
-        adjustment: 0,
-        history: [],
-        colors: [],
-        dominant_color: null,
         analytics_scope: "ai_247",
         ...(mocks.analyticsSyncPresent
           ? {
-              analytics_sync: {
-                status: mocks.aiAnalyticsAvailable ? "synced" : "error",
-                available: mocks.aiAnalyticsAvailable,
-                detail: mocks.aiAnalyticsAvailable ? "" : "Журнал событий недоступен",
-              },
+              analytics_sync: analyticsSync(mocks.aiAnalyticsAvailable),
             }
           : {}),
         cameras: [],
@@ -135,22 +113,10 @@ vi.mock("@/lib/use-api", () => ({
         day: "2026-09-01",
         total: mocks.shippingSources.length ? 12 : 0,
         all_time_total: mocks.shippingSources.length ? 12 : 0,
-        model_all_time_total: mocks.shippingSources.length ? 12 : 0,
-        adjustment: 0,
-        history: [],
-        colors: [],
-        dominant_color: null,
-        model_per_brand: {},
-        brands: [],
-        dominant_brand: null,
         analytics_scope: "shipping",
         ...(mocks.analyticsSyncPresent
           ? {
-              analytics_sync: {
-                status: mocks.analyticsAvailable ? "synced" : "error",
-                available: mocks.analyticsAvailable,
-                detail: mocks.analyticsAvailable ? "" : "Журнал событий недоступен",
-              },
+              analytics_sync: analyticsSync(mocks.analyticsAvailable),
             }
           : {}),
         cameras: mocks.shippingSources.map((camera) => ({
@@ -158,23 +124,15 @@ vi.mock("@/lib/use-api", () => ({
           day: "2026-09-01",
           model_total: 12,
           model_per_color: {},
-          model_per_brand: {},
           adjustment: 0,
           total: 12,
           all_time_total: 12,
           history: [],
           colors: [],
-          brands: [],
-          dominant_color: null,
-          dominant_brand: null,
           updated_at: null,
           ...(mocks.analyticsSyncPresent
             ? {
-                analytics_sync: {
-                  status: mocks.analyticsAvailable ? "synced" : "error",
-                  available: mocks.analyticsAvailable,
-                  detail: mocks.analyticsAvailable ? "" : "Журнал событий недоступен",
-                },
+                analytics_sync: analyticsSync(mocks.analyticsAvailable),
               }
             : {}),
         })),
@@ -195,17 +153,16 @@ vi.mock("@/lib/use-api", () => ({
   },
 }));
 
-const employee: Me = {
-  id: 1,
-  username: "loader",
-  is_client: false,
-  is_superuser: false,
+/** Состояние журнала событий камеры: синхронизирован или недоступен. */
+function analyticsSync(available: boolean) {
+  return {
+    status: available ? "synced" : "error",
+    available,
+    detail: available ? "" : "Журнал событий недоступен",
+  };
+}
 
-  permissions: ["monoblock.view"],
-  position: null,
-  client_id: null,
-  sales_department: null,
-};
+const employee = makeMe({ username: "loader", permissions: ["monoblock.view"] });
 
 /** Плитка StatCard по подписи: подпись и значение лежат в разных узлах. */
 function statCard(label: string) {
@@ -381,13 +338,6 @@ describe("доступ к AI 24/7 на странице моноблока", () 
     expect(statCard("Сегодня").getByText("—")).toBeInTheDocument();
     expect(statCard("Всего").getByText("—")).toBeInTheDocument();
   });
-
-  it("не запрашивает удалённые аккаунты моноблоков даже для администратора", () => {
-    mocks.me = { ...employee, is_superuser: true };
-    render(<MonoblockPage />);
-    expect(mocks.urls.some((url) => url?.includes("monoblock-devices"))).toBe(false);
-    expect(screen.queryByRole("button", { name: /^Моноблоки/ })).not.toBeInTheDocument();
-  });
 });
 
 describe("гейтинг данных вкладки «Отгрузка»", () => {
@@ -420,7 +370,8 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     expect(screen.getByText("Календарь отгрузки")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /AI 24\/7/ })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(mocks.urls).toContain("/cameras/monoblock-settings/");
+    // Выбор камер моноблока — только администратору: у просмотра нет лишнего запроса на ПК камер.
+    expect(mocks.urls).not.toContain("/cameras/monoblock-settings/");
     expect(mocks.urls).toContain("/cameras/always-on-settings/");
     expect(mocks.urls).toContain("/cameras/ai/sessions/");
     expect(mocks.urls).toContain("/cameras/shipping-settings/");
@@ -442,6 +393,7 @@ describe("гейтинг данных вкладки «Отгрузка»", () =
     fireEvent.click(screen.getByRole("tab", { name: "Конвейеры" }));
     expect(screen.getByRole("button", { name: /Камеры моноблока/ })).toBeInTheDocument();
     expect(mocks.urls).toContain("/cameras/shipping-settings/");
+    expect(mocks.urls).toContain("/cameras/monoblock-settings/");
   });
 });
 
@@ -450,21 +402,7 @@ describe("день и поиск очереди отгрузки", () => {
   const calendarUrls = () => mocks.urls.filter((url) => url?.startsWith("/orders/shipping-calendar/"));
 
   it("switches rows and summary totals by real transport type without changing API filters", () => {
-    const base: Order = {
-      id: 31,
-      client: 1,
-      client_name: "Test truck client",
-      currency: "KZT",
-      status: "confirmed",
-      transport_type: "truck",
-      truck_number: "00123455",
-      items: [],
-      total_amount: "0.00",
-      paid_total: "0.00",
-      is_fully_paid: true,
-      debt_override: false,
-      created_at: "2026-01-01T00:00:00Z",
-    };
+    const base = makeOrder({ id: 31, client_name: "Test truck client", truck_number: "00123455" });
     mocks.orders = [
       base,
       {
@@ -492,7 +430,6 @@ describe("день и поиск очереди отгрузки", () => {
   });
 
   it("по умолчанию запрашивает доску без фильтров", () => {
-    mocks.me = { ...employee, permissions: ["monoblock.view"] };
     render(<MonoblockPage />);
     openOrders();
 
@@ -505,7 +442,6 @@ describe("день и поиск очереди отгрузки", () => {
   });
 
   it("выбранный день уходит в запрос доски и истории, «Сегодня» его сбрасывает", async () => {
-    mocks.me = { ...employee, permissions: ["monoblock.view"] };
     const user = userEvent.setup();
     render(<MonoblockPage />);
     openOrders();
@@ -523,7 +459,6 @@ describe("день и поиск очереди отгрузки", () => {
   });
 
   it("выбор сегодняшней даты не замораживает киоск на вчера после полуночи", () => {
-    mocks.me = { ...employee, permissions: ["monoblock.view"] };
     const { rerender } = render(<MonoblockPage />);
     openOrders();
 
@@ -554,18 +489,6 @@ describe("день и поиск очереди отгрузки", () => {
     await waitFor(() => expect(boardUrls().at(-1)).toBe("/orders/?post_board=1&search=327%20ABC"));
     expect(screen.getByText("Результаты поиска")).toBeInTheDocument();
     expect(screen.getByLabelText("День")).toBeDisabled();
-  });
-
-  it("оператор видит поиск и выбор дня", () => {
-    mocks.me = {
-      ...employee,
-      username: "monoblock-cam2",
-    };
-    render(<MonoblockPage />);
-    openOrders();
-
-    expect(screen.getByLabelText("Поиск")).toBeInTheDocument();
-    expect(screen.getByLabelText("День")).toBeInTheDocument();
   });
 
   it("preserves selected transport and server filters when switching shipping sections", async () => {

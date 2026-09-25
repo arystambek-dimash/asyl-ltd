@@ -5,12 +5,11 @@ from django.test.utils import CaptureQueriesContext
 
 from apps.bots import whatsapp
 from apps.bots.models import BotMessage, WhatsAppBotSettings
-from apps.bots.service_user import ensure_bot_user
-from apps.bots.tests.samples import CONDUCT_CODES, OWNER_BAGS, OWNER_DAY, OWNER_REPORT
-from apps.bots.tests.whatsapp_fakes import GROUP, JIN, incoming
+from apps.bots.tests.samples import CONDUCT_CODES, OWNER_DAY, OWNER_REPORT, manual_train_order
+from apps.bots.tests.whatsapp_fakes import GROUP, incoming
 from apps.catalog.models import ProductAlias
 from apps.eventlog.models import EventLog
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
@@ -24,29 +23,6 @@ def _url(message, action=""):
 
 
 @pytest.fixture
-def bot_settings():
-    row = WhatsAppBotSettings.load()
-    row.enabled = True
-    row.allowed_chat_ids = [GROUP]
-    row.allowed_sender_ids = [JIN]
-    row.save()
-    return row
-
-
-@pytest.fixture
-def receive(bot_settings):
-    bot_user = ensure_bot_user()
-
-    def _receive(message):
-        stored = whatsapp.ingest(message, bot_settings)
-        whatsapp.process_pending(user=bot_user, bot_settings=bot_settings)
-        stored.refresh_from_db()
-        return stored
-
-    return _receive
-
-
-@pytest.fixture
 def reviewer(user_with_perms):
     """Динара: журнал бота и права проведения отчёта."""
     return user_with_perms("dinara", codes=[*CONDUCT_CODES, "bots.view", "bots.manage"])
@@ -55,14 +31,6 @@ def reviewer(user_with_perms):
 @pytest.fixture
 def viewer(user_with_perms):
     return user_with_perms("bot-viewer", codes=["bots.view"])
-
-
-@pytest.fixture
-def unknown_code_message(receive, client, product, price):
-    ProductAlias.objects.all().delete()
-    message = receive(incoming(OWNER_REPORT))
-    assert message.status == "needs_review"
-    return message
 
 
 # --- права ----------------------------------------------------------------------------------------
@@ -174,10 +142,7 @@ def test_reviewer_without_conduct_rights_gets_403(auth_client, user_with_perms, 
 
 
 def test_manual_order_is_shipped_by_the_message(auth_client, reviewer, receive, client, product, price):
-    manual = Order.objects.create(
-        client=client, currency="USD", department="export", transport_type="train", status="confirmed",
-        arrival_date=OWNER_DAY)
-    OrderItem.objects.create(order=manual, product=product, quantity=OWNER_BAGS, unit_price="7.40")
+    manual = manual_train_order(client, product, arrival_date=OWNER_DAY)
     message = receive(incoming(OWNER_REPORT))
     assert {issue["code"] for issue in message.issues} == {"manual_order_duplicate"}
     api = auth_client(reviewer)

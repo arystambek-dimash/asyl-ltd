@@ -8,8 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Segmented } from "@/components/ui/segmented";
-import { PlateInput } from "@/components/ui/plate-input";
-import { DataGate } from "@/components/ui/data-state";
+import { TransportNumberFields } from "@/components/ui/transport-number-fields";
+import { DataGate, FormError } from "@/components/ui/data-state";
+import { DepartmentDot } from "@/components/ui/department-badge";
 import {
   FixationFields,
   emptyFixationDraft,
@@ -23,6 +24,7 @@ import { moneyCents } from "@/lib/debt-orders";
 import { useApi } from "@/lib/use-api";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
+import { ORDER_AWAITING_SHIPMENT_STATUSES, ORDER_LOADING_STATUSES } from "@/lib/constants";
 import { formatEstimate, requestEstimate } from "@/lib/orders";
 import { formatPlatePair, isValidWagonNumber } from "@/lib/plates";
 import { cn, formatCurrency, todayLocalIsoDate, currencySymbol } from "@/lib/utils";
@@ -43,10 +45,10 @@ type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "phone" |
   department_code?: string;
   department_name?: string;
 };
-type OrderProductOption = Pick<
-  Product,
-  "id" | "label" | "available_bags" | "stock_by_warehouse" | "warehouse" | "warehouse_name"
->;
+type OrderProductOption = Pick<Product, "id" | "label" | "available_bags"> & {
+  /** Остаток мешков по складам: ключ — id склада; склада без записи у товара нет. */
+  stock_by_warehouse: Record<string, number>;
+};
 type OrderStoreOption = Pick<Store, "id" | "client" | "name" | "address">;
 type OrderDepartmentOption = Pick<Department, "id" | "code" | "name" | "color" | "is_default">;
 
@@ -68,17 +70,21 @@ const EMPTY_FORM_OPTIONS: OrderFormOptions = {
 
 function productIsAssignedToWarehouse(product: OrderProductOption, warehouse: string) {
   if (!warehouse) return true;
-  if (product.stock_by_warehouse !== undefined) {
-    return Object.prototype.hasOwnProperty.call(product.stock_by_warehouse, warehouse);
-  }
-  return String(product.warehouse) === warehouse;
+  return Object.prototype.hasOwnProperty.call(product.stock_by_warehouse, warehouse);
 }
 
 function productBagsAtWarehouse(product: OrderProductOption, warehouse: string) {
-  if (warehouse && product.stock_by_warehouse !== undefined) {
-    return product.stock_by_warehouse[warehouse] ?? 0;
-  }
+  if (warehouse) return product.stock_by_warehouse[warehouse] ?? 0;
   return product.available_bags ?? 0;
+}
+
+/** Позиции с товаром, которого нет на складе, очищаются — склад их не отгрузит. */
+function dropRowsOutsideWarehouse(rows: Row[], products: OrderProductOption[], warehouse: string): Row[] {
+  return rows.map((row) => {
+    const selected = products.find((item) => String(item.id) === row.product);
+    if (!selected || productIsAssignedToWarehouse(selected, warehouse)) return row;
+    return { ...row, product: "", price: "" };
+  });
 }
 
 function SectionTitle({
@@ -147,7 +153,9 @@ export function OrderForm({
   const [currency, setCurrency] = useState<"KZT" | "USD">(draft?.currency ?? source?.currency ?? "KZT");
   const [store, setStore] = useState(draft?.store ?? (source?.store ? String(source.store) : ""));
   const [warehouse, setWarehouse] = useState(draft?.warehouse ?? (source?.warehouse ? String(source.warehouse) : ""));
-  const [transport, setTransport] = useState<"truck" | "train">(draft?.transport ?? source?.transport_type ?? "truck");
+  const [transport, setTransport] = useState<Order["transport_type"]>(
+    draft?.transport ?? source?.transport_type ?? "truck",
+  );
   const [truck, setTruck] = useState(
     draft?.truck ?? (source?.transport_type === "train" ? "" : (source?.truck_number ?? "")),
   );
@@ -168,7 +176,7 @@ export function OrderForm({
             id: index,
             product: String(item.product ?? ""),
             quantity: String(item.quantity),
-            price: item.unit_price ?? item.price ?? "",
+            price: item.unit_price ?? "",
           }))
         : [{ id: 0, product: "", quantity: "", price: "" }],
   );
@@ -188,7 +196,9 @@ export function OrderForm({
 
   const compositionLocked = editing?.status === "loading";
   const shippedCorrection = editing?.status === "shipped";
-  const physicalFieldsLocked = Boolean(editing && ["arrived", "loading", "loaded", "shipped"].includes(editing.status));
+  const physicalFieldsLocked = Boolean(
+    editing && (editing.status === "shipped" || ORDER_LOADING_STATUSES.includes(editing.status)),
+  );
   const unchangedWagonNumber = editing && transport === editing.transport_type && wagonNumber === editing.truck_number;
   const wagonNumberInvalid =
     !physicalFieldsLocked &&
@@ -210,33 +220,15 @@ export function OrderForm({
   const clientPrices = loadedClientPrices ?? {};
 
   const referenceDataReady = formOptions !== null;
-
-  function reloadReferenceData() {
-    void reloadFormOptions();
-  }
-
-  useEffect(() => {
-    if (editing) return;
-    if (assignedDepartment) {
-      setDept(assignedDepartment.code);
-      return;
-    }
-  }, [assignedDepartment, departments, dept, editing]);
+  // Новый заказ уходит в отдел клиента (или менеджера); выбор вручную — только когда его нет.
+  const effectiveDept = assignedDepartment?.code ?? dept;
 
   useEffect(() => {
     if (!warehouses.length || editing) return;
     if (warehouse && warehouses.some((item) => String(item.id) === warehouse)) return;
     const initial = warehouses.find((item) => item.is_default) ?? warehouses[0];
     setWarehouse(String(initial.id));
-    if (template && products.some((item) => item.stock_by_warehouse !== undefined || item.warehouse !== undefined)) {
-      setRows((current) =>
-        current.map((row) => {
-          const selected = products.find((item) => String(item.id) === row.product);
-          if (!selected || productIsAssignedToWarehouse(selected, String(initial.id))) return row;
-          return { ...row, product: "", price: "" };
-        }),
-      );
-    }
+    if (template) setRows((current) => dropRowsOutsideWarehouse(current, products, String(initial.id)));
   }, [editing, products, template, warehouse, warehouses]);
 
   // Цены из черновика уже проверены человеком — первый загруженный прайс их не перетирает.
@@ -269,9 +261,9 @@ export function OrderForm({
     ? [
         ...warehouses,
         {
-          id: editing!.warehouse!,
+          id: editing!.warehouse,
           code: `inactive-${editing!.warehouse}`,
-          name: editing!.warehouse_name || "Отключённый склад",
+          name: editing!.warehouse_name,
           address: "",
           is_active: false,
           is_default: false,
@@ -279,13 +271,7 @@ export function OrderForm({
       ]
     : warehouses;
   const selectedWarehouse = warehouseOptions.find((item) => String(item.id) === warehouse);
-  const productsHaveWarehouseScope = products.some(
-    (item) => item.stock_by_warehouse !== undefined || item.warehouse !== undefined,
-  );
-  const warehouseProducts =
-    productsHaveWarehouseScope && warehouse
-      ? products.filter((item) => productIsAssignedToWarehouse(item, warehouse))
-      : products;
+  const warehouseProducts = products.filter((item) => productIsAssignedToWarehouse(item, warehouse));
   const validRows = rows.filter((row) => row.product && Number(row.quantity) > 0);
   // Та же оценка, что у заявки: без цены у позиции сумма «Не рассчитана», а не «0 ₸».
   const estimate = requestEstimate(validRows.map((row) => ({ quantity: row.quantity, unit_price: row.price })));
@@ -294,7 +280,7 @@ export function OrderForm({
   const selectedBags = estimate.bags;
   // Исторический заказ склад не списывает — товар без остатка тоже можно выбрать.
   const allowOutOfStock = shippedCorrection || backdating;
-  const fixationError = backdating ? fixationDraftError(fixation) : "";
+  const fixationError = backdating ? fixationDraftError(fixation, { currency }) : "";
   // Без цены у позиции итога нет — создать заказ всё равно нельзя (allPriced).
   const payNow = usePayNow(currency, moneyCents(estimate.amount ?? 0), draft?.payNow);
   const payingNow = canPayNow && !backdating && payNow.on;
@@ -310,7 +296,7 @@ export function OrderForm({
     if (editing || draftSaveBlocked.current) return;
     const next: OrderDraft = {
       template: template ?? null,
-      dept,
+      dept: effectiveDept,
       client,
       currency,
       store,
@@ -333,7 +319,7 @@ export function OrderForm({
     editing,
     template,
     me?.id,
-    dept,
+    effectiveDept,
     client,
     currency,
     store,
@@ -371,25 +357,29 @@ export function OrderForm({
     setRows((current) => [...current, { id: nextRowId.current++, product: "", quantity: "", price: "" }]);
   }
 
-  function validate(): string {
+  /** Незаполненная форма: кнопка создания неактивна. */
+  function blockingProblem(): string {
     if (!referenceDataReady) return "Сначала загрузите справочники заказа.";
-    if (!editing && selectedClient?.department_code && !clientDepartment) {
-      return "Отдел клиента недоступен. Проверьте его в карточке клиента.";
-    }
     if (!client) return "Выберите клиента.";
-    if (!dept) return "Выберите отдел продаж.";
+    if (!effectiveDept) return "Выберите отдел продаж.";
     if (warehouseOptions.length > 0 && !warehouse) return "Выберите склад отгрузки.";
-    if (wagonNumberInvalid) {
-      return "Номер вагона должен содержать 8 цифр. Если номер пока неизвестен, оставьте поле пустым.";
-    }
     if (!compositionLocked && !validRows.length) return "Добавьте хотя бы одну позицию.";
     if (!compositionLocked && !allPriced) return "Укажите цену для каждой позиции.";
     if (shippedCorrection && editReason.trim().length < 5) {
       return "Укажите причину изменения отгруженного заказа — минимум 5 символов.";
     }
-    if (fixationError) return fixationError;
-    if (payNowError) return payNowError;
-    return "";
+    return fixationError || payNowError;
+  }
+
+  // Недоступный отдел клиента и неверный номер вагона объясняются по нажатию — кнопка остаётся активной.
+  function validate(): string {
+    if (!editing && selectedClient?.department_code && !clientDepartment) {
+      return "Отдел клиента недоступен. Проверьте его в карточке клиента.";
+    }
+    if (wagonNumberInvalid) {
+      return "Номер вагона должен содержать 8 цифр. Если номер пока неизвестен, оставьте поле пустым.";
+    }
+    return blockingProblem();
   }
 
   async function submit(event: React.FormEvent) {
@@ -414,7 +404,7 @@ export function OrderForm({
         currency,
         ...(!physicalFieldsLocked
           ? {
-              department: assignedDepartment?.code ?? dept,
+              department: effectiveDept,
               transport_type: transport,
               // Номера уходят как записаны: неизменённый старый номер бэкенд не перепроверяет.
               ...(transport === "train"
@@ -453,16 +443,7 @@ export function OrderForm({
     }
   }
 
-  const submitDisabled =
-    busy ||
-    !referenceDataReady ||
-    !client ||
-    !dept ||
-    (warehouseOptions.length > 0 && !warehouse) ||
-    (!compositionLocked && (!validRows.length || !allPriced)) ||
-    (shippedCorrection && editReason.trim().length < 5) ||
-    !!fixationError ||
-    !!payNowError;
+  const submitDisabled = busy || blockingProblem() !== "";
 
   const orderSummaryRows = [
     { label: "Клиент", value: selectedClient?.name ?? "—" },
@@ -486,7 +467,7 @@ export function OrderForm({
           <DataGate
             loading={!formOptionsError && formOptionsLoading}
             error={formOptionsError || undefined}
-            onRetry={reloadReferenceData}
+            onRetry={reloadFormOptions}
           />
         </div>
       )}
@@ -516,7 +497,7 @@ export function OrderForm({
                   </div>
                   {assignedDepartment && (
                     <span className="hidden items-center gap-1.5 rounded-full border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-600 sm:inline-flex">
-                      <span className="size-2 rounded-full" style={{ backgroundColor: assignedDepartment.color }} />
+                      <DepartmentDot color={assignedDepartment.color} className="size-2" />
                       {assignedDepartment.name}
                       <span className="font-normal text-slate-400">
                         · {clientDepartment ? "отдел клиента" : "ваш отдел"}
@@ -806,7 +787,13 @@ export function OrderForm({
                     caption="Указать дату заказа и сразу зафиксировать статус и оплату."
                     ariaLabel="Задним числом"
                   >
-                    <FixationFields draft={fixation} onChange={setFixation} canPay={canPay} idPrefix="order-backdate" />
+                    <FixationFields
+                      draft={fixation}
+                      onChange={setFixation}
+                      canPay={canPay}
+                      currency={currency}
+                      idPrefix="order-backdate"
+                    />
                   </OptionToggle>
                 )}
 
@@ -860,19 +847,13 @@ export function OrderForm({
                       id="order-warehouse"
                       value={warehouse}
                       disabled={Boolean(
-                        editing && ["confirmed", "arrived", "loading", "loaded", "shipped"].includes(editing.status),
+                        editing &&
+                        (editing.status === "shipped" || ORDER_AWAITING_SHIPMENT_STATUSES.includes(editing.status)),
                       )}
                       onChange={(event) => {
                         const nextWarehouse = event.target.value;
                         setWarehouse(nextWarehouse);
-                        if (!productsHaveWarehouseScope) return;
-                        setRows((current) =>
-                          current.map((row) => {
-                            const selected = products.find((item) => String(item.id) === row.product);
-                            if (!selected || productIsAssignedToWarehouse(selected, nextWarehouse)) return row;
-                            return { ...row, product: "", price: "" };
-                          }),
-                        );
+                        setRows((current) => dropRowsOutsideWarehouse(current, products, nextWarehouse));
                       }}
                       className="h-10 rounded-lg bg-white"
                     >
@@ -912,49 +893,28 @@ export function OrderForm({
                     ]}
                   />
                 </div>
-                {transport === "truck" ? (
-                  <>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="order-truck">Тягач</Label>
-                      <PlateInput
-                        id="order-truck"
-                        warning
-                        defaultCountry={selectedClient?.country}
-                        value={truck}
-                        onChange={setTruck}
-                        disabled={physicalFieldsLocked}
-                      />
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="order-trailer">Прицеп (необязательно)</Label>
-                      <PlateInput
-                        id="order-trailer"
-                        kind="trailer"
-                        defaultCountry={selectedClient?.country}
-                        value={trailer}
-                        onChange={setTrailer}
-                        disabled={physicalFieldsLocked}
-                      />
-                      <p className="text-[11px] text-slate-500">Номера можно указать позже, при въезде.</p>
-                    </div>
-                  </>
-                ) : (
-                  <div className="grid gap-1.5">
-                    <Label htmlFor="order-wagon-number">Номер вагона</Label>
-                    <Input
-                      id="order-wagon-number"
-                      inputMode="numeric"
-                      maxLength={8}
-                      placeholder="8 цифр"
-                      value={wagonNumber}
-                      onChange={(event) => setWagonNumber(event.target.value)}
-                      disabled={physicalFieldsLocked}
-                      aria-invalid={wagonNumberInvalid || undefined}
-                      className="h-10 rounded-lg tabular-nums"
-                    />
-                    <p className="text-[11px] text-slate-500">Можно указать позже, до начала погрузки.</p>
-                  </div>
-                )}
+                <TransportNumberFields
+                  id="order"
+                  transportType={transport}
+                  defaultCountry={selectedClient?.country}
+                  disabled={physicalFieldsLocked}
+                  errors={{ truck: wagonNumberInvalid }}
+                  hint={
+                    transport === "truck"
+                      ? "Номера можно указать позже, при въезде."
+                      : "Можно указать позже, до начала погрузки."
+                  }
+                  value={{ truck_number: transport === "train" ? wagonNumber : truck, trailer_number: trailer }}
+                  onChange={(pair) => {
+                    if (transport === "train") {
+                      setWagonNumber(pair.truck_number);
+                    } else {
+                      setTruck(pair.truck_number);
+                      setTrailer(pair.trailer_number);
+                    }
+                  }}
+                  className="gap-4"
+                />
                 <div className="grid gap-1.5">
                   <Label htmlFor="order-arrival">Плановая дата прибытия</Label>
                   <Input
@@ -987,14 +947,7 @@ export function OrderForm({
         </div>
       )}
 
-      {error && (
-        <p
-          role="alert"
-          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-[var(--destructive)]"
-        >
-          {error}
-        </p>
-      )}
+      <FormError message={error} className="rounded-lg py-2.5 font-medium" />
 
       <div className="sticky -bottom-5 z-10 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
         <span className="mr-auto text-sm text-slate-500 lg:hidden">

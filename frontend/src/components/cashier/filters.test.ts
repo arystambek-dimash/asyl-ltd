@@ -1,29 +1,18 @@
 import { describe, expect, it } from "vitest";
-import {
-  EMPTY_CASH_FILTERS,
-  activeFilterCount,
-  filterScreenFor,
-  initialFilters,
-  periodPresetOf,
-  periodRange,
-} from "./filters";
+import { periodPresetOf } from "@/lib/date-range";
+import { EMPTY_CASH_FILTERS, PERIOD_PRESETS, activeFilterCount, filterScreenFor, initialFilters } from "./filters";
 
-const now = new Date(2026, 8, 12);
+const today = "2026-09-12";
 
-describe("periodRange", () => {
-  it("builds presets from today", () => {
-    expect(periodRange("today", now)).toEqual({ dateFrom: "2026-09-12", dateTo: "2026-09-12" });
-    expect(periodRange("week", now)).toEqual({ dateFrom: "2026-09-06", dateTo: "2026-09-12" });
-    expect(periodRange("month", now)).toEqual({ dateFrom: "2026-09-01", dateTo: "2026-09-12" });
-    expect(periodRange("all", now)).toEqual({ dateFrom: "", dateTo: "" });
-  });
+describe("cash period presets", () => {
   it("recognises the active preset", () => {
-    expect(periodPresetOf({ dateFrom: "2026-09-12", dateTo: "2026-09-12" }, now)).toBe("today");
-    expect(periodPresetOf({ dateFrom: "", dateTo: "" }, now)).toBe("all");
-    expect(periodPresetOf({ dateFrom: "2026-09-02", dateTo: "2026-09-12" }, now)).toBe("custom");
+    expect(periodPresetOf({ dateFrom: "2026-09-12", dateTo: "2026-09-12" }, PERIOD_PRESETS, today)).toBe("today");
+    expect(periodPresetOf({ dateFrom: "2026-09-01", dateTo: "2026-09-12" }, PERIOD_PRESETS, today)).toBe("month");
+    expect(periodPresetOf({ dateFrom: "", dateTo: "" }, PERIOD_PRESETS, today)).toBe("all");
+    expect(periodPresetOf({ dateFrom: "2026-09-02", dateTo: "2026-09-12" }, PERIOD_PRESETS, today)).toBe("custom");
   });
   it("starts the mobile report at today only", () => {
-    const filters = initialFilters(now);
+    const filters = initialFilters(today);
     expect(filters.report).toMatchObject({ dateFrom: "2026-09-12", dateTo: "2026-09-12" });
     expect(filters.overview).toEqual(EMPTY_CASH_FILTERS);
   });

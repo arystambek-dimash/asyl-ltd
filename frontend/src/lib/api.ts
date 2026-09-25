@@ -74,13 +74,13 @@ export function hasAuthTokens() {
 api.interceptors.request.use((config) => {
   const request = config as RetryableRequest;
   if (request._authEpoch === undefined) request._authEpoch = authEpoch;
-  else if (request._authEpoch !== authEpoch) throw staleAuthRequest();
+  else if (request._authEpoch !== authEpoch) throw staleAuthSession();
   const token = getAccess();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-function staleAuthRequest(): CanceledError<unknown> {
+export function staleAuthSession(): CanceledError<unknown> {
   return new CanceledError("Authentication session changed");
 }
 
@@ -99,7 +99,7 @@ function refreshAccess(refresh: string, epoch: number): Promise<string> {
       { signal: controller.signal, timeout: 15_000 },
     )
     .then((res) => {
-      if (epoch !== authEpoch || getRefresh() !== refresh) throw staleAuthRequest();
+      if (epoch !== authEpoch || getRefresh() !== refresh) throw staleAuthSession();
       const access = res.data.access;
       if (typeof access !== "string" || !access) {
         throw new AxiosError("Invalid token refresh response", "ERR_BAD_RESPONSE");
@@ -118,13 +118,13 @@ function refreshAccess(refresh: string, epoch: number): Promise<string> {
 api.interceptors.response.use(
   (response) => {
     const request = response.config as RetryableRequest;
-    if (request._authEpoch !== authEpoch) throw staleAuthRequest();
+    if (request._authEpoch !== authEpoch) throw staleAuthSession();
     return response;
   },
   async (error: AxiosError) => {
     const original = error.config as RetryableRequest | undefined;
     if (original?._authEpoch !== undefined && original._authEpoch !== authEpoch) {
-      return Promise.reject(staleAuthRequest());
+      return Promise.reject(staleAuthSession());
     }
     const refresh = getRefresh();
     if (error.response?.status === 401 && original && refresh && !original._retry) {
@@ -132,7 +132,7 @@ api.interceptors.response.use(
       const epoch = authEpoch;
       try {
         const access = await refreshAccess(refresh, epoch);
-        if (epoch !== authEpoch || getRefresh() !== refresh) throw staleAuthRequest();
+        if (epoch !== authEpoch || getRefresh() !== refresh) throw staleAuthSession();
         original._authEpoch = epoch;
         original.headers!.Authorization = `Bearer ${access}`;
         return api(original);
@@ -206,6 +206,12 @@ export async function blobApiError(e: unknown): Promise<string> {
     }
   }
   return apiError(e);
+}
+
+/** Машинный `code` из тела ошибки API; "" — если сервер его не прислал. */
+export function apiErrorCode(e: unknown): string {
+  const code = (e as AxiosError<{ code?: unknown }> | undefined)?.response?.data?.code;
+  return typeof code === "string" ? code : "";
 }
 
 export function isCanceledRequest(error: unknown): boolean {

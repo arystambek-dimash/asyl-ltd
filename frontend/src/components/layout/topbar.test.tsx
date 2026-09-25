@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { Topbar } from "./topbar";
-import type { Me } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 
 const session = vi.hoisted(() => ({ push: vi.fn(), logout: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: session.push }) }));
@@ -10,16 +10,7 @@ vi.mock("@/store/auth", () => ({ useAuth: () => ({ logout: session.logout }) }))
 vi.mock("@/components/notification-bell", () => ({ NotificationBell: () => null }));
 vi.mock("@/components/onboarding-tour", () => ({ TOUR_START_EVENT: "tour" }));
 
-const me: Me = {
-  id: 1,
-  username: "kassa",
-  is_client: false,
-  is_superuser: false,
-  permissions: [],
-  position: "Касса",
-  client_id: null,
-  sales_department: null,
-};
+const me = makeMe({ username: "kassa", position: "Касса" });
 
 it("shows the menu button by default", () => {
   render(<Topbar me={me} title="Касса" />);

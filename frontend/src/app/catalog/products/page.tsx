@@ -9,9 +9,9 @@ import { Modal } from "@/components/ui/modal";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { StatCard } from "@/components/ui/stat-card";
-import { SortableHeader, type SortDir } from "@/components/ui/sortable-header";
+import { SortableHeader, useSortState } from "@/components/ui/sortable-header";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   EMPTY_PRODUCT_DRAFT,
@@ -24,8 +24,9 @@ import { ProductAliasCodes, ProductAliasesEditor } from "@/components/catalog/pr
 import { ProductPhoto, ProductPhotoPicker } from "@/components/catalog/product-photo";
 import { saveProductPhoto } from "@/lib/product-photo";
 import { Tabs } from "@/components/ui/tabs";
-import { DataGate, ErrorAlert } from "@/components/ui/data-state";
+import { DataGate, ErrorAlert, FormError } from "@/components/ui/data-state";
 import { useApi } from "@/lib/use-api";
+import { useConfirmAction } from "@/lib/use-confirm-action";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
@@ -55,16 +56,12 @@ function ProductsPageInner() {
   const [draft, setDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoRemoved, setPhotoRemoved] = useState(false);
-  const [askWeight, setAskWeight] = useState(false);
   const [stockBags, setStockBags] = useState("");
   const [stockWarehouse, setStockWarehouse] = useState("");
   // Товар, созданный в этом окне: если приход не прошёл, повтор досоздаст только приход.
   const [createdId, setCreatedId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [arcItem, setArcItem] = useState<Product | null>(null);
-  const [arcError, setArcError] = useState("");
-  const [arcBusy, setArcBusy] = useState(false);
   const [restoreError, setRestoreError] = useState("");
   const [restoreBusyId, setRestoreBusyId] = useState<number | null>(null);
 
@@ -73,7 +70,6 @@ function ProductsPageInner() {
     setDraft(EMPTY_PRODUCT_DRAFT);
     setPhotoFile(null);
     setPhotoRemoved(false);
-    setAskWeight(false);
     setStockBags("");
     setStockWarehouse("");
     setCreatedId(null);
@@ -85,7 +81,6 @@ function ProductsPageInner() {
     setDraft({ name: p.name, color: p.color ?? "Red", weight: String(Number(p.weight_kg)) });
     setPhotoFile(null);
     setPhotoRemoved(false);
-    setAskWeight(p.ask_truck_weight ?? false);
     setStockBags("");
     setCreatedId(null);
     setError("");
@@ -97,10 +92,7 @@ function ProductsPageInner() {
     setBusy(true);
     setError("");
     try {
-      const body = {
-        ...productPayload(draft, { canViewColor, editing: Boolean(editing) }),
-        ask_truck_weight: askWeight,
-      };
+      const body = productPayload(draft, { canViewColor, editing: Boolean(editing) });
       const saved = editing
         ? await api.patch<Product>(`/products/${editing.id}/`, body)
         : await api.post<Product>("/products/", body);
@@ -138,21 +130,11 @@ function ProductsPageInner() {
   const defaultWarehouseId = String((warehouses.find((item) => item.is_default) ?? warehouses[0])?.id ?? "");
   const stockBagsInvalid = stockBags !== "" && !(Number.isInteger(Number(stockBags)) && Number(stockBags) >= 0);
 
-  async function confirmArchive() {
-    if (!arcItem) return;
-    setArcBusy(true);
-    setArcError("");
-    try {
-      await api.post(`/products/${arcItem.id}/archive/`);
-      setArcItem(null);
-      reload();
-      reloadArchived();
-    } catch (e) {
-      setArcError(apiError(e));
-    } finally {
-      setArcBusy(false);
-    }
-  }
+  const archive = useConfirmAction<Product>(async (product) => {
+    await api.post(`/products/${product.id}/archive/`);
+    reload();
+    reloadArchived();
+  });
 
   async function restore(p: Product) {
     setRestoreBusyId(p.id);
@@ -168,17 +150,9 @@ function ProductsPageInner() {
     }
   }
 
-  const [sortKey, setSortKey] = useState("name");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const { sortKey, sortDir, toggleSort } = useSortState("name", "asc");
   const list = products ?? [];
   const archiveList = archived ?? [];
-  const toggleSort = (k: string) => {
-    if (k === sortKey) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      setSortDir("asc");
-    }
-  };
   const sorted = [...list].sort((a, b) => {
     const cmp = a.name.localeCompare(b.name, "ru");
     return sortDir === "asc" ? cmp : -cmp;
@@ -221,11 +195,7 @@ function ProductsPageInner() {
       {tab === "archive" ? (
         <Card>
           <CardContent className="pt-6">
-            {restoreError && (
-              <p className="mb-3 rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-                {restoreError}
-              </p>
-            )}
+            <FormError message={restoreError} className="mb-3" />
             {!archived ? (
               <DataGate loading={archivedLoading} error={archivedLoadError} onRetry={reloadArchived} />
             ) : (
@@ -267,13 +237,7 @@ function ProductsPageInner() {
                         </TD>
                       </TR>
                     ))}
-                    {archiveList.length === 0 && (
-                      <TR>
-                        <TD colSpan={canViewColor ? 4 : 3} className="py-4 text-center text-[var(--muted-foreground)]">
-                          Архив пуст.
-                        </TD>
-                      </TR>
-                    )}
+                    {archiveList.length === 0 && <EmptyRow colSpan={canViewColor ? 4 : 3}>Архив пуст.</EmptyRow>}
                   </TBody>
                 </Table>
               </>
@@ -339,10 +303,7 @@ function ProductsPageInner() {
                                 size="sm"
                                 variant="ghost"
                                 className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                                onClick={() => {
-                                  setArcError("");
-                                  setArcItem(p);
-                                }}
+                                onClick={() => archive.open(p)}
                                 title="В архив"
                               >
                                 <Archive className="size-4" />
@@ -352,13 +313,7 @@ function ProductsPageInner() {
                         </TD>
                       </TR>
                     ))}
-                    {sorted.length === 0 && (
-                      <TR>
-                        <TD colSpan={canViewColor ? 5 : 4} className="py-4 text-center text-[var(--muted-foreground)]">
-                          Товаров пока нет.
-                        </TD>
-                      </TR>
-                    )}
+                    {sorted.length === 0 && <EmptyRow colSpan={canViewColor ? 5 : 4}>Товаров пока нет.</EmptyRow>}
                   </TBody>
                 </Table>
               </>
@@ -400,20 +355,6 @@ function ProductsPageInner() {
             }}
           />
           <ProductFields idPrefix="product" draft={draft} onChange={setDraft} canViewColor={canViewColor} autoFocus />
-          <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3">
-            <input
-              type="checkbox"
-              className="mt-0.5 size-4 accent-[var(--primary)]"
-              checked={askWeight}
-              onChange={(e) => setAskWeight(e.target.checked)}
-            />
-            <span className="text-sm">
-              <span className="font-medium">Спрашивать вес машины при въезде</span>
-              <span className="block text-xs text-[var(--muted-foreground)]">
-                Если выключено — вес не спрашивается, берётся расчётный по мешкам.
-              </span>
-            </span>
-          </label>
           {editing && canEdit && <ProductAliasesEditor product={editing} onChange={applyProduct} />}
           {stockStepVisible && (
             <div className="flex flex-col gap-3 rounded-lg border bg-[var(--muted)]/30 p-3">
@@ -461,26 +402,18 @@ function ProductsPageInner() {
               </div>
             </div>
           )}
-          {error && (
-            <p className="rounded-md border border-[var(--destructive)]/20 bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]">
-              {error}
-            </p>
-          )}
+          <FormError message={error} />
         </form>
       </Modal>
 
       <ConfirmDialog
-        open={!!arcItem}
-        onClose={() => setArcItem(null)}
+        {...archive.dialog}
         title="Отправить товар в архив?"
         description={
-          arcItem
-            ? `«${arcItem.label}» уйдёт в архив: пропадёт из выбора новых заказов. Старые заказы и отчёты не изменятся. Можно восстановить.`
+          archive.item
+            ? `«${archive.item.label}» уйдёт в архив: пропадёт из выбора новых заказов. Старые заказы и отчёты не изменятся. Можно восстановить.`
             : ""
         }
-        busy={arcBusy}
-        error={arcError}
-        onConfirm={confirmArchive}
       />
     </AppShell>
   );

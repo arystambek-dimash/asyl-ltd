@@ -5,9 +5,11 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { api, apiError } from "@/lib/api";
-import { apiFileUrl, formatKg } from "@/lib/grain";
+import { apiFileUrl } from "@/lib/api-file-url";
+import { MANUAL_REASON_MAX_LENGTH, formatKg, isManualReasonValid, passageNetKg } from "@/lib/grain";
 import { formatDateTime } from "@/lib/utils";
 import type { GrainUnassignedWeighing, GrainWagon, GrainWeighing } from "@/lib/types";
+import { useWeighingDialog } from "./use-weighing-dialog";
 
 export function HistoricalTareDialog({
   item,
@@ -22,23 +24,21 @@ export function HistoricalTareDialog({
   onBusyChange?: (busy: boolean) => void;
   disabled?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const dialog = useWeighingDialog(onBusyChange);
+  const { busy, setBusy, setError } = dialog;
   const [resolvedItem, setResolvedItem] = useState(item);
   const [number, setNumber] = useState(item?.vehicle_number || wagon?.number || "");
   const [rows, setRows] = useState<GrainWeighing[]>([]);
   const [selected, setSelected] = useState<number>();
   const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const source = rows.find((row) => row.id === selected);
+  const valid = Boolean(resolvedItem && source && isManualReasonValid(reason));
 
   async function show() {
-    setOpen(true);
-    setError("");
+    dialog.show();
     setRows([]);
     setSelected(undefined);
     setReason("");
-    onBusyChange?.(true);
     if (!item && wagon) {
       setBusy(true);
       try {
@@ -77,24 +77,17 @@ export function HistoricalTareDialog({
       setBusy(false);
     }
   }
-  async function save() {
-    if (!resolvedItem || !source || reason.trim().length < 5 || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.post(`/grain/unassigned-weighings/${resolvedItem.id}/historical-exit/`, {
-        number,
-        reference_record: source.id,
-        reason: reason.trim(),
-      });
-      setOpen(false);
-      onBusyChange?.(false);
-      onChanged();
-    } catch (e) {
-      setError(apiError(e));
-    } finally {
-      setBusy(false);
-    }
+  function save() {
+    if (!valid || !resolvedItem || !source) return;
+    void dialog.submit(
+      () =>
+        api.post(`/grain/unassigned-weighings/${resolvedItem.id}/historical-exit/`, {
+          number,
+          reference_record: source.id,
+          reason: reason.trim(),
+        }),
+      onChanged,
+    );
   }
   return (
     <>
@@ -102,21 +95,16 @@ export function HistoricalTareDialog({
         {wagon ? "Исправить как выезд" : "Выезд с сохранённой тарой"}
       </Button>
       <ConfirmDialog
-        open={open}
+        open={dialog.open}
         title="Выезд с сохранённой тарой"
         description="Сверьте номер и исходную запись тары. Это прежний вес: сегодняшнее взвешивание пустой машины не подтверждено. Источник и автор исходной записи сохранятся."
         confirmLabel="Сохранить и завершить вывоз"
         confirmVariant="default"
         busy={busy}
-        error={error}
-        confirmDisabled={!source || reason.trim().length < 5 || !resolvedItem}
-        onConfirm={() => void save()}
-        onClose={() => {
-          if (!busy) {
-            setOpen(false);
-            onBusyChange?.(false);
-          }
-        }}
+        error={dialog.error}
+        confirmDisabled={!valid}
+        onConfirm={save}
+        onClose={dialog.close}
       >
         <div className="space-y-3">
           <div className="flex gap-2">
@@ -171,13 +159,13 @@ export function HistoricalTareDialog({
             ))}
           </div>
           {source && resolvedItem && (
-            <p className="font-semibold">Нетто: {formatKg(resolvedItem.weight_kg - source.weight_kg)}</p>
+            <p className="font-semibold">Нетто: {formatKg(passageNetKg(resolvedItem.weight_kg, source.weight_kg))}</p>
           )}
           <Input
             aria-label="Причина использования сохранённой тары"
             placeholder="Причина исправления или использования прежней тары"
             value={reason}
-            maxLength={300}
+            maxLength={MANUAL_REASON_MAX_LENGTH}
             disabled={busy}
             onChange={(e) => setReason(e.target.value)}
           />

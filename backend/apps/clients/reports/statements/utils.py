@@ -11,8 +11,6 @@ STATEMENT_CONTENT_TYPES = {
 def statement_departments(params):
     raw = params.get("departments")
     if raw is None:
-        raw = params.get("department")
-    if raw is None:
         return None
     codes = tuple(dict.fromkeys(
         code.strip() for code in raw.split(",") if code.strip()

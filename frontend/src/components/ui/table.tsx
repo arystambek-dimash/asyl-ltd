@@ -36,3 +36,13 @@ export function TH({ className, ...props }: React.ThHTMLAttributes<HTMLTableCell
 export function TD({ className, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) {
   return <td className={cn("h-12 px-3 sm:px-4 align-middle", className)} {...props} />;
 }
+/** Строка-заглушка на всю ширину таблицы: «пусто», «Загрузка…» и т. п. */
+export function EmptyRow({ colSpan, children = "Здесь пусто" }: { colSpan: number; children?: React.ReactNode }) {
+  return (
+    <TR>
+      <TD colSpan={colSpan} className="py-10 text-center text-sm text-[var(--muted-foreground)]">
+        {children}
+      </TD>
+    </TR>
+  );
+}

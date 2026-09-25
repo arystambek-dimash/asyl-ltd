@@ -1,9 +1,8 @@
 import * as React from "react";
+import type { BadgeTone } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
-type Tone = "muted" | "primary" | "success" | "warning" | "destructive" | "outline";
-
-const toneClasses: Record<Tone, string> = {
+const toneClasses: Record<BadgeTone, string> = {
   muted: "bg-[var(--muted)] text-[var(--muted-foreground)]",
   primary: "bg-[var(--ring)]/12 text-[var(--ring)]",
   success: "bg-[var(--success)]/12 text-[var(--success)]",
@@ -12,7 +11,8 @@ const toneClasses: Record<Tone, string> = {
   outline: "bg-transparent text-[var(--muted-foreground)] border border-[var(--border)]",
 };
 
-const dotColor: Record<Tone, string> = {
+/** CSS-цвет тона — для точек и полос вне Badge. */
+export const BADGE_TONE_COLOR: Record<BadgeTone, string> = {
   muted: "var(--muted-foreground)",
   primary: "var(--ring)",
   success: "var(--success)",
@@ -27,7 +27,7 @@ export function Badge({
   className,
   children,
   ...props
-}: React.HTMLAttributes<HTMLSpanElement> & { tone?: Tone; dot?: boolean }) {
+}: React.HTMLAttributes<HTMLSpanElement> & { tone?: BadgeTone; dot?: boolean }) {
   return (
     <span
       className={cn(
@@ -37,7 +37,7 @@ export function Badge({
       )}
       {...props}
     >
-      {dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: dotColor[tone] }} />}
+      {dot && <span className="h-1.5 w-1.5 rounded-full" style={{ background: BADGE_TONE_COLOR[tone] }} />}
       {children}
     </span>
   );

@@ -26,27 +26,32 @@ class DenyAll(BasePermission):
 
 
 class HasPerm(BasePermission):
-    def __init__(self, *codes):
+    """Любое из прав; с require_all=True — все сразу."""
+
+    def __init__(self, *codes, require_all=False):
         self.codes = codes
+        self.require_all = require_all
 
     def has_permission(self, request, view):
         user = request.user
         if not _auth(request) or user.is_client:
             return False
-        return any(user.has_perm_code(c) for c in self.codes)
-
-
-class HasAllPerms(HasPerm):
-
-    def has_permission(self, request, view):
-        user = request.user
-        if not _auth(request) or user.is_client:
-            return False
-        return all(user.has_perm_code(code) for code in self.codes)
+        check = all if self.require_all else any
+        return check(user.has_perm_code(c) for c in self.codes)
 
 
 # Значение в required_perms: действие доступно только суперпользователю.
 SUPERUSER_ONLY = "__superuser__"
+
+
+def _permissions_for(code):
+    """Классы доступа для значения required_perms (код, кортеж кодов, SUPERUSER_ONLY)."""
+    if code is None:
+        return [DenyAll()]
+    if code == SUPERUSER_ONLY:
+        return [IsSuperUser()]
+    codes = code if isinstance(code, (tuple, list)) else (code,)
+    return [HasPerm(*codes)]
 
 
 class PermViewSetMixin:
@@ -58,13 +63,7 @@ class PermViewSetMixin:
             return [IsAuthenticated()]
         if action == "metadata":
             return [IsStaff()]
-        code = self.required_perms.get(action)
-        if code is None:
-            return [DenyAll()]
-        if code == SUPERUSER_ONLY:
-            return [IsSuperUser()]
-        codes = code if isinstance(code, (tuple, list)) else (code,)
-        return [HasPerm(*codes)]
+        return _permissions_for(self.required_perms.get(action))
 
 
 class PermAPIViewMixin:
@@ -72,16 +71,9 @@ class PermAPIViewMixin:
 
     def get_permissions(self):
         method = self.request.method.lower()
+        if not hasattr(self, method):
+            # Метод view не обслуживает: DRF ответит 405, а не 403.
+            return [IsAuthenticated()]
         if method in {"head", "options"}:
             method = "get"
-        codes = self.required_perms.get(method)
-
-        if codes is None:
-            return [DenyAll()]
-        if codes == SUPERUSER_ONLY:
-            return [IsSuperUser()]
-
-        if isinstance(codes, str):
-            codes = (codes,)
-
-        return [HasPerm(*codes)]
+        return _permissions_for(self.required_perms.get(method))

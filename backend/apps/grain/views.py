@@ -10,22 +10,23 @@ from django.db.models import Count, F, Q, Prefetch
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.cameras import ai as camera_ai
-from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import IsSuperUser, PermAPIViewMixin, PermViewSetMixin
+from apps.common.pagination import OptInPageNumberPagination, keyset_page
+from apps.common.permissions import SUPERUSER_ONLY, IsSuperUser, PermAPIViewMixin, PermViewSetMixin
 from apps.common.query_params import (
     filter_date_range,
     parse_date_range,
     parse_search_param,
     plate_search_q,
 )
-from apps.common.viewsets import SerializerViewSetMixin
+from apps.common.uuids import parse_canonical_uuid
+from apps.common.viewsets import NoStoreMixin, SerializerViewSetMixin
 from apps.eventlog.models import EventLog
 
 from . import (
@@ -41,7 +42,6 @@ from .models import (
     VEHICLE_ORIENTATION_FRONT,
     VEHICLE_ORIENTATION_REAR,
     GrainSupply,
-    Silo,
     SiloType,
     UnassignedWeighing,
     VehicleOrientationSample,
@@ -56,7 +56,6 @@ from .serializers import (
     AutomaticPassageScaleSettingsSerializer,
     GrainMovementSerializer,
     GrainSupplySerializer,
-    PassageNumberSerializer,
     SiloSerializer,
     SiloTypeSerializer,
     UnassignedAssignSerializer,
@@ -67,13 +66,12 @@ from .serializers import (
     UnassignedDiscardSerializer,
     UnassignedWeighingSerializer,
     VehicleOrientationSampleSerializer,
-    VehiclePlateCandidateSerializer,
     WagonBriefSerializer,
     WagonSerializer,
 )
 
 
-class TruckScaleReadingView(PermAPIViewMixin, APIView):
+class TruckScaleReadingView(NoStoreMixin, PermAPIViewMixin, APIView):
     """Read-only display for the Grain site's physical scale."""
 
     required_perms: ClassVar[dict[str, str]] = {"get": "grain.weigh"}
@@ -83,15 +81,13 @@ class TruckScaleReadingView(PermAPIViewMixin, APIView):
         throttles.append(TruckScalePreviewRateThrottle())
         return throttles
 
-    def get(self, request, scale_key=scale.DEFAULT_SCALE_KEY):
+    def get(self, request, scale_key):
         if scale_key not in scale.SCALE_KEYS:
             raise NotFound("Весовая не найдена.")
-        response = Response(get_scale_preview(scale_key))
-        response["Cache-Control"] = "no-store, max-age=0"
-        return response
+        return Response(get_scale_preview(scale_key))
 
 
-class AutomaticPassageScaleAcknowledgeView(PermAPIViewMixin, APIView):
+class AutomaticPassageScaleAcknowledgeView(NoStoreMixin, PermAPIViewMixin, APIView):
     """Explicitly resolve a latched automatic-scale failure."""
 
     required_perms: ClassVar[dict[str, str]] = {"post": "grain.weigh"}
@@ -107,24 +103,15 @@ class AutomaticPassageScaleAcknowledgeView(PermAPIViewMixin, APIView):
                     "code": "automatic_scale_ack_invalid",
                 }
             )
-        raw_request_id = request.data.get("request_id")
-        if not isinstance(raw_request_id, str):
+        request_id = parse_canonical_uuid(request.data.get("request_id"))
+        if request_id is None:
             raise ValidationError(
                 {
                     "detail": "request_id должен быть canonical UUID.",
                     "code": "automatic_scale_ack_invalid",
                 }
             )
-        try:
-            request_id = UUID(raw_request_id)
-        except ValueError as exc:
-            raise ValidationError(
-                {
-                    "detail": "request_id должен быть canonical UUID.",
-                    "code": "automatic_scale_ack_invalid",
-                }
-            ) from exc
-        if str(request_id) != raw_request_id or request.data.get("resolved") is not True:
+        if request.data.get("resolved") is not True:
             raise ValidationError(
                 {
                     "detail": "Подтвердите ручную обработку текущей операции.",
@@ -135,38 +122,22 @@ class AutomaticPassageScaleAcknowledgeView(PermAPIViewMixin, APIView):
             request_id,
             user=request.user,
         )
-        response = Response(
-            {"acknowledged": True, "scale_automation": runtime}
-        )
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response({"acknowledged": True, "scale_automation": runtime})
 
 
-class AutomaticPassageScaleRuntimeView(PermAPIViewMixin, APIView):
+class AutomaticPassageScaleRuntimeView(NoStoreMixin, PermAPIViewMixin, APIView):
     """Permission-safe CRM projection independent of the Camera-PC."""
 
     required_perms: ClassVar[dict[str, str]] = {"get": "grain.view"}
 
     def get(self, request):
-        response = Response(passage_scale_automation.scale_automation_runtime())
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(passage_scale_automation.scale_automation_runtime())
 
 
-class AutomaticPassageScaleSettingsView(PermAPIViewMixin, APIView):
+class AutomaticPassageScaleSettingsView(NoStoreMixin, PermAPIViewMixin, APIView):
     """Expose lane timing to grain staff; mutation is superuser-only."""
 
-    required_perms: ClassVar[dict[str, str]] = {"get": "grain.view"}
-
-    def get_permissions(self):
-        if self.request.method.lower() in {"patch", "put"}:
-            return [IsSuperUser()]
-        return super().get_permissions()
-
-    def finalize_response(self, request, response, *args, **kwargs):
-        response = super().finalize_response(request, response, *args, **kwargs)
-        response["Cache-Control"] = "no-store"
-        return response
+    required_perms: ClassVar[dict[str, str]] = {"get": "grain.view", "patch": SUPERUSER_ONLY}
 
     def get(self, request):
         return Response(passage_scale_automation.scale_automation_settings())
@@ -191,8 +162,6 @@ class AutomaticPassageScaleSettingsView(PermAPIViewMixin, APIView):
                 user=request.user,
             )
         )
-
-    put = patch
 
 
 def _get_supply(supply_id) -> GrainSupply | None:
@@ -231,16 +200,8 @@ def _passage_capture_idempotency_key(request) -> UUID:
                 "code": "idempotency_key_required",
             }
         )
-    try:
-        value = UUID(raw)
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValidationError(
-            {
-                "detail": "Idempotency-Key должен быть canonical lowercase UUID.",
-                "code": "idempotency_key_invalid",
-            }
-        ) from exc
-    if str(value) != raw:
+    value = parse_canonical_uuid(raw)
+    if value is None:
         raise ValidationError(
             {
                 "detail": "Idempotency-Key должен быть canonical lowercase UUID.",
@@ -277,7 +238,12 @@ def _record_stage_weight(request, wagon: Wagon, action: str) -> Wagon:
     return services.record_scale_weight(wagon, action, request.user)
 
 
-class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
+class GrainSupplyViewSet(
+    PermViewSetMixin,
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = (
         GrainSupply.objects.select_related("grain_type", "assigned_silo")
         .prefetch_related("wagons")
@@ -285,16 +251,7 @@ class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     )
     serializer_class = GrainSupplySerializer
     pagination_class = OptInPageNumberPagination
-    required_perms = {
-        "list": "grain.view",
-        "retrieve": "grain.view",
-        "create": "grain.supply",
-        "update": "grain.supply",
-        "partial_update": "grain.supply",
-        "destroy": "grain.supply",
-        "publish": "grain.supply",
-        "add_wagons": "grain.supply",
-    }
+    required_perms = {"list": "grain.view", "create": "grain.supply"}
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -305,43 +262,10 @@ class GrainSupplyViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(wagons__status=st.EXPECTED).distinct()
         return qs
 
-    def perform_create(self, serializer):
-        numbers = serializer.validated_data.pop("wagon_numbers", [])
-        with transaction.atomic():
-            supply = serializer.save(created_by=self.request.user)
-            if supply.simple_flow:
-                services.prepare_simple_supply(supply, self.request.user)
-            else:
-                services.add_wagon_numbers(supply, numbers, self.request.user)
-
     @transaction.atomic
-    def perform_update(self, serializer):
-        numbers = serializer.validated_data.pop("wagon_numbers", None)
-        supply = serializer.save()
-        if numbers:
-            services.add_wagon_numbers(supply, numbers, self.request.user)
-
-    def perform_destroy(self, instance):
-        if instance.wagons.exclude(status=st.EXPECTED).exists():
-            raise ValidationError(
-                {
-                    "detail": "Поставку с прибывшими вагонами удалить нельзя",
-                    "code": "supply_in_progress",
-                }
-            )
-        instance.wagons.all().delete()
-        instance.delete()
-
-    @action(detail=True, methods=["post"], url_path="publish")
-    def publish(self, request, pk=None):
-        supply = services.publish_supply(self.get_object(), request.user)
-        return Response(GrainSupplySerializer(supply).data)
-
-    @action(detail=True, methods=["post"], url_path="wagons")
-    def add_wagons(self, request, pk=None):
-        numbers = request.data.get("numbers") or []
-        created = services.add_wagon_numbers(self.get_object(), numbers, request.user)
-        return Response(WagonBriefSerializer(created, many=True).data, status=201)
+    def perform_create(self, serializer):
+        supply = serializer.save(created_by=self.request.user)
+        services.prepare_simple_supply(supply, self.request.user)
 
 
 class GrainTripViewSet(
@@ -353,7 +277,6 @@ class GrainTripViewSet(
         Wagon.objects.select_related("supply", "assigned_silo")
         .prefetch_related(
             Prefetch("weighings", queryset=WeighingRecord.objects.select_related("operator", "reference_record")),
-            "lab_checks",
             "allocations__silo",
         )
         .order_by("-id")
@@ -370,17 +293,10 @@ class GrainTripViewSet(
         qs = super().get_queryset()
         params = self.request.query_params
         scope = params.get("scope")
-        if scope == "expected":
-            qs = qs.filter(status=st.EXPECTED)
-        elif scope == "on_site":
+        if scope == "on_site":
             qs = qs.filter(status__in=st.ON_SITE_STATUSES)
-        elif scope == "exit_ready":
-            qs = qs.filter(status=st.EXIT_ALLOWED)
         elif scope == "finished":
-            qs = qs.filter(status__in=st.TERMINAL_STATUSES | {st.EXITED})
-        status = params.get("status")
-        if status:
-            qs = qs.filter(status=status)
+            qs = qs.filter(status__in=st.FINISHED_STATUSES)
         direction = params.get("direction")
         if direction in Wagon.DIRECTIONS:
             qs = qs.filter(direction=direction)
@@ -408,19 +324,13 @@ class GrainTripViewSet(
     @action(detail=True, methods=["delete"], url_path="delete")
     def delete_wagon(self, request, pk=None):
         """Удалить допустимый рейс с безопасным откатом учёта."""
-        if hasattr(request.data, "__contains__") and "reason" in request.data:
-            reason = request.data.get("reason")
-        else:
-            # Transitional fallback for callers using the previous contract.
-            reason = request.query_params.get("reason") or ""
+        data = request.data if isinstance(request.data, dict) else {}
         result = services.delete_wagon(
             self.get_object(),
             request.user,
-            reason=reason,
-            confirm_unrecorded_grain_handled=(
-                request.data.get("confirm_unrecorded_grain_handled", False)
-                if hasattr(request.data, "get")
-                else False
+            reason=data.get("reason", ""),
+            confirm_unrecorded_grain_handled=data.get(
+                "confirm_unrecorded_grain_handled", False
             ),
         )
         return Response(result)
@@ -452,33 +362,11 @@ class GrainTripViewSet(
 
 class WagonViewSet(GrainTripViewSet):
     required_perms = {
-        "list": "grain.view",
-        "retrieve": "grain.view",
+        **GrainTripViewSet.required_perms,
         "arrive": "grain.arrive",
-        "camera_arrive": "grain.arrive",
-        "passage": "grain.arrive",
-        "set_number": "grain.arrive",
-        "vehicle_plate_candidates": "grain.arrive",
-        "delete_wagon": "grain.delete",
-        # Старый процесс вагонов (лаборатория, диспетчер, разгрузка, выезд) —
-        # кнопки не показываются, действия остались у администрирования.
-        "approve": "grain.admin",
-        "gross": "grain.weigh",
-        "tare": "grain.weigh",
         "entry_weight": "grain.weigh",
         "exit_weight": "grain.weigh",
-        "lab": "grain.admin",
-        "suggest_silos_action": "grain.admin",
-        "assign_silo_action": "grain.admin",
-        "change_silo_action": "grain.admin",
-        "start_unloading_action": "grain.admin",
-        "pause_unloading": "grain.admin",
-        "finish_unloading_action": "grain.admin",
-        "resolve_discrepancy_action": "grain.inventory",
         "resolve_simple_discrepancy_action": "grain.inventory",
-        "inventory": "grain.inventory",
-        "exit": "grain.admin",
-        "timeline": "grain.view",
     }
 
     @action(detail=False, methods=["post"], url_path="arrive")
@@ -487,81 +375,8 @@ class WagonViewSet(GrainTripViewSet):
             request.data.get("number"),
             request.user,
             supply=_get_supply(request.data.get("supply")),
-            number_source="manual",
         )
         return Response(WagonSerializer(wagon).data, status=201)
-
-    @action(detail=False, methods=["post"], url_path="camera-arrive")
-    def camera_arrive(self, request):
-        """Контракт для OCR: камера передаёт номер и ожидаемый приход."""
-        supply = _get_supply(request.data.get("supply"))
-        if supply is None:
-            raise ValidationError(
-                {
-                    "detail": "Укажите ожидаемый приход",
-                    "code": "supply_required",
-                }
-            )
-        wagon = services.register_arrival(
-            request.data.get("number"),
-            request.user,
-            supply=supply,
-            number_source="camera",
-            camera_source=request.data.get("camera_source") or "",
-        )
-        return Response(WagonSerializer(wagon).data, status=201)
-
-    @action(detail=True, methods=["post"], url_path="approve")
-    def approve(self, request, pk=None):
-        wagon = services.approve_unplanned(
-            self.get_object(),
-            request.user,
-            supply=_get_supply(request.data.get("supply")),
-        )
-        return self._done(wagon)
-
-    @action(detail=True, methods=["post"], url_path="gross")
-    def gross(self, request, pk=None):
-        _require_empty_scale_command(request)
-        wagon = services.record_scale_weight(
-            self.get_object(), "gross", request.user
-        )
-        return self._done(wagon)
-
-    @action(detail=False, methods=["post"], url_path="passage")
-    def passage(self, request):
-        """Регистрация прохода: машина заехала за отрубями."""
-        wagon = services.create_passage(
-            request.user,
-            number=request.data.get("number") or "",
-            cargo_name=request.data.get("cargo_name") or "",
-            note=request.data.get("note") or "",
-            vehicle_plate_event_id=request.data.get("vehicle_plate_event_id"),
-        )
-        return Response(WagonSerializer(wagon).data, status=201)
-
-    @action(detail=True, methods=["patch", "post"], url_path="number")
-    def set_number(self, request, pk=None):
-        """Дописать или поправить номер машины, который камера не прочла."""
-        serializer = PassageNumberSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        wagon = services.set_passage_number(
-            self.get_object(),
-            serializer.validated_data["number"],
-            request.user,
-        )
-        return self._done(wagon)
-
-    @action(
-        detail=False,
-        methods=["get"],
-        url_path="vehicle-plate-candidates",
-    )
-    def vehicle_plate_candidates(self, request):
-        events = services.vehicle_plate_candidates()
-        response = Response(VehiclePlateCandidateSerializer(events, many=True).data)
-        response["Cache-Control"] = "no-store"
-        return response
 
     @action(detail=True, methods=["post"], url_path="entry-weight")
     def entry_weight(self, request, pk=None):
@@ -569,104 +384,11 @@ class WagonViewSet(GrainTripViewSet):
         wagon = _record_stage_weight(request, self.get_object(), "entry")
         return self._done(wagon)
 
-    @action(detail=True, methods=["post"], url_path="lab")
-    def lab(self, request, pk=None):
-        fields = {
-            key: request.data.get(key)
-            for key in (
-                "moisture",
-                "impurity",
-                "nature",
-                "grain_class",
-                "infestation",
-                "damage",
-                "note",
-            )
-            if request.data.get(key) not in (None, "")
-        }
-        services.record_lab_check(
-            self.get_object(), request.data.get("decision"), request.user, **fields
-        )
-        return self._done(self.get_object())
-
-    @action(detail=True, methods=["get"], url_path="suggest-silos")
-    def suggest_silos_action(self, request, pk=None):
-        silos = services.suggest_silos(self.get_object())
-        return Response(SiloSerializer(silos, many=True).data)
-
-    @action(detail=True, methods=["post"], url_path="assign-silo")
-    def assign_silo_action(self, request, pk=None):
-        try:
-            silo = Silo.objects.get(pk=request.data.get("silo"))
-        except Silo.DoesNotExist:
-            raise ValidationError(
-                {"detail": "Силос не найден", "code": "silo_not_found"}
-            )
-        wagon = services.assign_silo(
-            self.get_object(),
-            silo,
-            request.user,
-            expected_kg=request.data.get("expected_kg"),
-        )
-        return self._done(wagon)
-
-    @action(detail=True, methods=["post"], url_path="change-silo")
-    def change_silo_action(self, request, pk=None):
-        try:
-            silo = Silo.objects.get(pk=request.data.get("silo"))
-        except Silo.DoesNotExist:
-            raise ValidationError(
-                {"detail": "Силос не найден", "code": "silo_not_found"}
-            )
-        wagon = services.change_silo(
-            self.get_object(), silo, request.data.get("reason") or "", request.user
-        )
-        return self._done(wagon)
-
-    @action(detail=True, methods=["post"], url_path="start-unloading")
-    def start_unloading_action(self, request, pk=None):
-        return self._done(services.start_unloading(self.get_object(), request.user))
-
-    @action(detail=True, methods=["post"], url_path="pause-unloading")
-    def pause_unloading(self, request, pk=None):
-        return self._done(
-            services.set_unloading_paused(
-                self.get_object(), bool(request.data.get("paused", True)), request.user
-            )
-        )
-
-    @action(detail=True, methods=["post"], url_path="finish-unloading")
-    def finish_unloading_action(self, request, pk=None):
-        return self._done(
-            services.finish_unloading(
-                self.get_object(), request.user, note=request.data.get("note") or ""
-            )
-        )
-
-    @action(detail=True, methods=["post"], url_path="tare")
-    def tare(self, request, pk=None):
-        _require_empty_scale_command(request)
-        wagon = services.record_scale_weight(
-            self.get_object(), "tare", request.user
-        )
-        return self._done(wagon)
-
     @action(detail=True, methods=["post"], url_path="exit-weight")
     def exit_weight(self, request, pk=None):
         _require_empty_scale_command(request)
         wagon = _record_stage_weight(request, self.get_object(), "exit")
         return self._done(wagon)
-
-    @action(detail=True, methods=["post"], url_path="resolve-discrepancy")
-    def resolve_discrepancy_action(self, request, pk=None):
-        return self._done(
-            services.resolve_discrepancy(
-                self.get_object(),
-                request.data.get("action") or "",
-                request.user,
-                reason=request.data.get("reason") or "",
-            )
-        )
 
     @action(detail=True, methods=["post"], url_path="resolve-simple-discrepancy")
     def resolve_simple_discrepancy_action(self, request, pk=None):
@@ -679,27 +401,8 @@ class WagonViewSet(GrainTripViewSet):
             )
         )
 
-    @action(detail=True, methods=["post"], url_path="inventory")
-    def inventory(self, request, pk=None):
-        return self._done(
-            services.inventory_wagon(
-                self.get_object(),
-                request.user,
-                allocations=request.data.get("allocations"),
-            )
-        )
 
-    @action(detail=True, methods=["post"], url_path="exit")
-    def exit(self, request, pk=None):
-        return self._done(
-            services.register_exit(
-                self.get_object(), request.user, note=request.data.get("note") or ""
-            )
-        )
-
-
-
-class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class UnassignedWeighingViewSet(NoStoreMixin, PermViewSetMixin, viewsets.ReadOnlyModelViewSet):
     """Веса автовесов без номера, которые ждут привязки оператором."""
 
     queryset = UnassignedWeighing.objects.select_related("wagon", "resolved_by", "identity_check").order_by(
@@ -734,17 +437,13 @@ class UnassignedWeighingViewSet(PermViewSetMixin, viewsets.ReadOnlyModelViewSet)
 
     def _done(self, item: UnassignedWeighing):
         item.refresh_from_db()
-        response = Response(UnassignedWeighingSerializer(item).data)
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(UnassignedWeighingSerializer(item).data)
 
     @action(detail=True, methods=["get"], url_path="tare-candidates")
     def tare_candidates(self, request, pk=None):
         from .historical_tare import candidates
         rows = candidates(self.get_object(), request.query_params.get("number", ""))[:20]
-        response = Response(WeighingRecordSerializer(rows, many=True).data)
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(WeighingRecordSerializer(rows, many=True).data)
 
     @action(detail=True, methods=["post"], url_path="historical-exit")
     def historical_exit(self, request, pk=None):
@@ -839,7 +538,7 @@ def _camera_pc_orientation() -> dict | None:
     return info or None
 
 
-class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
+class VehicleOrientationSampleViewSet(NoStoreMixin, viewsets.ReadOnlyModelViewSet):
     """Разметка датасета ориентации: кадры, автоматические метки, конфликты.
 
     Датасет — инструмент владельца: все действия только суперпользователю,
@@ -908,9 +607,7 @@ class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
 
     def _done(self, sample: VehicleOrientationSample):
         sample.refresh_from_db()
-        response = Response(self.get_serializer(sample).data)
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(self.get_serializer(sample).data)
 
     @action(detail=True, methods=["post"], url_path="label")
     def label(self, request, pk=None):
@@ -961,8 +658,7 @@ class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
             dropped=Count("id", filter=Q(excluded=True)),
             unsent=Count("id", filter=active & Q(sent_at__isnull=True)),
         )
-        camera_pc = _camera_pc_orientation()
-        response = Response(
+        return Response(
             {
                 "total": stats["total"],
                 "by_label": {"front": stats["front"], "rear": stats["rear"]},
@@ -974,11 +670,9 @@ class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
                 "conflicts": stats["conflicts"],
                 "excluded": stats["dropped"],
                 "unsent": stats["unsent"],
-                "camera_pc": camera_pc,
+                "camera_pc": _camera_pc_orientation(),
             }
         )
-        response["Cache-Control"] = "no-store"
-        return response
 
     @action(detail=False, methods=["post"], url_path="purge")
     def purge(self, request):
@@ -1012,36 +706,28 @@ class VehicleOrientationSampleViewSet(viewsets.ReadOnlyModelViewSet):
             result = orientation_dataset.purge_samples(
                 self.get_queryset().filter(captured_at__lt=cutoff), cutoff=cutoff
             )
-        response = Response(result)
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(result)
 
 
-class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):
+class SiloViewSet(
+    PermViewSetMixin,
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = silo_overview()
     serializer_class = SiloSerializer
     pagination_class = OptInPageNumberPagination
+    http_method_names = ["get", "post", "patch", "head", "options"]
     required_perms = {
         # Чтение доступно и вкладке «Силосы» (silos.view), и зерновому процессу.
         "list": ("grain.view", "silos.view"),
-        "retrieve": ("grain.view", "silos.view"),
         "create": "grain.admin",
-        "update": "grain.admin",
         "partial_update": "grain.admin",
-        "destroy": "grain.admin",
         "movements": ("grain.view", "silos.view"),
         "adjust": "grain.inventory",
     }
-
-    def perform_destroy(self, instance):
-        if instance.movements.exists() or instance.reservations.exists():
-            raise ValidationError(
-                {
-                    "detail": "Силос с историей удалить нельзя — заблокируйте его",
-                    "code": "silo_has_history",
-                }
-            )
-        instance.delete()
 
     @action(detail=True, methods=["get"], url_path="movements")
     def movements(self, request, pk=None):
@@ -1071,59 +757,37 @@ class SiloViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(GrainMovementSerializer(movement).data, status=201)
 
 
-class SiloTypeViewSet(PermViewSetMixin, viewsets.ModelViewSet):
+class SiloTypeViewSet(
+    PermViewSetMixin,
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = SiloType.objects.select_related("default_silo").prefetch_related("silos")
     serializer_class = SiloTypeSerializer
     pagination_class = OptInPageNumberPagination
+    http_method_names = ["get", "post", "patch", "head", "options"]
     required_perms = {
         "list": ("grain.view", "silos.view"),
-        "retrieve": ("grain.view", "silos.view"),
         "create": ("grain.supply", "grain.admin"),
-        "update": "grain.admin",
         "partial_update": "grain.admin",
-        "destroy": "grain.admin",
     }
 
-    def perform_destroy(self, instance):
-        if instance.silos.exists():
-            raise ValidationError(
-                {
-                    "detail": "Тип используется силосами — сначала измените их тип.",
-                    "code": "silo_type_in_use",
-                }
-            )
-        instance.delete()
 
-
-class WagonArchRuntimeView(PermAPIViewMixin, APIView):
-    required_perms = {"get": "grain.view"}
-
-    def get(self, request):
-        response = Response(wagon_arch.runtime())
-        response["Cache-Control"] = "no-store"
-        return response
-
-
-class WagonArchStopListView(PermAPIViewMixin, APIView):
+class WagonArchStopListView(NoStoreMixin, PermAPIViewMixin, APIView):
     required_perms = {"get": "grain.view"}
 
     def get(self, request):
         rows = WagonArchStop.objects.select_related("wagon").order_by("-id")
-        before = request.query_params.get("before")
-        if before:
-            if not before.isdigit() or int(before) <= 0:
-                raise ValidationError("Некорректный номер страницы")
-            rows = rows.filter(pk__lt=int(before))
-        page = list(rows[:51])
+        page, next_cursor = keyset_page(rows, request.query_params.get("before"))
         deliveries = {d.request_id: d for d in WeighingPhotoDelivery.objects.filter(
-            request_id__in=[stop.photo_request_id for stop in page[:50]])}
-        data = WagonArchStopSerializer(page[:50], many=True, context={"deliveries": deliveries}).data
-        response = Response({"results": data, "next_cursor": page[49].pk if len(page) > 50 else None})
-        response["Cache-Control"] = "no-store"
-        return response
+            request_id__in=[stop.photo_request_id for stop in page])}
+        data = WagonArchStopSerializer(page, many=True, context={"deliveries": deliveries}).data
+        return Response({"results": data, "next_cursor": next_cursor})
 
 
-class WagonArchStopDismissView(PermAPIViewMixin, APIView):
+class WagonArchStopDismissView(NoStoreMixin, PermAPIViewMixin, APIView):
     """Оператор разобрался со стопом сам — закрыть его вручную."""
 
     # Закрыть остановку под аркой может весовщик (grain.edit в каталоге не было).
@@ -1136,6 +800,4 @@ class WagonArchStopDismissView(PermAPIViewMixin, APIView):
         data = WagonArchStopSerializer(
             stop, context={"deliveries": {stop.photo_request_id: delivery}}
         ).data
-        response = Response(data)
-        response["Cache-Control"] = "no-store"
-        return response
+        return Response(data)

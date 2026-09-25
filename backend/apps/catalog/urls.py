@@ -1,9 +1,9 @@
 from django.urls import path
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from .photos import ProductPhotoView
 from .views import ProductViewSet, ClientPricesView
 
-router = DefaultRouter()
+router = SimpleRouter()
 router.register("products", ProductViewSet, basename="product")
 urlpatterns = router.urls + [
     path("client-prices/", ClientPricesView.as_view(), name="client-prices"),

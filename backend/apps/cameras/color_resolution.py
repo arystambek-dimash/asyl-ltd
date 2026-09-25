@@ -11,15 +11,13 @@ ever overwriting the camera's answer, which colour/brand an unknown bag gets.
 * The database passes store the decision in ``resolved_*``/``*_resolution``
   of ``AlwaysOnImportedEvent``; events of a posted production shift are never
   changed automatically (a manual assignment goes through production.py).
-* ``business_day_transfers`` (stock posting, previews, corrections through
+* ``business_day_transfers`` (stock posting and previews through
   ``production_runs._day_totals``) and ``overlay_daily_rows`` (calendar-day
   analytics) are the only places that move resolved bags from the camera's
   ``unknown`` bucket to their resolved colour. The raw ledgers never change.
 * Only the camera's own answers are evidence. A manual assignment is a count
   (not a check of particular bags), so it never resolves another bag; and a
   long streak of misses or a far neighbour is never guessed across.
-* Automatic decisions stay provisional until posting: corrections may only
-  subtract camera-detected and manually assigned bags.
 """
 
 from __future__ import annotations
@@ -30,20 +28,25 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from fractions import Fraction
 
-from django.conf import settings
 from django.db.models import Q
-from django.utils import timezone
 
-from .event_protocol import UNKNOWN_CLASS, event_color_key, normalize_brand
+from .event_protocol import UNKNOWN_CLASS, brand_key, event_color_key, normalize_brand
 from .models import (
     ANALYTICS_SCOPE_AI247,
+    METHOD_MANUAL,
+    METHOD_NEIGHBORS,
+    METHOD_UNRESOLVED,
+    METHOD_VOTES,
     AlwaysOnCountArchive,
     AlwaysOnImportedEvent,
     AlwaysOnStockBatch,
 )
 from .production_runs import (
     TERMINAL_BATCH_STATUSES,
+    _iso,
     business_day_for,
+    local_date,
+    local_day_window,
     scheduled_for,
 )
 
@@ -54,19 +57,16 @@ WHITE_BRAND_NOTE = "белый мешок лежит обратной сторо
 # bags wait for a resolved or manual colour instead of blocking the shift.
 PENDING_COLORS = frozenset({UNKNOWN})
 
-METHOD_NEIGHBORS = "neighbors"
-METHOD_VOTES = "votes"
-METHOD_MANUAL = "manual"
-METHOD_UNRESOLVED = "unresolved"
 # ``""`` means the camera's own answer is used as is (a classified bag).
 AUTO_METHODS = (METHOD_UNRESOLVED, METHOD_NEIGHBORS, METHOD_VOTES)
 RESOLVED_METHODS = (METHOD_NEIGHBORS, METHOD_VOTES, METHOD_MANUAL)
 
-DEFAULT_MAX_GAP_SECONDS = 180
+# Longest pause that still belongs to one continuous stretch of bags.
+MAX_GAP = timedelta(seconds=180)
 # More bags in a row without the camera's answer than this is a systematic
 # problem (a new product the model does not know, a dirty lens, lighting),
 # not a random miss: the whole stretch waits for an operator.
-DEFAULT_MAX_STREAK = 5
+MAX_STREAK = 5
 NEARER_RATIO = Fraction(1, 3)
 # Order in which resolved bags take a bucket's capacity: an audited manual
 # assignment always keeps its bags, then decisions with vote evidence.
@@ -75,24 +75,6 @@ _METHOD_PRIORITY = {METHOD_MANUAL: 0, METHOD_VOTES: 1, METHOD_NEIGHBORS: 2}
 # extra continuous context loaded around every evaluated window.
 IMPORT_LOOKBACK = timedelta(minutes=30)
 WINDOW_CONTEXT = timedelta(minutes=30)
-
-
-def configured_max_gap() -> timedelta:
-    """Longest pause that still belongs to one continuous stretch of bags."""
-
-    seconds = getattr(
-        settings,
-        "AI247_UNKNOWN_NEIGHBOR_MAX_GAP_SECONDS",
-        DEFAULT_MAX_GAP_SECONDS,
-    )
-    return timedelta(seconds=max(1, int(seconds)))
-
-
-def configured_max_streak() -> int:
-    """Most bags in a row without an answer that may still be resolved."""
-
-    value = getattr(settings, "AI247_UNKNOWN_MAX_STREAK", DEFAULT_MAX_STREAK)
-    return max(1, int(value))
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +132,8 @@ def _votes_text(votes: Mapping[str, int]) -> str:
 def resolve_sequence(
     bags: Sequence[Bag],
     *,
-    max_gap: timedelta | None = None,
-    nearer_ratio: Fraction = NEARER_RATIO,
-    max_streak: int | None = None,
+    max_gap: timedelta = MAX_GAP,
+    max_streak: int = MAX_STREAK,
     open_start: bool = False,
     open_end: bool = False,
 ) -> list[Resolution | None]:
@@ -166,7 +147,7 @@ def resolve_sequence(
        different value;
     c) the sides disagree (a run boundary) → the value the partial votes
        favour when it is one of the two; otherwise the clearly nearer
-       neighbour (distance ratio ≤ ``nearer_ratio``); otherwise unresolved.
+       neighbour (distance ratio ≤ ``NEARER_RATIO``); otherwise unresolved.
 
     A neighbour counts only when it is at most ``max_gap`` away from the bag
     itself (and so is reached without a longer pause); the second bag that
@@ -178,11 +159,9 @@ def resolve_sequence(
     (inconclusive), as is every non-candidate bag.
     """
 
-    gap = max_gap or configured_max_gap()
-    streak_cap = configured_max_streak() if max_streak is None else max_streak
     count = len(bags)
     linked = [False] + [
-        timedelta(0) <= bags[index].at - bags[index - 1].at <= gap
+        timedelta(0) <= bags[index].at - bags[index - 1].at <= max_gap
         for index in range(1, count)
     ]
 
@@ -222,13 +201,13 @@ def resolve_sequence(
         if not bag.candidate:
             continue
         streak = misses[stretch[index]]
-        if streak > streak_cap:
+        if streak > max_streak:
             # Also when the window cuts the stretch: it is at least this long.
             decisions[index] = Resolution(
                 None,
                 METHOD_UNRESOLVED,
                 f"подряд {streak} меш. без ответа камеры (допустимо до "
-                f"{streak_cap}): похоже на сбой распознавания или новый товар",
+                f"{max_streak}): похоже на сбой распознавания или новый товар",
             )
             continue
         decisions[index] = _decide(
@@ -236,8 +215,7 @@ def resolve_sequence(
             index,
             previous,
             following,
-            nearer_ratio=nearer_ratio,
-            gap=gap,
+            gap=max_gap,
         )
     return decisions
 
@@ -248,7 +226,6 @@ def _decide(
     previous: list[int],
     following: list[int],
     *,
-    nearer_ratio: Fraction,
     gap: timedelta,
 ) -> Resolution | None:
     bag = bags[index]
@@ -288,7 +265,7 @@ def _decide(
         far_us = far // timedelta(microseconds=1)
         if (
             far_us > 0
-            and near_us * nearer_ratio.denominator <= far_us * nearer_ratio.numerator
+            and near_us * NEARER_RATIO.denominator <= far_us * NEARER_RATIO.numerator
         ):
             value = left.value if left_distance <= right_distance else right.value
             return Resolution(
@@ -353,9 +330,7 @@ def effective_brand(
 
     if brand_resolution in RESOLVED_METHODS and resolved_brand:
         return resolved_brand
-    if brand is None:
-        return None
-    return " ".join(brand.split()).lower() or None
+    return brand_key(brand)
 
 
 def _is_color_candidate(row: AlwaysOnImportedEvent) -> bool:
@@ -374,13 +349,14 @@ def _known_color(row: AlwaysOnImportedEvent) -> str | None:
     return key if key and key != UNKNOWN else None
 
 
-def _is_brand_candidate(row: AlwaysOnImportedEvent) -> bool:
+def _is_unknown_brand(brand: str | None, classification_status: str | None) -> bool:
     # A white bag is shown reversed on purpose: no brand is visible by design.
-    return (
-        row.brand_resolution != METHOD_MANUAL
-        and row.brand is not None
-        and " ".join(row.brand.split()).lower() == UNKNOWN
-        and row.classification_status != "white_reverse"
+    return brand_key(brand) == UNKNOWN and classification_status != "white_reverse"
+
+
+def _is_brand_candidate(row: AlwaysOnImportedEvent) -> bool:
+    return row.brand_resolution != METHOD_MANUAL and _is_unknown_brand(
+        row.brand, row.classification_status
     )
 
 
@@ -403,26 +379,21 @@ def initial_markers(
             METHOD_UNRESOLVED if event_color_key(color, class_name) == UNKNOWN else ""
         ),
         "brand_resolution": (
-            METHOD_UNRESOLVED
-            if brand is not None
-            and " ".join(brand.split()).lower() == UNKNOWN
-            and classification_status != "white_reverse"
-            else ""
+            METHOD_UNRESOLVED if _is_unknown_brand(brand, classification_status) else ""
         ),
     }
 
 
-def unknown_color_q(prefix: str = "") -> Q:
+def unknown_color_q() -> Q:
     """SQL twin of ``event_color_key(...) == "unknown"`` for bounded reads."""
 
     def unknown(field_name: str) -> Q:
-        return Q(**{f"{prefix}{field_name}__iexact": UNKNOWN}) | Q(
-            **{f"{prefix}{field_name}__istartswith": f"{UNKNOWN}_"}
+        return Q(**{f"{field_name}__iexact": UNKNOWN}) | Q(
+            **{f"{field_name}__istartswith": f"{UNKNOWN}_"}
         )
 
     return unknown("color") | (
-        (Q(**{f"{prefix}color__isnull": True}) | Q(**{f"{prefix}color": ""}))
-        & unknown("class_name")
+        (Q(color__isnull=True) | Q(color="")) & unknown("class_name")
     )
 
 
@@ -512,10 +483,9 @@ def _evaluate(
 
     if not rows:
         return 0
-    gap = configured_max_gap()
-    open_start = rows[0].occurred_at - query_start <= gap
-    open_end = query_end is not None and query_end - rows[-1].occurred_at <= gap
-    options = {"max_gap": gap, "open_start": open_start, "open_end": open_end}
+    open_start = rows[0].occurred_at - query_start <= MAX_GAP
+    open_end = query_end is not None and query_end - rows[-1].occurred_at <= MAX_GAP
+    options = {"open_start": open_start, "open_end": open_end}
     colors = resolve_sequence(
         [
             Bag(
@@ -670,14 +640,13 @@ def awaits_following_bags(
     """
 
     cutoff = scheduled_for(business_day)
-    gap = configured_max_gap()
-    if caught_up_at is not None and caught_up_at >= cutoff + gap:
+    if caught_up_at is not None and caught_up_at >= cutoff + MAX_GAP:
         return False
     return (
         _journal(camera)
         .filter(
             Q(color_resolution__in=AUTO_METHODS) | Q(brand_resolution__in=AUTO_METHODS),
-            occurred_at__gte=cutoff - gap,
+            occurred_at__gte=cutoff - MAX_GAP,
             occurred_at__lt=cutoff,
         )
         .exists()
@@ -710,24 +679,18 @@ def pending_unknown_events(camera: str, business_day: date, limit: int):
 
 @dataclass(frozen=True)
 class Transfers:
-    """Net bag movement per bucket and how the incoming bags were resolved.
-
-    ``automatic`` is the part of ``delta`` made by neighbour/vote decisions:
-    they may still change until the shift is posted, so a correction can
-    never rely on them (see ``production_runs._day_totals``).
-    """
+    """Net bag movement per bucket and how the incoming bags were resolved."""
 
     delta: dict[str, int]
     inferred: dict[str, dict[str, int]]
-    automatic: dict[str, int] = field(default_factory=dict)
 
 
 def _transfers(rows, available: Mapping[str, int]) -> Transfers:
     """Never move more bags than a bucket holds.
 
-    A bucket can hold fewer bags than resolved events when an operator has
-    already subtracted part of it (a correction) or, for analytics, when the
-    day was split by an archive. The bags beyond it are not moved twice.
+    A bucket can hold fewer bags than resolved events when a historical
+    correction subtracted part of it or, for analytics, when the day was
+    split by an archive. The bags beyond it are not moved twice.
     Manual assignments take the capacity first, so a later automatic
     decision can never push an audited assignment out; within one method
     the given order (newest first) decides.
@@ -735,7 +698,6 @@ def _transfers(rows, available: Mapping[str, int]) -> Transfers:
 
     remaining = {key: max(0, int(value)) for key, value in available.items()}
     delta: dict[str, int] = defaultdict(int)
-    automatic: dict[str, int] = defaultdict(int)
     inferred: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for source, target, method in sorted(
         rows, key=lambda row: _METHOD_PRIORITY.get(row[2], len(_METHOD_PRIORITY))
@@ -746,13 +708,9 @@ def _transfers(rows, available: Mapping[str, int]) -> Transfers:
         delta[source] -= 1
         delta[target] += 1
         inferred[target][method] += 1
-        if method != METHOD_MANUAL:
-            automatic[source] -= 1
-            automatic[target] += 1
     return Transfers(
         {key: value for key, value in delta.items() if value},
         {key: dict(sorted(value.items())) for key, value in inferred.items()},
-        {key: value for key, value in automatic.items() if value},
     )
 
 
@@ -786,54 +744,34 @@ def business_day_transfers(
     )
 
 
-def _local_day(value: datetime) -> date:
-    return timezone.localtime(value, timezone.get_default_timezone()).date()
-
-
-def _day_bounds(first: date, last: date) -> tuple[datetime, datetime]:
-    tz = timezone.get_default_timezone()
-    return (
-        timezone.make_aware(datetime.combine(first, datetime.min.time()), tz),
-        timezone.make_aware(
-            datetime.combine(last + timedelta(days=1), datetime.min.time()), tz
-        ),
-    )
-
-
-def overlay_daily_rows(
-    rows, *, methods: Sequence[str] = RESOLVED_METHODS
-) -> dict[tuple[str, date], dict[str, dict]]:
-    """Show resolved colours/brands in active AI 24/7 daily analytics rows.
+def overlay_daily_rows(rows) -> dict[tuple[str, date], dict[str, dict[str, int]]]:
+    """Show resolved colours in active AI 24/7 daily analytics rows.
 
     The stored daily ledger keeps the camera's answers; this replaces the
-    in-memory ``model_per_color``/``model_per_brand`` of the given (unsaved,
-    read-only) rows with one grouped read. Returns what was inferred per
-    (camera, day): ``{"colors": {colour: {method: n}}, "brands": {...}}``.
-    ``methods=(METHOD_MANUAL,)`` gives the stable counts a subtraction may
-    rely on (automatic decisions can still change before posting).
+    in-memory ``model_per_color`` of the given (unsaved, read-only) rows with
+    one grouped read. Returns what was inferred per (camera, day):
+    ``{colour: {method: n}}``.
     """
-
-    methods = tuple(methods)
 
     rows = [row for row in rows if row.model_total > 0]
     if not rows:
         return {}
     days = [row.day for row in rows]
-    start, end = _day_bounds(min(days), max(days))
+    start, end = local_day_window(min(days), max(days))
     by_key = {(row.camera, row.day): row for row in rows}
     cameras = {row.camera for row in rows}
-    # Archiving zeroes the live day (analytics.archive_camera): the bags
-    # imported before that moment left this row for the archive snapshot.
+    # Archiving zeroed the live day: the bags imported before that moment
+    # left this row for the archive snapshot.
     archived_before: dict[tuple[str, date], datetime] = {}
     for camera, created_at in AlwaysOnCountArchive.objects.filter(
         camera__in=cameras, created_at__gte=start, created_at__lt=end
     ).values_list("camera", "created_at"):
-        key = (camera, _local_day(created_at))
+        key = (camera, local_date(created_at))
         archived_before[key] = max(archived_before.get(key, created_at), created_at)
     events = (
         AlwaysOnImportedEvent.objects.filter(
-            (Q(color_resolution__in=methods) & ~Q(resolved_color=""))
-            | (Q(brand_resolution__in=methods) & ~Q(resolved_brand="")),
+            ~Q(resolved_color=""),
+            color_resolution__in=RESOLVED_METHODS,
             camera__in=cameras,
             analytics_scope=ANALYTICS_SCOPE_AI247,
             applied_to_analytics=True,
@@ -849,13 +787,9 @@ def overlay_daily_rows(
             "class_name",
             "resolved_color",
             "color_resolution",
-            "brand",
-            "resolved_brand",
-            "brand_resolution",
         )
     )
     color_moves: dict[tuple[str, date], list] = defaultdict(list)
-    brand_moves: dict[tuple[str, date], list] = defaultdict(list)
     for (
         camera,
         occurred_at,
@@ -864,45 +798,27 @@ def overlay_daily_rows(
         class_name,
         resolved_color,
         color_method,
-        brand,
-        resolved_brand,
-        brand_method,
     ) in events:
-        key = (camera, _local_day(occurred_at))
+        key = (camera, local_date(occurred_at))
         if key not in by_key:
             continue
         if key in archived_before and imported_at < archived_before[key]:
             continue
-        if color_method in methods and resolved_color:
-            source = event_color_key(color, class_name)
-            if source:
-                color_moves[key].append((source, resolved_color, color_method))
-        if brand_method in methods and resolved_brand and brand is not None:
-            source = " ".join(brand.split()).lower()
-            if source:
-                brand_moves[key].append((source, resolved_brand, brand_method))
+        source = event_color_key(color, class_name)
+        if source:
+            color_moves[key].append((source, resolved_color, color_method))
 
-    inferred: dict[tuple[str, date], dict[str, dict]] = {}
-    for key in set(color_moves) | set(brand_moves):
+    inferred: dict[tuple[str, date], dict[str, dict[str, int]]] = {}
+    for key, moves in color_moves.items():
         row = by_key[key]
         colors = {
             str(name): int(value)
             for name, value in (row.model_per_color or {}).items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
-        brands = {
-            str(name): int(value)
-            for name, value in (row.model_per_brand or {}).items()
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-        }
-        color_transfer = _transfers(color_moves.get(key, ()), colors)
-        brand_transfer = _transfers(brand_moves.get(key, ()), brands)
-        row.model_per_color = _moved(colors, color_transfer.delta)
-        row.model_per_brand = _moved(brands, brand_transfer.delta)
-        inferred[key] = {
-            "colors": color_transfer.inferred,
-            "brands": brand_transfer.inferred,
-        }
+        transfer = _transfers(moves, colors)
+        row.model_per_color = _moved(colors, transfer.delta)
+        inferred[key] = transfer.inferred
     return inferred
 
 
@@ -955,8 +871,7 @@ def resolved_day_runs(
     *,
     start: datetime,
     end: datetime,
-    iso,
-) -> tuple[list[dict], dict]:
+) -> list[dict]:
     """Return display runs where resolved bags carry their colour and marker.
 
     ``rows``/``payloads`` are the day's ``AlwaysOnProductionRun`` rows and
@@ -988,7 +903,6 @@ def resolved_day_runs(
             .values_list("occurred_at", "resolved_color", "color_resolution")
         )
     display: list[dict] = []
-    inferred: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     target_set = set(targets)
     for index, payload in enumerate(payloads):
         row = rows[index]
@@ -1024,27 +938,14 @@ def resolved_day_runs(
             if methods:
                 item["inferred"] = dict(sorted(methods.items()))
                 item["source_color"] = payload["color"]
-                for method, count in methods.items():
-                    inferred[color][method] += count
             if len(segments) > 1:
                 item["segment"] = position
                 item["started_at"] = (
-                    iso(bags[0][0]) if position else payload["started_at"]
+                    _iso(bags[0][0]) if position else payload["started_at"]
                 )
                 if position < len(segments) - 1:
-                    item["last_counted_at"] = iso(bags[-1][0])
-                    item["ended_at"] = iso(bags[-1][0])
+                    item["last_counted_at"] = _iso(bags[-1][0])
+                    item["ended_at"] = _iso(bags[-1][0])
                     item["status"] = "closed"
             display.append(item)
-    summary = {
-        "inferred": {
-            color: dict(sorted(methods.items())) for color, methods in inferred.items()
-        },
-        "unresolved_bags": sum(
-            int(item["model_bags"])
-            for item in display
-            if item.get("color") in PENDING_COLORS
-            and not item.get("is_partial_for_day")
-        ),
-    }
-    return display, summary
+    return display

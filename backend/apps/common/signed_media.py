@@ -2,6 +2,7 @@
 
 from typing import ClassVar
 
+from django.http import FileResponse
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
@@ -19,3 +20,17 @@ class SignedMediaView(APIView):
     authentication_classes: ClassVar[list] = []
     permission_classes: ClassVar[list] = [AllowAny]
     throttle_classes: ClassVar[list] = []
+
+    @staticmethod
+    def file_response(
+        handle,
+        *,
+        content_type: str = "image/jpeg",
+        cache_control: str = "private, no-store",
+        **options,
+    ) -> FileResponse:
+        """Stream an opened private file; the browser must not sniff its type."""
+        response = FileResponse(handle, content_type=content_type, **options)
+        response["Cache-Control"] = cache_control
+        response["X-Content-Type-Options"] = "nosniff"
+        return response

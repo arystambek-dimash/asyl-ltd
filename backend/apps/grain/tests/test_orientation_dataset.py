@@ -2,10 +2,8 @@
 
 import json
 from datetime import timedelta
-from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
-from uuid import uuid4
 
 import pytest
 from apps.cameras import ai as camera_ai
@@ -18,63 +16,17 @@ from apps.grain.models import (
     Wagon,
     WeighingRecord,
 )
-from django.core.files.base import ContentFile
+from apps.grain.tests.factories import (
+    JPEG,
+    orientation_sample,
+    orientation_trip,
+    unassigned_weighing,
+    weighing_record,
+)
 from django.core.management import CommandError, call_command
 from django.utils import timezone
 
-pytestmark = pytest.mark.django_db
-
-JPEG = b"\xff\xd8\xff\xe0" + b"1" * 32
-
-
-@pytest.fixture(autouse=True)
-def dataset_settings(settings, tmp_path):
-    settings.MEDIA_ROOT = tmp_path
-    settings.VEHICLE_ORIENTATION_DATASET_ENABLED = True
-    settings.VEHICLE_ORIENTATION_EMPTY_MAX_KG = 5000
-    settings.VEHICLE_ORIENTATION_LOADED_MIN_KG = 6000
-    settings.VEHICLE_ORIENTATION_EXPORT_BATCH = 100
-    settings.VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS = 60
-
-
-def _trip(number="854ANB13", *, status=st.AT_SILO, gross=None, tare=None, direction=Wagon.PASSAGE):
-    return Wagon.objects.create(
-        number=number,
-        direction=direction,
-        workflow="simple",
-        cargo_name="Отруби",
-        status=status,
-        arrived_at=timezone.now() - timedelta(hours=1),
-        gross_weight_kg=gross,
-        tare_weight_kg=tare,
-        number_source="camera",
-    )
-
-
-def _record(wagon, kind, weight, *, orientation="", photo=True):
-    record = WeighingRecord.objects.create(
-        wagon=wagon, kind=kind, weight_kg=weight, source="scale", orientation=orientation
-    )
-    if photo:
-        record.photo.save(f"{uuid4()}.jpg", ContentFile(JPEG), save=True)
-    return record
-
-
-def _unassigned(weight, *, status=UnassignedWeighing.OPEN, action="", wagon=None, orientation=""):
-    item = UnassignedWeighing.objects.create(
-        weight_kg=weight,
-        stable_weight_at=timezone.now() - timedelta(minutes=30),
-        scale_number="truck",
-        scale_age_seconds=Decimal("0.2"),
-        camera="cam1",
-        photo_request_id=uuid4(),
-        status=status,
-        action=action,
-        wagon=wagon,
-        orientation=orientation,
-    )
-    item.photo.save(f"{item.photo_request_id}.jpg", ContentFile(JPEG), save=True)
-    return item
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("orientation_dataset")]
 
 
 @pytest.mark.parametrize(
@@ -89,29 +41,29 @@ def test_weight_rule_has_a_dead_zone(weight, expected):
 
 
 def test_completed_trip_labels_by_role_even_for_a_heavy_empty_truck():
-    kamaz = _trip(status=st.COMPLETED, gross=8500, tare=20000)
-    entry = _record(kamaz, "gross", 8500)
-    exit_record = _record(kamaz, "tare", 20000)
+    kamaz = orientation_trip(gross=8500, tare=20000)
+    entry = weighing_record(kamaz, "gross", 8500)
+    exit_record = weighing_record(kamaz, "tare", 20000)
 
     assert dataset.label_weighing(entry) == dataset.Label("front", "trip")
     assert dataset.label_weighing(exit_record) == dataset.Label("rear", "trip")
 
 
 def test_open_and_cancelled_trips_fall_back_to_weight_or_nothing():
-    open_trip = _trip(status=st.AT_SILO, gross=3880)
-    cancelled = _trip("676VEA13", status=st.CANCELLED, gross=8320)
+    open_trip = orientation_trip(status=st.AT_SILO, tare=None)
+    cancelled = orientation_trip("676VEA13", status=st.CANCELLED, gross=8320, tare=None)
 
-    assert dataset.label_weighing(_record(open_trip, "gross", 3880)) == dataset.Label("front", "weight")
-    assert dataset.label_weighing(_record(cancelled, "gross", 8320)) is None
-    intake = _trip("111AAA01", direction=Wagon.INTAKE, gross=30000)
-    assert dataset.label_weighing(_record(intake, "gross", 30000)) is None
+    assert dataset.label_weighing(weighing_record(open_trip, "gross", 3880)) == dataset.Label("front", "weight")
+    assert dataset.label_weighing(weighing_record(cancelled, "gross", 8320)) is None
+    intake = orientation_trip("111AAA01", status=st.AT_SILO, gross=30000, tare=None, direction=Wagon.INTAKE)
+    assert dataset.label_weighing(weighing_record(intake, "gross", 30000)) is None
 
 
 def test_unassigned_labels_follow_the_trip_once_assigned():
-    done = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    assigned_exit = _unassigned(8760, status=UnassignedWeighing.ASSIGNED, action="exit", wagon=done)
-    parked = _unassigned(3900)
-    discarded = _unassigned(9000, status=UnassignedWeighing.DISCARDED)
+    done = orientation_trip()
+    assigned_exit = unassigned_weighing(8760, status=UnassignedWeighing.ASSIGNED, action="exit", wagon=done)
+    parked = unassigned_weighing(3900)
+    discarded = unassigned_weighing(9000, status=UnassignedWeighing.DISCARDED)
 
     assert dataset.label_unassigned(assigned_exit) == dataset.Label("rear", "trip")
     assert dataset.label_unassigned(parked) == dataset.Label("front", "weight")
@@ -119,11 +71,11 @@ def test_unassigned_labels_follow_the_trip_once_assigned():
 
 
 def test_collect_creates_rows_and_holds_back_model_conflicts():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    entry = _record(trip, "gross", 3880, orientation="front")
-    contradicted = _record(trip, "tare", 8760, orientation="front")  # model said front for the exit
-    _record(trip, "tare", 8760, photo=False)  # no photo: nothing to learn from
-    parked = _unassigned(3900)
+    trip = orientation_trip()
+    entry = weighing_record(trip, "gross", 3880, orientation="front")
+    contradicted = weighing_record(trip, "tare", 8760, orientation="front")  # model said front for the exit
+    weighing_record(trip, "tare", 8760, photo=False)  # no photo: nothing to learn from
+    parked = unassigned_weighing(3900)
 
     counters = dataset.collect()
 
@@ -137,8 +89,8 @@ def test_collect_creates_rows_and_holds_back_model_conflicts():
 
 
 def test_a_corrected_trip_relabels_and_resends_the_frame():
-    trip = _trip(status=st.AT_SILO, gross=8760)  # booked as entry by mistake
-    record = _record(trip, "gross", 8760)
+    trip = orientation_trip(status=st.AT_SILO, gross=8760, tare=None)  # booked as entry by mistake
+    record = weighing_record(trip, "gross", 8760)
     dataset.collect()
     sample = VehicleOrientationSample.objects.get()
     assert (sample.label, sample.label_source) == ("rear", "weight")
@@ -158,9 +110,9 @@ def test_a_corrected_trip_relabels_and_resends_the_frame():
 
 
 def test_export_posts_frames_and_stops_when_camera_pc_is_down():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    entry = _record(trip, "gross", 3880)
-    exit_record = _record(trip, "tare", 8760)
+    trip = orientation_trip()
+    entry = weighing_record(trip, "gross", 3880)
+    exit_record = weighing_record(trip, "tare", 8760)
     dataset.collect()
 
     with patch.object(camera_ai, "post_orientation_sample", return_value={"ok": True}) as post:
@@ -193,9 +145,9 @@ def test_export_posts_frames_and_stops_when_camera_pc_is_down():
 
 
 def test_export_records_rejections_and_skips_frames_without_a_file():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    rejected = _record(trip, "gross", 3880)
-    lost = _record(trip, "tare", 8760)
+    trip = orientation_trip()
+    rejected = weighing_record(trip, "gross", 3880)
+    lost = weighing_record(trip, "tare", 8760)
     dataset.collect()
     lost.photo.delete(save=False)  # file gone, reference kept
     WeighingRecord.objects.filter(pk=lost.pk).update(photo="grain/missing.jpg")
@@ -221,8 +173,8 @@ def test_run_can_be_disabled_and_the_command_reports_json(settings):
     assert dataset.run() == {"enabled": False}
 
     settings.VEHICLE_ORIENTATION_DATASET_ENABLED = True
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    _record(trip, "gross", 3880)
+    trip = orientation_trip()
+    weighing_record(trip, "gross", 3880)
     out = StringIO()
     with patch.object(camera_ai, "post_orientation_sample", return_value={"ok": True}):
         call_command("export_orientation_samples", stdout=out)
@@ -265,8 +217,8 @@ def test_client_sends_the_frame_with_metadata_headers():
 
 
 def test_manual_label_wins_over_automatic_rules_and_is_resent():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    record = _record(trip, "gross", 3880)
+    trip = orientation_trip()
+    record = weighing_record(trip, "gross", 3880)
     dataset.collect()
     sample = VehicleOrientationSample.objects.get()
     delivered = timezone.now()
@@ -290,9 +242,9 @@ def test_manual_label_wins_over_automatic_rules_and_is_resent():
 
 
 def test_excluding_a_sent_frame_removes_it_from_camera_pc():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    _record(trip, "gross", 3880)
-    never_sent = _record(trip, "tare", 8760)
+    trip = orientation_trip()
+    weighing_record(trip, "gross", 3880)
+    never_sent = weighing_record(trip, "tare", 8760)
     dataset.collect()
     sent, fresh = VehicleOrientationSample.objects.order_by("record_id")
     assert fresh.record_id == never_sent.pk
@@ -357,19 +309,6 @@ def test_dataset_clients_accept_only_2xx():
 # --- Очистка датасета -------------------------------------------------------
 
 
-def _row(record_id, *, kind=VehicleOrientationSample.WEIGHING, label="front", source="trip", **fields):
-    """Строка датасета напрямую: для очистки исходное взвешивание не нужно."""
-    return VehicleOrientationSample.objects.create(
-        record_kind=kind,
-        record_id=record_id,
-        label=label,
-        label_source=source,
-        weight_kg=fields.pop("weight_kg", 4000),
-        captured_at=fields.pop("captured_at", None) or timezone.now(),
-        **fields,
-    )
-
-
 def _on_pc(moment=None) -> dict:
     """Поля строки, чью копию Camera-PC держит: доставлена и не удалена."""
     moment = moment or timezone.now()
@@ -384,12 +323,12 @@ def _watermark():
 
 def test_purge_samples_deletes_rows_and_asks_camera_pc_only_about_delivered_frames():
     now = timezone.now()
-    sent = _row(1, **_on_pc(now))
-    gone_on_pc = _row(2, **_on_pc(now))
-    pending = _row(3, excluded=True, removal_pending=True)
-    _row(4)  # never reached Camera-PC
+    sent = orientation_sample(1, **_on_pc(now))
+    gone_on_pc = orientation_sample(2, **_on_pc(now))
+    pending = orientation_sample(3, excluded=True, removal_pending=True)
+    orientation_sample(4)  # never reached Camera-PC
     # Relabelled while the PC keeps the old copy: sent_at is reset, delivered_at is not.
-    relabelled = _row(5, source="manual", delivered_at=now)
+    relabelled = orientation_sample(5, source="manual", delivered_at=now)
 
     def fake_delete(sample_id):
         return sample_id != gone_on_pc.sample_id  # 404: the PC already forgot it
@@ -407,11 +346,11 @@ def test_purge_samples_deletes_rows_and_asks_camera_pc_only_about_delivered_fram
 
 def test_purge_samples_keeps_frames_camera_pc_rejected_or_could_not_reach():
     now = timezone.now()
-    rejected = _row(1, conflict=True, **_on_pc(now))
-    forgotten = _row(2, **_on_pc(now))
-    at_outage = _row(3, **_on_pc(now))
-    fresh = _row(4)
-    after_outage = _row(5, **_on_pc(now))
+    rejected = orientation_sample(1, conflict=True, **_on_pc(now))
+    forgotten = orientation_sample(2, **_on_pc(now))
+    at_outage = orientation_sample(3, **_on_pc(now))
+    fresh = orientation_sample(4)
+    after_outage = orientation_sample(5, **_on_pc(now))
     answers = [camera_ai.AiError(500, "disk full", {}), True, camera_ai.AiUnavailable("timed out")]
 
     with patch.object(camera_ai, "delete_orientation_sample", side_effect=answers) as delete:
@@ -436,8 +375,8 @@ def test_purge_samples_keeps_frames_camera_pc_rejected_or_could_not_reach():
 
 
 def test_purge_samples_can_leave_camera_pc_alone():
-    _row(1, **_on_pc())
-    _row(2)
+    orientation_sample(1, **_on_pc())
+    orientation_sample(2)
 
     with patch.object(camera_ai, "delete_orientation_sample") as delete:
         result = dataset.purge_samples(VehicleOrientationSample.objects.all(), remove_from_pc=False)
@@ -449,8 +388,8 @@ def test_purge_samples_can_leave_camera_pc_alone():
 
 def test_purge_samples_works_in_batches_and_reports_the_rest():
     now = timezone.now()
-    rows = [_row(record_id, captured_at=now, **_on_pc(now)) for record_id in (1, 2, 3)]
-    untouched = _row(9, captured_at=now + timedelta(hours=1))  # outside the filter
+    rows = [orientation_sample(record_id, captured_at=now, **_on_pc(now)) for record_id in (1, 2, 3)]
+    untouched = orientation_sample(9, captured_at=now + timedelta(hours=1))  # outside the filter
     queryset = VehicleOrientationSample.objects.filter(captured_at__lte=now)
 
     with patch.object(camera_ai, "delete_orientation_sample", return_value=True) as delete:
@@ -469,8 +408,8 @@ def test_purge_samples_works_in_batches_and_reports_the_rest():
 
 def test_purge_all_clears_camera_pc_in_one_call_or_falls_back_to_frames():
     now = timezone.now()
-    _row(1, **_on_pc(now))
-    _row(2)
+    orientation_sample(1, **_on_pc(now))
+    orientation_sample(2)
     with (
         patch.object(camera_ai, "clear_orientation_samples", return_value=1) as clear,
         patch.object(camera_ai, "delete_orientation_sample") as delete,
@@ -483,8 +422,8 @@ def test_purge_all_clears_camera_pc_in_one_call_or_falls_back_to_frames():
     assert VehicleOrientationSample.objects.count() == 0
 
     # An older Camera-PC without the bulk route: frames go one by one, in batches.
-    sent = _row(3, **_on_pc(now))
-    _row(4)
+    sent = orientation_sample(3, **_on_pc(now))
+    orientation_sample(4)
     with (
         patch.object(
             camera_ai, "clear_orientation_samples", side_effect=camera_ai.AiError(404, "no route", {})
@@ -502,8 +441,8 @@ def test_purge_all_clears_camera_pc_in_one_call_or_falls_back_to_frames():
     assert VehicleOrientationSample.objects.count() == 0
 
     # The PC is down: delivered frames wait for the nightly removal, the rest go now.
-    kept = _row(5, **_on_pc(now))
-    _row(6)
+    kept = orientation_sample(5, **_on_pc(now))
+    orientation_sample(6)
     with (
         patch.object(
             camera_ai, "clear_orientation_samples", side_effect=camera_ai.AiUnavailable("down")
@@ -531,9 +470,9 @@ def test_purge_all_clears_camera_pc_in_one_call_or_falls_back_to_frames():
 
 
 def test_purge_all_moves_the_watermark_so_the_nightly_collect_does_not_resurrect_rows():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    _record(trip, "gross", 3880)
-    _record(trip, "tare", 8760)
+    trip = orientation_trip()
+    weighing_record(trip, "gross", 3880)
+    weighing_record(trip, "tare", 8760)
     assert dataset.collect()["created"] == 2
     assert _watermark() is None
 
@@ -549,9 +488,9 @@ def test_purge_all_moves_the_watermark_so_the_nightly_collect_does_not_resurrect
     assert VehicleOrientationSample.objects.count() == 0
 
     # A frame weighed after the purge is collected as usual.
-    later = _trip("676VEA13", status=st.COMPLETED, gross=3900, tare=8800)
-    _record(later, "gross", 3900)
-    _unassigned(3950)
+    later = orientation_trip("676VEA13", gross=3900, tare=8800)
+    weighing_record(later, "gross", 3900)
+    unassigned_weighing(3950)
     assert dataset.collect()["created"] == 2
     assert VehicleOrientationSample.objects.count() == 2
 
@@ -563,10 +502,10 @@ def test_purge_all_moves_the_watermark_so_the_nightly_collect_does_not_resurrect
 
 def test_older_than_purge_moves_the_watermark_to_its_cutoff():
     now = timezone.now()
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    old = _record(trip, "gross", 3880)
-    fresh = _record(trip, "tare", 8760)
-    stale_item = _unassigned(3900)
+    trip = orientation_trip()
+    old = weighing_record(trip, "gross", 3880)
+    fresh = weighing_record(trip, "tare", 8760)
+    stale_item = unassigned_weighing(3900)
     WeighingRecord.objects.filter(pk=old.pk).update(created_at=now - timedelta(days=40))
     UnassignedWeighing.objects.filter(pk=stale_item.pk).update(created_at=now - timedelta(days=35))
     assert dataset.collect()["created"] == 3
@@ -594,8 +533,8 @@ def test_older_than_purge_moves_the_watermark_to_its_cutoff():
 
 
 def test_relabelled_frame_is_still_removed_from_camera_pc_on_purge():
-    trip = _trip(status=st.COMPLETED, gross=3880, tare=8760)
-    _record(trip, "gross", 3880)
+    trip = orientation_trip()
+    weighing_record(trip, "gross", 3880)
     dataset.collect()
     sample = VehicleOrientationSample.objects.get()
     with patch.object(camera_ai, "post_orientation_sample", return_value={"ok": True}):
@@ -628,8 +567,8 @@ def test_relabelled_frame_is_still_removed_from_camera_pc_on_purge():
 
 def test_purge_command_reports_totals_and_needs_a_scope():
     now = timezone.now()
-    old = _row(1, captured_at=now - timedelta(days=10), **_on_pc(now))
-    fresh = _row(2, captured_at=now - timedelta(days=1), **_on_pc(now))
+    old = orientation_sample(1, captured_at=now - timedelta(days=10), **_on_pc(now))
+    fresh = orientation_sample(2, captured_at=now - timedelta(days=1), **_on_pc(now))
 
     out = StringIO()
     with patch.object(camera_ai, "delete_orientation_sample", return_value=True) as delete:
@@ -654,7 +593,7 @@ def test_purge_command_reports_totals_and_needs_a_scope():
     delete.assert_not_called()
     assert _watermark() >= now
 
-    _row(3, **_on_pc(now))
+    orientation_sample(3, **_on_pc(now))
     out = StringIO()
     with patch.object(camera_ai, "clear_orientation_samples", return_value=1) as clear:
         call_command("purge_orientation_samples", "--all", stdout=out)
@@ -671,7 +610,7 @@ def test_purge_command_reports_totals_and_needs_a_scope():
 def test_purge_command_loops_over_batches_and_stops_when_camera_pc_is_down():
     now = timezone.now()
     for record_id in range(1, 6):
-        _row(record_id, captured_at=now - timedelta(days=10), **_on_pc(now))
+        orientation_sample(record_id, captured_at=now - timedelta(days=10), **_on_pc(now))
 
     out = StringIO()
     with (
@@ -687,7 +626,7 @@ def test_purge_command_loops_over_batches_and_stops_when_camera_pc_is_down():
 
     # --all on an old PC firmware: bulk clear fails every time, batches still finish.
     for record_id in range(6, 9):
-        _row(record_id, **_on_pc(now))
+        orientation_sample(record_id, **_on_pc(now))
     out = StringIO()
     with (
         patch.object(
@@ -704,7 +643,7 @@ def test_purge_command_loops_over_batches_and_stops_when_camera_pc_is_down():
 
     # The PC is down: one batch, then stop — the next batch would meet the same rows.
     kept = [
-        _row(record_id, captured_at=now - timedelta(days=10), **_on_pc(now))
+        orientation_sample(record_id, captured_at=now - timedelta(days=10), **_on_pc(now))
         for record_id in range(9, 13)
     ]
     out = StringIO()
@@ -741,3 +680,95 @@ def test_clear_client_wipes_the_dataset_in_one_request():
         with pytest.raises(camera_ai.AiError) as excinfo:
             camera_ai.clear_orientation_samples()
     assert excinfo.value.status == 404
+
+
+def _weighing_sample(record_id, **fields):
+    return VehicleOrientationSample.objects.create(
+        record_kind="weighing", record_id=record_id, label="front", label_source="weight",
+        weight_kg=1000, captured_at=timezone.now(), **fields,
+    )
+
+
+def _export_with(side_effect):
+    with patch.object(dataset, "_photo_bytes", return_value=b"jpeg"), patch.object(
+        camera_ai, "post_orientation_sample", side_effect=side_effect,
+    ):
+        dataset.export_pending(limit=10)
+
+
+def test_relabel_during_export_is_not_marked_delivered():
+    sample = _weighing_sample(99)
+
+    _export_with(lambda **_: dataset.set_manual_label(
+        VehicleOrientationSample.objects.get(pk=sample.pk), "rear", None,
+    ))
+
+    sample.refresh_from_db()
+    assert sample.label == "rear"
+    assert sample.sent_at is None
+
+
+def test_exclusion_during_first_export_queues_remote_removal():
+    sample = _weighing_sample(100)
+
+    _export_with(lambda **_: dataset.exclude_sample(sample, None))
+
+    sample.refresh_from_db()
+    assert sample.excluded
+    assert sample.removal_pending
+    assert sample.sent_at is None
+
+
+def test_unknown_export_outcome_keeps_remote_removal_obligation():
+    sample = _weighing_sample(101)
+
+    _export_with(camera_ai.AiUnavailable("timeout"))
+    dataset.set_manual_label(sample, "rear", None)
+    dataset.exclude_sample(sample, None)
+
+    assert sample.delivered_at is None
+    assert sample.removal_pending
+
+
+def test_dataset_purge_stops_starting_calls_at_deadline():
+    for record_id in (102, 103):
+        _weighing_sample(record_id, delivered_at=timezone.now())
+
+    with patch.object(dataset.time, "monotonic", side_effect=[0, 1, 10]), patch.object(
+        camera_ai, "delete_orientation_sample",
+    ) as remove:
+        result = dataset.purge_samples(VehicleOrientationSample.objects.all())
+
+    assert remove.call_count == 1
+    assert (result["deleted"], result["remaining"]) == (1, 1)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_dataset_purge_cannot_race_export():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from django.db import connections
+
+    entered, release = Event(), Event()
+
+    @dataset._serialized_dataset_operation
+    def hold_export():
+        entered.set()
+        assert release.wait(timeout=10)
+
+    def worker():
+        try:
+            hold_export()
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(worker)
+        try:
+            assert entered.wait(timeout=10)
+            with pytest.raises(dataset.OrientationSyncBusy):
+                dataset.purge_all(remove_from_pc=False)
+        finally:
+            release.set()
+        future.result(timeout=10)

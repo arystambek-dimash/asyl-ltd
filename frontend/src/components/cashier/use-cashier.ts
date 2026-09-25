@@ -1,15 +1,16 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ClientDebt, Department, Me, Store } from "@/lib/types";
+import { incomeTotals } from "@/lib/report-analytics";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
+import { periodRange } from "@/lib/date-range";
+import { apiUrl } from "@/lib/utils";
 import {
   EMPTY_CASH_FILTERS,
-  apiUrl,
   filterScreenFor,
   filtersAreValid,
   initialFilters,
-  periodRange,
   scopeParams,
   type CashFilters,
   type CashFiltersByScreen,
@@ -23,14 +24,7 @@ import {
   scopeLabel,
   storeDepartment,
 } from "./scope";
-import {
-  debtTotals,
-  incomeTotals,
-  queueTotals,
-  type AwaitingTotal,
-  type IncomeSummary,
-  type QueueTotal,
-} from "./totals";
+import { debtTotals, queueTotals, type AwaitingTotal, type IncomeSummary, type QueueTotal } from "./totals";
 import { useCashierQueue } from "./use-cashier-queue";
 import type { CashView, CashierPerms } from "./view";
 
@@ -41,9 +35,9 @@ function withDepartment(filters: CashFilters, department: string | null): CashFi
 
 /**
  * Данные кассы для обеих раскладок. Активные запросы зависят от экрана:
- * «Общее» (десктоп) — сводка/долги/очередь по своим фильтрам; главная
- * (телефон) — те же три запроса без фильтров, сводка строго за сегодня;
- * отчёт и долги на телефоне — свои фильтры; очередь и журнал — одинаково везде.
+ * «Общее» (десктоп) — сводка/долги/итоги оплат к подтверждению по своим фильтрам;
+ * главная (телефон) — те же три запроса без фильтров (сводка строго за сегодня)
+ * и итоги «Ждут оплаты»; отчёт и долги на телефоне — свои фильтры; «Оплаты» — одинаково везде.
  * POS — список должников без фильтров для поиска клиента.
  * На телефоне отдел для всех экранов задаёт переключатель в шапке, кроме оплат
  * к подтверждению: эта очередь общая для всех отделов (см. queueDepartment).
@@ -78,11 +72,9 @@ export function useCashier({
   // Отдел кассы: закреплённый в карточке сотрудника или выбранный в шапке (запоминается на устройстве
   // отдельно для каждого пользователя — телефон у кассиров может быть общий).
   const departmentAccess = departmentScope(me);
-  const { assigned, switchable } = departmentAccess;
+  const { assigned } = departmentAccess;
   const userId = me?.id;
-  const [chosen, setChosen] = useState(
-    () => readStoredDepartment(userId) ?? me?.sales_department?.code ?? ALL_DEPARTMENTS,
-  );
+  const [chosen, setChosen] = useState(() => readStoredDepartment(userId) ?? ALL_DEPARTMENTS);
   const setDepartment = useCallback(
     (code: string) => {
       setChosen(code);
@@ -114,7 +106,7 @@ export function useCashier({
   );
   // «Ждут оплаты» — заказы отдела кассы, как долги: закреплённый отдел или отдел из шапки;
   // при «Все отделы» в шапке отдел выбирают быстрые фильтры экрана.
-  const awaitingDepartment = mobile ? (assigned ? assigned.code : chosen === ALL_DEPARTMENTS ? null : chosen) : null;
+  const awaitingDepartment = mobile && department !== ALL_DEPARTMENTS ? department : null;
   const awaitingFilters = useMemo(
     () => withDepartment(filtersByScreen.confirm, awaitingDepartment),
     [filtersByScreen.confirm, awaitingDepartment],
@@ -148,8 +140,8 @@ export function useCashier({
     perms.canReports && summaryFilters && filtersAreValid(summaryFilters)
       ? apiUrl("/reports/summary/", {
           section: "income",
-          from: summaryFilters.dateFrom,
-          to: summaryFilters.dateTo,
+          date_from: summaryFilters.dateFrom,
+          date_to: summaryFilters.dateTo,
           department: summaryFilters.department,
           store: summaryFilters.store,
         })
@@ -190,25 +182,21 @@ export function useCashier({
     if (homeActive) tasks.push(reloadAwaitingSummary());
     await Promise.all(tasks);
   }, [homeActive, reloadAwaitingSummary, reloadDebts, reloadQueueSummary, reloadSummary]);
-  const paymentChanged = useCallback(async () => {
-    await reloadOverview();
-  }, [reloadOverview]);
 
   const queue = useCashierQueue(
     perms.canPayments && view === "confirm",
     scoped.confirm,
     awaitingFilters,
-    paymentChanged,
     // «К возврату» — в кассе на компьютере; на телефоне этого списка нет.
     { refunds: !mobile },
   );
 
   const overviewValid = !overviewActive || filtersAreValid(filtersByScreen.overview);
-  useVisiblePolling(reloadOverview, 30_000, (overviewActive || homeActive) && overviewValid && !queue.busy);
+  useVisiblePolling(reloadOverview, 30_000, (overviewActive || homeActive) && overviewValid);
   // Preserve rows the cashier explicitly expanded; manual refresh and
   // completed actions still reload the queue from its first page.
   useVisiblePolling(
-    queue.refresh,
+    queue.reload,
     30_000,
     perms.canPayments && view === "confirm" && !queue.busy && !queue.loadingMore && queue.longestList <= 50,
   );
@@ -218,7 +206,6 @@ export function useCashier({
     me,
     perms,
     view,
-    mobile,
     filters,
     filterScreen,
     filtersByScreen,
@@ -227,14 +214,12 @@ export function useCashier({
     summary,
     debts,
     queueSummary,
-    awaitingSummary,
     queue,
     stores: stores ?? [],
     departments: departments ?? [],
     /** Отдел кассы для шапки на телефоне: закреплённый или выбранный, с именем кассира. */
     scope: {
       assigned,
-      switchable,
       department,
       setDepartment,
       cashier: cashierName(me),
@@ -252,7 +237,6 @@ export function useCashier({
     debtTotals: debtTotals(debtRows),
     debtsReady: debts.data !== null && !debts.error,
     reloadOverview,
-    paymentChanged,
   };
 }
 

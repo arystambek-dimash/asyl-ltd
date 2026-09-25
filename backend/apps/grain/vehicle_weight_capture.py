@@ -2,27 +2,30 @@
 
 from __future__ import annotations
 
-import math
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, timedelta
-from decimal import Decimal
+from datetime import timedelta
 from uuid import UUID
 
 from django.conf import settings
 from django.db import IntegrityError, InterfaceError, OperationalError, transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import APIException
 
 from apps.cameras import ai as camera_ai
 
-from . import scale
+from . import scale, services
 from .models import PassageWeightCapture, Wagon
+from .plate_recognition import (
+    RECOGNITION_FIELDS,
+    api_exception_parts,
+    apply_recognition,
+    canonical_timestamp,
+    recognized_at_for,
+    safe_ai_payload,
+    terminal_ai_error,
+)
 from .weighing_photos import attach_photo, queue_photo
-
-KZ_VEHICLE_PLATE_RE = re.compile(r"^(?:[0-9]{3}[A-Z]{2,3}[0-9]{2}|[A-Z][0-9]{3}[A-Z]{3})$")
 
 
 class PassageCaptureError(APIException):
@@ -62,13 +65,6 @@ class _ApplyRejected(Exception):
 class _CaptureClaim:
     capture_id: int
     state: str
-
-
-def _grain_services():
-    # Lazy import keeps the coordinator separate without creating a module cycle.
-    from . import services
-
-    return services
 
 
 def _processing_lease() -> timedelta:
@@ -129,24 +125,6 @@ def _transient_exception(
         recognition_status=capture.stage,
         retryable=True,
     )
-
-
-def _api_exception_parts(error: APIException) -> tuple[str, str]:
-    details = error.detail
-    codes = error.get_codes()
-    if isinstance(details, dict):
-        raw_detail = details.get("detail")
-        detail = str(raw_detail) if raw_detail else str(error)
-    else:
-        detail = str(details)
-    if isinstance(details, dict) and details.get("code"):
-        code = str(details["code"])
-    elif isinstance(codes, dict):
-        raw_code = codes.get("code") or codes.get("detail")
-        code = str(raw_code) if raw_code else "passage_capture_rejected"
-    else:
-        code = str(codes or "passage_capture_rejected")
-    return detail[:300], code[:64]
 
 
 def _idempotency_conflict(idempotency_key: UUID) -> PassageCaptureError:
@@ -212,32 +190,18 @@ def _classify_existing_capture(
     # ``retryable`` is written only after the previous handler has stopped.
     # Clearing it under the Wagon lock is therefore an attempt-claim CAS: one
     # immediate retry proceeds while concurrent duplicates remain in-progress.
-    if capture.retryable and can_resume:
-        capture.retryable = False
-        capture.error_code = ""
-        capture.error_detail = ""
-        capture.response_status = None
-        capture.save(
-            update_fields=[
-                "retryable",
-                "error_code",
-                "error_detail",
-                "response_status",
-                "updated_at",
-            ]
-        )
-        return _CaptureClaim(capture.pk, "resume")
-
-    if capture.updated_at >= now - _processing_lease():
-        raise _transient_exception(
-            capture,
-            status_code=409,
-            detail="Распознавание номера и фиксация веса уже выполняются.",
-            code="passage_capture_in_progress",
-        )
-    if not can_resume:
-        _terminalize_interrupted_claim(capture, now=now)
-        return _CaptureClaim(capture.pk, "terminal")
+    # Without that flag only an expired lease may be resumed.
+    if not (capture.retryable and can_resume):
+        if capture.updated_at >= now - _processing_lease():
+            raise _transient_exception(
+                capture,
+                status_code=409,
+                detail="Распознавание номера и фиксация веса уже выполняются.",
+                code="passage_capture_in_progress",
+            )
+        if not can_resume:
+            _terminalize_interrupted_claim(capture, now=now)
+            return _CaptureClaim(capture.pk, "terminal")
 
     capture.retryable = False
     capture.error_code = ""
@@ -264,13 +228,12 @@ def _begin_capture(
     idempotency_key: UUID,
     now,
 ) -> _CaptureClaim:
-    grain_services = _grain_services()
     # When automatic polling is enabled, every new manual physical capture
     # follows State -> automatic capture -> Wagon -> PassageWeightCapture.
     # Existing idempotency keys remain replayable even while another automatic
     # episode is active because they never read the scale a second time.
     automation_state, automation_capture = (
-        grain_services._lock_automatic_passage_lane()
+        services.lock_automatic_passage_lane()
     )
     wagon = Wagon.objects.select_for_update(of=("self",)).get(pk=wagon_id)
     existing = (
@@ -287,8 +250,8 @@ def _begin_capture(
             now=now,
         )
 
-    grain_services._assert_manual_physical_capture_enabled()
-    grain_services._assert_automatic_passage_lane_allows_manual_operation(
+    services.assert_manual_physical_capture_enabled()
+    services.assert_automatic_passage_lane_allows_manual_operation(
         automation_state,
         automation_capture,
     )
@@ -302,7 +265,7 @@ def _begin_capture(
             recognition_status="rejected",
             retryable=False,
         )
-    grain_services._ensure_scale_action_ready(wagon, action)
+    services.ensure_scale_action_ready(wagon, action)
     active = (
         PassageWeightCapture.objects.select_for_update()
         .filter(
@@ -374,7 +337,7 @@ def _begin_capture(
             idempotency_key=idempotency_key,
             now=now,
         )
-    grain_services._fence_automatic_passage_lane_for_manual_mutation(
+    services.fence_automatic_passage_lane_for_manual_mutation(
         automation_state
     )
     return _CaptureClaim(capture.pk, "new")
@@ -388,13 +351,10 @@ def _lock_wagon_then_capture(
         .filter(pk=capture_id)
         .first()
     )
-    if hint is None or hint.wagon_id is None:
-        raise _ApplyRejected(
-            "Рейс операции больше не существует.",
-            "passage_capture_wagon_missing",
-        )
     wagon = (
-        Wagon.objects.select_for_update(of=("self",))
+        None
+        if hint is None or hint.wagon_id is None
+        else Wagon.objects.select_for_update(of=("self",))
         .filter(pk=hint.wagon_id)
         .first()
     )
@@ -433,9 +393,8 @@ def _persist_scale_reading(
             "Состояние рейса изменилось во время чтения весов.",
             "wagon_changed_during_scale_read",
     )
-    _grain_services()._ensure_scale_action_ready(wagon, capture.action)
-    weight_kg = _grain_services()._whole_scale_weight_kg(reading)
-    capture.weight_kg = weight_kg
+    services.ensure_scale_action_ready(wagon, capture.action)
+    capture.weight_kg = services.whole_scale_weight_kg(reading)
     queue_photo(capture.camera, capture.idempotency_key)
     capture.scale_number = scale.TRUCK_SCALE_KEY
     capture.scale_age_seconds = reading.age_seconds
@@ -464,150 +423,6 @@ def _persist_scale_reading(
     return capture
 
 
-def _safe_ai_payload(payload: Mapping | None) -> dict:
-    """Keep bounded diagnostics, never an arbitrary upstream JSON document."""
-
-    if not isinstance(payload, Mapping):
-        return {}
-    safe: dict[str, object] = {}
-    string_limits = {
-        "status": 64,
-        "request_id": 36,
-        "camera": 32,
-        "source": 4,
-        "stable_weight_at": 48,
-        "recognized_at": 48,
-        "vehicle_number": 30,
-        "error": 300,
-        "error_code": 64,
-        "camera_status": 64,
-        "active_input": 64,
-        "roi_updated_at": 64,
-    }
-    for field, limit in string_limits.items():
-        value = payload.get(field)
-        if isinstance(value, str):
-            safe[field] = value[:limit]
-    for field in ("ok", "retryable", "votes_truncated"):
-        value = payload.get(field)
-        if isinstance(value, bool):
-            safe[field] = value
-    for field in (
-        "fresh_frames_seen",
-        "frames_scanned",
-        "ambiguous_frames",
-        "detected_frames",
-        "ocr_candidates",
-        "accepted_reads",
-        "confirmation_votes",
-        # The Camera-PC's second look at zoomed tiles of the frames that held
-        # no plate, and how many of those looks found one.
-        "zoom_frames",
-        "zoom_detected_frames",
-    ):
-        value = payload.get(field)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            safe[field] = min(value, 1_000_000)
-    for field in ("best_detector_confidence", "confirmation_window_seconds"):
-        number = _bounded_float(payload.get(field), upper=1e6 if field.endswith("seconds") else 1)
-        if number is not None:
-            safe[field] = number
-    _copy_no_match_diagnostics(payload, safe)
-
-    orientation = payload.get("orientation")
-    if isinstance(orientation, Mapping):
-        label, confidence = camera_ai.vehicle_orientation(payload)
-        safe_orientation: dict[str, object] = {"label": label or None}
-        if confidence is not None:
-            safe_orientation["confidence"] = confidence
-        raw_label = orientation.get("raw_label")
-        if isinstance(raw_label, str):
-            safe_orientation["raw_label"] = raw_label[:16]
-        safe["orientation"] = safe_orientation
-
-    confirmation = payload.get("confirmation")
-    if isinstance(confirmation, Mapping):
-        safe_confirmation: dict[str, int | float] = {}
-        votes = confirmation.get("votes")
-        if (
-            isinstance(votes, int)
-            and not isinstance(votes, bool)
-            and 1 <= votes <= camera_ai.MAX_VEHICLE_CONFIRMATION_VOTES
-        ):
-            safe_confirmation["votes"] = votes
-        for field in ("detector_confidence", "ocr_confidence"):
-            value = confirmation.get(field)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                number = float(value)
-                if math.isfinite(number) and 0 <= number <= 1:
-                    safe_confirmation[field] = number
-        if safe_confirmation:
-            safe["confirmation"] = safe_confirmation
-    return safe
-
-
-def _bounded_float(value: object, *, upper: float) -> float | None:
-    """A finite float inside ``[0, upper]``, else ``None``."""
-
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) and 0 <= number <= upper else None
-
-
-# ``no_match`` answers carry the last OCR reads and the vote tally so an
-# operator can tell a detector miss from a misread. They are copied within
-# the same bounds the Camera-PC promises, never trusted for size.
-MAX_NO_MATCH_VOTES = 8
-MAX_NO_MATCH_READS = 8
-MAX_NO_MATCH_TEXT = 32
-
-
-def _copy_no_match_diagnostics(payload: Mapping, safe: dict) -> None:
-    votes = payload.get("votes")
-    if isinstance(votes, Mapping):
-        safe_votes: dict[str, int] = {}
-        for number, count in list(votes.items())[:MAX_NO_MATCH_VOTES]:
-            if (
-                isinstance(number, str)
-                and 1 <= len(number) <= MAX_NO_MATCH_TEXT
-                and isinstance(count, int)
-                and not isinstance(count, bool)
-                and count >= 0
-            ):
-                safe_votes[number] = min(count, 1_000_000)
-        if safe_votes:
-            safe["votes"] = safe_votes
-    reads = payload.get("last_reads")
-    if not isinstance(reads, list):
-        return
-    safe_reads: list[dict[str, object]] = []
-    for read in reads[:MAX_NO_MATCH_READS]:
-        if not isinstance(read, Mapping):
-            continue
-        item: dict[str, object] = {}
-        frame = read.get("frame")
-        if isinstance(frame, int) and not isinstance(frame, bool) and frame >= 0:
-            item["frame"] = min(frame, 1_000_000)
-        for field in ("variant", "raw_text", "number"):
-            value = read.get(field)
-            if isinstance(value, str):
-                item[field] = value[:MAX_NO_MATCH_TEXT]
-        for field, upper in (
-            ("confidence", 1),
-            ("detector_confidence", 1),
-            ("bbox_w", 100_000),
-            ("bbox_h", 100_000),
-        ):
-            number = _bounded_float(read.get(field), upper=upper)
-            if number is not None:
-                item[field] = number
-        if item:
-            safe_reads.append(item)
-    if safe_reads:
-        safe["last_reads"] = safe_reads
-
-
 @transaction.atomic
 def _finish_capture_error(
     capture_id: int,
@@ -633,7 +448,7 @@ def _finish_capture_error(
         "updated_at",
     ]
     if ai_payload is not None:
-        capture.ai_payload_json = _safe_ai_payload(ai_payload)
+        capture.ai_payload_json = safe_ai_payload(ai_payload)
         update_fields.append("ai_payload_json")
     if not retryable:
         capture.status = PassageWeightCapture.FAILED
@@ -644,50 +459,26 @@ def _finish_capture_error(
     return capture
 
 
-def _terminal_ai_error(error: camera_ai.AiError) -> tuple[int, str, str, bool]:
-    payload = error.payload
-    remote_status = str(payload.get("status") or "")
-    if error.status in {401, 403}:
-        return (
-            502,
-            "vehicle_recognition_auth_failed",
-            "Camera-PC отклонил служебный ключ. Обратитесь к администратору.",
-            False,
-        )
-    retryable_hint = payload.get("retryable")
-    # A reverse proxy may return an HTML/empty 5xx response before the CV
-    # service can attach its retryability contract. Preserve the stored scale
-    # sample in that case: only an explicit ``retryable: false`` may make a
-    # remote 5xx terminal.
-    retryable = (
-        retryable_hint is True
-        or error.status == 202
-        or (error.status >= 500 and retryable_hint is not False)
-    )
-    codes = {
-        "processing": "vehicle_recognition_pending",
-        "model_unavailable": "vehicle_model_unavailable",
-        "on_demand_unavailable": "vehicle_recognition_not_configured",
-        "no_match": "vehicle_plate_not_confirmed",
-        "camera_unavailable": "vehicle_camera_unavailable",
-        "roi_unavailable": "vehicle_roi_unavailable",
-        "stale_weight_trigger": "stale_weight_trigger",
-        "camera_not_configured": "vehicle_camera_not_configured",
-        "idempotency_conflict": "vehicle_recognition_idempotency_conflict",
-        "lane_busy": "vehicle_recognition_lane_busy",
-        "capture_window_missed": "vehicle_capture_window_missed",
-        "failed": "vehicle_recognition_failed",
-        "interrupted": "vehicle_recognition_interrupted",
-    }
-    code = codes.get(remote_status, "vehicle_recognition_failed")
-    status_code = 409 if error.status == 202 else int(error.status)
-    return status_code, code, error.detail, retryable
+def _fail(
+    capture_id: int,
+    *,
+    status_code: int,
+    code: str,
+    detail: str,
+    retryable: bool,
+    ai_payload: Mapping | None = None,
+) -> Wagon:
+    """Record the error, then answer with whatever the capture durably became."""
 
-
-def _canonical_timestamp(value) -> str:
-    return value.astimezone(UTC).isoformat(timespec="microseconds").replace(
-        "+00:00", "Z"
+    failed = _finish_capture_error(
+        capture_id,
+        status_code=status_code,
+        code=code,
+        detail=detail,
+        retryable=retryable,
+        ai_payload=ai_payload,
     )
+    return _completed_wagon_or_raise(failed)
 
 
 @transaction.atomic
@@ -698,51 +489,15 @@ def _persist_ai_success(capture_id: int, payload: dict) -> PassageWeightCapture:
     if capture.status != PassageWeightCapture.PROCESSING:
         raise _capture_exception(capture)
 
-    recognized_at = parse_datetime(str(payload.get("recognized_at") or ""))
-    response_trigger = parse_datetime(str(payload.get("stable_weight_at") or ""))
-    confirmation = payload.get("confirmation") or {}
-    if (
-        recognized_at is None
-        or timezone.is_naive(recognized_at)
-        or response_trigger is None
-        or timezone.is_naive(response_trigger)
-        or capture.stable_weight_at is None
-        or response_trigger != capture.stable_weight_at
-    ):
+    recognized_at = recognized_at_for(payload, capture.stable_weight_at)
+    if recognized_at is None:
         raise _ApplyRejected(
             "AI-сервис вернул некорректные временные метки.",
             "vehicle_recognition_malformed",
         )
 
-    capture.vehicle_number = str(payload["vehicle_number"])
-    capture.camera_source = str(payload["source"])
-    capture.recognized_at = recognized_at
-    capture.confirmation_votes = int(confirmation["votes"])
-    capture.detector_confidence = Decimal(str(confirmation["detector_confidence"]))
-    capture.ocr_confidence = Decimal(str(confirmation["ocr_confidence"]))
-    capture.ai_payload_json = _safe_ai_payload(payload)
-    capture.response_status = 200
-    capture.retryable = False
-    capture.error_code = ""
-    capture.error_detail = ""
-    capture.stage = PassageWeightCapture.APPLYING
-    capture.save(
-        update_fields=[
-            "vehicle_number",
-            "camera_source",
-            "recognized_at",
-            "confirmation_votes",
-            "detector_confidence",
-            "ocr_confidence",
-            "ai_payload_json",
-            "response_status",
-            "retryable",
-            "error_code",
-            "error_detail",
-            "stage",
-            "updated_at",
-        ]
-    )
+    apply_recognition(capture, payload, recognized_at=recognized_at)
+    capture.save(update_fields=[*RECOGNITION_FIELDS, "updated_at"])
     return capture
 
 
@@ -765,10 +520,9 @@ def _apply_capture(capture_id: int, user) -> Wagon:
             "wagon_changed_during_vehicle_recognition",
         )
 
-    services = _grain_services()
-    services._ensure_scale_action_ready(wagon, capture.action)
+    services.ensure_scale_action_ready(wagon, capture.action)
     number = services.normalize_passage_number(capture.vehicle_number)
-    if KZ_VEHICLE_PLATE_RE.fullmatch(number) is None:
+    if services.KZ_VEHICLE_PLATE_RE.fullmatch(number) is None:
         raise _ApplyRejected(
             "Камера не подтвердила корректный номер Казахстана.",
             "vehicle_plate_invalid",
@@ -846,10 +600,10 @@ def _recognize_and_apply(
             payload = recognize(
                 capture.camera,
                 capture.idempotency_key,
-                _canonical_timestamp(capture.stable_weight_at),
+                canonical_timestamp(capture.stable_weight_at),
             )
         except camera_ai.AiProtocolError:
-            failed = _finish_capture_error(
+            return _fail(
                 capture_id,
                 status_code=502,
                 code="vehicle_recognition_malformed",
@@ -859,9 +613,8 @@ def _recognize_and_apply(
                 ),
                 retryable=False,
             )
-            return _completed_wagon_or_raise(failed)
         except camera_ai.AiUnavailable:
-            failed = _finish_capture_error(
+            return _fail(
                 capture_id,
                 status_code=503,
                 code="vehicle_recognition_unavailable",
@@ -871,10 +624,9 @@ def _recognize_and_apply(
                 ),
                 retryable=True,
             )
-            return _completed_wagon_or_raise(failed)
         except camera_ai.AiError as error:
-            status_code, code, detail, retryable = _terminal_ai_error(error)
-            failed = _finish_capture_error(
+            status_code, code, detail, retryable = terminal_ai_error(error)
+            return _fail(
                 capture_id,
                 status_code=status_code,
                 code=code,
@@ -882,59 +634,53 @@ def _recognize_and_apply(
                 retryable=retryable,
                 ai_payload=error.payload,
             )
-            return _completed_wagon_or_raise(failed)
         try:
             capture = _persist_ai_success(capture_id, payload)
         except _ApplyRejected as error:
-            failed = _finish_capture_error(
+            return _fail(
                 capture_id,
                 status_code=502,
                 code=error.code,
                 detail=error.detail,
                 retryable=False,
             )
-            return _completed_wagon_or_raise(failed)
 
     try:
         wagon = _apply_capture(capture_id, user)
     except _ApplyRejected as error:
-        failed = _finish_capture_error(
+        return _fail(
             capture_id,
             status_code=409,
             code=error.code,
             detail=error.detail,
             retryable=False,
         )
-        return _completed_wagon_or_raise(failed)
     except IntegrityError:
-        failed = _finish_capture_error(
+        return _fail(
             capture_id,
             status_code=409,
             code="vehicle_plate_in_use",
             detail="Этот номер уже привязан к другой машине на территории.",
             retryable=False,
         )
-        return _completed_wagon_or_raise(failed)
     except APIException as error:
-        detail, code = _api_exception_parts(error)
+        detail, code = api_exception_parts(error)
         retryable = int(error.status_code) >= 500
-        failed = _finish_capture_error(
+        return _fail(
             capture_id,
             status_code=int(error.status_code),
             code=code,
             detail=detail,
             retryable=retryable,
         )
-        return _completed_wagon_or_raise(failed)
     except (OperationalError, InterfaceError):
-        failed = _finish_capture_error(
+        return _fail(
             capture_id,
             status_code=503,
             code="passage_capture_apply_unavailable",
             detail="Результат получен, но база временно не подтвердила сохранение.",
             retryable=True,
         )
-        return _completed_wagon_or_raise(failed)
     # The weight is committed; the evidence photo is best effort.
     attach_photo(capture.camera, capture.idempotency_key)
     return wagon
@@ -993,57 +739,43 @@ def capture_passage_weight_and_plate(
                     stable_weight_at=stable_weight_at,
                 )
             except _ApplyRejected as error:
-                failed = _finish_capture_error(
+                return _fail(
                     capture.pk,
                     status_code=409,
                     code=error.code,
                     detail=error.detail,
                     retryable=False,
                 )
-                return _completed_wagon_or_raise(failed)
-            except APIException as error:
-                detail, code = _api_exception_parts(error)
-                failed = _finish_capture_error(
-                    capture.pk,
-                    status_code=int(error.status_code),
-                    code=code,
-                    detail=detail,
-                    retryable=False,
-                )
-                return _completed_wagon_or_raise(failed)
             except (OperationalError, InterfaceError):
-                failed = _finish_capture_error(
+                return _fail(
                     capture.pk,
                     status_code=503,
                     code="passage_capture_apply_unavailable",
                     detail="Не удалось безопасно сохранить показание весов.",
                     retryable=False,
                 )
-                return _completed_wagon_or_raise(failed)
             return _recognize_and_apply(capture.pk, user)
     except PassageCaptureError:
         raise
     except scale.TruckScaleCaptureBusy:
         # The durable claim did not sample hardware. Keep it terminal so the
         # same UUID can never accidentally capture a later vehicle.
-        failed = _finish_capture_error(
+        return _fail(
             capture.pk,
             status_code=409,
             code="truck_scale_capture_busy",
             detail="Весы уже фиксируют другое взвешивание.",
             retryable=False,
         )
-        return _completed_wagon_or_raise(failed)
     except APIException as error:
-        detail, code = _api_exception_parts(error)
-        failed = _finish_capture_error(
+        detail, code = api_exception_parts(error)
+        return _fail(
             capture.pk,
             status_code=int(error.status_code),
             code=code,
             detail=detail,
             retryable=False,
         )
-        return _completed_wagon_or_raise(failed)
 
 
 __all__ = ["PassageCaptureError", "capture_passage_weight_and_plate"]

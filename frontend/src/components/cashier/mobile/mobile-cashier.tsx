@@ -3,12 +3,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ChevronDown, QrCode } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { cn } from "@/lib/utils";
+import { DepartmentDot } from "@/components/ui/department-badge";
 import { CashFiltersSheet, FilterButton } from "../cash-filters-sheet";
 import { activeFilterCount, filtersError } from "../filters";
 import { ALL_DEPARTMENTS } from "../scope";
 import type { CashierModel } from "../use-cashier";
-import { hasHomeScreen, mobileMenu, type CashView, type MobileMenuKey } from "../view";
+import { hasHomeScreen, mobileMenu, type MobileMenuKey } from "../view";
 import { BottomBar, type BottomBarItem } from "./bottom-bar";
 import { ConfirmScreen } from "./confirm-screen";
 import { DebtsScreen } from "./debts-screen";
@@ -23,9 +23,8 @@ import { TransactionsScreen } from "./transactions-screen";
 const POS_BAR: BottomBarItem<"pos">[] = [{ key: "pos", label: "POS", icon: QrCode, accent: true }];
 
 /** Заголовки экранов кассы; POS называет себя сам по вкладке. */
-export const SCREEN_TITLES: Record<Exclude<CashView, "pos" | "remote">, string> = {
+const SCREEN_TITLES: Record<MobileMenuKey | "home", string> = {
   home: "Касса",
-  overview: "Касса",
   report: "Отчёт по поступлениям",
   debts: "Долги клиентов",
   confirm: "Оплаты",
@@ -34,14 +33,8 @@ export const SCREEN_TITLES: Record<Exclude<CashView, "pos" | "remote">, string> 
 
 /** Шапка главной: отдел — «касса», как название точки в Kaspi; с правом на все отделы — кнопка выбора. */
 function DepartmentHeading({ scope, onOpen }: { scope: CashierModel["scope"]; onOpen: () => void }) {
-  const dot = (
-    <span
-      aria-hidden
-      className={cn("size-2.5 shrink-0 rounded-full", !scope.color && "bg-[var(--muted-foreground)]")}
-      style={scope.color ? { backgroundColor: scope.color } : undefined}
-    />
-  );
-  if (!scope.switchable) {
+  const dot = <DepartmentDot color={scope.color} />;
+  if (scope.assigned) {
     return (
       <span className="flex items-center gap-2">
         {dot}
@@ -116,18 +109,19 @@ export function MobileCashier({ model }: { model: CashierModel }) {
     setDepartmentOpen(false);
   }, [view]);
   const showBack = view !== "home" && hasHomeScreen(perms);
+  // Отчёт выбирает период чипами, остаток долга есть только у долгов;
+  // отдел на телефоне выбирается в шапке кассы, а не в шторке.
+  const showDates = filterScreen !== "report";
+  const showRemaining = filterScreen === "debts";
   const activeFilters = filterScreen
-    ? activeFilterCount(model.filters, {
-        dates: filterScreen !== "report",
-        remaining: filterScreen === "debts",
-        department: false,
-      })
+    ? activeFilterCount(model.filters, { dates: showDates, remaining: showRemaining, department: false })
     : 0;
   const rangeError = filterScreen ? filtersError(model.filters) : null;
 
   if (posView) return <PosScreen model={model} flow={pos} section={scope.name} onClose={back} />;
-  // После раннего возврата view — не POS; TypeScript этого не выводит.
-  const screen = view as Exclude<CashView, "pos" | "remote">;
+  // После раннего возврата view — не POS, а overview на телефоне resolveView сводит к главной;
+  // TypeScript этого не выводит.
+  const screen = view as MobileMenuKey | "home";
 
   return (
     <AppShell
@@ -152,15 +146,16 @@ export function MobileCashier({ model }: { model: CashierModel }) {
         <CashFiltersSheet
           open={filtersOpen}
           onClose={() => setFiltersOpen(false)}
+          count={activeFilters}
           filters={model.filters}
           stores={model.stores}
           departments={departments}
-          showRemaining={filterScreen === "debts"}
-          showDates={filterScreen !== "report"}
+          showRemaining={showRemaining}
+          showDates={showDates}
           onChange={model.patchFilters}
         />
       )}
-      {scope.switchable && (
+      {!scope.assigned && (
         <DepartmentSheet
           open={departmentOpen}
           onClose={() => setDepartmentOpen(false)}

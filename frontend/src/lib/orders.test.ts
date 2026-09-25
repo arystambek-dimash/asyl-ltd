@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { UNPRICED_TOTAL, formatEstimate, hasUnpricedItems, requestEstimate } from "./orders";
+import {
+  UNPRICED_TOTAL,
+  clientLabel,
+  formatEstimate,
+  hasUnpricedItems,
+  orderItemsSummary,
+  requestEstimate,
+} from "./orders";
 import { formatCurrency } from "./utils";
 
 describe("requestEstimate", () => {
@@ -33,6 +40,15 @@ describe("requestEstimate", () => {
     expect(requestEstimate([{ quantity: "3", unit_price: "10" }])).toEqual({ bags: 3, amount: 30 });
     expect(requestEstimate([])).toEqual({ bags: 0, amount: 0 });
   });
+
+  it("sums money in tiyns so the total does not drift by fractions", () => {
+    // Во float 0.1 * 3 + 0.2 * 3 = 0.9000000000000001.
+    const lines = [
+      { quantity: 3, unit_price: "0.10" },
+      { quantity: 3, unit_price: "0.20" },
+    ];
+    expect(requestEstimate(lines)).toEqual({ bags: 6, amount: 0.9 });
+  });
 });
 
 it("formats an estimate or says it is not calculated", () => {
@@ -44,4 +60,24 @@ it("formats an estimate or says it is not calculated", () => {
 it("flags an order total with unpriced lines", () => {
   expect(hasUnpricedItems([{ unit_price: "1" }, { unit_price: null }])).toBe(true);
   expect(hasUnpricedItems([{ unit_price: "1" }])).toBe(false);
+});
+
+describe("clientLabel", () => {
+  it("names the client and falls back to its number", () => {
+    expect(clientLabel({ client: 5, client_name: "ТОО Цех" })).toBe("ТОО Цех");
+    expect(clientLabel({ client: 5, client_name: "" })).toBe("Клиент #5");
+  });
+});
+
+describe("orderItemsSummary", () => {
+  const line = (product_label: string | undefined, quantity: number) =>
+    ({ product_label, quantity }) as unknown as Parameters<typeof orderItemsSummary>[0]["items"][number];
+
+  it("shows the first two lines and counts the rest", () => {
+    expect(orderItemsSummary({ items: [line("Мука", 10), line(undefined, 5)] })).toBe("Мука × 10, Товар × 5");
+    expect(orderItemsSummary({ items: [line("Мука", 10), line("Отруби", 5), line("Сечка", 1), line("Жмых", 2)] })).toBe(
+      "Мука × 10, Отруби × 5 и ещё 2",
+    );
+    expect(orderItemsSummary({ items: [] })).toBe("");
+  });
 });

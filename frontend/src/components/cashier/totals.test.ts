@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClientDebt } from "@/lib/types";
-import { debtTotals, incomeTotals, queueTotals } from "./totals";
+import { formatCompactCurrency } from "@/lib/utils";
+import { debtTotals, formatCompactTotals, queueTotals } from "./totals";
 
 const debtRow: ClientDebt = {
   client_id: 1,
@@ -25,9 +26,6 @@ describe("queueTotals", () => {
     ]);
     expect(totals).toMatchObject({ currency: "KZT", total: 150, cash: 100, count: 4, other: [["USD", 5]] });
   });
-  it("treats rows without a count as single payments", () => {
-    expect(queueTotals([{ currency: "KZT", method: "cash", amount: "100" }]).count).toBe(1);
-  });
 });
 
 describe("debtTotals", () => {
@@ -40,40 +38,11 @@ describe("debtTotals", () => {
   });
 });
 
-describe("incomeTotals", () => {
-  it("reads the primary currency and keeps the rest separate", () => {
-    const totals = incomeTotals({
-      from: null,
-      to: null,
-      income: {
-        total: "90",
-        cash: "40",
-        cashless: "50",
-        gross: "100",
-        refunded: "10",
-        payments: 3,
-        refunds: 1,
-        currency: "KZT",
-        by_currency: { KZT: "90", USD: "5" },
-        cash_by_currency: { KZT: "40" },
-        cashless_by_currency: { KZT: "50" },
-        gross_by_currency: { KZT: "100", USD: "5" },
-        refunded_by_currency: { KZT: "10" },
-      },
-    });
-    expect(totals).toMatchObject({
-      currency: "KZT",
-      total: 90,
-      cash: 40,
-      cashless: 50,
-      gross: 100,
-      refunded: 10,
-      payments: 3,
-      otherCurrencies: [["USD", 5]],
-    });
-    expect(totals.grossFor("USD")).toBe(5);
-  });
-  it("is empty without data", () => {
-    expect(incomeTotals(null)).toMatchObject({ currency: "KZT", total: 0, payments: 0, otherCurrencies: [] });
+describe("formatCompactTotals", () => {
+  it("joins currencies with a plus instead of adding them", () => {
+    expect(formatCompactTotals({ currency: "KZT", total: 1_200_000, other: [["USD", 500]] })).toBe(
+      `${formatCompactCurrency(1_200_000, "KZT")} + ${formatCompactCurrency(500, "USD")}`,
+    );
+    expect(formatCompactTotals({ currency: "KZT", total: 0, other: [] })).toBe(formatCompactCurrency(0, "KZT"));
   });
 });

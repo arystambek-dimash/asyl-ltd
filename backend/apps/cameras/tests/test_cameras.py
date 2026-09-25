@@ -16,7 +16,7 @@ from apps.cameras.models import (
     ContinuousCameraRole,
     MonoblockCameraSettings,
 )
-from apps.cameras.views import (
+from apps.cameras.api_views.access import (
     CAM_COOKIE,
     CAM_TOKEN_AUDIENCE,
     CAM_TOKEN_MAX_AGE,
@@ -31,24 +31,22 @@ pytestmark = pytest.mark.django_db
 STREAM_URI = "/go2rtc/api/ws?src=cam2"
 
 
-@pytest.fixture
-def superuser(django_user_model):
-    return django_user_model.objects.create_superuser(
-        username="camera-root",
-        password="test",
-    )
-
-
 @pytest.fixture(autouse=True)
 def clear_camera_cache(monkeypatch):
     # Инвентарь ai_service в юнитах выключен — тесты проб не должны зависеть
     # от env; инвентарные тесты включают его сами.
     monkeypatch.setattr(ai, "AI_KEY", "")
-    cache.delete(services.CACHE_KEY)
-    cache.delete(services.LAST_GOOD_CACHE_KEY)
+    keys = (
+        services.CACHE_KEY,
+        services.FRESH_KEY,
+        services.LAST_GOOD_CACHE_KEY,
+        services.REFRESH_LOCK_KEY,
+        ai.ALWAYS_ON_CACHE_KEY,
+        ai.DETECTIONS_CACHE_KEY,
+    )
+    cache.delete_many(keys)
     yield
-    cache.delete(services.CACHE_KEY)
-    cache.delete(services.LAST_GOOD_CACHE_KEY)
+    cache.delete_many(keys)
 
 
 def _stream_token(auth_client, user):
@@ -61,6 +59,52 @@ def _authorize_stream(api_client, token, uri=STREAM_URI):
     api_client.cookies[CAM_COOKIE] = token
     headers = {} if uri is None else {"HTTP_X_ORIGINAL_URI": uri}
     return api_client.get("/api/cameras/auth/", **headers)
+
+
+def _live(scopes, *, capacity=None, pending=(), **processor):
+    """Снимок always-on ПК камер: каждая камера из ``scopes`` работает в своей роли."""
+    live = {
+        "camera_sources": list(scopes),
+        "source": "sub",
+        "analytics_scopes": dict(scopes),
+        "pending": list(pending),
+        "processors": [
+            {
+                "cam": camera,
+                "running": True,
+                "processor_alive": True,
+                "source": "sub",
+                "mode": "always_on",
+                "analytics_scope": scope,
+                "last_frame_at": "2026-09-01T08:00:00Z",
+                **processor,
+            }
+            for camera, scope in scopes.items()
+        ],
+    }
+    if capacity is not None:
+        live["capacity"] = capacity
+    return live
+
+
+def _split_contours():
+    """cam2 — отгрузка, cam3 — AI 24/7: настройки и закреплённые роли."""
+    MonoblockCameraSettings.objects.create(
+        camera_sources=["cam2"],
+        always_on_camera_sources=["cam3"],
+    )
+    ContinuousCameraRole.objects.bulk_create(
+        [
+            ContinuousCameraRole(
+                camera="cam2",
+                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
+            ),
+            ContinuousCameraRole(
+                camera="cam3",
+                analytics_scope=ANALYTICS_SCOPE_AI247,
+            ),
+        ]
+    )
 
 
 def fake_probe(statuses):
@@ -152,7 +196,7 @@ def test_discover_prefers_inventory(monkeypatch):
 
 def test_discover_syncs_dynamic_streams_to_go2rtc(monkeypatch):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    monkeypatch.setattr(services, "GO2RTC_API", "http://go2rtc:1984")
+    monkeypatch.setattr(ai, "GO2RTC_API", "http://go2rtc:1984")
     with (
         patch.object(ai, "inventory", return_value=INVENTORY),
         patch.object(services, "_go2rtc_put") as put,
@@ -167,18 +211,13 @@ def test_discover_syncs_dynamic_streams_to_go2rtc(monkeypatch):
             f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28",
             "ffmpeg:cam_8c28#video=h264",
         ),
-        (
-            "cam_8c28ai",
-            f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
-            f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}/cam_8c28ai",
-        ),
     ]
 
 
 @pytest.mark.parametrize("camera", ["cam33", "cam64"])
-def test_discover_provisions_dynamic_main_without_replacing_sub_or_ai(monkeypatch, camera):
+def test_discover_provisions_dynamic_main_without_replacing_sub(monkeypatch, camera):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    monkeypatch.setattr(services, "GO2RTC_API", "http://go2rtc:1984")
+    monkeypatch.setattr(ai, "GO2RTC_API", "http://go2rtc:1984")
     inventory = {
         "devices": [
             {"kind": "nvr-channel", "path": "cam32", "sub": "cam32sub"},
@@ -196,11 +235,10 @@ def test_discover_provisions_dynamic_main_without_replacing_sub_or_ai(monkeypatc
         f"rtsp://{services.CAMERA_USER}:{services.CAMERA_PASS}"
         f"@{services.CAMERA_HOST}:{services.CAMERA_PORT}"
     )
-    # cam32 already has all three aliases in the static configuration. The
-    # dynamic camera gets the same split: low-bandwidth wall, AI and true main.
+    # cam32 already has both aliases in the static configuration. The
+    # dynamic camera gets the same split: low-bandwidth wall and true main.
     assert [call.args for call in put.call_args_list] == [
         (camera, f"{base}/{camera}sub", f"ffmpeg:{camera}#video=h264"),
-        (f"{camera}ai", f"{base}/{camera}ai"),
         (f"{camera}main", f"{base}/{camera}", f"ffmpeg:{camera}main#video=h264"),
     ]
 
@@ -256,7 +294,7 @@ def test_discover_preserves_last_good_topology_during_total_outage(monkeypatch):
         services, "_probe_path", side_effect=fake_probe(["online", "online"])
     ):
         first = services.discover_cameras()
-    cache.delete(services.CACHE_KEY)
+    cache.delete(services.FRESH_KEY)  # снимок протух, связь пропала
     thread_class = threading.Thread
     refresh_threads = []
 
@@ -271,14 +309,18 @@ def test_discover_preserves_last_good_topology_during_total_outage(monkeypatch):
         patch.object(services.threading, "Thread", side_effect=capture_refresh),
     ):
         try:
-            during_outage = services.discover_cameras()
+            stale = services.discover_cameras()
         finally:
             # Keep the outage stub alive until refresh finishes, and prevent
             # it from writing cached topology into the next test's fixture.
             for thread in refresh_threads:
                 thread.join(timeout=5)
                 assert not thread.is_alive()
+        during_outage = services.discover_cameras()
 
+    # Пока идёт обновление, отдаётся последний снимок как есть; сбой виден
+    # после того, как фон его обнаружил.
+    assert stale == first
     assert [camera["id"] for camera in during_outage] == [
         camera["id"] for camera in first
     ]
@@ -286,15 +328,76 @@ def test_discover_preserves_last_good_topology_during_total_outage(monkeypatch):
     assert all("переподключ" in camera["note"].lower() for camera in during_outage)
 
 
+def test_stale_outage_snapshot_is_not_served_as_online(monkeypatch):
+    """Протухший офлайн-снимок сбоя не подменяется «живым» last-good.
+
+    Пока фоновое обновление ждёт сетевых таймаутов, стена должна продолжать
+    видеть сбой, а не камеры онлайн из last-good топологии.
+    """
+    monkeypatch.setattr(services, "CAMERA_PASS", "x")
+    with patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
+        services.discover_cameras()
+    with patch.object(services, "_probe_path", return_value="absent"):
+        services._refresh_cameras()  # сбой: в снимке офлайн-вид
+    cache.delete(services.FRESH_KEY)
+
+    with (
+        patch.object(services.threading, "Thread") as thread,
+        patch.object(services, "_probe_path") as probe,
+    ):
+        cameras = services.discover_cameras()
+
+    probe.assert_not_called()
+    thread.return_value.start.assert_called_once()
+    assert [c["online"] for c in cameras] == [False]
+    assert cache.get(services.LAST_GOOD_CACHE_KEY)[0]["online"] is True
+
+
+def test_probe_fallback_keeps_inventory_topology(monkeypatch):
+    """Недоступный инвентарь не затирает last-good урезанными пробами.
+
+    Пробы знают только cam1..camN с id по номеру канала: без direct/locked
+    камер и линий подсчёта. Из них берётся лишь живой статус каналов.
+    """
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    monkeypatch.setattr(services, "CAMERA_PASS", "x")
+    with patch.object(ai, "inventory", return_value=INVENTORY):
+        first = services.discover_cameras()
+
+    with (
+        patch.object(ai, "inventory", side_effect=ai.AiUnavailable("boom")),
+        patch.object(
+            services, "_probe_path", side_effect=fake_probe(["online", "offline"])
+        ),
+    ):
+        cameras = services._refresh_cameras()
+
+    assert cache.get(services.LAST_GOOD_CACHE_KEY) == first
+    assert services.discover_cameras() == cameras
+    assert [c["id"] for c in cameras] == [c["id"] for c in first]
+    by_src = {c["src"]: c for c in cameras}
+    assert by_src["cam1"]["online"] is True
+    assert by_src["cam2"]["online"] is False
+    assert by_src["cam2"]["line_config"] == INVENTORY["line_configs"]["cam2"]
+    # Канал без ответа пробы и direct-камера — «связь потеряна».
+    for src in ("cam10", "cam_8c28"):
+        assert by_src[src]["online"] is False
+        assert "переподключ" in by_src[src]["note"].lower()
+    locked = by_src[None]
+    assert locked["online"] is False
+    assert locked["note"] == INVENTORY["devices"][-1]["note"]
+
+
 def test_empty_discovery_uses_short_cache_ttl(monkeypatch):
     monkeypatch.setattr(services, "CAMERA_PASS", "")
     with patch.object(cache, "set", wraps=cache.set) as cache_set:
         assert services.discover_cameras() == []
     assert cache_set.call_args_list[-1].args == (
-        services.CACHE_KEY,
-        [],
+        services.FRESH_KEY,
+        True,
         services.EMPTY_CACHE_TTL,
     )
+    assert cache.get(services.CACHE_KEY) == []
 
 
 def test_camera_list_for_staff(auth_client, operator):
@@ -389,8 +492,6 @@ def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator
     )
     assert response.status_code == 202
     assert response.data["camera_sources"] == ["cam2", "cam3"]
-    assert response.data["always_on_camera_sources"] == ["cam2", "cam3"]
-    assert response.data["always_on_source"] == "sub"
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.camera_sources == ["cam2", "cam3"]
     assert row.updated_by == boss
@@ -400,9 +501,7 @@ def test_admin_configures_monoblock_camera_allowlist(auth_client, boss, operator
     assert response.data["camera_sources"] == ["cam2", "cam3"]
 
 
-def test_continuous_sources_and_roles_are_stable_and_disjoint(
-    django_user_model,
-):
+def test_continuous_sources_and_roles_are_stable_and_disjoint():
     row = MonoblockCameraSettings.objects.create(
         camera_sources=["cam3", "cam2", "cam3", "cam5"],
         always_on_camera_sources=["cam4"],
@@ -475,33 +574,14 @@ def test_monoblock_camera_save_reconciles_effective_substream_policy(
 ):
     MonoblockCameraSettings.objects.create(always_on_camera_sources=["cam4"])
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "cameras": ["cam2", "cam3", "cam4"],
-        "source": "sub",
-        "analytics_scopes": {
+    live = _live(
+        {
             "cam2": ANALYTICS_SCOPE_SHIPPING,
             "cam3": ANALYTICS_SCOPE_SHIPPING,
             "cam4": ANALYTICS_SCOPE_AI247,
         },
-        "capacity": 4,
-        "pending": [],
-        "processors": [
-            {
-                "cam": camera,
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": (
-                    ANALYTICS_SCOPE_AI247
-                    if camera == "cam4"
-                    else ANALYTICS_SCOPE_SHIPPING
-                ),
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-            for camera in ("cam2", "cam3", "cam4")
-        ],
-    }
+        capacity=4,
+    )
     with patch.object(ai, "configure_always_on", return_value=live) as configure:
         response = auth_client(boss).put(
             "/api/cameras/monoblock-settings/",
@@ -510,7 +590,6 @@ def test_monoblock_camera_save_reconciles_effective_substream_policy(
         )
 
     assert response.status_code == 200
-    assert response.data["always_on_sync_status"] == "synced"
     configure.assert_called_once_with(
         ["cam2", "cam3", "cam4"],
         "sub",
@@ -540,8 +619,6 @@ def test_monoblock_camera_save_is_durable_when_camera_pc_is_offline(
         )
 
     assert response.status_code == 202
-    assert response.data["always_on_sync_status"] == "pending"
-    assert "offline" in response.data["always_on_detail"]
     assert MonoblockCameraSettings.shipping_sources() == ["cam7"]
 
 
@@ -589,7 +666,7 @@ def test_monoblock_camera_change_rejects_known_effective_capacity_before_commit(
     monkeypatch.setattr(ai, "AI_KEY", "k")
     cache.set(
         ai.ALWAYS_ON_CACHE_KEY,
-        {"cameras": ["cam2"], "source": "sub", "capacity": 1},
+        {"camera_sources": ["cam2"], "source": "sub", "capacity": 1},
         ai.ALWAYS_ON_TTL,
     )
 
@@ -609,30 +686,17 @@ def test_monoblock_camera_change_rejects_known_effective_capacity_before_commit(
 
 def test_always_on_pending_reason_is_not_reported_as_synced(
     auth_client,
-    superuser,
+    admin_user,
     monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
-        "capacity": 2,
-        "pending": [{"cam": "cam2", "reason": "camera_warming"}],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-        ],
-    }
+    live = _live(
+        {"cam2": ANALYTICS_SCOPE_AI247},
+        capacity=2,
+        pending=[{"cam": "cam2", "reason": "camera_warming"}],
+    )
     with patch.object(ai, "configure_always_on", return_value=live):
-        response = auth_client(superuser).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam2"]},
             format="json",
@@ -643,7 +707,7 @@ def test_always_on_pending_reason_is_not_reported_as_synced(
     assert "cam2: camera_warming" in response.data["detail"]
 
     with patch.object(ai, "always_on_status_cached", return_value=live):
-        follow_up = auth_client(superuser).get(
+        follow_up = auth_client(admin_user).get(
             "/api/cameras/always-on-settings/"
         )
     assert follow_up.status_code == 200
@@ -652,24 +716,11 @@ def test_always_on_pending_reason_is_not_reported_as_synced(
 
 
 def test_order_mode_requires_continuous_analytics_for_always_on_readiness():
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_SHIPPING},
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "session",
-                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
-                "continuous_analytics": False,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-        ],
-    }
+    live = _live(
+        {"cam2": ANALYTICS_SCOPE_SHIPPING},
+        mode="session",
+        continuous_analytics=False,
+    )
 
     sync_status, detail = continuous.contour_sync_state(
         live,
@@ -682,24 +733,7 @@ def test_order_mode_requires_continuous_analytics_for_always_on_readiness():
 
 
 def test_always_on_readiness_waits_for_first_inference_frame_when_exposed():
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-                "metrics": {"inference_frames": 0},
-            }
-        ],
-    }
+    live = _live({"cam2": ANALYTICS_SCOPE_AI247}, metrics={"inference_frames": 0})
 
     sync_status, detail = continuous.contour_sync_state(
         live,
@@ -718,30 +752,16 @@ def test_always_on_readiness_waits_for_first_inference_frame_when_exposed():
 
 
 def test_always_on_readiness_rejects_stale_frame_during_camera_gap():
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "status": "reconnecting",
-                # This timestamp is deliberately stale: it must not make a
-                # disconnected capture look ready.
-                "last_frame_at": "2026-09-01T08:00:00Z",
-                "metrics": {
-                    "inference_frames": 18,
-                    "camera_gap_started_at": "2026-09-01T08:00:05Z",
-                },
-            }
-        ],
-    }
+    # The snapshot's last_frame_at is deliberately stale: it must not make a
+    # disconnected capture look ready.
+    live = _live(
+        {"cam2": ANALYTICS_SCOPE_AI247},
+        status="reconnecting",
+        metrics={
+            "inference_frames": 18,
+            "camera_gap_started_at": "2026-09-01T08:00:05Z",
+        },
+    )
 
     sync_status, detail = continuous.contour_sync_state(
         live,
@@ -770,23 +790,7 @@ def test_always_on_readiness_rejects_stale_frame_during_camera_gap():
 
 
 def test_contour_readiness_requires_exact_top_level_and_processor_roles():
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-        ],
-    }
+    live = _live({"cam2": ANALYTICS_SCOPE_AI247})
 
     status, detail = continuous.contour_sync_state(
         live,
@@ -831,7 +835,7 @@ def test_always_on_apply_is_serialized_so_newer_policy_finishes_last(monkeypatch
             assert allow_first_to_finish.wait(timeout=5)
         applied.append((list(cameras), source, dict(analytics_scopes)))
         return {
-            "cameras": cameras,
+            "camera_sources": cameras,
             "source": source,
             "analytics_scopes": analytics_scopes,
             "processors": [],
@@ -910,59 +914,19 @@ def test_operator_cannot_change_monoblock_camera_allowlist(auth_client, operator
     assert not MonoblockCameraSettings.objects.exists()
 
 
-def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
+def test_superuser_always_on_settings_normalize_cameras_and_configure_camera_pc(
     auth_client,
-    boss,
-    operator,
-    client_user,
-    user_with_perms,
-    django_user_model,
     monkeypatch,
+    admin_user,
 ):
-    for user in (boss, operator):
-        response = auth_client(user).get("/api/cameras/always-on-settings/")
-        assert response.status_code == 200
-    assert (
-        auth_client(client_user).get("/api/cameras/always-on-settings/").status_code
-        == 403
-    )
-
-    denied = auth_client(boss).put(
-        "/api/cameras/always-on-settings/",
-        {"camera_sources": ["cam2"]},
-        format="json",
-    )
-    assert denied.status_code == 403
-
-    manager = django_user_model.objects.create_superuser("ai-247-manager", password="pass12345")
-
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
-        "capacity": 2,
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "recording": False,
-                "total": 14,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-        ],
-    }
+    live = _live({"cam2": ANALYTICS_SCOPE_AI247}, capacity=2, recording=False, total=14)
     with (
         patch.object(
             ai,
             "cached_always_on_status",
             return_value={
-                "cameras": [],
+                "camera_sources": [],
                 "source": "sub",
                 "analytics_scopes": {},
                 "capacity": 2,
@@ -971,7 +935,7 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
         ),
         patch.object(ai, "configure_always_on", return_value=live) as configure,
     ):
-        response = auth_client(manager).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["2", "cam2"]},
             format="json",
@@ -989,75 +953,29 @@ def test_always_on_settings_are_readable_to_loaders_and_managed_separately(
     )
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.always_on_camera_sources == ["cam2"]
-    assert row.updated_by == manager
+    assert row.updated_by == admin_user
     # 24/7 — фоновый режим камеры, а не отгрузка: он не создаёт владельца,
     # сессию заказа или какую-либо camera binding в CRM.
     assert AiCountingSession.objects.count() == 0
 
 
-def test_always_on_choice_survives_camera_pc_outage(
-    auth_client,
-    superuser,
-    monkeypatch,
-):
-    monkeypatch.setattr(ai, "AI_KEY", "k")
-    with (
-        patch.object(
-            ai,
-            "always_on_status",
-            side_effect=ai.AiUnavailable("offline"),
-        ),
-        patch.object(
-            ai,
-            "configure_always_on",
-            side_effect=ai.AiUnavailable("offline"),
-        ),
-    ):
-        response = auth_client(superuser).put(
-            "/api/cameras/always-on-settings/",
-            {"camera_sources": ["cam3"]},
-            format="json",
-        )
-
-    assert response.status_code == 202
-    assert response.data["sync_status"] == "pending"
-    assert MonoblockCameraSettings.ai247_sources() == ["cam3"]
-
-
 def test_ai247_settings_expose_shipping_cameras_as_blocked(
     auth_client,
-    superuser,
+    admin_user,
 ):
-    MonoblockCameraSettings.objects.create(
-        camera_sources=["cam2"],
-        always_on_camera_sources=["cam3"],
-    )
-    ContinuousCameraRole.objects.bulk_create(
-        [
-            ContinuousCameraRole(
-                camera="cam2",
-                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-            ),
-            ContinuousCameraRole(
-                camera="cam3",
-                analytics_scope=ANALYTICS_SCOPE_AI247,
-            ),
-        ]
-    )
+    _split_contours()
 
-    response = auth_client(superuser).get("/api/cameras/always-on-settings/")
+    response = auth_client(admin_user).get("/api/cameras/always-on-settings/")
 
     assert response.status_code == 200
     assert response.data["analytics_scope"] == ANALYTICS_SCOPE_AI247
-    assert response.data["automatic_camera_sources"] == []
-    assert response.data["manual_camera_sources"] == ["cam3"]
     assert response.data["camera_sources"] == ["cam3"]
     assert response.data["blocked_camera_sources"] == ["cam2"]
 
 
 def test_ai247_picker_cannot_claim_shipping_camera_atomically(
     auth_client,
-    superuser,
+    admin_user,
 ):
     row = MonoblockCameraSettings.objects.create(
         camera_sources=["cam2"],
@@ -1065,7 +983,7 @@ def test_ai247_picker_cannot_claim_shipping_camera_atomically(
     )
 
     with patch.object(ai, "configure_always_on") as configure:
-        response = auth_client(superuser).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam2", "cam3"]},
             format="json",
@@ -1085,55 +1003,12 @@ def test_contour_settings_and_shipping_detections_do_not_leak_other_role(
     boss,
     monkeypatch,
 ):
-    MonoblockCameraSettings.objects.create(
-        camera_sources=["cam2"],
-        always_on_camera_sources=["cam3"],
-    )
-    ContinuousCameraRole.objects.bulk_create(
-        [
-            ContinuousCameraRole(
-                camera="cam2",
-                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-            ),
-            ContinuousCameraRole(
-                camera="cam3",
-                analytics_scope=ANALYTICS_SCOPE_AI247,
-            ),
-        ]
-    )
+    _split_contours()
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "cameras": ["cam2", "cam3"],
-        "source": "sub",
-        "analytics_scopes": {
-            "cam2": ANALYTICS_SCOPE_SHIPPING,
-            "cam3": ANALYTICS_SCOPE_AI247,
-        },
-        "capacity": 4,
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_SHIPPING,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-                "total": 12,
-            },
-            {
-                "cam": "cam3",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-                "total": 34,
-            },
-        ],
-    }
+    live = _live(
+        {"cam2": ANALYTICS_SCOPE_SHIPPING, "cam3": ANALYTICS_SCOPE_AI247},
+        capacity=4,
+    )
     detections = {
         **live,
         "processors": [
@@ -1169,7 +1044,6 @@ def test_contour_settings_and_shipping_detections_do_not_leak_other_role(
     assert [item["cam"] for item in ai247.data["processors"]] == ["cam3"]
 
     assert boxes.status_code == 200
-    assert boxes.data["cameras"] == ["cam2"]
     assert boxes.data["camera_sources"] == ["cam2"]
     assert boxes.data["analytics_scopes"] == {
         "cam2": ANALYTICS_SCOPE_SHIPPING
@@ -1177,30 +1051,69 @@ def test_contour_settings_and_shipping_detections_do_not_leak_other_role(
     assert [item["cam"] for item in boxes.data["processors"]] == ["cam2"]
 
 
-def test_contour_settings_hide_stale_processors_from_the_opposite_scope(
+@pytest.mark.parametrize(
+    "settings_url,detections_url,cameras",
+    [
+        (
+            "/api/cameras/always-on-settings/",
+            "/api/cameras/always-on-detections/",
+            ["cam3"],
+        ),
+        (
+            "/api/cameras/shipping-continuous-settings/",
+            "/api/cameras/shipping-continuous-detections/",
+            ["cam2"],
+        ),
+    ],
+)
+def test_contour_views_stay_pending_and_empty_without_camera_pc(
     auth_client,
     boss,
     monkeypatch,
+    settings_url,
+    detections_url,
+    cameras,
 ):
     MonoblockCameraSettings.objects.create(
         camera_sources=["cam2"],
         always_on_camera_sources=["cam3"],
     )
-    ContinuousCameraRole.objects.bulk_create(
-        [
-            ContinuousCameraRole(
-                camera="cam2",
-                analytics_scope=ANALYTICS_SCOPE_SHIPPING,
-            ),
-            ContinuousCameraRole(
-                camera="cam3",
-                analytics_scope=ANALYTICS_SCOPE_AI247,
-            ),
-        ]
-    )
+
+    disabled = auth_client(boss).get(settings_url)
+
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    offline = ai.AiUnavailable("ПК камер недоступен")
+    with (
+        patch.object(ai, "always_on_status_cached", side_effect=offline),
+        patch.object(ai, "always_on_detections_cached", side_effect=offline),
+    ):
+        unavailable = auth_client(boss).get(settings_url)
+        boxes = auth_client(boss).get(detections_url)
+
+    assert disabled.status_code == 200
+    assert disabled.data["sync_status"] == "pending"
+    assert disabled.data["detail"] == "AI-сервис не настроен"
+    assert disabled.data["service_available"] is False
+    assert unavailable.status_code == 200
+    assert unavailable.data["camera_sources"] == cameras
+    assert unavailable.data["sync_status"] == "pending"
+    assert unavailable.data["detail"] == str(offline)
+    assert unavailable.data["processors"] == []
+    assert boxes.status_code == 200
+    assert boxes.data["camera_sources"] == cameras
+    assert boxes.data["processors"] == []
+    assert boxes.data["pending"] == []
+
+
+def test_contour_settings_hide_stale_processors_from_the_opposite_scope(
+    auth_client,
+    boss,
+    monkeypatch,
+):
+    _split_contours()
     monkeypatch.setattr(ai, "AI_KEY", "k")
     stale_live = {
-        "cameras": ["cam2", "cam3"],
+        "camera_sources": ["cam2", "cam3"],
         "source": "sub",
         "analytics_scopes": {
             "cam2": ANALYTICS_SCOPE_SHIPPING,
@@ -1234,7 +1147,6 @@ def test_contour_settings_hide_stale_processors_from_the_opposite_scope(
             "/api/cameras/shipping-continuous-settings/"
         )
         ai247 = auth_client(boss).get("/api/cameras/always-on-settings/")
-        monoblock = auth_client(boss).get("/api/cameras/monoblock-settings/")
         detections = auth_client(boss).get(
             "/api/cameras/shipping-continuous-detections/"
         )
@@ -1243,19 +1155,17 @@ def test_contour_settings_hide_stale_processors_from_the_opposite_scope(
     assert shipping.data["sync_status"] == "pending"
     assert ai247.data["processors"] == []
     assert ai247.data["sync_status"] == "pending"
-    assert monoblock.data["processors"] == []
     assert detections.data["processors"] == []
     assert detections.data["pending"] == []
 
 
 def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
     auth_client,
-    superuser,
+    admin_user,
     boss,
     operator,
     client_user,
     user_with_perms,
-    monkeypatch,
 ):
     for user in (boss, operator, client_user):
         response = auth_client(user).get("/api/cameras/wagon-number-settings/")
@@ -1277,92 +1187,68 @@ def test_wagon_number_camera_assignment_is_superuser_only_and_uses_main_stream(
         == 403
     )
 
-    monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "camera": "cam1",
-        "source": "main",
-        "stream": "cam1",
-        "assigned": True,
-        "mode": "wagon_number_24_7",
-    }
-    with patch.object(ai, "configure_wagon_number", return_value=live) as configure:
-        response = auth_client(superuser).put(
-            "/api/cameras/wagon-number-settings/",
-            {"camera_source": "1"},
-            format="json",
-        )
+    response = auth_client(admin_user).put(
+        "/api/cameras/wagon-number-settings/",
+        {"camera_source": "1"},
+        format="json",
+    )
 
     assert response.status_code == 200
     assert response.data["camera_source"] == "cam1"
     assert response.data["source"] == "main"
-    assert response.data["sync_status"] == "synced"
-    configure.assert_called_once_with("cam1", "main")
     row = MonoblockCameraSettings.objects.get(singleton=True)
     assert row.wagon_number_camera_source == "cam1"
-    assert row.updated_by == superuser
+    assert row.updated_by == admin_user
 
 
-def test_wagon_number_camera_assignment_survives_camera_pc_outage(
+def test_wagon_number_camera_assignment_is_effective_without_camera_pc(
     auth_client,
-    superuser,
+    admin_user,
     monkeypatch,
 ):
+    # Роли камеры на ПК камер нет: сохранённое назначение сразу действует,
+    # а не висит «ожидает связь» после 404 от несуществующего эндпоинта.
     monkeypatch.setattr(ai, "AI_KEY", "k")
     with patch.object(
         ai,
-        "configure_wagon_number",
-        side_effect=ai.AiUnavailable("offline"),
+        "_call",
+        side_effect=AssertionError("назначение не синхронизируется с ПК камер"),
     ):
-        response = auth_client(superuser).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/wagon-number-settings/",
             {"camera_source": "cam3"},
             format="json",
         )
+        follow_up = auth_client(admin_user).get("/api/cameras/wagon-number-settings/")
 
-    assert response.status_code == 202
-    assert response.data["camera_source"] == "cam3"
-    assert response.data["sync_status"] == "pending"
+    assert response.status_code == 200
     assert MonoblockCameraSettings.wagon_number_source() == "cam3"
-
-    with patch.object(
-        ai,
-        "wagon_number_status_cached",
-        side_effect=ai.AiUnavailable("offline"),
-    ):
-        follow_up = auth_client(superuser).get("/api/cameras/wagon-number-settings/")
-    assert follow_up.data["camera_source"] == "cam3"
+    row = MonoblockCameraSettings.objects.get(singleton=True)
+    expected = {"camera_source": "cam3", "source": "main", "updated_at": row.updated_at}
+    assert response.data == expected
+    assert follow_up.status_code == 200
+    assert follow_up.data == expected
 
 
 def test_superuser_can_clear_wagon_number_camera_assignment(
     auth_client,
-    superuser,
-    monkeypatch,
+    admin_user,
 ):
     MonoblockCameraSettings.objects.create(wagon_number_camera_source="cam2")
-    monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "camera": None,
-        "source": "main",
-        "stream": None,
-        "assigned": False,
-        "mode": "wagon_number_24_7",
-    }
-    with patch.object(ai, "configure_wagon_number", return_value=live) as configure:
-        response = auth_client(superuser).put(
-            "/api/cameras/wagon-number-settings/",
-            {"camera_source": None},
-            format="json",
-        )
+    response = auth_client(admin_user).put(
+        "/api/cameras/wagon-number-settings/",
+        {"camera_source": None},
+        format="json",
+    )
 
     assert response.status_code == 200
     assert response.data["camera_source"] is None
-    configure.assert_called_once_with(None, "main")
     assert MonoblockCameraSettings.wagon_number_source() == ""
 
 
 def test_superuser_cannot_exceed_camera_pc_processor_capacity(
     auth_client,
-    superuser,
+    admin_user,
     monkeypatch,
 ):
     monkeypatch.setattr(ai, "AI_KEY", "k")
@@ -1373,7 +1259,7 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
             ai,
             "cached_always_on_status",
             return_value={
-                "cameras": [],
+                "camera_sources": [],
                 "source": "sub",
                 "analytics_scopes": {},
                 "capacity": 1,
@@ -1382,7 +1268,7 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
         ),
         patch.object(ai, "configure_always_on") as configure,
     ):
-        response = auth_client(superuser).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam2", "cam3"]},
             format="json",
@@ -1395,31 +1281,14 @@ def test_superuser_cannot_exceed_camera_pc_processor_capacity(
 
 def test_capacity_guard_allows_policy_reduction_back_toward_limit(
     auth_client,
-    superuser,
+    admin_user,
     monkeypatch,
 ):
     MonoblockCameraSettings.objects.create(
         always_on_camera_sources=["cam2", "cam3"]
     )
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    live = {
-        "cameras": ["cam2"],
-        "source": "sub",
-        "analytics_scopes": {"cam2": ANALYTICS_SCOPE_AI247},
-        "capacity": 1,
-        "pending": [],
-        "processors": [
-            {
-                "cam": "cam2",
-                "running": True,
-                "processor_alive": True,
-                "source": "sub",
-                "mode": "always_on",
-                "analytics_scope": ANALYTICS_SCOPE_AI247,
-                "last_frame_at": "2026-09-01T08:00:00Z",
-            }
-        ],
-    }
+    live = _live({"cam2": ANALYTICS_SCOPE_AI247}, capacity=1)
     with (
         patch.object(
             ai,
@@ -1428,7 +1297,7 @@ def test_capacity_guard_allows_policy_reduction_back_toward_limit(
         ),
         patch.object(ai, "configure_always_on", return_value=live) as configure,
     ):
-        response = auth_client(superuser).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam2"]},
             format="json",
@@ -1466,7 +1335,7 @@ def test_token_denied_for_portal_client(auth_client, client_user):
 
 @pytest.mark.parametrize(
     "source",
-    ["cam2", "cam2ai", "cam_8c28", "cam1main"],
+    ["cam2", "cam_8c28", "cam1main"],
 )
 def test_auth_accepts_valid_staff_cookie(api_client, auth_client, operator, source):
     token = _stream_token(auth_client, operator)
@@ -1672,7 +1541,7 @@ def test_known_topology_answers_without_waiting_for_the_network(monkeypatch):
     monkeypatch.setattr(services, "CAMERA_PASS", "x")
     with patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
         services.discover_cameras()
-    cache.delete(services.CACHE_KEY)  # снимок протух, last-known-good остался
+    cache.delete(services.FRESH_KEY)  # снимок протух
 
     started = []
 
@@ -1692,22 +1561,39 @@ def test_known_topology_answers_without_waiting_for_the_network(monkeypatch):
 
     assert probe.call_count == 0, "запрос не должен ходить по сети"
     assert [c["id"] for c in cameras] == ["nvr:cam1"]
-    assert cameras[0]["online"] is False
+    # Истёкший срок — не сбой связи: стена не гаснет «нет сигнала».
+    assert cameras[0]["online"] is True
     assert started, "обновление должно уйти в фон"
 
-    # Фоновое обновление возвращает камеры в строй и снимает замок.
-    with patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
+    # Фоновое обновление приносит актуальный статус и снимает замок.
+    with patch.object(services, "_probe_path", side_effect=fake_probe(["offline"])):
         started[0]._target()
     assert cache.get(services.REFRESH_LOCK_KEY) is None
-    assert services.discover_cameras()[0]["online"] is True
+    assert services.discover_cameras()[0]["online"] is False
+
+
+def test_lost_snapshot_shows_known_topology_offline_while_refreshing(monkeypatch):
+    monkeypatch.setattr(services, "CAMERA_PASS", "x")
+    with patch.object(services, "_probe_path", side_effect=fake_probe(["online"])):
+        services.discover_cameras()
+    cache.delete_many([services.CACHE_KEY, services.FRESH_KEY])  # сброс кэша
+
+    with (
+        patch.object(services.threading, "Thread") as thread,
+        patch.object(services, "_probe_path") as probe,
+    ):
+        cameras = services.discover_cameras()
+
+    probe.assert_not_called()
+    thread.return_value.start.assert_called_once()
+    assert [(c["id"], c["online"]) for c in cameras] == [("nvr:cam1", False)]
 
 
 def test_always_on_status_is_not_refetched_on_every_poll(monkeypatch):
     """The polling read path must not call the camera PC per request."""
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    cache.delete(ai.ALWAYS_ON_CACHE_KEY)
     payload = {
-        "cameras": ["cam1"],
+        "camera_sources": ["cam1"],
         "source": "sub",
         "analytics_scopes": {"cam1": ANALYTICS_SCOPE_AI247},
         "processors": [],
@@ -1721,7 +1607,7 @@ def test_always_on_status_is_not_refetched_on_every_poll(monkeypatch):
 
 def test_always_on_choice_survives_an_unreachable_camera_pc(
     auth_client,
-    superuser,
+    admin_user,
     monkeypatch,
 ):
     """A camera-PC timeout must not discard the administrator's selection.
@@ -1731,14 +1617,13 @@ def test_always_on_choice_survives_an_unreachable_camera_pc(
     is offline — the UI showed the choice reverting to zero instead.
     """
     monkeypatch.setattr(ai, "AI_KEY", "k")
-    cache.delete(ai.ALWAYS_ON_CACHE_KEY)
     timeout = ai.AiUnavailable("<urlopen error timed out>")
 
     with (
         patch.object(ai, "configure_always_on", side_effect=timeout),
         patch.object(ai, "always_on_status") as blocking_status,
     ):
-        response = auth_client(superuser).put(
+        response = auth_client(admin_user).put(
             "/api/cameras/always-on-settings/",
             {"camera_sources": ["cam3"]},
             format="json",
@@ -1754,5 +1639,5 @@ def test_always_on_choice_survives_an_unreachable_camera_pc(
 
     # Follow-up reads keep showing it, so the page cannot fall back to "0".
     with patch.object(ai, "always_on_status_cached", side_effect=timeout):
-        follow_up = auth_client(superuser).get("/api/cameras/always-on-settings/")
+        follow_up = auth_client(admin_user).get("/api/cameras/always-on-settings/")
     assert follow_up.data["camera_sources"] == ["cam3"]

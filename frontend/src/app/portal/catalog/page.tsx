@@ -5,14 +5,13 @@ import { AppShell } from "@/components/layout/app-shell";
 import { ProductPhoto } from "@/components/catalog/product-photo";
 import { AddToCart } from "@/components/portal/add-to-cart";
 import { CartBar } from "@/components/portal/cart-bar";
-import { bagsLabel } from "@/components/portal/cart-button";
 import { CurrencyToggle } from "@/components/portal/currency-toggle";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataGate } from "@/components/ui/data-state";
 import { priceCart } from "@/lib/cart";
 import { usePortalCatalog } from "@/lib/use-portal-catalog";
-import { cn, formatCurrency } from "@/lib/utils";
+import { bagsLabel, cn, formatCurrency } from "@/lib/utils";
 import { useCart } from "@/store/cart";
 
 export default function PortalCatalogPage() {

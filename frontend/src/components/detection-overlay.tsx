@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { cn } from "@/lib/utils";
 import type { AlwaysOnDetection } from "@/lib/types";
-import { useVideoBox } from "@/lib/use-video-box";
+import { useVideoBox, videoBoxStyle } from "@/lib/use-video-box";
 
 /**
  * Цвет рамки = цвет мешка, который распознала модель.
@@ -19,6 +18,10 @@ const BAG_COLORS: Record<string, string> = {
 };
 
 const FALLBACK_COLOR = "#F79009";
+
+// Рамка старше этого времени описывает уже уехавший мешок — гасим её, чтобы
+// она не висела на пустом месте при обрыве связи или остановке модели.
+const STALE_AFTER_MS = 2_500;
 
 /**
  * Данные приходят от AI-сервиса на ПК цеха, а он обновляется вручную и может
@@ -37,7 +40,6 @@ type DrawableBox = {
   h: number;
   label: string;
   color: string;
-  counted: boolean;
   confidence: number | null;
 };
 
@@ -53,17 +55,12 @@ function visibleBox(x: number, y: number, w: number, h: number) {
 }
 
 /**
- * Привести рамки к долям кадра, поняв любой формат AI-сервиса.
+ * Привести рамки AI-сервиса к долям кадра.
  *
- * ПК цеха обновляется вручную и живёт своей версией, поэтому в ответе
- * встречаются оба вида:
- *
- * - нормализованный — `{x, y, w, h, label}`, доли кадра (0..1);
- * - пиксельный — `{bbox: [x1, y1, x2, y2], class_name}`, точки кадра.
- *
- * Пиксели делим на размер кадра из `detection_frame`. Без него масштаб
- * неизвестен: нарисовать «на глаз» значило бы показать рамку не на том
- * мешке, поэтому такие записи отбрасываем.
+ * Сервис отдаёт рамку в пикселях кадра модели — `{bbox: [x1, y1, x2, y2],
+ * class_name}`. Пиксели делим на размер кадра из `detection_frame`. Без него
+ * масштаб неизвестен: нарисовать «на глаз» значило бы показать рамку не на
+ * том мешке, поэтому такие записи отбрасываем.
  *
  * Запись без пригодных координат тоже отбрасывается целиком — рамка на
  * `NaN%` уехала бы по экрану вместо того, чтобы просто не появиться.
@@ -74,36 +71,21 @@ export function normalizeDetections(
 ): DrawableBox[] {
   const frameWidth = Number(frame?.width);
   const frameHeight = Number(frame?.height);
-  const canScale = Number.isFinite(frameWidth) && Number.isFinite(frameHeight) && frameWidth > 0 && frameHeight > 0;
+  if (!(Number.isFinite(frameWidth) && Number.isFinite(frameHeight) && frameWidth > 0 && frameHeight > 0)) return [];
 
-  return (detections ?? []).flatMap((item) => {
-    const raw = item as AlwaysOnDetection & {
-      bbox?: unknown;
-      class_name?: unknown;
-    };
-    let coords: number[];
-
-    if (Array.isArray(raw?.bbox)) {
-      if (!canScale) return [];
-      const [x1, y1, x2, y2] = raw.bbox.map(Number);
-      if (![x1, y1, x2, y2].every(Number.isFinite)) return [];
-      coords = [x1 / frameWidth, y1 / frameHeight, (x2 - x1) / frameWidth, (y2 - y1) / frameHeight];
-    } else {
-      coords = [raw?.x, raw?.y, raw?.w, raw?.h].map(Number);
-    }
-
-    if (!coords.every(Number.isFinite)) return [];
-    const [x, y, w, h] = coords;
-    const visible = visibleBox(x, y, w, h);
+  return (detections ?? []).flatMap((raw) => {
+    if (!Array.isArray(raw?.bbox)) return [];
+    const [x1, y1, x2, y2] = raw.bbox.map(Number);
+    if (![x1, y1, x2, y2].every(Number.isFinite)) return [];
+    const visible = visibleBox(x1 / frameWidth, y1 / frameHeight, (x2 - x1) / frameWidth, (y2 - y1) / frameHeight);
     if (!visible) return [];
-    const label = raw?.label ?? (typeof raw?.class_name === "string" ? raw.class_name : undefined);
-    const confidence = Number(raw?.confidence);
+    const label = typeof raw.class_name === "string" ? raw.class_name : undefined;
+    const confidence = Number(raw.confidence);
     return [
       {
         ...visible,
-        label: String(label ?? ""),
+        label: label ?? "",
         color: bagColor(label),
-        counted: Boolean(raw?.counted),
         confidence: Number.isFinite(confidence) ? confidence : null,
       },
     ];
@@ -117,28 +99,28 @@ export function normalizeDetections(
  * месте: новых данных нет, а старые никто не убирает. Поэтому истечение
  * отсчитывается таймером, а не только приходом следующего ответа.
  */
-function useStale(updatedAt: number | undefined, staleAfterMs: number | undefined): boolean {
+function useStale(updatedAt: number | undefined): boolean {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!updatedAt || !staleAfterMs) return;
+    if (!updatedAt) return;
     setNow(Date.now());
-    const remaining = updatedAt + staleAfterMs - Date.now();
+    const remaining = updatedAt + STALE_AFTER_MS - Date.now();
     const timer = setTimeout(() => setNow(Date.now()), Math.max(0, remaining));
     return () => clearTimeout(timer);
-  }, [updatedAt, staleAfterMs]);
+  }, [updatedAt]);
 
-  if (!updatedAt || !staleAfterMs) return false;
-  return now - updatedAt >= staleAfterMs;
+  if (!updatedAt) return false;
+  return now - updatedAt >= STALE_AFTER_MS;
 }
 
 /**
  * Рамки распознанных мешков поверх видео.
  *
  * Всегда-включённые камеры отдают чистый поток без вжатых рамок, поэтому
- * их рисует браузер по координатам из статуса процессора. Координаты
- * приходят в долях кадра, так что оверлей не зависит ни от разрешения
- * камеры, ни от размера карточки.
+ * их рисует браузер по координатам из статуса процессора. Пиксели кадра
+ * модели переводятся в доли кадра, так что оверлей не зависит ни от
+ * разрешения камеры, ни от размера карточки.
  *
  * Из-за опроса рамки отстают от картинки на доли секунды — это цена того,
  * что горячий путь видео и счётчик остаются нетронутыми.
@@ -147,21 +129,16 @@ export function DetectionOverlay({
   detections,
   frame,
   updatedAt,
-  staleAfterMs,
-  className,
 }: {
   detections: AlwaysOnDetection[] | undefined;
-  /** Размер кадра модели: нужен, когда сервис отдаёт рамки в пикселях. */
+  /** Размер кадра модели: без него пиксельные рамки не во что масштабировать. */
   frame?: { width?: number; height?: number } | null;
-  /** Когда пришёл этот список рамок (`Date.now()`). */
+  /** Когда пришёл этот список рамок (`Date.now()`); без него рамки не гаснут. */
   updatedAt?: number;
-  /** Через сколько рамка считается устаревшей и гаснет. */
-  staleAfterMs?: number;
-  className?: string;
 }) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const box = useVideoBox(container);
-  const stale = useStale(updatedAt, staleAfterMs);
+  const stale = useStale(updatedAt);
   const drawable = stale ? [] : normalizeDetections(detections, frame);
   const labelOccurrences = new Map<string, number>();
 
@@ -169,12 +146,8 @@ export function DetectionOverlay({
     <div
       aria-hidden
       ref={setContainer}
-      className={cn("pointer-events-none absolute inset-0 overflow-hidden", className)}
-      style={
-        box
-          ? { left: box.left, top: box.top, width: box.width, height: box.height, right: "auto", bottom: "auto" }
-          : undefined
-      }
+      className="pointer-events-none absolute inset-0 overflow-hidden"
+      style={videoBoxStyle(box)}
     >
       {!drawable.length ? null : (
         <>
@@ -198,18 +171,14 @@ export function DetectionOverlay({
                   width: `${box.w * 100}%`,
                   height: `${box.h * 100}%`,
                   borderColor: box.color,
-                  // Засчитанный мешок выделяется толщиной и свечением — видно
-                  // не только что модель его нашла, но и что счётчик его принял.
-                  borderWidth: box.counted ? 3 : 1.5,
+                  borderWidth: 1.5,
                   borderStyle: "solid",
-                  boxShadow: box.counted ? `0 0 0 1px #fff, 0 0 12px ${box.color}` : undefined,
                 }}
               >
                 <span
                   className="absolute -top-[18px] left-0 whitespace-nowrap rounded-[3px] px-1 text-[10px] font-bold leading-4 text-white"
                   style={{ backgroundColor: box.color }}
                 >
-                  {box.counted && "✓ "}
                   {box.label}
                   {box.confidence === null ? "" : ` ${Math.round(box.confidence * 100)}%`}
                 </span>

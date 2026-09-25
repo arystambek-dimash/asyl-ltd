@@ -12,12 +12,14 @@ def test_order_defaults_debt_and_unpaid():
     o = Order.objects.create(client=c)
     assert o.payment_status == "unpaid"
     assert o.settlement_intent == "debt"
+    assert o.debt_requested is False
+    assert o.truck_number_set_by is None
     assert "paid" not in Order.STATUSES
 
 
 def test_remaining_amount():
     c = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    p = Product.objects.create(name="P", color="Red", weight_kg="50", price="100.00")
+    p = Product.objects.create(name="P", color="Red", weight_kg="50")
     o = Order.objects.create(client=c)
     OrderItem.objects.create(order=o, product=p, quantity=2, unit_price="100.00")
     assert o.remaining_amount == Decimal("200.00")

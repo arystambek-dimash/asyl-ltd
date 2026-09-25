@@ -42,16 +42,6 @@ jobs:
           FRONTEND_IMAGE_REF: ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
         run: docker compose -f docker-compose.prod.yml config --quiet
 
-  camera-pc-static:
-    name: Windows camera-PC package
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-      - name: Parse and test PowerShell camera package
-        shell: powershell
-        run: .\deploy\camera-pc\tests\Invoke-StaticTests.ps1
-
   backend:
     name: Backend tests + audit
     runs-on: ubuntu-latest

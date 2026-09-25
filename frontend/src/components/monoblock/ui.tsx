@@ -1,9 +1,9 @@
 "use client";
 
-// Тихий UI-kit модалки «Робот Кука» на токенах дизайн-системы (Card, border,
-// muted): без градиентов и анимаций, hairline-разделители, крупные табличные
-// цифры, цвет только на данных. Один язык для всех вкладок — не плодим
-// стили по месту.
+// Тихий UI-kit аналитики камер (моноблок и сессии отгрузки) на токенах
+// дизайн-системы (Card, border, muted): без градиентов и анимаций,
+// hairline-разделители, крупные табличные цифры, цвет только на данных.
+// Один язык для всех вкладок — не плодим стили по месту.
 
 import type { ReactNode } from "react";
 import { useId, useState } from "react";
@@ -121,18 +121,16 @@ export function ColorDot({ className }: { className?: string }) {
 }
 
 /** Тихий статус: точка + короткая метка (вместо прогресс-баров и абзацев). */
-export function StatusChip({ tone, children }: { tone: "ok" | "warn" | "error" | "muted"; children: ReactNode }) {
+export function StatusChip({ tone, children }: { tone: "ok" | "warn" | "error"; children: ReactNode }) {
   const map = {
     ok: "text-[var(--success)]",
     warn: "text-[var(--warning)]",
     error: "text-[var(--destructive)]",
-    muted: "text-[var(--muted-foreground)]",
   };
   const dot = {
     ok: "bg-[var(--success)]",
     warn: "bg-[var(--warning)]",
     error: "bg-[var(--destructive)]",
-    muted: "bg-[var(--muted-foreground)]",
   };
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium", map[tone])}>

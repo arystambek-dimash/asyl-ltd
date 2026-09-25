@@ -1,5 +1,4 @@
 import pytest
-from rest_framework.test import APIClient
 
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
@@ -8,12 +7,6 @@ from apps.sales.models import Department
 from apps.warehouse.models import StockItem, Warehouse
 
 pytestmark = pytest.mark.django_db
-
-
-def _api(user):
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
 
 
 def _reference_rows():
@@ -40,7 +33,6 @@ def _reference_rows():
         name="Мука",
         color="Blue",
         weight_kg="50",
-        ask_truck_weight=True,
     )
     StockItem.objects.create(product=product, bags=37)
     department = Department.objects.create(
@@ -56,11 +48,12 @@ def _reference_rows():
 def test_order_permission_grants_minimal_form_options(
     user_with_perms,
     permission,
+    api_as,
 ):
     user = user_with_perms(f"options-{permission}", codes=[permission])
     client, store, product, department = _reference_rows()
 
-    response = _api(user).get("/api/orders/form-options/")
+    response = api_as(user).get("/api/orders/form-options/")
 
     assert response.status_code == 200
     clients = {row["id"]: row for row in response.data["clients"]}
@@ -86,8 +79,6 @@ def test_order_permission_grants_minimal_form_options(
         "id": product.id,
         "label": "Мука · Синий 50 кг",
         "available_bags": 37,
-        "warehouse": main.pk,
-        "warehouse_name": main.name,
         "stock_by_warehouse": {str(main.pk): 37},
     }
     assert warehouses[main.pk]["code"] == "main"
@@ -116,22 +107,21 @@ def test_order_permission_grants_minimal_form_options(
         "phone",
         "payment_schedule_type",
         "payment_days",
-        "contract_signed_at",
     }.isdisjoint(stores[store.id])
     assert {
         "color",
         "cv_class",
-        "ask_truck_weight",
         "is_active",
     }.isdisjoint(products[product.id])
 
 
 def test_form_options_does_not_replace_generic_reference_permissions(
     user_with_perms,
+    api_as,
 ):
     user = user_with_perms("order-options-only", codes=["orders.create"])
     _reference_rows()
-    api = _api(user)
+    api = api_as(user)
 
     assert api.get("/api/orders/form-options/").status_code == 200
     assert api.get("/api/clients/").status_code == 403
@@ -141,6 +131,7 @@ def test_form_options_does_not_replace_generic_reference_permissions(
 
 def test_form_options_exposes_one_product_with_balances_by_warehouse(
     user_with_perms,
+    api_as,
 ):
     user = user_with_perms("multi-stock-options", codes=["orders.create"])
     _client, _store, product, _department = _reference_rows()
@@ -154,7 +145,7 @@ def test_form_options_exposes_one_product_with_balances_by_warehouse(
     StockItem.objects.create(product=product, warehouse=secondary, bags=12)
     StockItem.objects.create(product=product, warehouse=inactive, bags=99)
 
-    response = _api(user).get("/api/orders/form-options/")
+    response = api_as(user).get("/api/orders/form-options/")
 
     assert response.status_code == 200
     rows = [row for row in response.data["products"] if row["id"] == product.pk]
@@ -163,7 +154,7 @@ def test_form_options_exposes_one_product_with_balances_by_warehouse(
         str(main.pk): 37,
         str(secondary.pk): 12,
     }
-    assert rows[0]["warehouse"] == main.pk
+    # Пока склад в форме не выбран, виден остаток склада по умолчанию.
     assert rows[0]["available_bags"] == 37
     assert str(inactive.pk) not in rows[0]["stock_by_warehouse"]
     assert inactive.pk not in {
@@ -171,17 +162,17 @@ def test_form_options_exposes_one_product_with_balances_by_warehouse(
     }
 
 
-def test_unrelated_order_permission_cannot_read_form_options(user_with_perms):
+def test_unrelated_order_permission_cannot_read_form_options(user_with_perms, api_as):
     viewer = user_with_perms("orders-view-only", codes=["orders.view"])
 
-    assert _api(viewer).get("/api/orders/form-options/").status_code == 403
+    assert api_as(viewer).get("/api/orders/form-options/").status_code == 403
 
 
-def test_create_only_user_can_submit_selected_reference(user_with_perms):
+def test_create_only_user_can_submit_selected_reference(user_with_perms, api_as):
     creator = user_with_perms("orders-create-only", codes=["orders.create"])
     client, _store, product, department = _reference_rows()
 
-    response = _api(creator).post(
+    response = api_as(creator).post(
         "/api/orders/",
         {
             "client": client.id,
@@ -197,6 +188,7 @@ def test_create_only_user_can_submit_selected_reference(user_with_perms):
 
 def test_edit_only_user_can_validate_existing_client_and_load_prices(
     user_with_perms,
+    api_as,
 ):
     editor = user_with_perms("orders-edit-only", codes=["orders.edit"])
     client, _store, product, department = _reference_rows()
@@ -217,7 +209,7 @@ def test_edit_only_user_can_validate_existing_client_and_load_prices(
         currency="USD",
         price="125.00",
     )
-    api = _api(editor)
+    api = api_as(editor)
 
     update = api.patch(
         f"/api/orders/{order.id}/",

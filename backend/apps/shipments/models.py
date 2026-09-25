@@ -1,13 +1,13 @@
 from django.conf import settings
 from django.db import models
 
+from apps.common.models import SingletonModel
+
 
 class Shipment(models.Model):
     order = models.OneToOneField(
         "orders.Order", on_delete=models.CASCADE, related_name="shipment"
     )
-    # Вагон едет без номера машины — поле необязательно.
-    truck_number = models.CharField(max_length=30, blank=True, default="")
     # Ручной или расчётный входной вес в sales-flow.
     weigh_in_kg = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True
@@ -51,10 +51,6 @@ class ShipmentWagon(models.Model):
     bags = models.PositiveIntegerField()
     weight_kg = models.DecimalField(max_digits=10, decimal_places=2)
     position = models.PositiveSmallIntegerField()
-    # Сообщение WhatsApp-бота, по которому проведён вагон (пусто — «Вставить отчёт» у грузчика).
-    source_message = models.ForeignKey(
-        "bots.BotMessage", null=True, blank=True, on_delete=models.SET_NULL, related_name="wagons",
-    )
 
     class Meta:
         ordering = ["position", "id"]
@@ -90,15 +86,9 @@ def default_waybill_signers():
     ]
 
 
-class WaybillSettings(models.Model):
+class WaybillSettings(SingletonModel):
     """Шапка и подписи «Накладной на отпуск товаров» — одна строка на всё приложение."""
 
-    singleton = models.BooleanField(default=True, unique=True, editable=False)
     point_name = models.CharField(max_length=120, default="мельница Аксу")
     signers = models.JSONField(default=default_waybill_signers)
     updated_at = models.DateTimeField(auto_now=True)
-
-    @classmethod
-    def load(cls) -> "WaybillSettings":
-        settings, _ = cls.objects.get_or_create(singleton=True)
-        return settings

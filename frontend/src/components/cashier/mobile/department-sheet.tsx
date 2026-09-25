@@ -1,5 +1,6 @@
 "use client";
 import { Check } from "lucide-react";
+import { DepartmentDot } from "@/components/ui/department-badge";
 import { Modal } from "@/components/ui/modal";
 import type { Department } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -46,11 +47,7 @@ export function DepartmentSheet({
                 }}
                 className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[var(--muted)]/60"
               >
-                <span
-                  aria-hidden
-                  className={cn("size-2.5 shrink-0 rounded-full", !option.color && "bg-[var(--muted-foreground)]")}
-                  style={option.color ? { backgroundColor: option.color } : undefined}
-                />
+                <DepartmentDot color={option.color} />
                 <span className={cn("flex-1 text-[15px]", current ? "font-semibold" : "font-medium")}>
                   {option.name}
                 </span>

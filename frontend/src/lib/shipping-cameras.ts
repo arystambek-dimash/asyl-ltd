@@ -1,31 +1,16 @@
-import type { CameraFeed } from "@/components/camera-wall";
-import type { AiCountingSession, Order } from "@/lib/types";
+import type { AiCountingSession, CameraFeed, Order } from "@/lib/types";
 
 /** Камера с потоком (locked-камеры не играют и AI не считают). */
 export type PlayableCamera = CameraFeed & { src: string };
 
-// Цвет партии из ai_service (Blue_50, White…) → точка-индикатор в чипе.
-export const BAG_COLORS: [RegExp, string][] = [
-  [/blue/i, "#3b82f6"],
-  [/green/i, "#22c55e"],
-  [/red/i, "#ef4444"],
-  [/yellow/i, "#eab308"],
-  [/orange/i, "#f97316"],
-  [/black/i, "#27272a"],
-  [/white/i, "#e4e4e7"],
-];
-
-export function bagColor(name: string): string {
-  return BAG_COLORS.find(([re]) => re.test(name))?.[1] ?? "var(--muted-foreground)";
+/** Камеры, у которых есть поток для просмотра (locked не играют). */
+export function playableCameras(cams: CameraFeed[] | null | undefined): PlayableCamera[] {
+  return (cams ?? []).filter((c): c is PlayableCamera => !!c.src);
 }
 
-// Новый Windows AI-сервис возвращает machine-readable `online`, а старый
-// сервис возвращал локализованное `онлайн`. Во время плавного обновления
-// production принимаем оба контракта, чтобы готовый процессор не выглядел как
-// бесконечно прогревающийся.
-export function isAiOnlineStatus(status?: string): boolean {
-  const normalized = status?.trim().toLowerCase();
-  return normalized === "online" || normalized === "онлайн";
+/** Логическая камера camN: только её закрепляют за контурами и настраивают линию подсчёта. */
+export function isLogicalCamera(src: string): boolean {
+  return /^cam[1-9]\d*$/.test(src);
 }
 
 /** Первая запись по ключу: при дублях (несколько сессий заказа) берётся ранняя. */

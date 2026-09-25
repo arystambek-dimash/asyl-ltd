@@ -1,38 +1,24 @@
-from decimal import Decimal
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
-from apps.common.money import money_string
+from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY, money_string
 from apps.catalog.models import ClientPrice, Product
 from apps.catalog.photos import product_photo_url
 from apps.clients.models import Store
+from apps.orders.debt import available_to_pay, order_remaining
+from apps.orders.labels import payment_method_label
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.statuses import is_financial
-from apps.orders.serializers import DepartmentLabelMixin, OrderWagonsMixin
+from apps.orders.serializers import (
+    DepartmentLabelMixin,
+    OrderWagonsMixin,
+    apipay_invoice_data,
+)
+from apps.orders.services import client_release_invoice_error, order_items_error
 from apps.orders.transport import transport_locked, transport_on_site
 
 MAX_PORTAL_ORDER_ITEMS = 100
 MAX_PORTAL_ITEM_QUANTITY = 1_000_000
-
-
-class PortalOrderItemListSerializer(serializers.ListSerializer):
-    """Reject abusive lists before per-item database-backed validation runs."""
-
-    def to_internal_value(self, data):
-        if isinstance(data, list):
-            if not data:
-                raise serializers.ValidationError("Добавьте хотя бы один товар.")
-            if len(data) > MAX_PORTAL_ORDER_ITEMS:
-                raise serializers.ValidationError(
-                    f"В одном заказе можно указать не более {MAX_PORTAL_ORDER_ITEMS} позиций."
-                )
-        return super().to_internal_value(data)
-
-    def validate(self, items):
-        product_ids = [item["product"].pk for item in items]
-        if len(product_ids) != len(set(product_ids)):
-            raise serializers.ValidationError("Каждый товар укажите в заказе один раз.")
-        return items
 
 
 class CatalogProductSerializer(serializers.ModelSerializer):
@@ -55,12 +41,12 @@ class CatalogProductSerializer(serializers.ModelSerializer):
         return product_photo_url(obj)
 
     def get_price(self, obj):
-        # Только закреплённая цена текущего клиента. Базовую цену не раскрываем.
+        # Только закреплённая цена текущего клиента.
         prices = getattr(obj, "portal_client_prices", [])
         return money_string(prices[0].price) if prices else None
 
     def get_currency(self, obj):
-        return self.context.get("currency", "KZT")
+        return self.context.get("currency", DEFAULT_CURRENCY)
 
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):
@@ -75,7 +61,6 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrderItem
         fields = ["id", "product", "product_label", "quantity"]
-        list_serializer_class = PortalOrderItemListSerializer
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }
@@ -85,14 +70,19 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
     department_name = serializers.SerializerMethodField()
     # Вагоны отгрузки по отчёту и станция — клиенту только для чтения.
     wagons = serializers.SerializerMethodField()
-    items = PortalOrderItemSerializer(many=True)
-    settlement_intent = serializers.ChoiceField(
-        choices=Order.SETTLEMENT_INTENTS, required=False)
-    payment_method = serializers.ChoiceField(
-        choices=Order.PAYMENT_METHODS, required=False)
+    # Длину списка DRF проверяет до поштучной проверки позиций в БД.
+    items = PortalOrderItemSerializer(
+        many=True,
+        allow_empty=False,
+        max_length=MAX_PORTAL_ORDER_ITEMS,
+        error_messages={
+            "empty": "Добавьте хотя бы один товар.",
+            "max_length": "В одном заказе можно указать не более {max_length} позиций.",
+        },
+    )
     transport_type = serializers.ChoiceField(
         choices=Order.TRANSPORT_TYPES, required=False, default="truck")
-    currency = serializers.ChoiceField(choices=Order.CURRENCIES, required=False)
+    currency = serializers.ChoiceField(choices=CURRENCY_CHOICES, required=False)
     store = serializers.PrimaryKeyRelatedField(
         queryset=Store.objects.all(), required=False, allow_null=True)
     store_name = serializers.CharField(source="store.name", read_only=True, default=None)
@@ -102,7 +92,6 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
     has_pending_payment = serializers.SerializerMethodField()
     available_amount = serializers.SerializerMethodField()
     payment_parts = serializers.SerializerMethodField()
-    apipay_invoice = serializers.SerializerMethodField()
     client_phone = serializers.CharField(source="client.phone", read_only=True)
     # Страна номера по умолчанию в полях «Тягач» и «Прицеп».
     client_country = serializers.CharField(source="client.country", read_only=True)
@@ -134,7 +123,6 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
             "has_pending_payment",
             "available_amount",
             "payment_parts",
-            "apipay_invoice",
             "client_phone",
             "client_country",
             "receipt_available",
@@ -144,20 +132,27 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
             "wagons",
             "transport_locked",
             "debt_requested",
-            "debt_override",
             "created_at",
         ]
         read_only_fields = [
             "status",
             "payment_status",
+            "settlement_intent",
+            "payment_method",
             "department",
             "rejection_reason",
             "truck_number",
             "trailer_number",
             "rail_station",
             "debt_requested",
-            "debt_override",
         ]
+
+    def validate_items(self, items):
+        # Та же проверка, что у сотрудников: каталог портала архив скрывает,
+        # но id архивного товара может прийти из сохранённой корзины.
+        if error := order_items_error(items):
+            raise serializers.ValidationError(error)
+        return items
 
     def validate_store(self, store):
         if store is None:
@@ -166,34 +161,6 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
         if store.client_id != client.id:
             raise serializers.ValidationError("Магазин принадлежит другому клиенту.")
         return store
-
-    def validate(self, attrs):
-        attrs = super().validate(attrs)
-        # При создании заказа выбор оплаты намеренно не принимаем: цена и
-        # фактический остаток известны только после подтверждения и отгрузки.
-        if self.instance is None:
-            attrs["payment_method"] = "pending"
-            attrs["settlement_intent"] = "pending"
-            return attrs
-        method = attrs.get("payment_method")
-        intent = attrs.get("settlement_intent")
-        if method is not None:
-            expected_intent = "debt" if method == "debt" else "instant"
-            if intent is not None and intent != expected_intent:
-                raise serializers.ValidationError({
-                    "detail": "Способ оплаты не соответствует способу расчёта.",
-                    "code": "payment_method_mismatch",
-                })
-            attrs["settlement_intent"] = expected_intent
-        elif intent is not None:
-            # Старые приложения присылают только settlement_intent.
-            attrs["payment_method"] = "debt" if intent == "debt" else "invoice"
-        else:
-            # Способ оплаты клиент выбирает не при оформлении, а только после
-            # завершения отгрузки. До этого заказ не должен считаться долгом.
-            attrs["payment_method"] = "pending"
-            attrs["settlement_intent"] = "pending"
-        return attrs
 
     def _client(self):
         try:
@@ -234,11 +201,10 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
     def get_remaining_amount(self, obj):
         if not self._money_visible(obj):
             return None
-        return money_string(obj.remaining_amount)
+        return money_string(order_remaining(obj))
 
     def get_has_pending_payment(self, obj):
         # Клиент отправил заявку на оплату, идёт цепочка подтверждения.
-        from apps.orders.models import Payment
         # get_queryset() prefetches payments; filtering the related manager
         # would bypass that cache and issue one EXISTS query per order.
         return any(
@@ -249,12 +215,7 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
     def get_available_amount(self, obj):
         if not self._money_visible(obj):
             return None
-        reserved = sum(
-            (payment.amount for payment in obj.payments.all()
-             if payment.status in Payment.IN_PROGRESS_STATUSES),
-            Decimal("0"),
-        )
-        return money_string(max(Decimal("0"), obj.remaining_amount - reserved))
+        return money_string(available_to_pay(obj))
 
     def get_payment_parts(self, obj):
         result = []
@@ -265,69 +226,22 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
         ):
             if payment.status not in (*Payment.IN_PROGRESS_STATUSES, "confirmed"):
                 continue
-            invoice = None
-            try:
-                provider = payment.apipay_invoice
-                invoice = {
-                    "id": provider.invoice_id,
-                    "status": provider.status,
-                    "channel": provider.channel,
-                    "phone_number": provider.phone_number or None,
-                    "qr_token_url": provider.qr_token_url or None,
-                    "qr_image_url": provider.qr_image_url or None,
-                    "qr_expires_at": provider.qr_expires_at,
-                }
-            except ObjectDoesNotExist:
-                pass
+            invoice = getattr(payment, "apipay_invoice", None)
             result.append({
                 "id": payment.id,
                 "amount": money_string(payment.amount),
                 "method": payment.method,
+                "method_label": payment_method_label(payment.method),
                 "status": payment.status,
+                # Те же правила, что у освобождения заявки на сервере.
                 "can_release": (
                     payment.status in Payment.IN_PROGRESS_STATUSES
                     and payment.recorded_by_id == user_id
-                    and not (
-                        invoice is not None
-                        and (
-                            invoice["status"] in (
-                                "paid", "partially_refunded",
-                            )
-                            or (
-                                invoice["channel"] == "qr"
-                                and invoice["id"] is None
-                                and invoice["status"] == "creating"
-                            )
-                        )
-                    )
+                    and client_release_invoice_error(invoice) is None
                 ),
-                "apipay_invoice": invoice,
+                "apipay_invoice": apipay_invoice_data(invoice),
             })
         return result
-
-    def get_apipay_invoice(self, obj):
-        payments = sorted(
-            obj.payments.all(), key=lambda row: row.paid_at, reverse=True
-        )
-        for payment in payments:
-            try:
-                invoice = payment.apipay_invoice
-            except ObjectDoesNotExist:
-                continue
-            return {
-                "payment_id": payment.id,
-                "id": invoice.invoice_id,
-                "status": invoice.status,
-                "error_code": invoice.error_code or None,
-                "paid_at": invoice.paid_at,
-                "channel": invoice.channel,
-                "phone_number": invoice.phone_number or None,
-                "qr_token_url": invoice.qr_token_url or None,
-                "qr_image_url": invoice.qr_image_url or None,
-                "qr_expires_at": invoice.qr_expires_at,
-                "total_refunded": money_string(invoice.total_refunded),
-            }
-        return None
 
     def get_receipt_available(self, obj):
         return any(
@@ -345,8 +259,6 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
             (item["product"] for item in items),
             warehouse=warehouse,
         )
-        intent = validated_data.get("settlement_intent", "pending")
-        method = validated_data.get("payment_method", "pending")
         transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")
         client = self._client()
@@ -360,25 +272,25 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
         order = Order.objects.create(client=client, status="pending",
                                      currency=currency,
                                      department=client.department.code if client.department_id else "",
-                                     settlement_intent=intent,
-                                     payment_method=method, store=store,
+                                     # Выбор оплаты при оформлении не принимаем: цена
+                                     # и фактический остаток известны только после
+                                     # подтверждения и отгрузки (дефолт модели — debt).
+                                     settlement_intent="pending",
+                                     payment_method="pending", store=store,
                                      warehouse=warehouse,
                                      transport_type=transport)
-        # Products are already validated model instances. Populate the same
-        # immutable snapshots as OrderItem.save(), then insert the bounded list
-        # in one query instead of one INSERT per public request item.
+        # bulk_create не вызывает OrderItem.save(): снимок товара заполняем
+        # тем же методом, а ограниченный список вставляем одним запросом.
         order_items = []
         for item in items:
             product = item["product"]
-            order_items.append(OrderItem(
+            order_item = OrderItem(
                 order=order,
                 product=product,
                 quantity=item["quantity"],
                 unit_price=client_prices.get(product.id),
-                product_label_snapshot=str(product),
-                product_cv_class_snapshot=product.cv_class,
-                product_weight_kg_snapshot=product.weight_kg,
-                product_ask_truck_weight_snapshot=product.ask_truck_weight,
-            ))
+            )
+            order_item.fill_snapshot()
+            order_items.append(order_item)
         OrderItem.objects.bulk_create(order_items)
         return order

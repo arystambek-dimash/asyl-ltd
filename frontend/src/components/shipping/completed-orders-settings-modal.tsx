@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Archive, CalendarDays, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
 import type { ShippingBoardSettings } from "@/lib/types";
@@ -18,7 +19,7 @@ export function CompletedOrdersSettingsModal({
   open: boolean;
   settings: ShippingBoardSettings | null;
   onClose: () => void;
-  onSaved: () => Promise<unknown>;
+  onSaved: (saved: ShippingBoardSettings) => Promise<unknown>;
 }) {
   const [days, setDays] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -34,8 +35,10 @@ export function CompletedOrdersSettingsModal({
     setBusy(true);
     setError("");
     try {
-      await api.patch("/cameras/shipping-settings/", { completed_orders_days: days });
-      await onSaved();
+      const { data } = await api.patch<ShippingBoardSettings>("/cameras/shipping-settings/", {
+        completed_orders_days: days,
+      });
+      await onSaved(data);
       onClose();
     } catch (e) {
       setError(apiError(e));
@@ -108,7 +111,11 @@ export function CompletedOrdersSettingsModal({
         <Archive className="mt-0.5 size-4 shrink-0" />
         Видео подсчёта хранится отдельно на компьютере камер {settings?.video_retention_days ?? 14} дней.
       </div>
-      {error && <p className="mt-3 text-sm text-[var(--destructive)]">{error}</p>}
+      {error && (
+        <div className="mt-3">
+          <ErrorAlert message={error} />
+        </div>
+      )}
     </Modal>
   );
 }

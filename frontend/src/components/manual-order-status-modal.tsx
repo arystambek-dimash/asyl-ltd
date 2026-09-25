@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Ban, Check, LoaderCircle, PackageCheck } from "lucide-react";
 import { api, apiError } from "@/lib/api";
+import { ORDER_LOADING_STATUSES } from "@/lib/constants";
 import { orderedBagCount } from "@/lib/orders";
 import type { Order } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -10,8 +11,9 @@ import { Modal } from "@/components/ui/modal";
 
 export type ManualOrderTarget = "shipped" | "cancelled";
 
+/** Машина уже на посту — берём мешки, насчитанные погрузкой, иначе заказанные. */
 function suggestedBags(order: Order) {
-  return ["arrived", "loading", "loaded"].includes(order.status) ? (order.bags_loaded ?? 0) : orderedBagCount(order);
+  return ORDER_LOADING_STATUSES.includes(order.status) ? (order.bags_loaded ?? 0) : orderedBagCount(order);
 }
 
 export function ManualOrderStatusModal({
@@ -23,7 +25,7 @@ export function ManualOrderStatusModal({
   order: Order | null;
   target: ManualOrderTarget | null;
   onClose: () => void;
-  onChanged: (order: Order) => void | Promise<void>;
+  onChanged: () => unknown;
 }) {
   const [bags, setBags] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,7 +39,7 @@ export function ManualOrderStatusModal({
 
   if (!order || !target) return null;
   const fallback = suggestedBags(order);
-  const usesCurrentCount = ["arrived", "loading", "loaded"].includes(order.status);
+  const usesCurrentCount = ORDER_LOADING_STATUSES.includes(order.status);
   const parsed = bags.trim() === "" ? null : Number(bags);
   const validBags = parsed != null && Number.isInteger(parsed) && parsed >= 0;
 
@@ -47,8 +49,8 @@ export function ManualOrderStatusModal({
     try {
       const body: { status: ManualOrderTarget; bags_loaded?: number } = { status };
       if (bagsLoaded != null) body.bags_loaded = bagsLoaded;
-      const response = await api.post<{ order: Order }>(`/orders/${order!.id}/set-status/`, body);
-      await onChanged(response.data.order);
+      await api.post(`/orders/${order!.id}/set-status/`, body);
+      await onChanged();
       onClose();
     } catch (cause) {
       setError(apiError(cause));

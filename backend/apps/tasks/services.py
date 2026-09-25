@@ -2,17 +2,19 @@
 import logging
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from apps.eventlog.services import log_event
 
-from .attachments import detected_media_type
-from .models import Task, TaskAttachment, TaskNotification
+from .attachments import delete_file_if_unreferenced, detected_media_type
+from .models import Task, TaskAttachment
 
-MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MB = 1024 * 1024
+MAX_ATTACHMENT_BYTES = 25 * MB
 MAX_ATTACHMENTS = 10
-MAX_ATTACHMENTS_TOTAL_BYTES = 75 * 1024 * 1024
+MAX_ATTACHMENTS_TOTAL_BYTES = 75 * MB
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +34,39 @@ def _locked_task(task):
         raise NotFound("Задача не найдена") from exc
 
 
+def can_act(task, user) -> bool:
+    """Закрыть задачу или вернуть её в работу может исполнитель, постановщик или суперадмин."""
+    return bool(user.is_superuser or user.pk in (task.assignee_id, task.created_by_id))
+
+
+def visible_tasks_q(user) -> Q:
+    """Свои задачи (поставленные мне или мной) видны всем, чужие — с правом tasks.view."""
+    if user.has_perm_code("tasks.view"):
+        return Q()
+    return Q(assignee=user) | Q(created_by=user)
+
+
+def can_see(task, user) -> bool:
+    """То же правило, что visible_tasks_q, для уже загруженной задачи."""
+    return user.has_perm_code("tasks.view") or can_act(task, user)
+
+
 def _assert_can_act(task, user):
-    if not (user.is_superuser or user.pk in (task.assignee_id, task.created_by_id)):
+    if not can_act(task, user):
         raise PermissionDenied("Изменить выполнение задачи может исполнитель или постановщик")
 
 
 def _assert_still_visible(task, user):
-    if not (user.is_superuser or user.has_perm_code("tasks.view")
-            or user.pk in (task.assignee_id, task.created_by_id)):
+    if not can_see(task, user):
         raise NotFound("Задача больше недоступна")
+
+
+def _clean_title(title) -> str:
+    title = " ".join(str(title or "").split())
+    if not title:
+        raise ValidationError({"detail": "Укажите, что нужно сделать",
+                               "code": "empty_title"})
+    return title
 
 
 def _kind_for(upload) -> str:
@@ -53,32 +79,19 @@ def _kind_for(upload) -> str:
     })
 
 
-def notify_assignee(task: Task, text: str) -> TaskNotification | None:
-    """Уведомление исполнителю. Самому себе задачи не «прилетают»."""
-    if task.created_by_id == task.assignee_id:
-        return None
-    return TaskNotification.objects.create(
-        user=task.assignee, task=task, text=text[:500],
-    )
-
-
-def create_task(*, title: str, body: str, assignee, user, due_date=None,
+def create_task(*, title: str, assignee, user, body: str = "", due_date=None,
                 attachments=()) -> Task:
-    title = " ".join(str(title or "").split())
-    if not title:
-        raise ValidationError({"detail": "Укажите, что нужно сделать",
-                               "code": "empty_title"})
+    title = _clean_title(title)
     validate_assignee(assignee)
     stored_files = []
     try:
         with transaction.atomic():
             task = Task.objects.create(
-                title=title[:200], body=str(body or "").strip(),
+                title=title, body=str(body or "").strip(),
                 assignee=assignee, created_by=user, due_date=due_date,
             )
             created_attachments = add_attachments(task, attachments, user)
             stored_files = _stored_file_refs(created_attachments)
-            notify_assignee(task, f"Новая задача: {task.title}")
             log_event(
                 "task", f"Задача «{task.title}» поставлена",
                 user=user,
@@ -94,6 +107,7 @@ def create_task(*, title: str, body: str, assignee, user, due_date=None,
 
 
 def add_attachments(task: Task, uploads, user) -> list[TaskAttachment]:
+    """Приложить файлы к только что созданной задаче (вызывается из create_task)."""
     uploads = list(uploads)
     if not uploads:
         return []
@@ -101,12 +115,7 @@ def add_attachments(task: Task, uploads, user) -> list[TaskAttachment]:
     stored_files = []
     try:
         with transaction.atomic():
-            locked_task = _locked_task(task)
-            _assert_can_act(locked_task, user)
-            existing_sizes = list(
-                locked_task.attachments.values_list("size_bytes", flat=True)
-            )
-            if len(existing_sizes) + len(uploads) > MAX_ATTACHMENTS:
+            if len(uploads) > MAX_ATTACHMENTS:
                 raise ValidationError({
                     "detail": (
                         f"К задаче можно приложить не больше "
@@ -120,24 +129,25 @@ def add_attachments(task: Task, uploads, user) -> list[TaskAttachment]:
                 size = getattr(upload, "size", 0) or 0
                 if size > MAX_ATTACHMENT_BYTES:
                     raise ValidationError({
-                        "detail": "Файл больше 25 МБ",
+                        "detail": f"Файл больше {MAX_ATTACHMENT_BYTES // MB} МБ",
                         "code": "attachment_too_large",
                     })
                 validated.append((upload, size, _kind_for(upload)))
 
-            total_size = sum(existing_sizes) + sum(
-                size for _, size, _ in validated
-            )
+            total_size = sum(size for _, size, _ in validated)
             if total_size > MAX_ATTACHMENTS_TOTAL_BYTES:
                 raise ValidationError({
-                    "detail": "Общий размер вложений задачи больше 75 МБ",
+                    "detail": (
+                        f"Общий размер вложений задачи больше "
+                        f"{MAX_ATTACHMENTS_TOTAL_BYTES // MB} МБ"
+                    ),
                     "code": "attachments_too_large",
                 })
 
             created = []
             for upload, size, kind in validated:
                 attachment = TaskAttachment(
-                    task=locked_task,
+                    task=task,
                     kind=kind,
                     file=upload,
                     original_name=str(getattr(upload, "name", ""))[:255],
@@ -176,18 +186,12 @@ def _delete_unreferenced_files(file_refs) -> None:
         if identity in seen:
             continue
         seen.add(identity)
-        if TaskAttachment.objects.filter(file=name).exists():
-            continue
         try:
-            storage.delete(name)
+            delete_file_if_unreferenced(storage, name)
         except Exception:
             # Never hide the transaction error that triggered cleanup. The
             # failure is still logged so operations can remove the orphan.
             logger.exception("Could not remove orphaned task attachment %s", name)
-
-
-def add_attachment(task: Task, upload, user) -> TaskAttachment:
-    return add_attachments(task, [upload], user)[0]
 
 
 @transaction.atomic
@@ -201,11 +205,6 @@ def complete_task(task: Task, user) -> Task:
     task.done_at = timezone.now()
     task.done_by = user
     task.save(update_fields=["status", "done_at", "done_by", "updated_at"])
-    if task.created_by_id and task.created_by_id != user.pk:
-        TaskNotification.objects.create(
-            user=task.created_by, task=task,
-            text=f"Задача выполнена: {task.title}"[:500],
-        )
     log_event(
         "task", f"Задача «{task.title}» выполнена",
         user=user, payload={"task_id": task.pk},
@@ -224,7 +223,6 @@ def reopen_task(task: Task, user) -> Task:
     task.done_at = None
     task.done_by = None
     task.save(update_fields=["status", "done_at", "done_by", "updated_at"])
-    notify_assignee(task, f"Задача снова в работе: {task.title}")
     log_event(
         "task", f"Задача «{task.title}» возвращена в работу",
         user=user, payload={"task_id": task.pk},
@@ -241,7 +239,6 @@ def reassign_task(task: Task, assignee, user) -> Task:
         return task
     task.assignee = assignee
     task.save(update_fields=["assignee", "updated_at"])
-    notify_assignee(task, f"Вам передана задача: {task.title}")
     log_event(
         "task", f"Задача «{task.title}» передана другому исполнителю",
         user=user, payload={"task_id": task.pk, "assignee_id": assignee.pk},
@@ -251,10 +248,12 @@ def reassign_task(task: Task, assignee, user) -> Task:
 
 @transaction.atomic
 def update_task(task: Task, changes: dict, user) -> Task:
-    """PATCH and the reassign action share notification and locking rules."""
+    """PATCH задачи: смена исполнителя идёт через reassign_task."""
     task = _locked_task(task)
     _assert_still_visible(task, user)
     assignee = changes.get("assignee")
+    if "title" in changes:
+        changes = {**changes, "title": _clean_title(changes["title"])}
     fields = []
     for field in ("title", "body", "due_date"):
         if field in changes:
@@ -265,3 +264,8 @@ def update_task(task: Task, changes: dict, user) -> Task:
     if assignee is not None:
         task = reassign_task(task, assignee, user)
     return task
+
+
+def can_delete_task(task: Task, user) -> bool:
+    """Снять задачу может только её постановщик или суперадмин."""
+    return bool(user.is_superuser or task.created_by_id == user.pk)

@@ -1,16 +1,11 @@
-/* eslint-disable @next/next/no-img-element */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import type { Payment } from "@/lib/types";
+import type { ApiPayInvoiceView } from "@/lib/types";
 import { QrCodeImage } from "./qr-code-image";
 
-vi.mock("next/image", () => ({
-  default: ({ src, alt, onError }: { src: string; alt: string; onError?: () => void }) => (
-    <img src={src} alt={alt} onError={onError} />
-  ),
-}));
+vi.mock("next/image", () => import("@/test-utils/next-image"));
 
-function provider(url: string | null): NonNullable<Payment["provider"]> {
+function provider(url: string | null): ApiPayInvoiceView {
   return {
     invoice_id: 1,
     channel: "qr",
@@ -19,9 +14,6 @@ function provider(url: string | null): NonNullable<Payment["provider"]> {
     qr_token_url: null,
     qr_image_url: url,
     qr_expires_at: null,
-    total_refunded: "0.00",
-    available_for_refund: "0.00",
-    refunds: [],
   };
 }
 

@@ -2,20 +2,14 @@
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { PlateInput } from "@/components/ui/plate-input";
 import { Select } from "@/components/ui/select";
+import { TransportNumberFields } from "@/components/ui/transport-number-fields";
 import { formatEstimate, requestEstimate } from "@/lib/orders";
-import {
-  formatPlatePair,
-  transportChanges,
-  transportNumberError,
-  transportPairOf,
-  type TransportPair,
-} from "@/lib/plates";
+import { transportChanges, transportNumberError, transportPairOf, type TransportPair } from "@/lib/plates";
 import type { Department, Order } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { formatCurrency, PHONE_INPUT_TEXT } from "@/lib/utils";
+import { orderTransportText } from "@/lib/wagons";
 import { useAuth } from "@/store/auth";
 
 export interface OrderConfirmationData {
@@ -44,7 +38,7 @@ interface OrderConfirmationProps {
   onConfirm: (data: OrderConfirmationData) => void;
 }
 
-/** Shared by the cashier and order page: confirmation is one atomic request. */
+/** Форма подтверждения заявки (карточка заказа и вкладка «Заявки»): подтверждение — один атомарный запрос. */
 export function OrderConfirmation(props: OrderConfirmationProps) {
   // Состав заявки перечитали (400 invalid_item): окно заполняется заново по новым позициям.
   const composition = props.order.items.map((item) => item.id).join(".");
@@ -62,7 +56,6 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
   // Клиент без отдела закрепится за отделом подтверждения; сотрудник отдела — только за своим.
   const unassigned = !order.client_department;
   const lockedDepartment = order.client_department || me?.sales_department?.code || "";
-  // Even legacy requests may contain a department assigned by the old default.
   const [department, setDepartment] = useState(lockedDepartment);
   const [askAssign, setAskAssign] = useState(false);
   const [prices, setPrices] = useState<Record<string, string>>(() =>
@@ -273,61 +266,22 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
         <legend className="float-left text-sm font-medium">Транспорт (можно позже)</legend>
         {transportLocked ? (
           <div className="text-sm">
-            <div className="font-medium tabular-nums">
-              {train ? order.truck_number : formatPlatePair(order.truck_number, order.trailer_number ?? "")}
-            </div>
+            <div className="font-medium tabular-nums">{orderTransportText(order)}</div>
             <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
               Номер указал клиент — изменить его может только он.
             </p>
           </div>
-        ) : train ? (
-          <div>
-            <Label htmlFor={`${fieldId}-wagon`}>Номер вагона</Label>
-            <Input
-              id={`${fieldId}-wagon`}
-              inputMode="numeric"
-              maxLength={8}
-              placeholder="8 цифр"
-              disabled={busy}
-              value={numbers.truck_number}
-              aria-invalid={!!truckError || undefined}
-              aria-describedby={truckError ? `${fieldId}-truck-error` : undefined}
-              onChange={(event) => setNumbers((current) => ({ ...current, truck_number: event.target.value }))}
-              className={`${PHONE_INPUT_TEXT} tabular-nums`}
-            />
-            <NumberError id={`${fieldId}-truck-error`} message={truckError} />
-          </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label htmlFor={`${fieldId}-truck`}>Тягач</Label>
-              <PlateInput
-                id={`${fieldId}-truck`}
-                warning
-                defaultCountry={context?.client_country}
-                disabled={busy}
-                aria-invalid={!!truckError || undefined}
-                aria-describedby={truckError ? `${fieldId}-truck-error` : undefined}
-                value={numbers.truck_number}
-                onChange={(truck_number) => setNumbers((current) => ({ ...current, truck_number }))}
-              />
-              <NumberError id={`${fieldId}-truck-error`} message={truckError} />
-            </div>
-            <div>
-              <Label htmlFor={`${fieldId}-trailer`}>Прицеп</Label>
-              <PlateInput
-                id={`${fieldId}-trailer`}
-                kind="trailer"
-                defaultCountry={context?.client_country}
-                disabled={busy}
-                aria-invalid={!!trailerError || undefined}
-                aria-describedby={trailerError ? `${fieldId}-trailer-error` : undefined}
-                value={numbers.trailer_number}
-                onChange={(trailer_number) => setNumbers((current) => ({ ...current, trailer_number }))}
-              />
-              <NumberError id={`${fieldId}-trailer-error`} message={trailerError} />
-            </div>
-          </div>
+          <TransportNumberFields
+            id={fieldId}
+            transportType={order.transport_type}
+            defaultCountry={context?.client_country}
+            disabled={busy}
+            errors={{ truck: truckError, trailer: trailerError }}
+            value={numbers}
+            onChange={setNumbers}
+            className="sm:grid-cols-2"
+          />
         )}
       </fieldset>
       {/* Итог и кнопка прилипают к низу окна: длинная заявка не прячет их за прокруткой. */}
@@ -375,15 +329,5 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
         )}
       </div>
     </form>
-  );
-}
-
-/** Почему номер не примут — под его полем. */
-function NumberError({ id, message }: { id: string; message: string | null }) {
-  if (!message) return null;
-  return (
-    <p id={id} className="mt-1 text-xs text-[var(--destructive)]">
-      {message}
-    </p>
   );
 }

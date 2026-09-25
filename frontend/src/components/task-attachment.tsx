@@ -6,6 +6,9 @@ import { useEffect, useRef, useState } from "react";
 
 import { api, apiError, blobApiError } from "@/lib/api";
 
+// Сервер отдаёт url: null, когда файла у вложения больше нет.
+const ATTACHMENT_UNAVAILABLE = "Файл недоступен";
+
 export function AttachmentChip({
   taskId,
   attachmentId,
@@ -68,7 +71,11 @@ export function AttachmentChip({
     setAttachmentError("");
     try {
       const freshUrl = await renewUrl();
-      if (!freshUrl) throw new Error("Attachment is unavailable");
+      if (!freshUrl) {
+        newTab?.close();
+        setAttachmentError(ATTACHMENT_UNAVAILABLE);
+        return;
+      }
       setCurrentUrl(freshUrl);
       if (newTab) newTab.location.replace(freshUrl);
       else window.open(freshUrl, "_blank", "noopener,noreferrer");
@@ -85,7 +92,10 @@ export function AttachmentChip({
     setAttachmentError("");
     try {
       const freshUrl = await renewUrl();
-      if (!freshUrl) throw new Error("Attachment is unavailable");
+      if (!freshUrl) {
+        setAttachmentError(ATTACHMENT_UNAVAILABLE);
+        return;
+      }
       let response;
       try {
         response = await api.get<Blob>(freshUrl, { responseType: "blob" });
@@ -101,11 +111,13 @@ export function AttachmentChip({
     }
   }
 
+  const errorNote = attachmentError && <span className="text-xs text-[var(--destructive)]">{attachmentError}</span>;
+
   if (!url) {
     return (
       <span
         className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs text-[var(--muted-foreground)]"
-        title="Файл недоступен"
+        title={ATTACHMENT_UNAVAILABLE}
       >
         <Paperclip className="size-3.5" />
         {name || "файл"}
@@ -129,7 +141,7 @@ export function AttachmentChip({
           <Paperclip className="size-3.5" />
           {loadingAttachment ? "Загрузка…" : "Прослушать голосовое"}
         </button>
-        {attachmentError && <span className="text-xs text-[var(--destructive)]">{attachmentError}</span>}
+        {errorNote}
       </div>
     );
   }
@@ -153,18 +165,21 @@ export function AttachmentChip({
             className="size-16 rounded-lg border object-cover transition group-hover:opacity-80"
           />
         </button>
-        {attachmentError && <span className="text-xs text-[var(--destructive)]">{attachmentError}</span>}
+        {errorNote}
       </div>
     );
   }
   return (
-    <button
-      type="button"
-      disabled={loadingAttachment}
-      onClick={() => void openFreshUrl()}
-      className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs hover:bg-[var(--muted)]"
-    >
-      <Paperclip className="size-3.5" /> {loadingAttachment ? "Загрузка…" : name || "файл"}
-    </button>
+    <div className="grid gap-1">
+      <button
+        type="button"
+        disabled={loadingAttachment}
+        onClick={() => void openFreshUrl()}
+        className="flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs hover:bg-[var(--muted)]"
+      >
+        <Paperclip className="size-3.5" /> {loadingAttachment ? "Загрузка…" : name || "файл"}
+      </button>
+      {errorNote}
+    </div>
   );
 }

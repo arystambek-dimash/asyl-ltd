@@ -2,15 +2,15 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import ClientPrice, Product
+from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY
+
+from .models import Product
 from .photos import product_photo_url
 
 
 class ProductSerializer(serializers.ModelSerializer):
     label = serializers.SerializerMethodField()
     color_label = serializers.CharField(source="get_color_display", read_only=True)
-    cv_class = serializers.CharField(read_only=True)
-    available_bags = serializers.SerializerMethodField()
     photo_url = serializers.SerializerMethodField()
     # Коды товара в отчётах о вагонах («Д1с») — словарь бота и «Вставить отчёт».
     aliases = serializers.SerializerMethodField()
@@ -18,8 +18,7 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = ["id", "name", "color", "color_label", "weight_kg",
-                  "is_active", "ask_truck_weight",
-                  "label", "cv_class", "available_bags", "photo_url", "aliases"]
+                  "is_active", "label", "photo_url", "aliases"]
 
     def get_aliases(self, obj):
         # Код — как его пишет отчёт («Д1с»), а не ключ сравнения.
@@ -27,11 +26,6 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def get_photo_url(self, obj):
         return product_photo_url(obj)
-
-    def get_available_bags(self, obj):
-        # This legacy catalogue field is intentionally a company-wide total.
-        # Warehouse-sensitive flows use their explicit stock projections.
-        return sum(stock.bags for stock in obj.stock_items.all())
 
     def _can_view_color(self):
         request = self.context.get("request")
@@ -44,8 +38,7 @@ class ProductSerializer(serializers.ModelSerializer):
             user
             and user.is_authenticated
             and (
-                user.is_superuser
-                or user.has_perm_code("orders.create")
+                user.has_perm_code("orders.create")
                 or user.has_perm_code("warehouse.view")
             )
         )
@@ -53,14 +46,13 @@ class ProductSerializer(serializers.ModelSerializer):
     def get_label(self, obj):
         if self._can_view_color():
             return str(obj)
-        return f"{obj.name} · {int(obj.weight_kg)} кг"
+        return f"{obj.name} · {obj.packaging_label}"
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self._can_view_color():
             data.pop("color", None)
             data.pop("color_label", None)
-            data.pop("cv_class", None)
         return data
 
 
@@ -72,7 +64,7 @@ class ClientPriceUpdateItemSerializer(serializers.Serializer):
         required=False, allow_null=True,
     )
     currency = serializers.ChoiceField(
-        choices=ClientPrice.CURRENCIES, required=False, default="KZT")
+        choices=CURRENCY_CHOICES, required=False, default=DEFAULT_CURRENCY)
 
 
 class ClientPriceUpdateSerializer(serializers.Serializer):

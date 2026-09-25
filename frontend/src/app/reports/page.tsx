@@ -2,66 +2,47 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Scale } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import { MoneyTrendChart } from "@/components/charts/money-trend-chart";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { ClientsTable } from "@/components/reports/clients-table";
 import { DepartmentComparison } from "@/components/reports/department-comparison";
-import { CHART_TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { LoadMore } from "@/components/ui/load-more";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { Input } from "@/components/ui/input";
 import { SummaryCard } from "@/components/ui/summary-card";
-import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
+import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { Tabs } from "@/components/ui/tabs";
-import { amountForCurrency, otherCurrencyAmounts, primaryMoneyCurrency } from "@/lib/currency-map";
-import { reportChartCurrencies, reportChartSeries, shipmentSettlement } from "@/lib/report-analytics";
-import { useApi } from "@/lib/use-api";
-import type { Department, ReportSummary } from "@/lib/types";
+import { adaptDashboardDebt } from "@/lib/dashboard-analytics";
 import {
+  incomeDetailRows,
+  incomeTotals,
+  reportChartCurrencies,
+  reportChartSeries,
+  shipmentSettlement,
+} from "@/lib/report-analytics";
+import { useApi } from "@/lib/use-api";
+import type { Department, ReportDay, ReportSummary } from "@/lib/types";
+import {
+  apiUrl,
+  cn,
   currencySymbol,
+  dateRangeError,
   formatCompactCurrency,
   formatCurrency,
+  formatIsoDate,
   formatMoney,
   monthStartLocalIsoDate,
   todayLocalIsoDate,
 } from "@/lib/utils";
 
-function dayLabel(iso: string): string {
-  const [y, m, d] = iso.split("-");
-  return `${d}.${m}.${y}`;
-}
-
-function EmptyRow({ colSpan }: { colSpan: number }) {
-  return (
-    <TR>
-      <TD colSpan={colSpan} className="py-14 text-center text-sm text-[var(--muted-foreground)]">
-        Здесь пусто
-      </TD>
-    </TR>
-  );
-}
-
 /* ── История периода: три смысловые карточки ────────────────────────────── */
 
 function PeriodStory({ data }: { data: ReportSummary }) {
   const split = shipmentSettlement(data.shipped);
-  const incomeCurrency = data.income.currency || "KZT";
-  const incomeTotal = amountForCurrency(data.income.by_currency, data.income.total, incomeCurrency);
-  const incomeGross = amountForCurrency(
-    data.income.gross_by_currency ?? {},
-    data.income.gross ?? data.income.total,
-    incomeCurrency,
-  );
-  const refunded = amountForCurrency(
-    data.income.refunded_by_currency ?? {},
-    data.income.refunded ?? "0",
-    incomeCurrency,
-  );
-  const incomeOthers = otherCurrencyAmounts(data.income.by_currency, incomeCurrency);
-  const refundOthers = otherCurrencyAmounts(data.income.refunded_by_currency ?? {}, incomeCurrency);
+  const income = incomeTotals(data);
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -102,14 +83,6 @@ function PeriodStory({ data }: { data: ReportSummary }) {
             value: formatCurrency(split.paidToDate, split.currency),
             strong: true,
           },
-          ...(split.awaiting > 0
-            ? [
-                {
-                  label: "К оплате без отсрочки",
-                  value: formatCurrency(split.awaiting, split.currency),
-                },
-              ]
-            : []),
           ...split.others.flatMap((other) => [
             {
               label: `Погашено, ${other.currency}`,
@@ -119,56 +92,20 @@ function PeriodStory({ data }: { data: ReportSummary }) {
               label: `Остаток долга, ${other.currency}`,
               value: formatCurrency(other.debt, other.currency),
             },
-            ...(other.awaiting > 0
-              ? [
-                  {
-                    label: `К оплате, ${other.currency}`,
-                    value: formatCurrency(other.awaiting, other.currency),
-                  },
-                ]
-              : []),
           ]),
         ]}
       />
       <SummaryCard
         title="Чистое поступление в кассу за период"
-        tone={incomeTotal < 0 ? "destructive" : "success"}
-        value={formatCompactCurrency(incomeTotal, incomeCurrency)}
-        valueTitle={formatCurrency(incomeTotal, incomeCurrency)}
+        tone={income.total < 0 ? "destructive" : "success"}
+        value={formatCompactCurrency(income.total, income.currency)}
+        valueTitle={formatCurrency(income.total, income.currency)}
         rows={[
-          {
-            label: "Наличными, с учётом возвратов",
-            value: formatCurrency(
-              amountForCurrency(data.income.cash_by_currency, data.income.cash, incomeCurrency),
-              incomeCurrency,
-            ),
-          },
-          {
-            label: "Безналично, с учётом возвратов",
-            value: formatCurrency(
-              amountForCurrency(data.income.cashless_by_currency, data.income.cashless, incomeCurrency),
-              incomeCurrency,
-            ),
-          },
-          ...incomeOthers.map(([currency, value]) => ({
-            label: "Также чистыми",
-            value: formatCurrency(value, currency),
-          })),
-          ...(refunded > 0
-            ? [
-                { label: "Поступило до возвратов", value: formatCurrency(incomeGross, incomeCurrency) },
-                { label: "Возвращено", value: formatCurrency(refunded, incomeCurrency) },
-              ]
-            : []),
-          ...refundOthers.flatMap(([currency, value]) => [
-            {
-              label: `Поступило до возвратов, ${currency}`,
-              value: formatCurrency(amountForCurrency(data.income.gross_by_currency ?? {}, "0", currency), currency),
-            },
-            { label: `Возвращено, ${currency}`, value: formatCurrency(value, currency) },
-          ]),
-          { label: "Платежей", value: formatMoney(data.income.payments) },
-          ...((data.income.refunds ?? 0) > 0 ? [{ label: "Возвратов", value: formatMoney(data.income.refunds) }] : []),
+          { label: "Наличными, с учётом возвратов", value: formatCurrency(income.cash, income.currency) },
+          { label: "Безналично, с учётом возвратов", value: formatCurrency(income.cashless, income.currency) },
+          ...incomeDetailRows(income),
+          { label: "Платежей", value: formatMoney(income.payments) },
+          ...(data.income.refunds > 0 ? [{ label: "Возвратов", value: formatMoney(data.income.refunds) }] : []),
         ]}
       />
     </div>
@@ -178,12 +115,14 @@ function PeriodStory({ data }: { data: ReportSummary }) {
 /* ── Долг сейчас: снимок на сегодня, от периода не зависит ──────────────── */
 
 function DebtNowBand({ debt }: { debt: ReportSummary["debt_now"] }) {
-  const currency = debt.currency || "KZT";
-  const total = amountForCurrency(debt.by_currency, debt.total, currency);
-  const others = otherCurrencyAmounts(debt.by_currency, currency);
-  const overdueCurrency = primaryMoneyCurrency(debt.overdue_by_currency, debt.overdue_currency || currency);
-  const overdueTotal = amountForCurrency(debt.overdue_by_currency, "0", overdueCurrency);
-  const overdueOthers = otherCurrencyAmounts(debt.overdue_by_currency, overdueCurrency);
+  const {
+    debtTotal: total,
+    debtCurrency: currency,
+    debtOthers: others,
+    overdueTotal,
+    overdueCurrency,
+    overdueOthers,
+  } = adaptDashboardDebt(debt);
   const hasOverdue = overdueTotal > 0 || debt.overdue_clients > 0;
 
   return (
@@ -238,11 +177,8 @@ function DaysChart({ data }: { data: ReportSummary }) {
   const [requestedCurrency, setRequestedCurrency] = useState<string | null>(null);
   // Если после смены периода выбранной валюты больше нет, берём доступную
   // прямо при рендере — отдельный effect и лишний цикл рендера не нужны.
-  const currency =
-    requestedCurrency && currencies.includes(requestedCurrency)
-      ? requestedCurrency
-      : (currencies[0] ?? data.shipped.currency ?? data.income.currency ?? "KZT");
-  const series = reportChartSeries(data.days, currency, data.shipped.currency || "KZT", data.income.currency || "KZT");
+  const currency = requestedCurrency && currencies.includes(requestedCurrency) ? requestedCurrency : currencies[0];
+  const series = reportChartSeries(data.days, currency);
   if (series.length < 2) return null;
 
   return (
@@ -259,85 +195,103 @@ function DaysChart({ data }: { data: ReportSummary }) {
             />
           )}
           <span className="flex items-center gap-1.5">
-            <span className="size-2 rounded-full bg-[var(--ring)]" /> Отгружено
+            <span className="size-2 rounded-full bg-[var(--ring)]" /> Выручка
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="size-2 rounded-full bg-[var(--success)]" /> Чистое поступление
+            <span className="size-2 rounded-full bg-[var(--success)]" /> Поступило
           </span>
         </div>
       </div>
-      <div
-        className="h-[210px] w-full px-2 pt-2 sm:px-4"
-        role="img"
-        aria-label={`График отгрузок и поступлений по дням за период, ${series.length} дней.`}
-      >
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={series} margin={{ top: 16, right: 8, left: 8, bottom: 0 }}>
-            <defs>
-              <linearGradient id="report-revenue-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--ring)" stopOpacity={0.22} />
-                <stop offset="100%" stopColor="var(--ring)" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 7" vertical={false} stroke="var(--border)" />
-            <XAxis
-              dataKey="label"
-              tickLine={false}
-              axisLine={false}
-              tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-              interval={series.length > 14 ? 3 : 1}
-              dy={8}
-            />
-            <Tooltip
-              contentStyle={CHART_TOOLTIP_STYLE}
-              formatter={(value: number, name: string) => [
-                formatCurrency(value, currency),
-                name === "revenue" ? "Отгружено" : "Чистое поступление",
-              ]}
-              labelFormatter={(label) => String(label)}
-            />
-            <Area
-              type="monotone"
-              dataKey="revenue"
-              stroke="var(--ring)"
-              strokeWidth={2.25}
-              fill="url(#report-revenue-fill)"
-            />
-            <Area type="monotone" dataKey="received" stroke="var(--success)" strokeWidth={2} fillOpacity={0} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-      <ul className="sr-only">
-        {series.map((point) => (
-          <li key={point.date}>
-            {point.label}: отгружено {formatCurrency(point.revenue, currency)}, поступило чистыми{" "}
-            {formatCurrency(point.received, currency)}
-          </li>
-        ))}
-      </ul>
+      <MoneyTrendChart data={series} currency={currency} className="h-[210px] w-full px-2 pt-2 sm:px-4" />
     </section>
   );
 }
 
 /* ── Таблица по дням: точные числа для сверки ───────────────────────────── */
 
+interface MoneyCell {
+  byCurrency: Record<string, string>;
+  amount: string;
+}
+
+/**
+ * Денежные колонки таблицы по дням: значение дня и строки «Итого» рядом,
+ * чтобы новая колонка добавлялась в одном месте. Отгрузочные суммы без
+ * разбивки по валютам показываются в валюте отгрузок, кассовые — в валюте поступлений.
+ */
+const DAY_MONEY_COLUMNS: {
+  title: string;
+  source: "shipped" | "income";
+  className?: string;
+  day: (day: ReportDay) => MoneyCell;
+  total: (data: ReportSummary) => MoneyCell;
+}[] = [
+  {
+    title: "Отгружено",
+    source: "shipped",
+    day: (d) => ({ byCurrency: d.revenue_by_currency, amount: d.revenue }),
+    total: ({ shipped }) => ({ byCurrency: shipped.revenue_by_currency, amount: shipped.revenue }),
+  },
+  {
+    title: "Погашено",
+    source: "shipped",
+    day: (d) => ({ byCurrency: d.paid_amount_by_currency, amount: d.paid_amount }),
+    total: ({ shipped }) => ({ byCurrency: shipped.paid_amount_by_currency, amount: shipped.paid_amount }),
+  },
+  {
+    title: "Остаток долга сейчас",
+    source: "shipped",
+    className: "text-[var(--destructive)]",
+    day: (d) => ({ byCurrency: d.debt_amount_by_currency, amount: d.debt_amount }),
+    total: ({ shipped }) => ({ byCurrency: shipped.debt_amount_by_currency, amount: shipped.debt_amount }),
+  },
+  {
+    title: "Наличные, нетто",
+    source: "income",
+    day: (d) => ({ byCurrency: d.cash_by_currency, amount: d.cash }),
+    total: ({ income }) => ({ byCurrency: income.cash_by_currency, amount: income.cash }),
+  },
+  {
+    title: "Безналичные, нетто",
+    source: "income",
+    day: (d) => ({ byCurrency: d.cashless_by_currency, amount: d.cashless }),
+    total: ({ income }) => ({ byCurrency: income.cashless_by_currency, amount: income.cashless }),
+  },
+  {
+    title: "Возвраты",
+    source: "income",
+    className: "text-[var(--destructive)]",
+    day: (d) => ({ byCurrency: d.refunded_by_currency, amount: d.refunded }),
+    total: ({ income }) => ({ byCurrency: income.refunded_by_currency, amount: income.refunded }),
+  },
+  {
+    title: "Чистое поступление",
+    source: "income",
+    className: "font-semibold",
+    day: (d) => ({ byCurrency: d.received_by_currency, amount: d.received }),
+    total: ({ income }) => ({ byCurrency: income.by_currency, amount: income.total }),
+  },
+];
+
 function DaysTable({ data }: { data: ReportSummary }) {
-  const cols = [
-    "№",
-    "Дата",
-    "Заказов",
-    "Мешков",
-    "Отгружено",
-    "Погашено",
-    "Остаток долга сейчас",
-    "К оплате без отсрочки",
-    "Наличные, нетто",
-    "Безналичные, нетто",
-    "Возвраты",
-    "Чистое поступление",
-  ];
-  const shippedCurrency = data.shipped.currency || "KZT";
-  const incomeCurrency = data.income.currency || "KZT";
+  const cols = ["№", "Дата", "Заказов", "Мешков", ...DAY_MONEY_COLUMNS.map((column) => column.title)];
+  const fallbackCurrency = {
+    shipped: data.shipped.currency || "KZT",
+    income: data.income.currency || "KZT",
+  };
+  const moneyCells = (cell: (column: (typeof DAY_MONEY_COLUMNS)[number]) => MoneyCell, strong: boolean) =>
+    DAY_MONEY_COLUMNS.map((column) => {
+      const { byCurrency, amount } = cell(column);
+      return (
+        <TD key={column.title} className={cn("text-right tabular-nums", column.className, strong && "font-semibold")}>
+          <CurrencyAmounts
+            byCurrency={byCurrency}
+            fallbackAmount={amount}
+            fallbackCurrency={fallbackCurrency[column.source]}
+          />
+        </TD>
+      );
+    });
   // Длинный период рендерим лениво; строка «Итого» видна всегда.
   const [limit, setLimit] = useState(31);
   const visibleDays = data.days.slice(0, limit);
@@ -362,65 +316,10 @@ function DaysTable({ data }: { data: ReportSummary }) {
                 {visibleDays.map((d, i) => (
                   <TR key={d.date}>
                     <TD className="text-[var(--muted-foreground)]">{i + 1}</TD>
-                    <TD className="font-medium tabular-nums">{dayLabel(d.date)}</TD>
+                    <TD className="font-medium tabular-nums">{formatIsoDate(d.date)}</TD>
                     <TD className="text-right tabular-nums">{d.orders}</TD>
                     <TD className="text-right tabular-nums">{d.bags}</TD>
-                    <TD className="text-right tabular-nums">
-                      <CurrencyAmounts
-                        byCurrency={d.revenue_by_currency}
-                        fallbackAmount={d.revenue}
-                        fallbackCurrency={shippedCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right tabular-nums">
-                      <CurrencyAmounts
-                        byCurrency={d.paid_amount_by_currency}
-                        fallbackAmount={d.paid_amount}
-                        fallbackCurrency={shippedCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right tabular-nums text-[var(--destructive)]">
-                      <CurrencyAmounts
-                        byCurrency={d.debt_amount_by_currency}
-                        fallbackAmount={d.debt_amount}
-                        fallbackCurrency={shippedCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right tabular-nums text-[var(--warning)]">
-                      <CurrencyAmounts
-                        byCurrency={d.awaiting_amount_by_currency}
-                        fallbackAmount={d.awaiting_amount}
-                        fallbackCurrency={shippedCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right tabular-nums">
-                      <CurrencyAmounts
-                        byCurrency={d.cash_by_currency}
-                        fallbackAmount={d.cash}
-                        fallbackCurrency={incomeCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right tabular-nums">
-                      <CurrencyAmounts
-                        byCurrency={d.cashless_by_currency}
-                        fallbackAmount={d.cashless}
-                        fallbackCurrency={incomeCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right tabular-nums text-[var(--destructive)]">
-                      <CurrencyAmounts
-                        byCurrency={d.refunded_by_currency ?? {}}
-                        fallbackAmount={d.refunded ?? "0"}
-                        fallbackCurrency={incomeCurrency}
-                      />
-                    </TD>
-                    <TD className="text-right font-semibold tabular-nums">
-                      <CurrencyAmounts
-                        byCurrency={d.received_by_currency}
-                        fallbackAmount={d.received}
-                        fallbackCurrency={incomeCurrency}
-                      />
-                    </TD>
+                    {moneyCells((column) => column.day(d), false)}
                   </TR>
                 ))}
                 <TR className="bg-[var(--muted)]/50">
@@ -429,62 +328,7 @@ function DaysTable({ data }: { data: ReportSummary }) {
                   </TD>
                   <TD className="text-right font-semibold tabular-nums">{data.shipped.orders}</TD>
                   <TD className="text-right font-semibold tabular-nums">{data.shipped.bags}</TD>
-                  <TD className="text-right font-semibold tabular-nums">
-                    <CurrencyAmounts
-                      byCurrency={data.shipped.revenue_by_currency}
-                      fallbackAmount={data.shipped.revenue}
-                      fallbackCurrency={shippedCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums">
-                    <CurrencyAmounts
-                      byCurrency={data.shipped.paid_amount_by_currency}
-                      fallbackAmount={data.shipped.paid_amount}
-                      fallbackCurrency={shippedCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums text-[var(--destructive)]">
-                    <CurrencyAmounts
-                      byCurrency={data.shipped.debt_amount_by_currency}
-                      fallbackAmount={data.shipped.debt_amount}
-                      fallbackCurrency={shippedCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums text-[var(--warning)]">
-                    <CurrencyAmounts
-                      byCurrency={data.shipped.awaiting_amount_by_currency}
-                      fallbackAmount={data.shipped.awaiting_amount}
-                      fallbackCurrency={shippedCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums">
-                    <CurrencyAmounts
-                      byCurrency={data.income.cash_by_currency}
-                      fallbackAmount={data.income.cash}
-                      fallbackCurrency={incomeCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums">
-                    <CurrencyAmounts
-                      byCurrency={data.income.cashless_by_currency}
-                      fallbackAmount={data.income.cashless}
-                      fallbackCurrency={incomeCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums text-[var(--destructive)]">
-                    <CurrencyAmounts
-                      byCurrency={data.income.refunded_by_currency ?? {}}
-                      fallbackAmount={data.income.refunded ?? "0"}
-                      fallbackCurrency={incomeCurrency}
-                    />
-                  </TD>
-                  <TD className="text-right font-semibold tabular-nums">
-                    <CurrencyAmounts
-                      byCurrency={data.income.by_currency}
-                      fallbackAmount={data.income.total}
-                      fallbackCurrency={incomeCurrency}
-                    />
-                  </TD>
+                  {moneyCells((column) => column.total(data), true)}
                 </TR>
               </>
             )}
@@ -509,17 +353,8 @@ function ReportsPageInner() {
   const [view, setView] = useState<"clients" | "days">("clients");
 
   const { data: departments } = useApi<Department[]>("/departments/");
-  const validRange = !from || !to || from <= to;
-
-  const url = useMemo(() => {
-    if (!validRange) return null;
-    const q = new URLSearchParams();
-    if (from) q.set("from", from);
-    if (to) q.set("to", to);
-    if (department !== "all") q.set("department", department);
-    const qs = q.toString();
-    return `/reports/summary/${qs ? `?${qs}` : ""}`;
-  }, [from, to, department, validRange]);
+  const rangeError = dateRangeError(from, to);
+  const url = rangeError ? null : apiUrl("/reports/summary/", { date_from: from, date_to: to, department });
 
   const { data, error, reload } = useApi<ReportSummary>(url);
 
@@ -553,9 +388,9 @@ function ReportsPageInner() {
           )}
         </div>
 
-        {!validRange && (
+        {rangeError && (
           <p role="alert" className="text-sm font-medium text-[var(--destructive)]">
-            Дата начала не может быть позже даты окончания.
+            {rangeError}
           </p>
         )}
         {error && <ErrorAlert message={error} onRetry={reload} />}
@@ -563,7 +398,7 @@ function ReportsPageInner() {
         {data && (
           <>
             <PeriodStory data={data} />
-            {data.departments && <DepartmentComparison rows={data.departments} from={data.from} to={data.to} />}
+            <DepartmentComparison rows={data.departments} from={data.from} to={data.to} />
             <DebtNowBand debt={data.debt_now} />
             <DaysChart data={data} />
             <div className="flex flex-col gap-3">
@@ -575,7 +410,7 @@ function ReportsPageInner() {
                 active={view}
                 onChange={(key) => setView(key as "clients" | "days")}
               />
-              {view === "clients" ? <ClientsTable clients={data.clients ?? []} /> : <DaysTable data={data} />}
+              {view === "clients" ? <ClientsTable clients={data.clients} /> : <DaysTable data={data} />}
             </div>
           </>
         )}

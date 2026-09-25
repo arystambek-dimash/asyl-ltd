@@ -4,7 +4,8 @@ from django.urls import reverse
 from rest_framework import serializers
 
 from .attachments import signed_attachment_token
-from .models import Task, TaskAttachment, TaskNotification
+from .models import Task, TaskAttachment
+from .services import can_act, create_task, update_task
 
 STATUS_LABELS = {Task.PENDING: "В ожидании", Task.DONE: "Выполнено"}
 
@@ -38,14 +39,23 @@ class TaskSerializer(serializers.ModelSerializer):
     done_by_name = serializers.SerializerMethodField()
     attachments = TaskAttachmentSerializer(many=True, read_only=True)
     can_complete = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
 
-    def validate_assignee(self, value):
-        from .services import validate_assignee
-        return validate_assignee(value)
+    def create(self, validated_data):
+        request = self.context["request"]
+        return create_task(
+            **validated_data,
+            user=request.user,
+            attachments=request.FILES.getlist("attachments"),
+        )
 
     def update(self, instance, validated_data):
-        from .services import update_task
         return update_task(instance, validated_data, self.context["request"].user)
+
+    def get_can_delete(self, obj):
+        from .services import can_delete_task
+        user = getattr(self.context.get("request"), "user", None)
+        return bool(user and user.is_authenticated and can_delete_task(obj, user))
 
     class Meta:
         model = Task
@@ -53,7 +63,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "id", "title", "body", "status", "status_label",
             "assignee", "assignee_name", "created_by", "created_by_name",
             "due_date", "done_at", "done_by_name", "attachments",
-            "can_complete", "created_at", "updated_at",
+            "can_complete", "can_delete", "created_at", "updated_at",
         ]
         read_only_fields = ["status", "done_at", "created_by"]
 
@@ -70,22 +80,5 @@ class TaskSerializer(serializers.ModelSerializer):
         return _person(obj.done_by)
 
     def get_can_complete(self, obj):
-        """Закрыть задачу может исполнитель, постановщик или суперадмин."""
         user = getattr(self.context.get("request"), "user", None)
-        if user is None or not user.is_authenticated:
-            return False
-        return bool(
-            user.is_superuser
-            or obj.assignee_id == user.pk
-            or obj.created_by_id == user.pk
-        )
-
-
-class TaskNotificationSerializer(serializers.ModelSerializer):
-    task_title = serializers.CharField(source="task.title", read_only=True)
-    task_status = serializers.CharField(source="task.status", read_only=True)
-
-    class Meta:
-        model = TaskNotification
-        fields = ["id", "task", "task_title", "task_status", "text",
-                  "is_read", "created_at"]
+        return bool(user and user.is_authenticated and can_act(obj, user))

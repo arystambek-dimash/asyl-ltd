@@ -1,8 +1,12 @@
+from datetime import datetime, timedelta
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
+
+from apps.common.models import SingletonModel
 
 ANALYTICS_SCOPE_SHIPPING = "shipping"
 ANALYTICS_SCOPE_AI247 = "ai_247"
@@ -108,76 +112,9 @@ class AiCountingSession(models.Model):
         ]
 
 
-class ShippingTransportState(models.Model):
-    """Durable observations and the last claimed visit of one conveyor.
-
-    A missing/unreadable number never releases a loading or its visit latch.
-    """
-
-    binding = models.OneToOneField(
-        ShippingTransportCamera, null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="automation"
-    )
-    conveyor_camera = models.CharField(max_length=32, unique=True)
-    configuration_updated_at = models.DateTimeField()
-    state = models.CharField(max_length=32, default="waiting_number")
-    detail = models.CharField(max_length=500, blank=True, default="")
-    number = models.CharField(max_length=32, blank=True, default="")
-    candidate_number = models.CharField(max_length=32, blank=True, default="")
-    confirmations = models.PositiveSmallIntegerField(default=0)
-    candidate_since = models.DateTimeField(null=True, blank=True)
-    observed_at = models.DateTimeField(null=True, blank=True)
-    frame_ids = models.JSONField(default=list, blank=True)
-    polled_at = models.DateTimeField(null=True, blank=True)
-    claimed_number = models.CharField(max_length=32, blank=True, default="")
-    # Presence comes from a separate body detector, never from missing OCR.
-    tracking = models.JSONField(default=dict, blank=True)
-    candidate_visit_id = models.CharField(max_length=256, blank=True, default="")
-    claimed_visit_id = models.CharField(max_length=256, blank=True, default="")
-    departure_observed_at = models.DateTimeField(null=True, blank=True)
-    tracking_alert = models.CharField(max_length=500, blank=True, default="")
-    auto_finish = models.JSONField(default=dict, blank=True)
-    session = models.ForeignKey(
-        AiCountingSession, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="transport_states",
-    )
-    evidence = models.ForeignKey(
-        "ShippingTransportRecognitionEvent", null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="current_states",
-    )
-
-
-class ShippingTransportRecognitionEvent(models.Model):
-    """Recognition evidence displayed in the monoblock loading/order details."""
-
-    conveyor_camera = models.CharField(max_length=32)
-    number_camera = models.CharField(max_length=32)
-    recognition_model = models.CharField(max_length=32)
-    number = models.CharField(max_length=32)
-    visit_id = models.CharField(max_length=256, blank=True, default="")
-    tracking = models.JSONField(default=dict, blank=True)
-    first_seen_at = models.DateTimeField()
-    last_seen_at = models.DateTimeField()
-    status = models.CharField(max_length=32)
-    order = models.ForeignKey(
-        "orders.Order", null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="transport_recognitions",
-    )
-    session = models.ForeignKey(
-        AiCountingSession, null=True, blank=True, on_delete=models.SET_NULL,
-        related_name="transport_recognitions",
-    )
-    image = models.FileField(upload_to="shipping-transport/%Y/%m/%d", blank=True)
-
-    class Meta:
-        ordering = ["-first_seen_at", "-id"]
-        indexes = [models.Index(fields=["conveyor_camera", "-first_seen_at"], name="shipping_transport_seen_idx")]
-
-
-class MonoblockCameraSettings(models.Model):
+class MonoblockCameraSettings(SingletonModel):
     """Admin-managed camera names and allowlist for loading workflows."""
 
-    singleton = models.BooleanField(default=True, unique=True, editable=False)
     camera_sources = models.JSONField(default=list, blank=True)
     # Камеры с AI 24/7. Фоновый overlay не публикуется, а исходный substream
     # хранится на камера-ПК в отдельном rolling-архиве для доказательств.
@@ -198,16 +135,6 @@ class MonoblockCameraSettings(models.Model):
         related_name="monoblock_camera_settings_updates",
     )
     updated_at = models.DateTimeField(auto_now=True)
-
-    @classmethod
-    def allowed_sources(cls) -> set[str]:
-        row = cls.objects.filter(singleton=True).only("camera_sources").first()
-        configured = {
-            source
-            for source in (row.camera_sources if row else [])
-            if isinstance(source, str) and source
-        }
-        return configured
 
     @classmethod
     def display_names(cls) -> dict[str, str]:
@@ -237,7 +164,7 @@ class MonoblockCameraSettings(models.Model):
                 .first()
             )
         configured = row.camera_sources if row else []
-        return cls._ordered_camera_union(configured)
+        return cls.ordered_camera_union(configured)
 
     @classmethod
     def ai247_sources(
@@ -252,7 +179,19 @@ class MonoblockCameraSettings(models.Model):
                 .only("always_on_camera_sources")
                 .first()
             )
-        return cls._ordered_camera_union(row.always_on_camera_sources if row else [])
+        return cls.ordered_camera_union(row.always_on_camera_sources if row else [])
+
+    @classmethod
+    def contour_sources(
+        cls,
+        analytics_scope: str,
+        row: "MonoblockCameraSettings | None" = None,
+    ) -> list[str]:
+        """Return the active cameras of one analytics contour."""
+
+        if analytics_scope == ANALYTICS_SCOPE_AI247:
+            return cls.ai247_sources(row)
+        return cls.shipping_sources(row)
 
     @classmethod
     def continuous_sources(
@@ -261,7 +200,7 @@ class MonoblockCameraSettings(models.Model):
     ) -> list[str]:
         """Return the physical camera-PC processor set for both contours."""
 
-        return cls._ordered_camera_union(
+        return cls.ordered_camera_union(
             cls.shipping_sources(row),
             cls.ai247_sources(row),
         )
@@ -318,13 +257,8 @@ class MonoblockCameraSettings(models.Model):
             .values_list("camera", flat=True)
         )
 
-    # Compatibility aliases for integrations importing the former helper.
-    # New code must choose one business contour explicitly.
-    mandatory_always_on_sources = shipping_sources
-    always_on_sources = continuous_sources
-
     @staticmethod
-    def _ordered_camera_union(*groups) -> list[str]:
+    def ordered_camera_union(*groups) -> list[str]:
         result: list[str] = []
         for group in groups:
             for source in group or []:
@@ -347,87 +281,110 @@ class MonoblockCameraSettings(models.Model):
         return source if isinstance(source, str) else ""
 
 
-class RetiredMonoblockAccount(models.Model):
-    """Архив отключённых технических аккаунтов; не участвует в правах и камерах."""
-
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="retired_monoblock_account",
-    )
-    name = models.CharField(max_length=80)
-    camera_source = models.CharField(max_length=32, unique=True)
-    is_active = models.BooleanField(default=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="created_retired_monoblock_accounts",
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "cameras_monoblockdevice"
-        ordering = ["name", "id"]
-
-    def __str__(self):
-        return self.name
-
-
 class AlwaysOnCounterCursor(models.Model):
-    """Последний сырой счётчик агента для вычисления реального прироста."""
+    """Курсор журнала событий подсчёта камеры (/events на ПК камер)."""
 
     camera = models.CharField(max_length=32, unique=True)
+    # Последний агрегатный счётчик до перехода камеры на журнал событий: по
+    # нему проверяется начальная граница журнала (event_sync.apply_page).
     last_total = models.PositiveIntegerField(default=0)
     last_per_color = models.JSONField(default=dict, blank=True)
-    last_mode = models.CharField(max_length=16, blank=True, default="")
-    # ``NULL`` keeps compatibility with camera-PC builds that only expose
-    # aggregate snapshots.  The first successful /events response switches
+    # ``NULL`` until the first successful /events response, which switches
     # this camera permanently to the durable event stream, including when the
     # first page is empty and the high-water mark is therefore zero.
     last_event_id = models.PositiveBigIntegerField(null=True, blank=True)
     event_journal_id = models.CharField(max_length=64, null=True, blank=True)
     last_event_at = models.DateTimeField(null=True, blank=True)
     event_caught_up_at = models.DateTimeField(null=True, blank=True)
-    # NULL: not probed since this schema was installed; False: explicit 404
-    # legacy service; True: durable event journal is the sole count source.
+    # NULL: not probed yet; True: durable event journal is the sole count
+    # source; False: only historical rows of cameras that answered 404 on
+    # /events before the journal cutover — no new ones are written.
     event_sync_supported = models.BooleanField(null=True, blank=True)
     event_boundary_validated = models.BooleanField(default=False)
     event_drain_required_at = models.DateTimeField(null=True, blank=True)
     event_stop_drain_requested_at = models.DateTimeField(null=True, blank=True)
     event_stop_confirmed_at = models.DateTimeField(null=True, blank=True)
-    event_compat_total = models.PositiveIntegerField(null=True, blank=True)
     event_sync_error = models.CharField(max_length=500, blank=True, default="")
     event_sync_failed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        constraints = [
-            # Old backend images know only ``last_total``.  During an image
-            # rollback they must not apply snapshots behind a frozen event
-            # cursor and make a later re-rollout count the same crossings
-            # twice.  New event ingestion advances both fields atomically.
-            models.CheckConstraint(
-                condition=(
-                    Q(last_event_id__isnull=True)
-                    | (
-                        Q(event_compat_total__isnull=False)
-                        & Q(last_total=models.F("event_compat_total"))
-                    )
-                ),
-                name="cameras_event_cursor_compat_total",
-            ),
-        ]
+    @classmethod
+    def locked(cls, camera: str) -> "AlwaysOnCounterCursor":
+        """Курсор камеры под блокировкой строки.
+
+        Импорт событий, закрытие смены и архив берут его первым: так у всех
+        один порядок блокировок, и страница журнала не делится между ними.
+        """
+        cursor, _ = cls.objects.select_for_update().get_or_create(camera=camera)
+        return cursor
+
+    @classmethod
+    def draining_cameras(cls) -> set[str]:
+        """Камеры, чей журнал ещё надо дочитать, даже если их сняли с контура."""
+        return set(
+            cls.objects.exclude(event_sync_supported=False)
+            .filter(
+                Q(event_drain_required_at__isnull=False)
+                | Q(event_stop_drain_requested_at__isnull=False)
+                | ~Q(event_sync_error="")
+                | Q(
+                    last_event_id__isnull=False,
+                    event_caught_up_at__isnull=True,
+                )
+            )
+            .values_list("camera", flat=True)
+        )
+
+    @property
+    def has_sync_failure(self) -> bool:
+        """Последний опрос журнала событий завершился ошибкой."""
+        return bool(self.event_sync_error) or self.event_sync_failed_at is not None
+
+    def is_caught_up(self, *, now: datetime, max_age: timedelta) -> bool:
+        """Журнал догнан не раньше ``max_age`` назад, без ошибок и дренажа."""
+        caught_up = self.event_caught_up_at
+        return (
+            self.event_sync_supported is True
+            and self.event_boundary_validated
+            and not self.has_sync_failure
+            and self.event_drain_required_at is None
+            and self.event_stop_drain_requested_at is None
+            and caught_up is not None
+            and timedelta(0) <= now - caught_up <= max_age
+        )
+
+    def sync_status(self, *, now: datetime, max_age: timedelta) -> str:
+        """Код состояния журнала событий; тексты и пороги выбирают экраны.
+
+        ``pending`` — журнал ещё не опрошен, ``unsupported`` — исторический
+        курсор камеры, ответившей 404 на /events до перехода на журнал,
+        ``boundary`` — начальная граница не подтверждена.
+        """
+        if self.has_sync_failure:
+            return "error"
+        if self.event_sync_supported is None:
+            return "pending"
+        if self.event_sync_supported is False:
+            return "unsupported"
+        if not self.event_boundary_validated:
+            return "boundary"
+        if self.event_caught_up_at is None:
+            return "catching_up"
+        if now - self.event_caught_up_at > max_age:
+            return "stale"
+        return "synced"
 
 
+METHOD_UNRESOLVED = "unresolved"
+METHOD_NEIGHBORS = "neighbors"
+METHOD_VOTES = "votes"
+METHOD_MANUAL = "manual"
 RESOLUTION_CHOICES = (
     ("", "Classified by camera"),
-    ("unresolved", "Unresolved"),
-    ("neighbors", "Neighbours"),
-    ("votes", "Partial votes"),
-    ("manual", "Manual"),
+    (METHOD_UNRESOLVED, "Unresolved"),
+    (METHOD_NEIGHBORS, "Neighbours"),
+    (METHOD_VOTES, "Partial votes"),
+    (METHOD_MANUAL, "Manual"),
 )
 
 
@@ -658,19 +615,14 @@ class VehiclePlateEvent(models.Model):
         ordering = ["-detected_at", "-id"]
         indexes = [
             models.Index(
-                fields=["vehicle_number"],
-                name="plate_vehicle_number_idx",
-            ),
-            models.Index(fields=["detected_at"], name="plate_detected_at_idx"),
-            models.Index(
                 fields=["camera", "-detected_at"],
                 name="plate_camera_detected_idx",
             ),
         ]
 
 
-class AlwaysOnDailyAnalytics(models.Model):
-    """Накопленный 24/7-счёт за день и аудируемая ручная поправка."""
+class DailyCountBase(models.Model):
+    """Общие поля дневного счёта камеры: модельный итог и ручная поправка."""
 
     camera = models.CharField(max_length=32)
     day = models.DateField(db_index=True)
@@ -681,6 +633,20 @@ class AlwaysOnDailyAnalytics(models.Model):
     # include the column in INSERTs, so PostgreSQL must still supply `{}`.
     model_per_brand = models.JSONField(default=dict, db_default={}, blank=True)
     adjustment = models.IntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+        ordering = ["camera"]
+
+    @property
+    def total(self) -> int:
+        return max(0, self.model_total + self.adjustment)
+
+
+class AlwaysOnDailyAnalytics(DailyCountBase):
+    """Накопленный 24/7-счёт за день и аудируемая ручная поправка."""
+
     # Строка уехала в архив: в текущем счётчике её больше нет, но день
     # остаётся на графике и в истории. Обнуление счётчика — это перенос
     # накопленного в архив, а не потеря данных.
@@ -694,10 +660,8 @@ class AlwaysOnDailyAnalytics(models.Model):
         on_delete=models.SET_NULL,
         related_name="daily_rows",
     )
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        ordering = ["camera"]
+    class Meta(DailyCountBase.Meta):
         constraints = [
             models.UniqueConstraint(
                 fields=["camera", "day"],
@@ -705,12 +669,8 @@ class AlwaysOnDailyAnalytics(models.Model):
             ),
         ]
 
-    @property
-    def total(self) -> int:
-        return max(0, self.model_total + self.adjustment)
 
-
-class ShippingDailyAnalytics(models.Model):
+class ShippingDailyAnalytics(DailyCountBase):
     """Rollback-safe continuous analytics for shipment cameras.
 
     AI 24/7 keeps using ``AlwaysOnDailyAnalytics`` unchanged because an
@@ -719,16 +679,7 @@ class ShippingDailyAnalytics(models.Model):
     without making the legacy ``get_or_create(camera, day)`` ambiguous.
     """
 
-    camera = models.CharField(max_length=32)
-    day = models.DateField(db_index=True)
-    model_total = models.PositiveIntegerField(default=0)
-    model_per_color = models.JSONField(default=dict, blank=True)
-    model_per_brand = models.JSONField(default=dict, db_default={}, blank=True)
-    adjustment = models.IntegerField(default=0)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["camera"]
+    class Meta(DailyCountBase.Meta):
         constraints = [
             models.UniqueConstraint(
                 fields=["camera", "day"],
@@ -736,17 +687,16 @@ class ShippingDailyAnalytics(models.Model):
             ),
         ]
 
-    @property
-    def total(self) -> int:
-        return max(0, self.model_total + self.adjustment)
-
 
 class ShippingAnalyticsBootstrap(models.Model):
-    """One-time fence for transferring pre-scope-cutover shipping history."""
+    """Record of the finished transfer of pre-scope-cutover shipping history.
+
+    Migration 0028 created one marker per shipping camera; ``completed_at``
+    bounds which legacy AI 24/7 events belong to that camera's shipping log.
+    """
 
     camera = models.CharField(max_length=32, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    scope_confirmed_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -811,15 +761,12 @@ class AlwaysOnWarehouseRoute(models.Model):
 
     The route is separate from colour-to-product mappings so clearing or
     changing a colour does not lose the physical warehouse destination.
-    ``warehouse`` stays nullable during the expand rollout: a previous image
-    can run after migrations and simply continues to use the main warehouse.
+    A camera without a route uses the main warehouse.
     """
 
     camera = models.CharField(max_length=32, unique=True)
     warehouse = models.ForeignKey(
         "warehouse.Warehouse",
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="always_on_routes",
     )
@@ -912,13 +859,9 @@ class AlwaysOnStockBatch(models.Model):
     )
 
     camera = models.CharField(max_length=32)
-    # Snapshot of the route used for this production shift.  It is nullable
-    # during the expand rollout so the previous image can still INSERT a batch
-    # after the migration and an automatic rollback remains safe.
+    # Snapshot of the route used for this production shift.
     warehouse = models.ForeignKey(
         "warehouse.Warehouse",
-        null=True,
-        blank=True,
         on_delete=models.PROTECT,
         related_name="always_on_stock_batches",
     )
@@ -1035,7 +978,7 @@ class AlwaysOnCountArchive(models.Model):
         ordering = ["-created_at"]
 
 
-class CameraHealthState(models.Model):
+class CameraHealthState(SingletonModel):
     """Last durable result of the end-to-end camera monitor.
 
     There is deliberately one row.  Keeping the heartbeat in PostgreSQL makes
@@ -1054,7 +997,6 @@ class CameraHealthState(models.Model):
         (OUTAGE, "Outage"),
     )
 
-    singleton = models.BooleanField(default=True, unique=True, editable=False)
     status = models.CharField(max_length=16, choices=STATUSES, default=INITIALIZING)
     observed_status = models.CharField(
         max_length=16, choices=STATUSES, default=INITIALIZING
@@ -1068,7 +1010,6 @@ class CameraHealthState(models.Model):
     first_degraded_at = models.DateTimeField(null=True, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_good_at = models.DateTimeField(null=True, blank=True)
-    last_changed_at = models.DateTimeField(null=True, blank=True)
     outage_started_at = models.DateTimeField(null=True, blank=True)
     components = models.JSONField(default=dict, blank=True)
     streams = models.JSONField(default=dict, blank=True)
@@ -1115,10 +1056,9 @@ class CameraIncident(models.Model):
         ]
 
 
-class ShippingSessionSettings(models.Model):
+class ShippingSessionSettings(SingletonModel):
     """Count-session policy; migration-time fence excludes old journal history."""
 
-    singleton = models.BooleanField(default=True, unique=True, editable=False)
     idle_timeout_seconds = models.PositiveIntegerField(
         default=300, validators=[MinValueValidator(30), MaxValueValidator(86400)]
     )
@@ -1189,9 +1129,7 @@ class ShippingLoadingSegment(models.Model):
     total_bags = models.PositiveBigIntegerField(default=0)
     idle_timeout_seconds = models.PositiveIntegerField(default=300)
     first_event = models.ForeignKey(AlwaysOnImportedEvent, on_delete=models.PROTECT, related_name="started_loading_segments")
-    last_event = models.ForeignKey(AlwaysOnImportedEvent, on_delete=models.PROTECT, related_name="last_loading_segments")
     first_upstream_event_id = models.PositiveBigIntegerField()
-    last_upstream_event_id = models.PositiveBigIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -19,11 +19,12 @@ from datetime import timedelta
 from functools import wraps
 
 from django.conf import settings
-from django.db import connection, transaction
+from django.db import transaction
 from rest_framework.exceptions import APIException, NotFound
 from django.utils import timezone
 
 from apps.cameras import ai as camera_ai
+from apps.common.locks import advisory_lock
 
 from . import statuses as st
 from .models import (
@@ -56,6 +57,9 @@ class OrientationSyncBusy(APIException):
     default_code = "orientation_sync_busy"
 
 
+_DATASET_ADVISORY_KEY = 0x4153594C4F52494E
+
+
 def _serialized_dataset_operation(operation):
     """Fence collection/export/purge across HTTP workers, Celery and CLI.
 
@@ -66,22 +70,10 @@ def _serialized_dataset_operation(operation):
     """
     @wraps(operation)
     def run_locked(*args, **kwargs):
-        key = 0x4153594C4F52494E
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_try_advisory_lock(%s)", [key])
-            acquired = cursor.fetchone()[0]
-        if not acquired:
-            raise OrientationSyncBusy()
-        try:
+        with advisory_lock(_DATASET_ADVISORY_KEY, blocking=False) as acquired:
+            if not acquired:
+                raise OrientationSyncBusy()
             return operation(*args, **kwargs)
-        finally:
-            if connection.needs_rollback:
-                # An aborted transaction cannot execute the unlock statement.
-                # Closing releases the session lock and preserves the error.
-                connection.close()
-            elif connection.connection is not None:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT pg_advisory_unlock(%s)", [key])
     return run_locked
 
 
@@ -106,9 +98,7 @@ def _trip_completed(wagon: Wagon | None) -> bool:
         wagon is not None
         and wagon.is_passage
         and wagon.status == st.COMPLETED
-        and wagon.gross_weight_kg is not None
-        and wagon.tare_weight_kg is not None
-        and wagon.tare_weight_kg > wagon.gross_weight_kg
+        and (wagon.computed_net_kg() or 0) > 0
     )
 
 
@@ -232,53 +222,42 @@ def collect(*, limit: int | None = None) -> dict[str, int]:
 
     since = _collect_since()
     counters = {"created": 0, "updated": 0, "unchanged": 0, "unlabelled": 0}
-    records = (
-        WeighingRecord.objects.exclude(photo="")
-        .exclude(source="historical")  # Reused evidence is not a new camera observation.
-        .filter(wagon__direction=Wagon.PASSAGE, created_at__gte=since)
-        .select_related("wagon")
-        .order_by("-id")
+    # (вид образца, взвешивания с фото, правило метки, поле времени съёмки)
+    sources = (
+        (
+            VehicleOrientationSample.WEIGHING,
+            WeighingRecord.objects.exclude(photo="")
+            .exclude(source="historical")  # Reused evidence is not a new camera observation.
+            .filter(wagon__direction=Wagon.PASSAGE, created_at__gte=since),
+            label_weighing,
+            "created_at",
+        ),
+        (
+            VehicleOrientationSample.UNASSIGNED,
+            UnassignedWeighing.objects.exclude(photo="").filter(created_at__gte=since),
+            label_unassigned,
+            "stable_weight_at",
+        ),
     )
-    if limit is not None:
-        records = records[:limit]
-    for record in records:
-        label = label_weighing(record)
-        if label is None:
-            counters["unlabelled"] += 1
-            continue
-        counters[
-            _upsert(
-                VehicleOrientationSample.WEIGHING,
-                record.pk,
-                label,
-                weight_kg=record.weight_kg,
-                captured_at=record.created_at,
-                model_orientation=record.orientation,
-            )
-        ] += 1
-    items = (
-        UnassignedWeighing.objects.exclude(photo="")
-        .filter(created_at__gte=since)
-        .select_related("wagon")
-        .order_by("-id")
-    )
-    if limit is not None:
-        items = items[:limit]
-    for item in items:
-        label = label_unassigned(item)
-        if label is None:
-            counters["unlabelled"] += 1
-            continue
-        counters[
-            _upsert(
-                VehicleOrientationSample.UNASSIGNED,
-                item.pk,
-                label,
-                weight_kg=item.weight_kg,
-                captured_at=item.stable_weight_at,
-                model_orientation=item.orientation,
-            )
-        ] += 1
+    for kind, queryset, labeler, captured_at_field in sources:
+        rows = queryset.select_related("wagon").order_by("-id")
+        if limit is not None:
+            rows = rows[:limit]
+        for row in rows:
+            label = labeler(row)
+            if label is None:
+                counters["unlabelled"] += 1
+                continue
+            counters[
+                _upsert(
+                    kind,
+                    row.pk,
+                    label,
+                    weight_kg=row.weight_kg,
+                    captured_at=getattr(row, captured_at_field),
+                    model_orientation=row.orientation,
+                )
+            ] += 1
     return counters
 
 
@@ -327,9 +306,9 @@ def set_manual_label(sample: VehicleOrientationSample, label: str, user) -> Vehi
     старая копия, и очистка обязана попросить ПК забыть её.
     """
 
-    _refresh_locked_sample(sample)
     if label not in {VEHICLE_ORIENTATION_FRONT, VEHICLE_ORIENTATION_REAR}:
         raise ValueError("label must be front or rear")
+    _refresh_locked_sample(sample)
     sample.label = label
     sample.label_source = VehicleOrientationSample.BY_MANUAL
     sample.conflict = False
@@ -345,7 +324,6 @@ def set_manual_label(sample: VehicleOrientationSample, label: str, user) -> Vehi
             "label_source",
             "conflict",
             "excluded",
-            "removal_pending",
             "sent_at",
             "last_error",
             "reviewed_by",
@@ -362,7 +340,7 @@ def exclude_sample(sample: VehicleOrientationSample, user) -> VehicleOrientation
 
     _refresh_locked_sample(sample)
     sample.excluded = True
-    sample.removal_pending = sample.delivered_at is not None or sample.removal_pending
+    sample.removal_pending = _on_camera_pc(sample)
     sample.conflict = False
     sample.reviewed_by = user
     sample.reviewed_at = timezone.now()
@@ -393,14 +371,12 @@ def export_removals(*, limit: int) -> dict[str, int]:
         try:
             camera_ai.delete_orientation_sample(sample.sample_id)
         except camera_ai.AiUnavailable as exc:
-            sample.last_error = str(exc)[:200]
-            sample.save(update_fields=["last_error", "updated_at"])
+            _record_pc_error(sample, exc)
             counters["remove_failed"] += 1
             log.warning("Orientation sample removal stopped: Camera-PC unavailable: %s", exc)
             break
         except camera_ai.AiError as exc:
-            sample.last_error = str(exc)[:200]
-            sample.save(update_fields=["last_error", "updated_at"])
+            _record_pc_error(sample, exc)
             counters["remove_failed"] += 1
             continue
         # A reviewer may have restored/relabelled the sample during HTTP I/O.
@@ -411,6 +387,13 @@ def export_removals(*, limit: int) -> dict[str, int]:
         )
         counters["removed"] += 1
     return counters
+
+
+def _record_pc_error(sample: VehicleOrientationSample, exc: Exception) -> None:
+    """Запомнить на строке, почему Camera-PC не принял запрос по кадру."""
+
+    sample.last_error = str(exc)[:200]
+    sample.save(update_fields=["last_error", "updated_at"])
 
 
 def _on_camera_pc(sample: VehicleOrientationSample) -> bool:
@@ -483,14 +466,12 @@ def purge_samples(
             camera_ai.delete_orientation_sample(sample.sample_id)
         except camera_ai.AiUnavailable as exc:
             result["pc_unavailable"] = True
-            sample.last_error = str(exc)[:200]
-            sample.save(update_fields=["last_error", "updated_at"])
+            _record_pc_error(sample, exc)
             kept.append(sample.pk)
             log.warning("Orientation sample purge stopped: Camera-PC unavailable: %s", exc)
             continue
         except camera_ai.AiError as exc:
-            sample.last_error = str(exc)[:200]
-            sample.save(update_fields=["last_error", "updated_at"])
+            _record_pc_error(sample, exc)
             kept.append(sample.pk)
             continue
         result["removed_from_pc"] += 1
@@ -580,14 +561,12 @@ def export_pending(*, limit: int) -> dict[str, int]:
                 captured_at=sample.captured_at.isoformat(),
             )
         except camera_ai.AiUnavailable as exc:
-            sample.last_error = str(exc)[:200]
-            sample.save(update_fields=["last_error", "updated_at"])
+            _record_pc_error(sample, exc)
             counters["unavailable"] += 1
             log.warning("Orientation sample export stopped: Camera-PC unavailable: %s", exc)
             break
         except camera_ai.AiError as exc:
-            sample.last_error = str(exc)[:200]
-            sample.save(update_fields=["last_error", "updated_at"])
+            _record_pc_error(sample, exc)
             counters["failed"] += 1
             continue
         with transaction.atomic():

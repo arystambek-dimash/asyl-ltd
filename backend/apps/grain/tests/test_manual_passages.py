@@ -1,12 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from importlib import import_module
 from threading import Barrier, Event
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from django.apps import apps
 from django.db import close_old_connections, connection, connections, transaction
 from django.utils import timezone
 
@@ -19,7 +17,6 @@ from apps.grain.models import (
     UnassignedWeighing, VehicleTareMemory, Wagon, WeighingIdentityCheck,
     WeighingRecord,
 )
-from apps.sys_permissions.models import Permission
 
 pytestmark = pytest.mark.django_db
 ENTRY_URL = "/api/grain/passages/manual-entry/"
@@ -234,12 +231,9 @@ def test_manual_commands_require_dedicated_permission(auth_client, user_with_per
     assert _correct(client, wagon).status_code == 403
 
 
-def test_superuser_can_correct_without_employee_grant(auth_client, make_user):
-    user = make_user("weighing-superuser")
-    user.is_superuser = True
-    user.save(update_fields=["is_superuser"])
+def test_superuser_can_correct_without_employee_grant(auth_client, admin_user):
     wagon, _ = _completed()
-    assert _correct(auth_client(user), wagon).status_code == 200
+    assert _correct(auth_client(admin_user), wagon).status_code == 200
 
 
 def test_client_cannot_correct_even_with_permission(auth_client, editor, payload):
@@ -271,14 +265,6 @@ def test_active_automatic_capture_blocks_manual_mutation_atomically(auth_client,
     assert wagon.weighings.count() == 1
     state.refresh_from_db()
     assert state.current_capture == capture and state.phase == "processing"
-
-
-def test_permission_migration_seeds_explicit_assignable_permission_idempotently():
-    migration = import_module("apps.sys_permissions.migrations.0022_grain_correct_weighing_permission")
-    with connection.schema_editor() as editor:
-        migration.ensure_permission(apps, editor)
-        migration.ensure_permission(apps, editor)
-    assert Permission.objects.filter(code="grain.correct_weighing").count() == 1
 
 
 @pytest.mark.django_db(transaction=True)
@@ -352,7 +338,7 @@ def test_legacy_entry_and_manual_exit_recovery_share_lane_first_lock_order(edito
         close_old_connections()
         try:
             with transaction.atomic():
-                manual_passages._lock_lane()
+                services.lock_passage_lane_for_manual_operation()
                 lane_held.set()
                 assert legacy_waiting_for_lane.wait(timeout=5)
                 return manual_passages.create_entry(

@@ -26,4 +26,10 @@ describe("OrderPaymentBadge", () => {
     rerender(<OrderPaymentBadge order={{ status: "arrived", payment_status: "unpaid" }} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("shows «На проверке» over the payment status while a payment waits for the till", () => {
+    render(<OrderPaymentBadge order={{ status: "shipped", payment_status: "unpaid" }} pending />);
+    expect(screen.getByText("На проверке")).toBeInTheDocument();
+    expect(screen.queryByText("Не оплачен")).not.toBeInTheDocument();
+  });
 });

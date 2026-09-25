@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.db.models import (
+    Case,
     CharField,
     Count,
     DecimalField,
@@ -24,22 +25,34 @@ from django.db.models import (
     Subquery,
     Sum,
     Value,
+    When,
 )
 from django.db.models.functions import Cast, Coalesce, Concat, Greatest, NullIf, Trim, TruncDate
+from django.db.models.lookups import Exact, IContains
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 
 from apps.common.plates import is_valid_plate, normalize_plate, plate_match_key
 from apps.common.query_params import (
+    filter_date_range,
+    parse_date_range,
     parse_iso_date,
     parse_search_param,
+    parse_store_id,
     plate_search_q,
 )
+from apps.sales.access import scope_by_client_department
+from apps.sales.labels import UNASSIGNED_CODE
 from apps.shipments.models import ShipmentWagon
 
-from .debt import overpaid_amount
+from .debt import DEBT_STATUS, overpaid_amount
 from .models import Order, OrderItem, Payment, StatusChangeRequest
-from .statuses import AWAITING_SHIPMENT_STATUSES
+from .statuses import (
+    AWAITING_SHIPMENT_STATUSES,
+    ON_POST_STATUSES,
+    PUBLIC_STATUS_LABELS,
+    statuses_in_group,
+)
 
 
 MONEY = DecimalField(max_digits=30, decimal_places=2)
@@ -113,7 +126,7 @@ def awaiting_payment_orders(queryset: QuerySet[Order]) -> QuerySet[Order]:
     не дошла — ``instant``), касса должна взять оплату или согласовать долг.
     """
     return with_order_amounts(
-        queryset.filter(status="shipped")
+        queryset.filter(status=DEBT_STATUS)
         .exclude(settlement_intent="debt")
         .exclude(payment_status="settled"),
         select=False,
@@ -144,6 +157,17 @@ def overpaid_orders(queryset: QuerySet[Order]) -> QuerySet[Order]:
     return queryset.filter(pk__in=list(order_overpaid_by_id(queryset)))
 
 
+def _item_totals_by_order(order_ids) -> dict[int, Decimal]:
+    """Сумма позиций каждого заказа из ``order_ids`` одним группирующим запросом."""
+    return dict(
+        OrderItem.objects.filter(order_id__in=order_ids)
+        .order_by()
+        .values("order_id")
+        .annotate(value=item_value_sum())
+        .values_list("order_id", "value")
+    )
+
+
 def order_overpaid_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
     """Переплата по каждому заказу выборки (debt.overpaid_amount) за два группирующих запроса.
 
@@ -158,13 +182,7 @@ def order_overpaid_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
         .annotate(value=payment_refundable_sum())
         .values_list("order_id", "order__status", "value")
     )
-    totals = dict(
-        OrderItem.objects.filter(order_id__in=confirmed.values("order_id"))
-        .order_by()
-        .values("order_id")
-        .annotate(value=item_value_sum())
-        .values_list("order_id", "value")
-    )
+    totals = _item_totals_by_order(confirmed.values("order_id"))
     zero = Decimal("0")
     overpaid = (
         (pk, overpaid_amount(status, refundable, totals.get(pk) or zero))
@@ -183,13 +201,7 @@ def order_remaining_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
     Заказа нет в словаре — остаток ноль.
     """
     ids = queryset.order_by().values("pk")
-    totals = dict(
-        OrderItem.objects.filter(order_id__in=ids)
-        .order_by()
-        .values("order_id")
-        .annotate(value=item_value_sum())
-        .values_list("order_id", "value")
-    )
+    totals = _item_totals_by_order(ids)
     paid = dict(
         Payment.objects.filter(order_id__in=ids, status="confirmed")
         .order_by()
@@ -204,28 +216,90 @@ def order_remaining_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
     }
 
 
+def order_department(prefix: str = ""):
+    """Отдел заказа для фильтров и сводок: без своего отдела — отдел клиента.
+
+    Заказ с пустым ``department`` (заявка портала, старые данные) учитывается
+    там же, где его клиент, — как в кассе и в доступе отдела к клиентам
+    (sales.access.scope_by_client_department). Нет отдела ни у заказа, ни у
+    клиента — пустая строка. ``prefix`` — путь до заказа (``order__`` у оплат).
+    """
+    return Case(
+        When(
+            **{f"{prefix}department": ""},
+            then=Coalesce(F(f"{prefix}client__department__code"), Value("")),
+        ),
+        default=F(f"{prefix}department"),
+        output_field=CharField(),
+    )
+
+
+def department_q(code: str, prefix: str = "") -> Q:
+    """Условие ``?department=``: заказы отдела ``code``, ``__unassigned`` — без отдела."""
+    return Q(Exact(order_department(prefix), "" if code == UNASSIGNED_CODE else code))
+
+
+def filter_order_scope(queryset, params, *, prefix="", date_field=None, department_extra=None):
+    """Общие фильтры списков заказов и оплат: ``?department=``, ``?store=`` и период.
+
+    ``prefix`` — путь до заказа (``order__`` у оплат), период — по полю
+    ``date_field``, если оно задано. ``department_extra`` добавляется к
+    условию отдела через ИЛИ.
+    """
+    department = params.get("department")
+    if department:
+        match = department_q(department, prefix)
+        if department_extra is not None:
+            match |= department_extra
+        queryset = queryset.filter(match)
+    store = parse_store_id(params.get("store"))
+    if store:
+        queryset = queryset.filter(**{f"{prefix}store_id": store})
+    if date_field:
+        date_from, date_to = parse_date_range(params)
+        queryset = filter_date_range(queryset, date_field, date_from, date_to)
+    return queryset
+
+
+def filter_status_group(queryset: QuerySet[Order], group: str | None) -> QuerySet[Order]:
+    """``?status_group=``: публичная группа статусов («Ожидает загрузки» — это
+    confirmed/arrived/loading, точечный status для неё не годится)."""
+    if not group:
+        return queryset
+    if group not in PUBLIC_STATUS_LABELS:
+        raise ValidationError({"detail": "Неизвестная группа статусов", "code": "bad_status_group"})
+    return queryset.filter(status__in=statuses_in_group(group))
+
+
+def _client_name(prefix: str):
+    """Имя клиента, как ``Client.name``: ФИО пользователя, без него — логин."""
+    return Coalesce(
+        NullIf(
+            Trim(Concat(f"{prefix}user__first_name", Value(" "), f"{prefix}user__last_name")),
+            Value(""),
+        ),
+        F(f"{prefix}user__username"),
+    )
+
+
+def client_search_q(search: str, prefix: str = "client__") -> Q:
+    """Клиент по имени, названию ТОО или телефону — одинаково во всех списках.
+
+    ``prefix`` — путь до клиента (``order__client__`` у оплат).
+    """
+    return (
+        Q(IContains(_client_name(prefix), search))
+        | Q(**{f"{prefix}company_name__icontains": search})
+        | Q(**{f"{prefix}phone__icontains": search})
+    )
+
+
 def filter_order_search(queryset: QuerySet[Order], search: str) -> QuerySet[Order]:
     if not search:
         return queryset
-    # Same full name / username fallback displayed by Client.name.
-    queryset = queryset.alias(
-        search_name=Coalesce(
-            NullIf(
-                Trim(
-                    Concat(
-                        "client__user__first_name",
-                        Value(" "),
-                        "client__user__last_name",
-                    )
-                ),
-                Value(""),
-            ),
-            F("client__user__username"),
-        ),
-        search_id=Cast("id", CharField()),
-    )
+    queryset = queryset.alias(search_id=Cast("id", CharField()))
     return queryset.filter(
-        Q(search_name__icontains=search)
+        client_search_q(search)
         | Q(search_id__icontains=search)
         | order_plate_q(search)
     )
@@ -266,21 +340,7 @@ def order_page_sort(queryset: QuerySet[Order], ordering: str) -> QuerySet[Order]
     if key == "amount":
         queryset = with_order_amounts(queryset, select=False)
     if key == "client":
-        queryset = queryset.alias(
-            sort_client=Coalesce(
-                NullIf(
-                    Trim(
-                        Concat(
-                            "client__user__first_name",
-                            Value(" "),
-                            "client__user__last_name",
-                        )
-                    ),
-                    Value(""),
-                ),
-                F("client__user__username"),
-            )
-        )
+        queryset = queryset.alias(sort_client=_client_name("client__"))
     # Явная сортировка — строго по выбранной колонке: без скрытого
     # «отгруженные в конец», иначе порядок по дате выглядит вперемешку.
     direction = "-" if descending else ""
@@ -291,21 +351,9 @@ def order_page_sort(queryset: QuerySet[Order], ordering: str) -> QuerySet[Order]
     return queryset.order_by(*dict.fromkeys(fields))
 
 
-# Заказ уже на посту: машина заехала, грузится или ждёт выезда. Такие строки
-# живут на доске, пока не выедут, — сколько бы дней ни длилась погрузка.
-BOARD_ACTIVE_STATUSES = ("arrived", "loading", "loaded")
 # Поиск не привязан ко дню, но выехавшие заказы старше месяца на посту не
 # нужны — для них есть архив заказов.
 BOARD_SEARCH_SHIPPED_DAYS = 30
-
-
-def _client_name_query(search: str) -> Q:
-    """``Client.name`` — это ФИО пользователя; ТОО ищут и по названию."""
-    return (
-        Q(client__user__first_name__icontains=search)
-        | Q(client__user__last_name__icontains=search)
-        | Q(client__company_name__icontains=search)
-    )
 
 
 def for_post_board(
@@ -336,26 +384,31 @@ def for_post_board(
         scope = Q(status__in=AWAITING_SHIPMENT_STATUSES) | Q(
             status="shipped", shipment__shipped_at__date__gte=since
         )
-        match = order_plate_q(search) | _client_name_query(search)
+        match = order_plate_q(search) | client_search_q(search)
         # ``str.isdigit()`` истинно и для «²», а ``int()`` на нём падает —
         # номером заказа считаем только ASCII-цифры.
         if search.isascii() and search.isdigit():
             match |= Q(id=int(search))
         return queryset.filter(scope & match)
-    waiting_on = lambda when: Q(status="confirmed") & (  # noqa: E731 - small local predicate
-        Q(arrival_date=when) | Q(arrival_date__isnull=True, created_at__date=when)
-    )
+
+    def waiting_on(when: date) -> Q:
+        return Q(status="confirmed") & (
+            Q(arrival_date=when) | Q(arrival_date__isnull=True, created_at__date=when)
+        )
+
+    # Заказ на посту живёт на доске, пока не выедет, — сколько бы дней ни
+    # длилась погрузка.
     if day is None or day == today:
         since = today - timedelta(days=max(0, completed_order_days - 1))
         return queryset.filter(
-            Q(status__in=BOARD_ACTIVE_STATUSES)
+            Q(status__in=ON_POST_STATUSES)
             | waiting_on(today)
             | Q(status="shipped", shipment__shipped_at__date__gte=since)
         )
     return queryset.filter(
         Q(status="shipped", shipment__shipped_at__date=day)
         | (
-            Q(status__in=BOARD_ACTIVE_STATUSES)
+            Q(status__in=ON_POST_STATUSES)
             & (
                 Q(shipment__arrived_at__date=day)
                 | Q(shipment__loading_started_at__date=day)
@@ -479,24 +532,20 @@ def shipping_calendar_days(queryset: QuerySet[Order], first_day: date, last_day:
         .annotate(day=planned_day())
         .filter(day__gte=first_day, day__lte=last_day)
         .values("day")
-        .annotate(orders=Count("id", distinct=True), bags=Sum("items__quantity"))
+        .annotate(orders=Count("id", distinct=True))
     )
     shipped = (
         queryset.filter(status="shipped", shipment__shipped_at__date__gte=first_day,
                         shipment__shipped_at__date__lte=last_day)
         .annotate(day=TruncDate("shipment__shipped_at"))
         .values("day")
-        .annotate(orders=Count("id", distinct=True), bags=Sum("items__quantity"))
+        .annotate(orders=Count("id", distinct=True))
     )
     days: dict[date, dict] = {}
     for row in waiting:
-        day = days.setdefault(row["day"], {"waiting": 0, "waiting_bags": 0, "shipped": 0, "shipped_bags": 0})
-        day["waiting"] = row["orders"]
-        day["waiting_bags"] = int(row["bags"] or 0)
+        days.setdefault(row["day"], {"waiting": 0, "shipped": 0})["waiting"] = row["orders"]
     for row in shipped:
-        day = days.setdefault(row["day"], {"waiting": 0, "waiting_bags": 0, "shipped": 0, "shipped_bags": 0})
-        day["shipped"] = row["orders"]
-        day["shipped_bags"] = int(row["bags"] or 0)
+        days.setdefault(row["day"], {"waiting": 0, "shipped": 0})["shipped"] = row["orders"]
     return [{"day": day.isoformat(), **values} for day, values in sorted(days.items())]
 
 
@@ -519,6 +568,20 @@ CASHIER_QUEUE_PAYMENT = Q(
 )
 
 
+def cashier_queue_payments(user) -> QuerySet[Payment]:
+    """Оплаты очереди кассы, которые видит ``user``: без счёта провайдера, в живых заказах.
+
+    Одна выборка для «Кассы» и счётчика «Подтвердить оплаты» на дашборде.
+    Оплаты в работе видны кассе любого отдела.
+    """
+    return scope_by_client_department(
+        Payment.objects.filter(CASHIER_QUEUE_PAYMENT, order__deleted_at__isnull=True),
+        user,
+        client_path="order__client",
+        shared=CASHIER_QUEUE_PAYMENT,
+    )
+
+
 def with_payment_api_relations(
     queryset: QuerySet[Payment], *, order_context: bool = False
 ) -> QuerySet[Payment]:
@@ -533,7 +596,6 @@ def with_payment_api_relations(
     queryset = queryset.select_related("apipay_invoice").prefetch_related(
         "order__items",
         "order__payments",
-        "apipay_invoice__refunds",
         "payment_refunds__requested_by",
     )
     if order_context:
@@ -547,9 +609,7 @@ def with_payment_api_relations(
 def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
     payments = Payment.objects.select_related(
         "recorded_by", "received_by", "confirmed_by", "apipay_invoice"
-    ).prefetch_related(
-        "apipay_invoice__refunds", "payment_refunds__requested_by"
-    )
+    ).prefetch_related("payment_refunds__requested_by")
     status_requests = StatusChangeRequest.objects.select_related(
         "requested_by", "decided_by"
     )
@@ -559,7 +619,6 @@ def with_order_api_relations(queryset: QuerySet[Order]) -> QuerySet[Order]:
         "store",
         "warehouse",
         "shipment",
-        "debt_override_by",
         "deleted_by",
     ).prefetch_related(
         "items__product",

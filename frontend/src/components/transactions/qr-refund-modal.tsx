@@ -5,20 +5,12 @@ import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
+import { copyText, whatsappLink } from "@/lib/clipboard";
 import { showSuccess } from "@/lib/toast";
 import type { Payment, QrRefundState } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { currencySymbol, formatDateTime, formatMoney } from "@/lib/utils";
-
-const WAITING = new Set([
-  "issuing",
-  "awaiting_customer",
-  "activating",
-  "awaiting_scan",
-  "customer_identified",
-  "executing",
-]);
+import { formatCurrency, formatDateTime, formatPaymentNumber } from "@/lib/utils";
 
 function stepText(state: QrRefundState): string {
   switch (state.status) {
@@ -59,7 +51,7 @@ export function QrRefundModal({
   const [error, setError] = useState("");
   // Ответ POST возврата — первая точка, дальше опрос; ответ действия — свежее опроса.
   const state = override ?? data ?? initial;
-  const waiting = !!state && WAITING.has(state.status);
+  const waiting = !!state?.active;
   useVisiblePolling(
     async () => {
       setOverride(null);
@@ -87,22 +79,17 @@ export function QrRefundModal({
 
   async function copy() {
     if (!link) return;
-    try {
-      await navigator.clipboard.writeText(link);
-      showSuccess("Ссылка скопирована");
-    } catch {
-      setError("Не удалось скопировать — выделите ссылку вручную.");
-    }
+    if (await copyText(link)) showSuccess("Ссылка скопирована");
+    else setError("Не удалось скопировать — выделите ссылку вручную.");
   }
 
-  const currency = currencySymbol(payment.currency);
   return (
     <Modal
       open
       onClose={() => !busy && onClose()}
-      eyebrow={`PAY-${String(payment.id).padStart(6, "0")} · Kaspi QR`}
+      eyebrow={`${formatPaymentNumber(payment.id)} · Kaspi QR`}
       title="Возврат по QR"
-      description={`${payment.client_name ?? "Покупатель"} · ${formatMoney(state?.amount ?? payment.amount)} ${currency}`}
+      description={`${payment.client_name ?? "Покупатель"} · ${formatCurrency(state?.amount ?? payment.amount, payment.currency)}`}
       footer={<Button onClick={onClose}>Закрыть</Button>}
     >
       <div className="space-y-4">
@@ -149,12 +136,7 @@ export function QrRefundModal({
                   <Share2 className="size-4" /> Поделиться
                 </Button>
               )}
-              <Button
-                variant="outline"
-                onClick={() =>
-                  window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, "_blank", "noopener")
-                }
-              >
+              <Button variant="outline" onClick={() => window.open(whatsappLink("", shareText), "_blank", "noopener")}>
                 <Send className="size-4" /> WhatsApp
               </Button>
               <Button variant="outline" onClick={() => void copy()}>
@@ -179,9 +161,7 @@ export function QrRefundModal({
                 className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm"
               >
                 <div>
-                  <div className="font-medium tabular-nums">
-                    {formatMoney(operation.amount)} {currency}
-                  </div>
+                  <div className="font-medium tabular-nums">{formatCurrency(operation.amount, payment.currency)}</div>
                   {operation.date && (
                     <div className="text-xs text-[var(--muted-foreground)]">{formatDateTime(operation.date)}</div>
                   )}
@@ -199,7 +179,7 @@ export function QrRefundModal({
             <CheckCircle2 className="size-5 shrink-0 text-[var(--success)]" />
             <div>
               <div className="font-medium">
-                Деньги возвращены: {formatMoney(state.refunded_amount ?? state.amount)} {currency}
+                Деньги возвращены: {formatCurrency(state.refunded_amount ?? state.amount, payment.currency)}
               </div>
               {state.receipt_url && (
                 <a href={state.receipt_url} target="_blank" rel="noreferrer" className="text-xs underline">
@@ -236,8 +216,9 @@ export function QrRefundModal({
  * со ссылкой. Поэтому окно держит родитель, который перезагрузку переживает.
  */
 export function useQrRefundWindow(onChanged: () => unknown) {
-  const [started, setStarted] = useState<{ payment: Payment; initial: QrRefundState } | null>(null);
-  const start = useCallback((payment: Payment, initial: QrRefundState) => setStarted({ payment, initial }), []);
+  // initial=null — окно уже начатого возврата: состояние подтянет опрос.
+  const [started, setStarted] = useState<{ payment: Payment; initial: QrRefundState | null } | null>(null);
+  const start = useCallback((payment: Payment, initial: QrRefundState | null) => setStarted({ payment, initial }), []);
   const modal = started && (
     <QrRefundModal
       key={started.payment.id}

@@ -81,7 +81,7 @@ function session(overrides: Partial<ShippingSession> = {}): ShippingSession {
 }
 
 function page(results: ShippingSession[], truncated = false): ShippingSessionsPage {
-  return { results, next_cursor: null, truncated };
+  return { results, truncated };
 }
 
 function renderDay(day: string | null = "2026-09-10") {
@@ -216,7 +216,6 @@ describe("CameraShippingSessions", () => {
     await user.click(screen.getByRole("button", { name: "Сохранить номер" }));
     expect(mocks.post).toHaveBeenCalledWith("/cameras/shipping-segments/101/identify/", { number: "28055531" });
     expect(mocks.reload).toHaveBeenCalledOnce();
-    expect(screen.getByRole("status")).toHaveTextContent("Номер 28055531 сохранён");
   });
 
   it("preserves the unknown record and typed number when the server refuses identification", async () => {
@@ -234,7 +233,6 @@ describe("CameraShippingSessions", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Номер уже изменён");
     expect(screen.getByRole("textbox")).toHaveValue("28055531");
     expect(mocks.reload).not.toHaveBeenCalled();
-    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("keeps unidentified segments read-only without the load permission", () => {

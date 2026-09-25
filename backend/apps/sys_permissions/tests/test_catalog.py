@@ -1,5 +1,13 @@
 from apps.sys_permissions.perms import ALL_CODES, PERMISSIONS
 
+RETIRED_CODES = {
+    "shipping.view", "shipping.load", "shipping.ship", "shipping.arrive",
+    "shipping.rollback", "shipping.debt_override", "train.view", "train.load",
+    "ai_247.manage", "sys_permissions.view", "catalog.delete",
+    "grain.lab", "grain.dispatch", "grain.unload", "grain.exit",
+    "rbac.view", "rbac.manage",
+}
+
 
 def test_codes_are_unique():
     codes = [permission["code"] for permission in PERMISSIONS]
@@ -26,15 +34,4 @@ def test_known_codes_are_present():
 
 
 def test_retired_codes_are_not_in_runtime_catalog():
-    retired = {
-        "shipping.view", "shipping.load", "shipping.ship", "shipping.arrive",
-        "shipping.rollback", "shipping.debt_override", "train.view", "train.load",
-        "ai_247.manage", "sys_permissions.view", "catalog.delete",
-        "grain.lab", "grain.dispatch", "grain.unload", "grain.exit",
-    }
-    assert retired.isdisjoint(ALL_CODES)
-
-
-def test_legacy_rbac_codes_are_not_in_runtime_catalog():
-    assert "rbac.view" not in ALL_CODES
-    assert "rbac.manage" not in ALL_CODES
+    assert RETIRED_CODES.isdisjoint(ALL_CODES)

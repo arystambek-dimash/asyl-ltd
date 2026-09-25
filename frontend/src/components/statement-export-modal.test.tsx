@@ -1,41 +1,34 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AxiosError, AxiosHeaders } from "axios";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import { monthStartLocalIsoDate, todayLocalIsoDate } from "@/lib/utils";
+import { makeDepartment } from "@/test-utils/factories";
 
 const getMock = vi.hoisted(() => vi.fn());
 const downloadMock = vi.hoisted(() => vi.fn());
 const useApiMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/api", () => ({
+// Разбор ошибок настоящий: скачивание получает тело ошибки Blob-ом.
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   api: { get: getMock },
-  apiError: () => "Ошибка выписки",
 }));
 vi.mock("@/lib/download", () => ({ downloadBlob: downloadMock }));
 vi.mock("@/lib/use-api", () => ({ useApi: useApiMock }));
 
 const departments = [
-  {
-    id: 1,
-    code: "north",
-    name: "Север",
-    color: "#315FD5",
-    is_active: true,
-    is_default: true,
-    order_count: 5,
-    created_at: "2026-01-01T00:00:00Z",
-  },
-  {
+  makeDepartment({ code: "north", name: "Север", order_count: 5 }),
+  makeDepartment({
     id: 2,
     code: "south",
     name: "Юг",
     color: "#1F9D6A",
-    is_active: true,
     is_default: false,
     order_count: 3,
     created_at: "2026-01-02T00:00:00Z",
-  },
+  }),
 ];
 
 function renderModal(onClose = vi.fn()) {
@@ -44,7 +37,7 @@ function renderModal(onClose = vi.fn()) {
       open
       onClose={onClose}
       endpoint="/clients/statement/"
-      filename="clients-full-statement.xlsx"
+      filenameStem="clients-full-statement"
       title="Общая выписка"
       description="Описание"
       scopeLabel="Все клиенты"
@@ -56,6 +49,7 @@ function renderModal(onClose = vi.fn()) {
 describe("StatementExportModal", () => {
   beforeEach(() => {
     getMock.mockReset();
+    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
     downloadMock.mockReset();
     useApiMock.mockReset();
     useApiMock.mockReturnValue({
@@ -67,7 +61,6 @@ describe("StatementExportModal", () => {
   });
 
   it("exports only selected departments and defaults to a visible date period", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
     const onClose = vi.fn();
     const user = userEvent.setup();
     renderModal(onClose);
@@ -96,7 +89,6 @@ describe("StatementExportModal", () => {
   });
 
   it("keeps an explicit all-time option and dates the downloaded filename", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
     const user = userEvent.setup();
     renderModal();
 
@@ -113,19 +105,7 @@ describe("StatementExportModal", () => {
     );
   });
 
-  it("omits the sections param while every section stays selected", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
-    const user = userEvent.setup();
-    renderModal();
-
-    await user.click(screen.getByRole("button", { name: "Скачать .xlsx" }));
-
-    // Полный набор == прежнее поведение: параметр не отправляется.
-    expect(getMock.mock.calls[0][1].params).not.toHaveProperty("sections");
-  });
-
   it("sends only the sections left selected, in canonical order", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
     const user = userEvent.setup();
     renderModal();
 
@@ -146,20 +126,7 @@ describe("StatementExportModal", () => {
     expect(getMock).not.toHaveBeenCalled();
   });
 
-  it("downloads Excel by default without an export param", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["xlsx"]) });
-    const user = userEvent.setup();
-    renderModal();
-
-    await user.click(screen.getByRole("button", { name: "Скачать .xlsx" }));
-
-    // Прежние ссылки не должны меняться от появления второго формата.
-    expect(getMock.mock.calls[0][1].params).not.toHaveProperty("export");
-    expect(downloadMock.mock.calls[0][1]).toMatch(/\.xlsx$/);
-  });
-
   it("switches to PDF and names the file accordingly", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["pdf"]) });
     const user = userEvent.setup();
     renderModal();
 
@@ -172,7 +139,6 @@ describe("StatementExportModal", () => {
   });
 
   it("keeps the section choice when the format changes", async () => {
-    getMock.mockResolvedValue({ data: new Blob(["pdf"]) });
     const user = userEvent.setup();
     renderModal();
 
@@ -183,5 +149,26 @@ describe("StatementExportModal", () => {
     const params = getMock.mock.calls[0][1].params;
     expect(params.export).toBe("pdf");
     expect(params.sections).toBe("summary,clients,ledger,orders,payments,debts");
+  });
+
+  it("shows the server reason from a Blob error body instead of a generic error", async () => {
+    const error = new AxiosError("failed");
+    error.response = {
+      status: 400,
+      statusText: "",
+      data: new Blob([JSON.stringify({ detail: "Период больше года" })], { type: "application/json" }),
+      headers: new AxiosHeaders(),
+      config: { headers: new AxiosHeaders() },
+    };
+    getMock.mockRejectedValue(error);
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderModal(onClose);
+
+    await user.click(screen.getByRole("button", { name: "Скачать .xlsx" }));
+
+    expect(await screen.findByText("Период больше года")).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(downloadMock).not.toHaveBeenCalled();
   });
 });

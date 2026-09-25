@@ -8,9 +8,7 @@ from .models import (
     PASSAGE_SCALE_MAX_STABLE_WEIGHT_SECONDS,
     PASSAGE_SCALE_MIN_STABLE_WEIGHT_SECONDS,
     GrainMovement,
-    GrainSettings,
     GrainSupply,
-    LabCheck,
     PassageWeightCapture,
     Silo,
     SiloAllocation,
@@ -22,18 +20,17 @@ from .models import (
     WeighingRecord,
 )
 from .orientation_dataset import load_records
-from .photos import KIND_UNASSIGNED, KIND_WEIGHING, photo_url
+from .photos import KIND_EVIDENCE, KIND_UNASSIGNED, KIND_WEIGHING, photo_url
 from .weighing_photos import photo_delivery_status
-from .statuses import WAGON_STATUS_LABELS
+from .statuses import FINISHED_STATUSES, WAGON_STATUS_LABELS
 
 
 class SiloSerializer(serializers.ModelSerializer):
-    current_balance_kg = serializers.SerializerMethodField()
-    reserved_kg = serializers.SerializerMethodField()
-    free_capacity_kg = serializers.SerializerMethodField()
+    current_balance_kg = serializers.IntegerField(read_only=True)
+    reserved_kg = serializers.IntegerField(read_only=True)
+    free_capacity_kg = serializers.IntegerField(read_only=True)
     fill_percent = serializers.SerializerMethodField()
     active_wagons = serializers.SerializerMethodField()
-    sensor_difference_kg = serializers.SerializerMethodField()
     silo_type_name = serializers.CharField(
         source="silo_type.name", default=None, read_only=True
     )
@@ -58,13 +55,11 @@ class SiloSerializer(serializers.ModelSerializer):
             "is_quarantine",
             "status",
             "unloading_line",
-            "sensor_estimated_kg",
             "current_balance_kg",
             "reserved_kg",
             "free_capacity_kg",
             "fill_percent",
             "active_wagons",
-            "sensor_difference_kg",
         ]
 
     def validate(self, attrs):
@@ -77,34 +72,16 @@ class SiloSerializer(serializers.ModelSerializer):
     def get_fill_percent(self, silo: Silo) -> int:
         if not silo.total_capacity_kg:
             return 0
-        return round(self.get_current_balance_kg(silo) * 100 / silo.total_capacity_kg)
-
-    def get_current_balance_kg(self, silo):
-        if hasattr(silo, "_balance_kg"):
-            return silo._balance_kg
-        return silo.current_balance_kg
-
-    def get_reserved_kg(self, silo):
-        if hasattr(silo, "_reserved_kg"):
-            return silo._reserved_kg
-        return silo.reserved_kg
-
-    def get_free_capacity_kg(self, silo):
-        return silo.total_capacity_kg - self.get_current_balance_kg(silo) - self.get_reserved_kg(silo)
+        return round(silo.current_balance_kg * 100 / silo.total_capacity_kg)
 
     def get_active_wagons(self, silo: Silo):
         if hasattr(silo, "_active_wagons"):
             return [{"id": row.pk, "number": row.number, "status": row.status}
                     for row in silo._active_wagons]
         rows = silo.assigned_wagons.exclude(
-            status__in=["completed", "cancelled", "return_to_supplier", "exited"],
+            status__in=FINISHED_STATUSES,
         ).values("id", "number", "status")
         return list(rows)
-
-    def get_sensor_difference_kg(self, silo: Silo):
-        if silo.sensor_estimated_kg is None:
-            return None
-        return silo.sensor_estimated_kg - self.get_current_balance_kg(silo)
 
     def get_is_default_route(self, silo: Silo) -> bool:
         return silo.default_for_types.exists()
@@ -342,7 +319,7 @@ class UnassignedAssignSerializer(serializers.Serializer):
 class HistoricalTareSerializer(serializers.Serializer):
     reference_record = serializers.IntegerField(min_value=1)
     number = serializers.CharField(max_length=30)
-    reason = serializers.CharField(min_length=5, max_length=300)
+    reason = serializers.CharField()
 
 
 class UnassignedCreatePassageSerializer(serializers.Serializer):
@@ -358,28 +335,6 @@ class UnassignedDiscardSerializer(serializers.Serializer):
     reason = serializers.CharField(
         max_length=200, allow_blank=True, required=False, default=""
     )
-
-
-class LabCheckSerializer(serializers.ModelSerializer):
-    checked_by_name = serializers.CharField(
-        source="checked_by.username", default=None, read_only=True
-    )
-
-    class Meta:
-        model = LabCheck
-        fields = [
-            "id",
-            "moisture",
-            "impurity",
-            "nature",
-            "grain_class",
-            "infestation",
-            "damage",
-            "note",
-            "decision",
-            "checked_by_name",
-            "created_at",
-        ]
 
 
 class SiloAllocationSerializer(serializers.ModelSerializer):
@@ -447,11 +402,12 @@ class WagonSerializer(serializers.ModelSerializer):
         source="assigned_silo.name", default=None, read_only=True
     )
     weighings = WeighingRecordSerializer(many=True, read_only=True)
-    lab_checks = LabCheckSerializer(many=True, read_only=True)
     allocations = SiloAllocationSerializer(many=True, read_only=True)
-    weight_difference_kg = serializers.SerializerMethodField()
-    weight_difference_percent = serializers.SerializerMethodField()
-    weight_matches = serializers.SerializerMethodField()
+    # Сверка веса считается в модели (Wagon.weight_*) — тем же правилом,
+    # что ставит статус «Расхождение веса».
+    weight_difference_kg = serializers.IntegerField(read_only=True)
+    weight_difference_percent = serializers.FloatField(read_only=True)
+    weight_matches = serializers.BooleanField(read_only=True)
     vehicle_recognition_captures = serializers.SerializerMethodField()
     entry_photo_url = serializers.SerializerMethodField()
     exit_photo_url = serializers.SerializerMethodField()
@@ -497,7 +453,6 @@ class WagonSerializer(serializers.ModelSerializer):
             "note",
             "created_at",
             "weighings",
-            "lab_checks",
             "allocations",
             "vehicle_recognition_captures",
             "entry_photo_url",
@@ -527,24 +482,20 @@ class WagonSerializer(serializers.ModelSerializer):
         captures = wagon.passage_weight_captures.order_by("-id")[:10]
         return PassageWeightCaptureSerializer(captures, many=True).data
 
-    def get_weight_difference_kg(self, wagon: Wagon):
-        expected = wagon.planned_weight_kg
-        if expected is None or wagon.net_weight_kg is None:
-            return None
-        return wagon.net_weight_kg - expected
 
-    def get_weight_difference_percent(self, wagon: Wagon):
-        difference = self.get_weight_difference_kg(wagon)
-        expected = wagon.planned_weight_kg
-        if difference is None or not expected:
-            return None
-        return round(difference * 100 / expected, 2)
-
-    def get_weight_matches(self, wagon: Wagon):
-        percent = self.get_weight_difference_percent(wagon)
-        if percent is None:
-            return None
-        return abs(percent) <= float(GrainSettings.get().allowed_discrepancy_percent)
+# Журналы, фото и выгрузка нужны только карточке вагона, не строке списка.
+WAGON_DETAIL_ONLY_FIELDS = frozenset({
+    "unloading_point",
+    "unloading_started_at",
+    "unloading_finished_at",
+    "unloading_paused",
+    "note",
+    "weighings",
+    "allocations",
+    "vehicle_recognition_captures",
+    "entry_photo_url",
+    "exit_photo_url",
+})
 
 
 class WagonBriefSerializer(WagonSerializer):
@@ -552,38 +503,8 @@ class WagonBriefSerializer(WagonSerializer):
 
     class Meta(WagonSerializer.Meta):
         fields = [
-            "id",
-            "supply",
-            "number",
-            "number_source",
-            "number_camera_source",
-            "workflow",
-            "direction",
-            "cargo_name",
-            "status",
-            "status_label",
-            "unplanned",
-            "supplier",
-            "culture",
-            "grain_class",
-            "grain_type",
-            "grain_type_name",
-            "document_weight_kg",
-            "expected_weight_kg",
-            "arrived_at",
-            "gross_weight_kg",
-            "tare_weight_kg",
-            "net_weight_kg",
-            "entry_weight_kg",
-            "exit_weight_kg",
-            "weight_difference_kg",
-            "weight_difference_percent",
-            "weight_matches",
-            "assigned_silo",
-            "assigned_silo_name",
-            "silo_arrived_at",
-            "exited_at",
-            "created_at",
+            name for name in WagonSerializer.Meta.fields
+            if name not in WAGON_DETAIL_ONLY_FIELDS
         ]
 
 
@@ -631,9 +552,6 @@ class VehiclePlateCandidateSerializer(serializers.ModelSerializer):
 
 class GrainSupplySerializer(serializers.ModelSerializer):
     wagons = WagonBriefSerializer(many=True, read_only=True)
-    wagon_numbers = serializers.ListField(
-        child=serializers.CharField(allow_blank=True), write_only=True, required=False
-    )
     grain_type_name = serializers.CharField(
         source="grain_type.name", default="", read_only=True
     )
@@ -655,34 +573,23 @@ class GrainSupplySerializer(serializers.ModelSerializer):
             "assigned_silo",
             "assigned_silo_name",
             "simple_flow",
-            "contract",
             "culture",
             "grain_class",
-            "expected_date",
             "expected_total_kg",
-            "document_weight_kg",
-            "wagons_expected",
             "note",
             "status",
             "created_at",
             "wagons",
-            "wagon_numbers",
         ]
-        read_only_fields = ["status", "created_at"]
+        read_only_fields = ["simple_flow", "status", "created_at"]
         extra_kwargs = {
             "culture": {"required": False, "allow_blank": True},
         }
 
     def validate(self, attrs):
-        simple = attrs.get("simple_flow", getattr(self.instance, "simple_flow", False))
-        if not simple:
-            return attrs
-        grain_type = attrs.get("grain_type", getattr(self.instance, "grain_type", None))
-        silo = attrs.get("assigned_silo", getattr(self.instance, "assigned_silo", None))
-        expected = attrs.get(
-            "expected_total_kg",
-            getattr(self.instance, "expected_total_kg", None),
-        )
+        grain_type = attrs.get("grain_type")
+        silo = attrs.get("assigned_silo")
+        expected = attrs.get("expected_total_kg")
         errors = {}
         if not grain_type:
             errors["grain_type"] = "Выберите тип зерна"
@@ -697,7 +604,7 @@ class GrainSupplySerializer(serializers.ModelSerializer):
         # Старые строки остаются заполнены только для совместимости с историей.
         attrs.setdefault("culture", grain_type.name)
         attrs.setdefault("grain_class", "")
-        attrs.setdefault("wagons_expected", 1)
+        attrs["simple_flow"] = True
         return attrs
 
 
@@ -745,4 +652,4 @@ class WagonArchStopSerializer(serializers.ModelSerializer):
 
     def get_photo_url(self, stop):
         delivery = self.context.get("deliveries", {}).get(stop.photo_request_id)
-        return photo_url("evidence", delivery)
+        return photo_url(KIND_EVIDENCE, delivery)

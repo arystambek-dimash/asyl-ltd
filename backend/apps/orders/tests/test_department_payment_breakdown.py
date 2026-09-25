@@ -3,6 +3,7 @@
 Одна цифра выручки не отвечает на главный вопрос дашборда — сколько из неё
 уже получено, а сколько висит долгом. Разбивка обязана считаться по тем же
 правилам, что «Касса» и выписка (``Order.is_debt``), иначе цифры разойдутся.
+Валюты не складываются: 5 $ и 1000 ₸ одного отдела — это не «1005».
 """
 import pytest
 
@@ -14,15 +15,15 @@ from apps.orders.models import Order, OrderItem, Payment
 pytestmark = pytest.mark.django_db
 
 
-def _order(client, department, price, *, qty=1, status="shipped", intent="debt"):
+def _order(client, department, price, *, qty=1, status="shipped", intent="debt",
+           currency="KZT"):
     # Товар уникален по (имя, цвет, вес) — нумеруем, чтобы в одном тесте
     # можно было создать несколько заказов с одинаковой ценой.
     product = Product.objects.create(
-        name=f"P-{Product.objects.count() + 1}", color="Red", weight_kg="50",
-        price="1")
+        name=f"P-{Product.objects.count() + 1}", color="Red", weight_kg="50")
     order = Order.objects.create(
         client=client, status=status, department=department.code,
-        settlement_intent=intent,
+        settlement_intent=intent, currency=currency,
     )
     OrderItem.objects.create(
         order=order, product=product, quantity=qty, unit_price=price)
@@ -89,6 +90,7 @@ def test_summary_ignores_non_financial_orders(boss, auth_client):
     row = _summary(auth_client, boss)["draft"]
 
     assert row["revenue"] == "0.00"
+    assert row["revenue_by_currency"] == {}
     assert row["debt"] == "0.00"
     assert (row["paid_orders"], row["partial_orders"], row["unpaid_orders"]) == (0, 0, 0)
     assert row["orders"] == 2, "в общем счётчике заказов они по-прежнему видны"
@@ -100,11 +102,35 @@ def test_summary_keeps_debt_split_by_currency(boss, auth_client):
         code="mix", name="Смешанный", color="#C58A35")
     client = Client.objects.create_with_user(first_name="Мул", last_name="Ьти", phone="4")
 
-    kzt = _order(client, department, "1000")
-    usd = _order(client, department, "20")
-    Order.objects.filter(pk=usd.pk).update(currency="USD")
+    _order(client, department, "1000")
+    _order(client, department, "20", currency="USD")
 
     row = _summary(auth_client, boss)["mix"]
 
     assert row["debt_by_currency"] == {"KZT": "1000.00", "USD": "20.00"}
-    assert kzt.currency == "KZT"
+
+
+def test_revenue_is_split_by_currency(boss, auth_client):
+    department = Department.objects.create(code="main2", name="Отдел", color="#000")
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
+    _order(client, department, "1000")
+    _order(client, department, "5", currency="USD")
+
+    row = _summary(auth_client, boss)[department.code]
+
+    # Раньше здесь было «1005» — сумма, не существующая ни в одной валюте.
+    assert row["revenue_by_currency"] == {"KZT": "1000.00", "USD": "5.00"}
+    assert row["revenue_currency"] == "KZT"
+    assert row["revenue"] == "1000.00"
+
+
+def test_single_currency_department_reports_it_plainly(boss, auth_client):
+    department = Department.objects.create(code="usd_only", name="Экспорт", color="#000")
+    client = Client.objects.create_with_user(first_name="C", last_name="D", phone="y")
+    _order(client, department, "500", qty=2, currency="USD")
+
+    row = _summary(auth_client, boss)[department.code]
+
+    assert row["revenue_currency"] == "USD"
+    assert row["revenue"] == "1000.00"
+    assert row["revenue_by_currency"] == {"USD": "1000.00"}

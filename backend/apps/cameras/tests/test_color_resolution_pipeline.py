@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.cameras import (
@@ -16,41 +15,33 @@ from apps.cameras import (
     color_resolution,
     event_sync,
     production,
+    production_queries,
+    production_runs,
 )
 from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
     AlwaysOnColorProductMapping,
+    AlwaysOnCountArchive,
     AlwaysOnCounterCursor,
     AlwaysOnDailyAnalytics,
     AlwaysOnImportedEvent,
+    AlwaysOnProductionCorrection,
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
     AlwaysOnStockPosting,
-    ContinuousCameraRole,
-    MonoblockCameraSettings,
 )
 from apps.catalog.models import Product
 from apps.eventlog.models import EventLog
 from apps.warehouse.models import StockItem, StockReceipt
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("ai247_camera")]
 
 ALMATY = ZoneInfo("Asia/Almaty")
 # 13:00 local on 25.08 — business day 2026-08-25, posted after 19:00.
 DAY_START = datetime(2026, 8, 25, 13, 0, tzinfo=ALMATY)
 POST_AT = datetime(2026, 8, 25, 19, 5, tzinfo=ALMATY)
+CUTOFF = datetime(2026, 8, 25, 19, 0, tzinfo=ALMATY)
 COLORS = {"R": "Red_50", "B": "Blue_50", "G": "Green_50", "W": "White_50"}
-
-
-@pytest.fixture(autouse=True)
-def _ai247_camera():
-    ContinuousCameraRole.objects.create(
-        camera="cam3", analytics_scope=ANALYTICS_SCOPE_AI247
-    )
-    MonoblockCameraSettings.objects.update_or_create(
-        singleton=True,
-        defaults={"always_on_camera_sources": ["cam3"]},
-    )
 
 
 def _raw(
@@ -112,6 +103,18 @@ def _raw(
     return event
 
 
+def _correction(color: str, bags: int) -> None:
+    """Историческая ручная коррекция смены DAY_START (вычет мешков цвета)."""
+
+    AlwaysOnProductionCorrection.objects.create(
+        camera="cam3",
+        business_day=DAY_START.date(),
+        color=color,
+        delta=-bags,
+        reason="двойной счёт мешка",
+    )
+
+
 def _sequence(
     pattern: str, *, start: datetime = DAY_START, step: int = 10, first_id: int = 1
 ):
@@ -142,7 +145,7 @@ def _event(event_id: int) -> AlwaysOnImportedEvent:
 
 def _product(color: str) -> Product:
     return Product.objects.create(
-        name=f"Мешок {color}", color=color, weight_kg="50", price="100"
+        name=f"Мешок {color}", color=color, weight_kg="50"
     )
 
 
@@ -292,12 +295,10 @@ def test_repeated_passes_change_nothing_once_decided():
 # ---------------------------------------------------------------------------
 
 
-def _ready_to_post():
+def _ready_to_post(at: datetime = POST_AT):
     """The journal was caught up after the 19:00 cutoff (see _post_one)."""
 
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        event_caught_up_at=POST_AT
-    )
+    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(event_caught_up_at=at)
 
 
 def _post() -> dict:
@@ -309,20 +310,17 @@ def _post() -> dict:
 def test_day_totals_move_resolved_bags_into_their_colour():
     _import(_sequence("R R ? R ? B B"))
     # The second ? sits on a red/blue boundary at equal distance: unresolved.
-    totals = production._day_totals("cam3", DAY_START.date())
+    totals = production_runs._day_totals("cam3", DAY_START.date())
 
     assert totals["red"] == {
         "detected_bags": 3,
         "resolved_bags": 1,
         "correction_bags": 0,
         "net_bags": 4,
-        # Neighbour decisions may still change before posting.
-        "provisional_bags": 1,
         "inferred": {"neighbors": 1},
     }
     assert totals["unknown"]["detected_bags"] == 2
     assert totals["unknown"]["resolved_bags"] == -1
-    assert totals["unknown"]["provisional_bags"] == -1
     assert totals["unknown"]["net_bags"] == 1
     # Runs keep the camera's answers; nothing in the raw ledger moved.
     assert (
@@ -420,15 +418,14 @@ def test_votes_decide_a_run_boundary_before_posting():
 def test_bag_just_before_the_cutoff_borrows_from_both_shifts():
     red = _map("red")
     _map("blue")
-    cutoff = datetime(2026, 8, 25, 19, 0, tzinfo=ALMATY)
     # B B ? | R R — the unknown bag is 2 s before 19:00, the red run starts
     # 3 s after it (next shift); blue is 30 s back: red is clearly nearer.
     events = [
-        _raw(1, "B", at=cutoff - timedelta(seconds=42)),
-        _raw(2, "B", at=cutoff - timedelta(seconds=32)),
-        _raw(3, "?", at=cutoff - timedelta(seconds=2)),
-        _raw(4, "R", at=cutoff + timedelta(seconds=1)),
-        _raw(5, "R", at=cutoff + timedelta(seconds=11)),
+        _raw(1, "B", at=CUTOFF - timedelta(seconds=42)),
+        _raw(2, "B", at=CUTOFF - timedelta(seconds=32)),
+        _raw(3, "?", at=CUTOFF - timedelta(seconds=2)),
+        _raw(4, "R", at=CUTOFF + timedelta(seconds=1)),
+        _raw(5, "R", at=CUTOFF + timedelta(seconds=11)),
     ]
     _import(events)
 
@@ -471,20 +468,17 @@ def test_a_long_stretch_between_two_runs_of_one_colour_is_not_filled_in():
 def test_posting_waits_for_the_after_neighbours_of_a_bag_near_the_cutoff():
     red = _map("red")
     blue = _map("blue")
-    cutoff = datetime(2026, 8, 25, 19, 0, tzinfo=ALMATY)
     _import(
         [
-            _raw(1, "B", at=cutoff - timedelta(seconds=90)),
-            _raw(2, "B", at=cutoff - timedelta(seconds=80)),
-            _raw(3, "?", at=cutoff - timedelta(seconds=10)),
+            _raw(1, "B", at=CUTOFF - timedelta(seconds=90)),
+            _raw(2, "B", at=CUTOFF - timedelta(seconds=80)),
+            _raw(3, "?", at=CUTOFF - timedelta(seconds=10)),
         ]
     )
     # Only blue before it so far: provisionally blue.
     assert _event(3).resolved_color == "blue"
-    early = cutoff + timedelta(seconds=90)
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        event_caught_up_at=early
-    )
+    early = CUTOFF + timedelta(seconds=90)
+    _ready_to_post(early)
 
     [waiting] = production.post_due_stock(early)
 
@@ -494,14 +488,12 @@ def test_posting_waits_for_the_after_neighbours_of_a_bag_near_the_cutoff():
 
     _import(
         [
-            _raw(4, "R", at=cutoff + timedelta(seconds=2)),
-            _raw(5, "R", at=cutoff + timedelta(seconds=12)),
+            _raw(4, "R", at=CUTOFF + timedelta(seconds=2)),
+            _raw(5, "R", at=CUTOFF + timedelta(seconds=12)),
         ]
     )
-    later = cutoff + color_resolution.configured_max_gap() + timedelta(seconds=5)
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        event_caught_up_at=later
-    )
+    later = CUTOFF + color_resolution.MAX_GAP + timedelta(seconds=5)
+    _ready_to_post(later)
     [batch] = production.post_due_stock(later)
 
     assert batch["status"] == AlwaysOnStockBatch.POSTED
@@ -512,17 +504,14 @@ def test_posting_waits_for_the_after_neighbours_of_a_bag_near_the_cutoff():
 
 def test_posting_does_not_wait_without_unknown_bags_near_the_cutoff():
     blue = _map("blue")
-    cutoff = datetime(2026, 8, 25, 19, 0, tzinfo=ALMATY)
     _import(
         [
-            _raw(1, "B", at=cutoff - timedelta(seconds=30)),
-            _raw(2, "B", at=cutoff - timedelta(seconds=20)),
+            _raw(1, "B", at=CUTOFF - timedelta(seconds=30)),
+            _raw(2, "B", at=CUTOFF - timedelta(seconds=20)),
         ]
     )
-    early = cutoff + timedelta(seconds=90)
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        event_caught_up_at=early
-    )
+    early = CUTOFF + timedelta(seconds=90)
+    _ready_to_post(early)
 
     [batch] = production.post_due_stock(early)
 
@@ -556,23 +545,10 @@ def test_posting_resolves_bags_written_without_markers_by_an_old_image():
     # An image rollback inserts rows without the resolution columns.
     AlwaysOnImportedEvent.objects.filter(upstream_event_id=3).update(color="unknown")
     AlwaysOnProductionRun.objects.all().delete()
-    production.record_color_deltas(
-        "cam3", {"red": 2}, DAY_START, 2, ordered_color_event=True
-    )
-    production.record_color_deltas(
-        "cam3",
-        {"unknown": 1},
-        DAY_START + timedelta(seconds=20),
-        1,
-        ordered_color_event=True,
-    )
-    production.record_color_deltas(
-        "cam3",
-        {"red": 1},
-        DAY_START + timedelta(seconds=30),
-        1,
-        ordered_color_event=True,
-    )
+    for color, seconds in (("red", 0), ("red", 0), ("unknown", 20), ("red", 30)):
+        production_runs.record_color_event(
+            "cam3", color, DAY_START + timedelta(seconds=seconds)
+        )
 
     batch = _post()
 
@@ -590,17 +566,14 @@ def test_correction_on_unknown_is_never_moved_twice():
     AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
         event_sync_supported=False
     )
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=1)
-    ):
-        production.record_correction("cam3", "unknown", 1, "двойной счёт мешка")
+    _correction("unknown", 1)
     # A red run follows: both unknown bags now resolve to red.
     _import(
         _sequence("R R", start=DAY_START + timedelta(minutes=6, seconds=20), first_id=5)
     )
     assert [_event(3).color_resolution, _event(4).color_resolution] == ["neighbors"] * 2
 
-    totals = production._day_totals("cam3", DAY_START.date())
+    totals = production_runs._day_totals("cam3", DAY_START.date())
 
     # Only the one bag the correction left in "unknown" can move to red.
     assert totals["unknown"]["net_bags"] == 0
@@ -608,41 +581,12 @@ def test_correction_on_unknown_is_never_moved_twice():
     assert totals["red"]["net_bags"] == 5
 
 
-def test_correction_availability_leaves_out_automatic_decisions():
-    # Neighbour/vote decisions can still change until the shift is posted, so
-    # a correction may only subtract bags that cannot move away later.
-    _import(_sequence("R R ? R"))
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        event_sync_supported=False
-    )
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=1)
-    ):
-        with pytest.raises(ValidationError) as error:
-            production.record_correction("cam3", "red", 4, "брак всей партии")
-        assert "3" in str(error.value.detail["amount"])
-        assert "автоматически" in str(error.value.detail["amount"])
-        production.record_correction("cam3", "red", 3, "брак всей партии")
-        with pytest.raises(ValidationError):
-            production.record_correction("cam3", "red", 2, "лишний мешок")
-
-    totals = production._day_totals("cam3", DAY_START.date())
-    assert totals["red"]["net_bags"] == 1
-    assert totals["red"]["provisional_bags"] == 1
-
-
 def test_a_correction_survives_a_later_change_of_an_automatic_decision():
     red = _map("red")
     blue = _map("blue")
     _import(_sequence("R R ?"))
     assert _event(3).resolved_color == "red"  # one-sided, still provisional
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=1)
-    ):
-        # The unknown bag may still move away: only the camera's two count.
-        with pytest.raises(ValidationError):
-            production.record_correction("cam3", "red", 3, "брак всей партии")
-        production.record_correction("cam3", "red", 2, "брак двух мешков")
+    _correction("red", 2)
     # Blue bags arrive right after the unknown one: it is now blue.
     _import(
         [
@@ -665,10 +609,7 @@ def test_a_correction_survives_a_later_change_of_an_automatic_decision():
 def test_a_correction_on_unknown_may_remove_an_automatically_resolved_bag():
     red = _map("red")
     _import(_sequence("R R ? R"))
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=1)
-    ):
-        production.record_correction("cam3", "unknown", 1, "двойной счёт мешка")
+    _correction("unknown", 1)
 
     batch = _post()
 
@@ -705,7 +646,7 @@ def test_posting_query_count_does_not_grow_with_unknown_bags():
         )
         with CaptureQueriesContext(connection) as queries:
             color_resolution.resolve_business_day("cam3", start.date())
-            production._day_totals("cam3", start.date())
+            production_runs._day_totals("cam3", start.date())
         return len(queries)
 
     small = measured("R ? R", 1, DAY_START)
@@ -719,6 +660,10 @@ def test_posting_query_count_does_not_grow_with_unknown_bags():
 # ---------------------------------------------------------------------------
 # Manual assignment («Указать цвет»)
 # ---------------------------------------------------------------------------
+
+
+def _now(at: datetime):
+    return patch.object(production.timezone, "now", return_value=at)
 
 
 def _assign(**overrides) -> dict:
@@ -814,9 +759,7 @@ def test_manual_colour_before_posting_joins_the_shift_posting():
     red = _map("red")
     _map("blue")
     _import(_sequence("R R ? B B"))
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=1)
-    ):
+    with _now(DAY_START + timedelta(hours=1)):
         payload = _assign()
     assert not StockReceipt.objects.exists()  # nothing posted yet
     assert payload["unresolved"] == {"business_day": "2026-08-25", "bags": 0}
@@ -842,7 +785,7 @@ def test_blocked_shift_keeps_its_bags_without_colour_visible_and_assignable():
     assert batch["last_error"] == "Не настроен товар для цветов: blue"
     assert batch["pending_bags"] == 1
 
-    with patch.object(production.timezone, "now", return_value=POST_AT):
+    with _now(POST_AT):
         payload = _assign()
     [row] = [item for item in payload["batches"] if item["id"] == batch["id"]]
     assert row["pending_bags"] == 0 and row["status"] == AlwaysOnStockBatch.BLOCKED
@@ -880,9 +823,7 @@ def test_a_manual_colour_is_never_evidence_for_other_bags():
         ]
     )
     assert {_event(3).color_resolution, _event(4).color_resolution} == {"unresolved"}
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=1)
-    ):
+    with _now(DAY_START + timedelta(hours=1)):
         payload = _assign(bags=1)
     assert payload["unresolved"]["bags"] == 1
     color_resolution.resolve_business_day("cam3", DAY_START.date())
@@ -909,13 +850,11 @@ def test_a_manual_colour_never_resolves_the_rest_of_a_boundary():
             _raw(7, "?", at=_at(3600)),
         ]
     )
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=2)
-    ):
+    with _now(DAY_START + timedelta(hours=2)):
         _assign(color="green", bags=1)
     color_resolution.resolve_business_day("cam3", DAY_START.date())
 
-    totals = production._day_totals("cam3", DAY_START.date())
+    totals = production_runs._day_totals("cam3", DAY_START.date())
     assert totals["green"]["net_bags"] == 1
     assert totals["unknown"]["net_bags"] == 2
     batch = _post()
@@ -933,17 +872,15 @@ def test_a_later_automatic_decision_never_displaces_a_manual_colour():
             _raw(3, "?", at=_at(3600)),
         ]
     )
-    with patch.object(
-        production.timezone, "now", return_value=DAY_START + timedelta(hours=2)
-    ):
-        production.record_correction("cam3", "unknown", 1, "двойной счёт мешка")
+    _correction("unknown", 1)
+    with _now(DAY_START + timedelta(hours=2)):
         payload = _assign(bags=2)
     assert payload["unresolved"]["bags"] == 0
     # A blue run now arrives next to the third bag and resolves it.
     _import([_raw(4, "B", at=_at(3610)), _raw(5, "B", at=_at(3620))])
     assert _event(3).color_resolution == "neighbors"
 
-    totals = production._day_totals("cam3", DAY_START.date())
+    totals = production_runs._day_totals("cam3", DAY_START.date())
     assert totals["red"]["net_bags"] == 2
     assert totals["red"]["inferred"] == {"manual": 2}
     assert totals["blue"]["net_bags"] == 2
@@ -995,7 +932,7 @@ def test_assign_api_requires_the_manage_permission(auth_client, admin_user, boss
 def test_selected_day_runs_show_resolved_colours_with_markers():
     _import(_sequence("R R ? R"))
 
-    payload = production.production_payload("cam3", day="2026-08-25")
+    payload = production_queries.production_payload("cam3", day="2026-08-25")
 
     runs = [
         (run["color"], run["model_bags"], run.get("inferred"))
@@ -1006,11 +943,10 @@ def test_selected_day_runs_show_resolved_colours_with_markers():
     assert [
         (run["color"], run["model_bags"]) for run in payload["algorithm_day_runs"]
     ] == [("red", 4)]
-    assert payload["run_smoothing"]["raw_model_per_color"] == {"red": 4}
-    assert payload["color_resolution"] == {
-        "inferred": {"red": {"neighbors": 1}},
-        "unresolved_bags": 0,
-    }
+    assert [
+        (item["color"], item["total"], item.get("inferred"))
+        for item in payload["run_smoothing"]["raw_colors"]
+    ] == [("red", 4, {"neighbors": 1})]
     # The durable ledger still says what the camera said.
     assert list(
         AlwaysOnProductionRun.objects.order_by("started_at").values_list(
@@ -1030,7 +966,7 @@ def test_selected_day_colour_cards_carry_the_resolution_marker():
     )
     _import(events)
 
-    smoothing = production.production_payload("cam3", day="2026-08-25")[
+    smoothing = production_queries.production_payload("cam3", day="2026-08-25")[
         "run_smoothing"
     ]
 
@@ -1051,7 +987,7 @@ def test_selected_day_splits_an_unknown_run_at_a_resolved_boundary():
     )
     _import(events)
 
-    runs = production.production_payload("cam3", day="2026-08-25")["day_runs"]
+    runs = production_queries.production_payload("cam3", day="2026-08-25")["day_runs"]
 
     assert [
         (run["color"], run["model_bags"], run.get("inferred"), run.get("segment"))
@@ -1068,11 +1004,10 @@ def test_selected_day_splits_an_unknown_run_at_a_resolved_boundary():
 def test_unresolved_bags_stay_unknown_in_the_selected_day():
     _import(_sequence("R R ? B B"))
 
-    payload = production.production_payload("cam3", day="2026-08-25")
+    payload = production_queries.production_payload("cam3", day="2026-08-25")
 
     assert [run["color"] for run in payload["day_runs"]] == ["red", "unknown", "blue"]
     assert "inferred" not in payload["day_runs"][1]
-    assert payload["color_resolution"] == {"inferred": {}, "unresolved_bags": 1}
 
 
 def test_dominant_brand_uses_resolved_colour_and_brand():
@@ -1082,7 +1017,7 @@ def test_dominant_brand_uses_resolved_colour_and_brand():
             event["brand"] = "mars"
     _import(events)
 
-    payload = production.production_payload("cam3", day="2026-08-25")
+    payload = production_queries.production_payload("cam3", day="2026-08-25")
 
     assert payload["dominant_brand_by_color"] == {"red": "mars"}
 
@@ -1104,10 +1039,6 @@ def test_period_analytics_show_resolved_colours_and_keep_the_raw_ledger():
     assert "inferred" not in colors["blue"]
     [point] = [item for item in camera["history"] if item["day"] == "2026-08-25"]
     assert point["model_per_color"] == {"red": 4, "unknown": 1, "blue": 2}
-    assert {item["color"]: item["total"] for item in payload["colors"]}["red"] == 4
-    brands = {item["brand"]: item["total"] for item in camera["brands"]}
-    # Brand is resolved independently: korol on both sides of the boundary.
-    assert brands == {"korol": 7}
     stored = AlwaysOnDailyAnalytics.objects.get(camera="cam3")
     assert stored.model_per_color == {"red": 3, "unknown": 2, "blue": 2}
 
@@ -1138,13 +1069,13 @@ def test_selected_day_query_count_does_not_grow_with_unknown_runs():
 
     def count(day: str) -> int:
         with CaptureQueriesContext(connection) as queries:
-            production.production_payload("cam3", day=day)
+            production_queries.production_payload("cam3", day=day)
         return len(queries)
 
     assert count("2026-08-26") == count("2026-08-25")
 
 
-def test_period_analytics_overlay_respects_an_archive_of_the_live_day(boss):
+def test_period_analytics_overlay_respects_an_archive_of_the_live_day():
     """Bags archived with the live day never move bags counted after it."""
 
     clock = {"now": DAY_START + timedelta(minutes=5)}
@@ -1152,7 +1083,18 @@ def test_period_analytics_overlay_respects_an_archive_of_the_live_day(boss):
         _import(_sequence("R R ? R"))
         assert _event(3).color_resolution == "neighbors"
         clock["now"] += timedelta(seconds=30)
-        analytics.archive_camera("cam3", "конец партии", boss)
+        # Архив дня закрытия: итог ушёл в архив, живая строка обнулена.
+        AlwaysOnCountArchive.objects.create(
+            camera="cam3",
+            period_start=DAY_START.date(),
+            period_end=DAY_START.date(),
+            model_total=4,
+            total=4,
+            days=1,
+        )
+        AlwaysOnDailyAnalytics.objects.filter(
+            camera="cam3", day=DAY_START.date()
+        ).update(model_total=0, model_per_color={}, model_per_brand={})
         # Two lone bags after the archive: nothing to borrow a colour from.
         clock["now"] = DAY_START + timedelta(minutes=40)
         _import(
@@ -1171,28 +1113,3 @@ def test_period_analytics_overlay_respects_an_archive_of_the_live_day(boss):
         "unknown": 2
     }
     assert all("inferred" not in item for item in camera["colors"])
-
-
-def test_subtract_today_counts_manual_but_not_automatic_colours(boss):
-    now = timezone.now()
-    start = now - timedelta(minutes=5)
-    _map("red")
-    _import(_sequence("R R ? R ? ? ? ? ? ?", start=start, step=1))
-    AlwaysOnCounterCursor.objects.filter(camera="cam3").update(
-        event_sync_supported=False
-    )
-    # The six trailing bags are too many in a row to guess; one is assigned.
-    production.assign_unknown_color(
-        "cam3",
-        production.business_day_for(now),
-        "red",
-        1,
-        "Проверено по записи камеры",
-    )
-
-    with pytest.raises(ValidationError) as error:
-        analytics.subtract_today("cam3", 5, "весь красный брак", boss, "red")
-    assert "4" in str(error.value.detail["amount"])
-    row = analytics.subtract_today("cam3", 4, "весь красный брак", boss, "red")
-
-    assert row["total"] == 6

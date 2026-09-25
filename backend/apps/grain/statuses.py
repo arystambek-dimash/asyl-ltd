@@ -1,7 +1,7 @@
 """Статусы вагона и строгая машина переходов.
 
 Один источник правды: сервисы меняют статус только через ``ensure_transition``,
-поэтому «из ARRIVED сразу в UNLOADING» невозможен ни из какого API.
+поэтому «из ARRIVED сразу в COMPLETED» невозможен ни из какого API.
 """
 
 # Основной поток
@@ -32,33 +32,6 @@ BLOCKED = "blocked"
 RETURN_TO_SUPPLIER = "return_to_supplier"
 CANCELLED = "cancelled"
 
-WAGON_STATUSES = [
-    EXPECTED,
-    ARRIVED,
-    AT_SILO,
-    GROSS_WEIGHED,
-    LAB_PENDING,
-    UNLOADING_ALLOWED,
-    SILO_ASSIGNED,
-    UNLOADING,
-    UNLOADING_COMPLETED,
-    TARE_WEIGHED,
-    INVENTORIED,
-    EXIT_ALLOWED,
-    EXITED,
-    COMPLETED,
-    UNPLANNED,
-    WAITING_FOR_APPROVAL,
-    REJECTED,
-    QUARANTINE,
-    INSUFFICIENT_CAPACITY,
-    WEIGHT_DISCREPANCY,
-    REWEIGHING_REQUIRED,
-    BLOCKED,
-    RETURN_TO_SUPPLIER,
-    CANCELLED,
-]
-
 WAGON_STATUS_LABELS = {
     EXPECTED: "Ожидается",
     ARRIVED: "Прибыл",
@@ -85,9 +58,12 @@ WAGON_STATUS_LABELS = {
     RETURN_TO_SUPPLIER: "Возврат поставщику",
     CANCELLED: "Отменён",
 }
+WAGON_STATUSES = list(WAGON_STATUS_LABELS)
 
 # Терминальные статусы: вагон больше не «на территории».
 TERMINAL_STATUSES = {COMPLETED, CANCELLED, RETURN_TO_SUPPLIER}
+# Рейс завершён для списков и силосов: терминальный или уже выехал.
+FINISHED_STATUSES = TERMINAL_STATUSES | {EXITED}
 # Статусы «на территории»: от прибытия до выезда.
 ON_SITE_STATUSES = {
     ARRIVED,
@@ -110,38 +86,20 @@ ON_SITE_STATUSES = {
     BLOCKED,
 }
 
+# Старые статусы (лаборатория, силос, разгрузка) остались только у исторических
+# записей: переходов из них нет, такие рейсы можно лишь удалить.
 VALID_TRANSITIONS: dict[str, set[str]] = {
     EXPECTED: {ARRIVED, CANCELLED},
-    UNPLANNED: {WAITING_FOR_APPROVAL, CANCELLED},
-    WAITING_FOR_APPROVAL: {ARRIVED, CANCELLED, RETURN_TO_SUPPLIER},
-    ARRIVED: {AT_SILO, GROSS_WEIGHED, BLOCKED, CANCELLED, RETURN_TO_SUPPLIER},
+    ARRIVED: {AT_SILO, BLOCKED, CANCELLED, RETURN_TO_SUPPLIER},
     AT_SILO: {TARE_WEIGHED, BLOCKED, CANCELLED, RETURN_TO_SUPPLIER},
-    GROSS_WEIGHED: {LAB_PENDING, BLOCKED},
-    LAB_PENDING: {UNLOADING_ALLOWED, REJECTED, QUARANTINE, BLOCKED},
-    REJECTED: {RETURN_TO_SUPPLIER, LAB_PENDING, CANCELLED},
-    QUARANTINE: {SILO_ASSIGNED, RETURN_TO_SUPPLIER, BLOCKED},
-    UNLOADING_ALLOWED: {SILO_ASSIGNED, INSUFFICIENT_CAPACITY, BLOCKED},
-    INSUFFICIENT_CAPACITY: {SILO_ASSIGNED, BLOCKED, RETURN_TO_SUPPLIER},
-    SILO_ASSIGNED: {UNLOADING, UNLOADING_ALLOWED, BLOCKED},
-    UNLOADING: {UNLOADING_COMPLETED, BLOCKED},
-    UNLOADING_COMPLETED: {TARE_WEIGHED, REWEIGHING_REQUIRED},
-    TARE_WEIGHED: {INVENTORIED, WEIGHT_DISCREPANCY, REWEIGHING_REQUIRED},
+    TARE_WEIGHED: {INVENTORIED, WEIGHT_DISCREPANCY},
     # Из расхождения нет пути в оприходование напрямую: сначала решение
     # (подтвердить вес или перевесить), потом обычный поток.
-    WEIGHT_DISCREPANCY: {AT_SILO, TARE_WEIGHED, REWEIGHING_REQUIRED},
-    REWEIGHING_REQUIRED: {AT_SILO, TARE_WEIGHED},
+    WEIGHT_DISCREPANCY: {AT_SILO, TARE_WEIGHED},
     INVENTORIED: {EXIT_ALLOWED},
     EXIT_ALLOWED: {EXITED, BLOCKED},
     EXITED: {COMPLETED},
-    BLOCKED: {
-        ARRIVED,
-        AT_SILO,
-        LAB_PENDING,
-        UNLOADING_ALLOWED,
-        SILO_ASSIGNED,
-        EXIT_ALLOWED,
-        CANCELLED,
-    },
+    BLOCKED: {ARRIVED, AT_SILO, EXIT_ALLOWED, CANCELLED},
 }
 
 

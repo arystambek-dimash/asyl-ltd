@@ -1,5 +1,5 @@
 from concurrent.futures import Future
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from apps.cameras import shipping_session_scheduler as scheduling
 
@@ -59,14 +59,3 @@ def test_projection_runs_before_network_and_import_is_one_page():
     ):
         scheduling._sync_and_project("cam2")
     assert calls == ["project", {"max_pages": 1}, "project", "close"]
-
-
-def test_new_monitor_uses_count_pipeline_and_preserves_supervisor():
-    # Tested through dependency injection by the legacy supervisor suite;
-    # ensure the new command does not accidentally start presence-based OCR.
-    from apps.cameras.management.commands.monitor_shipping_sessions import Command
-    command = Command()
-    command.run_monitor = Mock()
-    command.handle(once=True, interval=2)
-    assert command.run_monitor.call_args.kwargs["scheduler_class"] is scheduling.ShippingSessionScheduler
-    assert command.run_monitor.call_args.kwargs["once_callback"] is scheduling.poll_once

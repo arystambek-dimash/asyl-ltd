@@ -1,50 +1,40 @@
 "use client";
-import { useState } from "react";
-import { ChevronRight, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, RefreshCw } from "lucide-react";
 import { ActionCard } from "@/components/ui/action-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
-import { formatCompactCurrency, pluralRu } from "@/lib/utils";
-import { debtPaymentState, matchesDebtQuery } from "../debt-state";
+import { pluralRu } from "@/lib/utils";
+import { debtHref, debtPaymentState } from "../debt-state";
+import { formatCompactTotals } from "../totals";
 import type { CashierModel } from "../use-cashier";
-import { useOverdueCheck } from "../use-overdue-check";
+import { useDebtList } from "../use-debt-list";
 
 /** Долги клиентов списком: имя и телефон слева, остаток справа, тап — в карточку клиента. */
 export function DebtsScreen({ model }: { model: CashierModel }) {
   const { debtRows: rows, debts, debtTotals, debtsReady, perms } = model;
-  const [q, setQ] = useState("");
-  const [limit, setLimit] = useState(25);
-  const overdue = useOverdueCheck(debts.reload);
-  const filtered = rows.filter((row) => matchesDebtQuery(row, q));
-  const visible = filtered.slice(0, limit);
-  const totalsLine = [
-    formatCompactCurrency(debtTotals.total, debtTotals.currency),
-    ...debtTotals.other.map(([unit, value]) => formatCompactCurrency(value, unit)),
-  ].join(" + ");
+  const list = useDebtList(rows, debts.reload);
+  const { overdue, filtered, visible } = list;
 
   return (
     <section className="flex flex-col gap-4">
       {debtsReady && (
         <p className="text-[13px] text-[var(--muted-foreground)]">
-          Дебиторка <span className="font-semibold text-[var(--foreground)]">{totalsLine}</span>
+          Дебиторка <span className="font-semibold text-[var(--foreground)]">{formatCompactTotals(debtTotals)}</span>
           {` · ${debtTotals.clients} ${pluralRu(debtTotals.clients, ["клиент", "клиента", "клиентов"])}`}
           {debtTotals.overdue > 0 ? ` · ${debtTotals.overdue} с просрочкой` : ""}
         </p>
       )}
       <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--muted-foreground)]" />
-          <Input
-            className="pl-9"
-            placeholder="Поиск по клиенту или телефону"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
+        <SearchInput
+          wrapperClassName="flex-1"
+          placeholder="Поиск по клиенту или телефону"
+          value={list.query}
+          onChange={(e) => list.setQuery(e.target.value)}
+        />
         {perms.canCheckOverdue && (
           <Button
             variant="outline"
@@ -77,8 +67,7 @@ export function DebtsScreen({ model }: { model: CashierModel }) {
                   <li key={row.client_id}>
                     <ActionCard
                       primaryAction={{
-                        kind: "link",
-                        href: `/accounting/debts/clients/${row.client_id}`,
+                        href: debtHref(row),
                         label: `Долг клиента ${row.client_name || row.client_id}`,
                       }}
                       className="flex items-center gap-3 px-4 py-3.5"
@@ -109,7 +98,7 @@ export function DebtsScreen({ model }: { model: CashierModel }) {
                         <CurrencyAmounts
                           byCurrency={row.debt_by_currency}
                           fallbackAmount={row.debt_total}
-                          fallbackCurrency={row.debt_currency ?? "KZT"}
+                          fallbackCurrency={row.debt_currency}
                         />
                       </div>
                       <ChevronRight className="size-4 shrink-0 text-[var(--muted-foreground)]" />
@@ -121,12 +110,7 @@ export function DebtsScreen({ model }: { model: CashierModel }) {
           )}
         </div>
       )}
-      <LoadMore
-        shown={visible.length}
-        total={filtered.length}
-        hasMore={filtered.length > visible.length}
-        onClick={() => setLimit((current) => current + 25)}
-      />
+      <LoadMore {...list.more} />
     </section>
   );
 }

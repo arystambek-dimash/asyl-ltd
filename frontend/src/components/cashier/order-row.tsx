@@ -1,12 +1,11 @@
 "use client";
-import Link from "next/link";
 import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
 import { OverpaymentRefundButton } from "@/components/payments/overpayment-refund";
 import { StatusBadge } from "@/components/status-badge";
-import { withBack } from "@/lib/navigation";
 import type { Me, Order } from "@/lib/types";
 import { cn, formatCurrency } from "@/lib/utils";
-import { OrderDepartmentBadge } from "./department-badge";
+import { OrderDepartmentBadge } from "@/components/ui/department-badge";
+import { OrderRef } from "@/components/orders/order-ref";
 import type { CashierQueue } from "./use-cashier-queue";
 
 /** «оплачено 100 ₸ из 300 ₸» — только если часть уже оплачена. */
@@ -16,24 +15,26 @@ export function paidOfTotal(order: Order): string | null {
 }
 
 /**
- * Строка заказа в «Оплатах» кассы: сумма крупно, заказ (ссылкой, если кассе
- * можно его открыть), клиент и подробности, справа — бейджи, ниже — действия.
+ * Строка в «Оплатах» кассы: сумма крупно, заказ (ссылкой, если кассе можно его
+ * открыть), клиент и подробности, справа — бейджи, ниже — действия.
  */
-export function CashierOrderRow({
-  order,
+export function CashierRow({
+  orderId,
   amount,
+  currency,
   amountClassName,
   details,
-  badge,
+  badges,
   canOpenOrder,
   children,
 }: {
-  order: Order;
-  /** Крупная сумма строки: остаток к оплате или переплата. */
+  orderId: number;
+  /** Крупная сумма строки: остаток к оплате, переплата или сумма оплаты. */
   amount: string;
+  currency?: string;
   amountClassName?: string;
   details: (string | null | undefined | false)[];
-  badge?: React.ReactNode;
+  badges: React.ReactNode;
   canOpenOrder: boolean;
   children: React.ReactNode;
 }) {
@@ -42,26 +43,21 @@ export function CashierOrderRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className={cn("text-[17px] font-bold tabular-nums", amountClassName)}>
-            {formatCurrency(amount, order.currency)}
+            {formatCurrency(amount, currency)}
           </div>
           <div className="mt-0.5 text-[13px] text-[var(--muted-foreground)]">
-            {canOpenOrder ? (
-              <Link
-                href={withBack(`/orders/${order.id}`, "/accounting?view=confirm")}
-                className="underline-offset-2 hover:underline"
-              >
-                Заказ #{order.id}
-              </Link>
-            ) : (
-              <span>Заказ #{order.id}</span>
-            )}
-            {[order.client_name, ...details].filter(Boolean).map((part) => ` · ${part}`)}
+            <OrderRef
+              id={orderId}
+              canOpen={canOpenOrder}
+              back="/accounting?view=confirm"
+              linkClassName="underline-offset-2"
+            >
+              Заказ #{orderId}
+            </OrderRef>
+            {details.filter(Boolean).map((part) => ` · ${part}`)}
           </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          {badge}
-          <OrderDepartmentBadge order={order} />
-        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1">{badges}</div>
       </div>
       <div className="flex flex-wrap items-center gap-2">{children}</div>
     </li>
@@ -85,15 +81,21 @@ export function AwaitingShipmentRow({
   canOpenOrder: boolean;
 }) {
   return (
-    <CashierOrderRow
-      order={order}
-      amount={order.remaining_amount ?? "0"}
-      details={[paidOfTotal(order)]}
-      badge={<StatusBadge status={order.status} />}
+    <CashierRow
+      orderId={order.id}
+      amount={order.remaining_amount}
+      currency={order.currency}
+      details={[order.client_name, paidOfTotal(order)]}
+      badges={
+        <>
+          <StatusBadge status={order.status} />
+          <OrderDepartmentBadge order={order} />
+        </>
+      }
       canOpenOrder={canOpenOrder}
     >
       <OrderPaymentActions order={order} me={me} onChanged={() => void q.reload()} />
-    </CashierOrderRow>
+    </CashierRow>
   );
 }
 
@@ -110,15 +112,21 @@ export function OverpaidOrderRow({
   canOpenOrder: boolean;
 }) {
   return (
-    <CashierOrderRow
-      order={order}
+    <CashierRow
+      orderId={order.id}
       amount={order.overpaid_amount ?? "0"}
+      currency={order.currency}
       amountClassName="text-[var(--warning)]"
-      details={[paidOfTotal(order)]}
-      badge={<StatusBadge status={order.status} />}
+      details={[order.client_name, paidOfTotal(order)]}
+      badges={
+        <>
+          <StatusBadge status={order.status} />
+          <OrderDepartmentBadge order={order} />
+        </>
+      }
       canOpenOrder={canOpenOrder}
     >
       <OverpaymentRefundButton order={order} me={me} onChanged={q.reload} onQrRefund={q.qrRefund.start} />
-    </CashierOrderRow>
+    </CashierRow>
   );
 }

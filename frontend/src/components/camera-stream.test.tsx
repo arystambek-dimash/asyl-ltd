@@ -101,7 +101,7 @@ afterEach(() => {
 describe("CameraStream", () => {
   it("becomes visible when media starts before WebRTC reports connected", async () => {
     const onStateChange = vi.fn();
-    const view = render(<CameraStream src="cam2ai" onStateChange={onStateChange} />);
+    const view = render(<CameraStream src="cam2" onStateChange={onStateChange} />);
     const video = view.container.querySelector("video");
     expect(video).not.toBeNull();
 

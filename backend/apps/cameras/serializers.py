@@ -114,50 +114,6 @@ class WagonNumberCameraSettingsSerializer(serializers.Serializer):
         return {"camera_source": source}
 
 
-class AlwaysOnAnalyticsSubtractSerializer(serializers.Serializer):
-    amount = serializers.JSONField(required=False, allow_null=True)
-    reason = serializers.JSONField(required=False, allow_null=True)
-    color = serializers.CharField(max_length=32)
-
-    def validate(self, attrs):
-        raw_amount = attrs.get("amount")
-        if type(raw_amount) is not int or raw_amount <= 0:
-            raise serializers.ValidationError(
-                {"amount": "Укажите количество больше нуля"}
-            )
-        amount = raw_amount
-
-        raw_reason = attrs.get("reason", "")
-        if not isinstance(raw_reason, str):
-            reason = ""
-        else:
-            reason = " ".join(raw_reason.split())
-        if len(reason) < 5:
-            raise serializers.ValidationError(
-                {"reason": "Укажите причину (минимум 5 символов)"}
-            )
-        if len(reason) > 500:
-            raise serializers.ValidationError({"reason": "Причина слишком длинная"})
-        color = " ".join(str(attrs.get("color") or "").split()).lower()
-        if not color:
-            raise serializers.ValidationError({"color": "Выберите цвет продукции"})
-        return {"amount": amount, "reason": reason, "color": color}
-
-
-class AlwaysOnAnalyticsArchiveSerializer(serializers.Serializer):
-    note = serializers.JSONField(required=False, allow_null=True, default="")
-
-    def validate_note(self, value):
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise serializers.ValidationError("Передайте примечание строкой")
-        note = " ".join(value.split())
-        if len(note) > 500:
-            raise serializers.ValidationError("Примечание слишком длинное")
-        return note
-
-
 class AlwaysOnProductMappingItemSerializer(serializers.Serializer):
     color = serializers.CharField(max_length=32)
     product = serializers.IntegerField(min_value=1, allow_null=True)
@@ -194,54 +150,33 @@ class AlwaysOnUnknownColorSerializer(serializers.Serializer):
 
 
 class ShippingBoardSettingsSerializer(serializers.Serializer):
-    completed_orders_days = serializers.JSONField(required=False, allow_null=True)
-
-    def validate(self, attrs):
-        raw_value = attrs.get("completed_orders_days")
-        if type(raw_value) is bool or not isinstance(raw_value, (int, str)):
-            raise serializers.ValidationError(
-                {
-                    "completed_orders_days": "Укажите количество дней от 1 до 90",
-                    "code": "bad_completed_orders_days",
-                }
-            )
-        try:
-            value = int(raw_value)
-        except (TypeError, ValueError) as exc:
-            raise serializers.ValidationError(
-                {
-                    "completed_orders_days": "Укажите количество дней от 1 до 90",
-                    "code": "bad_completed_orders_days",
-                }
-            ) from exc
-        if value < 1 or value > 90:
-            raise serializers.ValidationError(
-                {
-                    "completed_orders_days": "Допустимо от 1 до 90 дней",
-                    "code": "bad_completed_orders_days",
-                }
-            )
-        return {"completed_orders_days": value}
+    completed_orders_days = serializers.IntegerField(
+        min_value=1,
+        max_value=90,
+        error_messages={
+            "required": "Укажите количество дней от 1 до 90",
+            "null": "Укажите количество дней от 1 до 90",
+            "invalid": "Укажите количество дней от 1 до 90",
+            "min_value": "Допустимо от 1 до 90 дней",
+            "max_value": "Допустимо от 1 до 90 дней",
+        },
+    )
 
 
-class CameraAiActionSerializer(serializers.Serializer):
-    """Common body/query values for start, reset and stop operations."""
-
-    order_id = serializers.IntegerField(min_value=1)
-    session_id = serializers.IntegerField(min_value=1, required=False)
-    complete_order = serializers.BooleanField(required=False, default=False)
-
-
-class AnalyticsRangeSerializer(serializers.Serializer):
-    date_from = serializers.DateField(required=False)
-    date_to = serializers.DateField(required=False)
-    camera = serializers.CharField(required=False, max_length=32)
+class AiCameraSerializerMixin:
+    """``camera`` query field normalized to a known AI camera id."""
 
     def validate_camera(self, value):
         try:
             return ai.normalize(value)
         except ai.AiError as exc:
             raise serializers.ValidationError("Неизвестная камера") from exc
+
+
+class AnalyticsRangeSerializer(AiCameraSerializerMixin, serializers.Serializer):
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
+    camera = serializers.CharField(required=False, max_length=32)
 
     def validate(self, attrs):
         from django.utils import timezone
@@ -254,15 +189,9 @@ class AnalyticsRangeSerializer(serializers.Serializer):
         return attrs
 
 
-class ShippingHistorySerializer(serializers.Serializer):
+class ShippingHistorySerializer(AiCameraSerializerMixin, serializers.Serializer):
     camera = serializers.CharField(max_length=32)
     day = serializers.DateField()
-
-    def validate_camera(self, value):
-        try:
-            return ai.normalize(value)
-        except ai.AiError as exc:
-            raise serializers.ValidationError("Неизвестная камера") from exc
 
     def validate_day(self, value):
         from datetime import date

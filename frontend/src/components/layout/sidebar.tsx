@@ -25,81 +25,78 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { can } from "@/lib/can";
+import { canAny, type Perm } from "@/lib/can";
+import { CASHIER_ENTRY_PERMS } from "@/components/cashier/view";
+import { focusedElement, restoreFocus, trapTab } from "@/lib/focus";
 import type { Me } from "@/lib/types";
 
-// perm — строка или массив (нужно ЛЮБОЕ из прав), как в RequirePerm.
-type Perm = string | string[];
 interface NavItem {
   href: string;
   label: string;
   icon: React.ElementType;
+  /** Нужно ЛЮБОЕ из прав, как в RequirePerm; без perm пункт виден всем. */
   perm?: Perm;
-  activePrefix?: string;
 }
 interface NavSection {
   title: string;
   items: NavItem[];
 }
 
-// Пункт виден, если у пользователя есть ЛЮБОЕ из перечисленных прав.
-function hasNavPerm(me: Me, perm?: Perm): boolean {
-  if (!perm) return true;
-  return (Array.isArray(perm) ? perm : [perm]).some((c) => can(me, c));
+function navItemVisible(me: Me, item: NavItem): boolean {
+  return !item.perm || canAny(me, item.perm);
 }
 
-function staffSections(): NavSection[] {
-  return [
-    {
-      title: "Обзор",
-      items: [
-        { href: "/dashboard", label: "Главная", icon: LayoutDashboard },
-        { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
-      ],
-    },
-    {
-      title: "Работа",
-      items: [
-        { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
-        // Касса (бывш. Табло бухгалтера): подтверждение оплат + вкладки «Долги» и «Транзакции».
-        {
-          href: "/accounting",
-          label: "Касса",
-          icon: HandCoins,
-          perm: ["payments.confirm", "payments.create", "reports.view", "payments.view"],
-        },
-        // Моноблок только для просмотра: очередь машин и вагонов, камеры и AI-подсчёт — одно право.
-        { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "monoblock.view" },
-        // Грузчик: очередь к отгрузке, одна кнопка «Отгружено» и печать накладной.
-        { href: "/loader", label: "Грузчик", icon: Truck, perm: "loader.view" },
-        { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
-        // Силосы имеют отдельное право независимо от зернового процесса.
-        { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
-        // Проходная вагонов: заявки, приход, взвешивание и выход.
-        { href: "/grain", label: "Приход и вывоз", icon: Wheat, perm: "grain.view" },
-        { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
-        { href: "/stores", label: "Магазины", icon: Store, perm: "stores.view" },
-        { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
-        // Без perm: свои задачи доступны каждому сотруднику, иначе исполнитель
-        // не смог бы открыть то, что ему поручили.
-        { href: "/tasks", label: "Задачи", icon: ListChecks },
-      ],
-    },
-    {
-      title: "Управление",
-      items: [
-        { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
-        // Отчёты о вагонах из WhatsApp: что бот провёл сам и что ждёт человека.
-        { href: "/management/whatsapp-bot", label: "WhatsApp-бот", icon: MessageCircle, perm: "bots.view" },
-        {
-          href: "/management/employees",
-          label: "Сотрудники",
-          icon: Settings,
-          perm: "employees.view",
-        },
-      ],
-    },
-  ];
+const STAFF_SECTIONS: NavSection[] = [
+  {
+    title: "Обзор",
+    items: [
+      { href: "/dashboard", label: "Главная", icon: LayoutDashboard },
+      { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
+    ],
+  },
+  {
+    title: "Работа",
+    items: [
+      { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
+      // Касса: подтверждение оплат + вкладки «Долги» и «Транзакции».
+      { href: "/accounting", label: "Касса", icon: HandCoins, perm: CASHIER_ENTRY_PERMS },
+      // Моноблок только для просмотра: очередь машин и вагонов, камеры и AI-подсчёт — одно право.
+      { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "monoblock.view" },
+      // Грузчик: очередь к отгрузке, одна кнопка «Отгружено» и печать накладной.
+      { href: "/loader", label: "Грузчик", icon: Truck, perm: "loader.view" },
+      { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
+      // Силосы имеют отдельное право независимо от зернового процесса.
+      { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },
+      // Проходная вагонов: заявки, приход, взвешивание и выход.
+      { href: "/grain", label: "Приход и вывоз", icon: Wheat, perm: "grain.view" },
+      { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
+      { href: "/stores", label: "Магазины", icon: Store, perm: "stores.view" },
+      { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
+      // Без perm: свои задачи доступны каждому сотруднику, иначе исполнитель
+      // не смог бы открыть то, что ему поручили.
+      { href: "/tasks", label: "Задачи", icon: ListChecks },
+    ],
+  },
+  {
+    title: "Управление",
+    items: [
+      { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
+      // Отчёты о вагонах из WhatsApp: что бот провёл сам и что ждёт человека.
+      { href: "/management/whatsapp-bot", label: "WhatsApp-бот", icon: MessageCircle, perm: "bots.view" },
+      {
+        href: "/management/employees",
+        label: "Сотрудники",
+        icon: Settings,
+        perm: "employees.view",
+      },
+    ],
+  },
+];
+
+/** Виден ли сотруднику пункт меню — обучение показывает шаги только по видимым разделам. */
+export function canSeeStaffNav(me: Me, href: string): boolean {
+  const item = STAFF_SECTIONS.flatMap((section) => section.items).find((navItem) => navItem.href === href);
+  return !!item && navItemVisible(me, item);
 }
 
 const PORTAL_SECTIONS: NavSection[] = [
@@ -117,9 +114,9 @@ const PORTAL_SECTIONS: NavSection[] = [
 // /portal/orders/42 горели бы и вложенный пункт, и «Мои заказы» (/portal/orders).
 function findActiveHref(sections: NavSection[], pathname: string): string | undefined {
   return sections
-    .flatMap((section) => section.items.map((item) => ({ href: item.href, match: item.activePrefix ?? item.href })))
-    .filter(({ match }) => pathname === match || pathname.startsWith(match + "/"))
-    .sort((a, b) => b.match.length - a.match.length)[0]?.href;
+    .flatMap((section) => section.items.map((item) => item.href))
+    .filter((href) => pathname === href || pathname.startsWith(href + "/"))
+    .sort((a, b) => b.length - a.length)[0];
 }
 
 function NavLeaf({
@@ -153,20 +150,19 @@ function NavLeaf({
 
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const pathname = usePathname();
-  const sections: NavSection[] = me.is_client ? PORTAL_SECTIONS : staffSections();
+  const sections: NavSection[] = me.is_client ? PORTAL_SECTIONS : STAFF_SECTIONS;
   const visible = sections
     .map((s) => ({
       ...s,
-      items: s.items.filter((item) => hasNavPerm(me, item.perm)),
+      items: s.items.filter((item) => navItemVisible(me, item)),
     }))
     .filter((s) => s.items.length > 0);
 
   const activeHref = findActiveHref(visible, pathname);
-  const initials = me.username.slice(0, 2).toUpperCase();
 
   return (
     <>
-      {/* профиль вверху */}
+      {/* логотип */}
       <div className="flex items-center gap-2.5 px-3 py-3">
         <Image
           src={logoMark}
@@ -203,14 +199,6 @@ function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void })
           </div>
         ))}
       </nav>
-
-      {/* футер */}
-      <div className="flex items-center justify-between border-t px-4 py-2.5 text-[11px] text-[var(--muted-foreground)]">
-        <span className="flex items-center gap-1.5">
-          <span className="size-1.5 rounded-full bg-[var(--success)]" /> {initials} · В сети
-        </span>
-        <span>v1.0</span>
-      </div>
     </>
   );
 }
@@ -219,7 +207,6 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
   const pathname = usePathname();
   const mobilePanelRef = useRef<HTMLElement>(null);
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   // Закрываем мобильную панель при смене маршрута.
   useEffect(() => {
@@ -228,7 +215,7 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
 
   useEffect(() => {
     if (!mobileOpen) return;
-    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const restoreTarget = focusedElement();
     const focusFrame = requestAnimationFrame(() => mobileCloseRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -236,31 +223,13 @@ export function Sidebar({ me, mobileOpen = false, onClose }: { me: Me; mobileOpe
         onClose?.();
         return;
       }
-      if (event.key !== "Tab" || !mobilePanelRef.current) return;
-      const focusable = Array.from(
-        mobilePanelRef.current.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((element) => !element.closest("[inert]"));
-      const first = focusable[0] ?? mobilePanelRef.current;
-      const last = focusable.at(-1) ?? mobilePanelRef.current;
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      if (mobilePanelRef.current) trapTab(event, mobilePanelRef.current);
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
       cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", onKeyDown);
-      const restoreTarget = restoreFocusRef.current;
-      restoreFocusRef.current = null;
-      if (restoreTarget?.isConnected && !restoreTarget.matches(":disabled")) {
-        restoreTarget.focus();
-      }
+      restoreFocus(restoreTarget);
     };
   }, [mobileOpen, onClose]);
 

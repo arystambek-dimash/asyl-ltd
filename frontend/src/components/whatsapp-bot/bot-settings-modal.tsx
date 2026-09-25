@@ -7,12 +7,10 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { PhoneInput } from "@/components/ui/phone-input";
+import { Textarea } from "@/components/ui/textarea";
 import { api, apiError } from "@/lib/api";
-import { cn, PHONE_INPUT_TEXT } from "@/lib/utils";
+import { PHONE_INPUT_TEXT } from "@/lib/utils";
 import { parseIdList, WHATSAPP_BOT_API, type WhatsAppBotSettings, type WhatsAppBotStatus } from "@/lib/whatsapp-bot";
-
-const TEXTAREA =
-  "w-full resize-y rounded-md border bg-[var(--background)] px-3 py-2 font-mono leading-snug outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/15";
 
 /**
  * Настройки бота (администратор): включить, какие чаты и отправители
@@ -64,7 +62,7 @@ export function BotSettingsModal({
       });
       onSaved(data);
     } catch (cause) {
-      setError(apiError(cause) || "Не удалось сохранить настройки");
+      setError(apiError(cause));
     } finally {
       setBusy(false);
     }
@@ -107,13 +105,14 @@ export function BotSettingsModal({
           htmlFor="bot-chats"
           hint="Группа «Отгрузка вагонов» (…@g.us), по одной в строке. Нет идентификатора — включите бота и напишите в группу: она появится ниже, а её сообщения до выбора — в «Пропущено»."
         >
-          <textarea
+          <Textarea
+            mono
             id="bot-chats"
             rows={2}
             spellCheck={false}
             value={chats}
             onChange={(event) => setChats(event.target.value)}
-            className={cn(TEXTAREA, PHONE_INPUT_TEXT)}
+            className="rounded-md"
           />
         </Field>
         {chatIds.some((id) => chatNames.get(id)) && (
@@ -148,13 +147,14 @@ export function BotSettingsModal({
           htmlFor="bot-senders"
           hint="Кто присылает отчёты: номер телефона (+998 90 111 22 33) или идентификатор, по одному в строке."
         >
-          <textarea
+          <Textarea
+            mono
             id="bot-senders"
             rows={2}
             spellCheck={false}
             value={senders}
             onChange={(event) => setSenders(event.target.value)}
-            className={cn(TEXTAREA, PHONE_INPUT_TEXT)}
+            className="rounded-md"
           />
         </Field>
 

@@ -38,7 +38,8 @@ x-backend-environment: &backend-environment
   AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-${CAMERA_AI_KEY:-}}
   AI_SERVICE_TIMEOUT: ${AI_SERVICE_TIMEOUT:-25}
   CAMERA_EVENT_SYNC_WORKERS: ${CAMERA_EVENT_SYNC_WORKERS:-2}
-  # Configured shipping number cameras acquire orders independently of the UI.
+  # shipping-transport-monitor: loading sessions/segments from bag counts;
+  # it never changes order statuses.
   SHIPPING_TRANSPORT_POLL_SECONDS: ${SHIPPING_TRANSPORT_POLL_SECONDS:-2}
   SHIPPING_TRANSPORT_HEARTBEAT_FILE: ${SHIPPING_TRANSPORT_HEARTBEAT_FILE:-/tmp/shipping-transport-monitor/heartbeat.json}
   SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS: ${SHIPPING_TRANSPORT_HEARTBEAT_MAX_AGE_SECONDS:-180}
@@ -47,8 +48,6 @@ x-backend-environment: &backend-environment
   VEHICLE_PLATE_WEBHOOK_TOKEN: ${VEHICLE_PLATE_WEBHOOK_TOKEN:?set VEHICLE_PLATE_WEBHOOK_TOKEN}
   VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES: ${VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES:-65536}
   THROTTLE_VEHICLE_PLATE_WEBHOOK: ${THROTTLE_VEHICLE_PLATE_WEBHOOK:-120/min}
-  # Event-driven only: at most one scale read per durable event, no background poll.
-  # Setting this to 0 is the immediate automation rollback switch.
   OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
   WEIGHING_AI_ENABLED: "${WEIGHING_AI_ENABLED:-1}"
   WEIGHING_AI_MODEL: "${WEIGHING_AI_MODEL:-gpt-5-mini}"
@@ -56,7 +55,6 @@ x-backend-environment: &backend-environment
   SHIPPING_WAGON_AI_DETAIL: "${SHIPPING_WAGON_AI_DETAIL:-high}"
   WEIGHING_AI_MAX_DAILY_REQUESTS: "${WEIGHING_AI_MAX_DAILY_REQUESTS:-200}"
   WEIGHING_AI_ENTRY_MAX_HOURS: "${WEIGHING_AI_ENTRY_MAX_HOURS:-12}"
-  VEHICLE_PLATE_AUTO_EXPORT_ENABLED: ${VEHICLE_PLATE_AUTO_EXPORT_ENABLED:-0}
   VEHICLE_PLATE_WEIGHT_FIRST_ENABLED: ${VEHICLE_PLATE_WEIGHT_FIRST_ENABLED:-0}
   VEHICLE_PLATE_WEIGHT_FIRST_CAMERA: ${VEHICLE_PLATE_WEIGHT_FIRST_CAMERA:-cam1}
   VEHICLE_PLATE_WEIGHT_FIRST_SOURCE: ${VEHICLE_PLATE_WEIGHT_FIRST_SOURCE:-main}
@@ -66,15 +64,14 @@ x-backend-environment: &backend-environment
   VEHICLE_PLATE_AUTO_SCALE_ENABLED: ${VEHICLE_PLATE_AUTO_SCALE_ENABLED:-0}
   VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS: ${VEHICLE_PLATE_AUTO_SCALE_POLL_SECONDS:-1}
   VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG: ${VEHICLE_PLATE_AUTO_SCALE_EMPTY_MAX_KG:-500}
-  VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS: ${VEHICLE_PLATE_AUTO_SCALE_STABLE_CONFIRM_POLLS:-2}
   VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS: ${VEHICLE_PLATE_AUTO_SCALE_CLEAR_CONFIRM_POLLS:-3}
   VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG: ${VEHICLE_PLATE_AUTO_SCALE_STABLE_TOLERANCE_KG:-50}
-  VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS: ${VEHICLE_PLATE_AUTO_SCALE_MAX_RECOGNITION_ATTEMPTS:-3}
   VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE: ${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE:-/tmp/passage-scale-monitor/heartbeat.json}
   VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS: ${VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_MAX_AGE_SECONDS:-60}
   VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME: ${VEHICLE_PLATE_AUTO_EXPORT_CARGO_NAME:-Отруби}
-  VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS: ${VEHICLE_PLATE_AUTO_EXPORT_EVENT_MAX_AGE_SECONDS:-15}
   VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS: ${VEHICLE_PLATE_AUTO_EXPORT_MIN_TRIP_SECONDS:-60}
+  # 0 stops the nightly front/rear orientation dataset export to the camera-PC.
+  VEHICLE_ORIENTATION_DATASET_ENABLED: ${VEHICLE_ORIENTATION_DATASET_ENABLED:-1}
   # Вагонные весы под аркой (vesyv, CAS Weight API). Явно пустое значение не
   # позволяет случайно взять вес машины для операции прихода.
   WAGON_SCALE_API_URL: ${WAGON_SCALE_API_URL-}
@@ -94,7 +91,6 @@ x-backend-environment: &backend-environment
   TRUCK_SCALE_MAX_AGE_SECONDS: ${TRUCK_SCALE_MAX_AGE_SECONDS:-5}
   TRUCK_SCALE_MAX_WEIGHT_KG: ${TRUCK_SCALE_MAX_WEIGHT_KG:-100000}
   THROTTLE_TRUCK_SCALE_PREVIEW: ${THROTTLE_TRUCK_SCALE_PREVIEW:-60/min}
-  CAMERA_PLAYBACK_URL: ${CAMERA_PLAYBACK_URL:-}
   GO2RTC_API_URL: ${GO2RTC_API_URL:-http://go2rtc:1984}
   CAMERA_EXPECTED_COUNT: ${CAMERA_EXPECTED_COUNT:-10}
   CAMERA_MINIMUM_ONLINE_COUNT: ${CAMERA_MINIMUM_ONLINE_COUNT:-5}
@@ -130,6 +126,11 @@ x-backend-environment: &backend-environment
   # WhatsApp-бот отчётов о вагонах: флаг виден и журналу в CRM («выключен на
   # сервере»). Ключи инстанса Green-API — только у сервиса whatsapp-bot.
   WHATSAPP_BOT_ENABLED: ${WHATSAPP_BOT_ENABLED:-0}
+
+# CI supplies an immutable digest reference. The all-zero fallback cannot
+# resolve to a real manifest: `ps`/`exec` remain usable for an existing
+# stack, while any manual recreate without a digest fails closed.
+x-backend-image: &backend-image ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
 
 x-default-logging: &default-logging
   driver: json-file
@@ -167,11 +168,7 @@ services:
       - data
 
   backend:
-    # CI supplies an immutable digest reference. The all-zero fallback cannot
-    # resolve to a real manifest: `ps`/`exec` remain usable for an existing
-    # stack, while any manual recreate without a digest fails closed.
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
-    build: ./backend
+    image: *backend-image
     environment: *backend-environment
     depends_on:
       db:
@@ -201,28 +198,8 @@ services:
 
   frontend:
     image: ${FRONTEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
-    build:
-      context: ./frontend
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
-        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
-        NEXT_PUBLIC_APP_RELEASE: ${APP_RELEASE:-${EXPECTED_SHA:-development}}
-        NEXT_PUBLIC_APP_ENVIRONMENT: ${APP_ENVIRONMENT:-production}
-        NEXT_PUBLIC_SENTRY_ENABLE_LOGS: ${NEXT_PUBLIC_SENTRY_ENABLE_LOGS:-0}
-        NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE:-0}
-        SENTRY_ORG: ${SENTRY_ORG:-}
-        SENTRY_PROJECT: ${SENTRY_PROJECT_FRONTEND:-}
     environment:
       NODE_ENV: production
-      APP_RELEASE: ${APP_RELEASE:-${EXPECTED_SHA:-development}}
-      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-production}
-      APP_SERVICE: frontend-server
-      # Kept empty by default. This container has no Internet route, so hosted
-      # server/edge reporting also needs a separately approved egress design.
-      SENTRY_FRONTEND_SERVER_DSN: ${SENTRY_FRONTEND_SERVER_DSN:-}
-      SENTRY_ENABLE_LOGS: ${SENTRY_FRONTEND_ENABLE_LOGS:-0}
-      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_FRONTEND_TRACES_SAMPLE_RATE:-0}
-      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_FRONTEND_PROFILES_SAMPLE_RATE:-0}
     depends_on:
       - backend
     expose:
@@ -289,10 +266,9 @@ services:
       - default
 
   camera-monitor:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: camera-monitor
     entrypoint: []
     command: ["python", "manage.py", "monitor_cameras"]
@@ -306,6 +282,15 @@ services:
       go2rtc:
         condition: service_healthy
     init: true
+    tmpfs:
+      - /tmp/camera-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    # Живость цикла: сбой камер или базы — degraded, зависший цикл — нездоров.
+    healthcheck:
+      test: ["CMD", "python", "/app/heartbeat_healthcheck.py", "/tmp/camera-monitor/heartbeat.json", "300"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -313,10 +298,9 @@ services:
       - default
 
   ai-stock-monitor:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: ai-stock-monitor
     entrypoint: []
     command: ["python", "manage.py", "post_always_on_stock"]
@@ -324,6 +308,15 @@ services:
       backend:
         condition: service_healthy
     init: true
+    tmpfs:
+      - /tmp/ai-stock-monitor:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    # Живость цикла оприходования: сбой базы — degraded, зависший цикл — нездоров.
+    healthcheck:
+      test: ["CMD", "python", "/app/heartbeat_healthcheck.py", "/tmp/ai-stock-monitor/heartbeat.json", "300"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -331,10 +324,9 @@ services:
       - default
 
   shipping-transport-monitor:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: shipping-transport-monitor
     # Wait for backend-owned migrations before projecting loading segments.
     entrypoint: []
@@ -369,10 +361,9 @@ services:
       - default
 
   passage-scale-monitor:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: passage-scale-monitor
     # Migrations and bootstrap remain owned by the healthy backend container.
     entrypoint: []
@@ -409,10 +400,9 @@ services:
       - default
 
   whatsapp-bot:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: whatsapp-bot
       # Всё необязательно: без WHATSAPP_BOT_ENABLED=1 процесс простаивает,
       # без ключей включённый бот честно пишет «degraded».
@@ -420,7 +410,6 @@ services:
       WHATSAPP_BOT_INSTANCE_ID: ${WHATSAPP_BOT_INSTANCE_ID:-}
       WHATSAPP_BOT_API_TOKEN: ${WHATSAPP_BOT_API_TOKEN:-}
       WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS: ${WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS:-20}
-      WHATSAPP_BOT_HEARTBEAT_FILE: /tmp/whatsapp-bot/heartbeat.json
       WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS: ${WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS:-180}
       WHATSAPP_BOT_LLM_ENABLED: ${WHATSAPP_BOT_LLM_ENABLED:-0}
       WHATSAPP_BOT_LLM_MODEL: ${WHATSAPP_BOT_LLM_MODEL:-}
@@ -452,10 +441,9 @@ services:
       - default
 
   celery-payments:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: celery-payments
     entrypoint: []
     command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--queues=payments", "--concurrency=1", "--prefetch-multiplier=1"]
@@ -481,10 +469,9 @@ services:
       - default
 
   celery-orientation:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: celery-orientation
     entrypoint: []
     command: ["celery", "-A", "config", "worker", "--loglevel=INFO", "--queues=orientation", "--hostname=orientation@%h", "--concurrency=1", "--prefetch-multiplier=1"]
@@ -509,12 +496,10 @@ services:
       - default
 
   celery-beat:
-    image: ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: *backend-image
     environment:
       <<: *backend-environment
-      DJANGO_COLLECTSTATIC: "0"
       APP_SERVICE: celery-beat
-      CELERY_BEAT_PID_FILE: /tmp/celerybeat/celerybeat.pid
     entrypoint: []
     command: ["celery", "-A", "config", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat/celerybeat-schedule", "--pidfile=/tmp/celerybeat/celerybeat.pid"]
     depends_on:
@@ -552,7 +537,6 @@ services:
       - ./deploy/certbot/www:/var/www/certbot:ro
       - ./deploy/certbot/conf:/etc/letsencrypt:ro
       - staticdata:/var/www/static:ro
-      - mediadata:/var/www/media:ro
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -593,35 +577,6 @@ services:
     logging: *default-logging
     networks:
       - data
-
-  wireguard:
-    image: lscr.io/linuxserver/wireguard:latest
-    container_name: wireguard
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Asia/Almaty
-      - SERVERURL=${WG_SERVERURL:-78.40.109.240}
-      - SERVERPORT=${WG_SERVERPORT:-51820}
-      - PEERS=${WG_PEERS:-operatorlaptop}
-      - PEERDNS=${WG_PEERDNS:-1.1.1.1}
-      - INTERNAL_SUBNET=${WG_INTERNAL_SUBNET:-10.13.13.0}
-      - ALLOWEDIPS=${WG_ALLOWEDIPS:-10.13.13.0/24,192.168.1.0/24}
-      - PERSISTENTKEEPALIVE_PEERS=${WG_PERSISTENTKEEPALIVE_PEERS:-all}
-      - LOG_CONFS=true
-    volumes:
-      - ./config:/config
-      - /lib/modules:/lib/modules:ro
-    ports:
-      - "51820:51820/udp"
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-      - net.ipv4.ip_forward=1
-    restart: unless-stopped
-    logging: *default-logging
 
 volumes:
   weighbridge-outbox:

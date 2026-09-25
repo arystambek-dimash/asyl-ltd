@@ -7,7 +7,6 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order
 from apps.orders.serializers import OrderSerializer
-from apps.orders.services import set_truck_number
 from apps.warehouse.models import StockItem
 
 pytestmark = pytest.mark.django_db
@@ -25,7 +24,7 @@ def wagon_order():
 
 def test_create_wagon_preserves_full_number(auth_client, manager, wagon_order):
     product = Product.objects.create(
-        name="Мука", color="Red", weight_kg="50", price="100.00"
+        name="Мука", color="Red", weight_kg="50"
     )
     StockItem.objects.create(product=product, bags=500)
     response = auth_client(manager).post(
@@ -128,13 +127,6 @@ def test_type_only_change_to_train_does_not_keep_vehicle_plate(
         "truck",
         "123ABC02",
     )
-
-
-def test_direct_number_service_applies_wagon_validation(manager, wagon_order):
-    with pytest.raises(ValidationError):
-        set_truck_number(wagon_order, "INVALID", manager)
-    wagon_order.refresh_from_db()
-    assert wagon_order.truck_number == "00123456"
 
 
 @pytest.mark.parametrize("status", ["confirmed", "loading"])

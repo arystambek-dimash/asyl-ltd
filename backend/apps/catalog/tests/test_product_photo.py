@@ -4,15 +4,7 @@ import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 
-from apps.catalog.models import Product
-
-pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture(autouse=True)
-def media_root(settings, tmp_path):
-    settings.MEDIA_ROOT = tmp_path
-    return tmp_path
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("media_root")]
 
 
 def _image(fmt="PNG", size=(2400, 1600), mode="RGBA"):
@@ -21,16 +13,12 @@ def _image(fmt="PNG", size=(2400, 1600), mode="RGBA"):
     return SimpleUploadedFile(f"photo.{fmt.lower()}", buffer.getvalue(), content_type=f"image/{fmt.lower()}")
 
 
-def _product():
-    return Product.objects.create(name="АТ 1с", color="Red", weight_kg="50")
-
-
 def _upload(api, product, upload):
     return api.post(f"/api/products/{product.pk}/photo/", {"photo": upload}, format="multipart")
 
 
-def test_manager_uploads_photo_normalized_to_small_jpeg(auth_client, manager, api_client):
-    product = _product()
+def test_manager_uploads_photo_normalized_to_small_jpeg(auth_client, manager, api_client, make_product):
+    product = make_product()
 
     response = _upload(auth_client(manager), product, _image())
 
@@ -50,9 +38,9 @@ def test_manager_uploads_photo_normalized_to_small_jpeg(auth_client, manager, ap
 
 
 def test_replacing_photo_expires_old_link_and_deletes_old_file(
-    auth_client, manager, api_client, django_capture_on_commit_callbacks
+    auth_client, manager, api_client, django_capture_on_commit_callbacks, make_product
 ):
-    product = _product()
+    product = make_product()
     api = auth_client(manager)
     first = _upload(api, product, _image("JPEG", mode="RGB"))
     product.refresh_from_db()
@@ -66,8 +54,8 @@ def test_replacing_photo_expires_old_link_and_deletes_old_file(
     assert not (product.photo.storage.exists(old_path))
 
 
-def test_delete_removes_photo(auth_client, manager, django_capture_on_commit_callbacks):
-    product = _product()
+def test_delete_removes_photo(auth_client, manager, django_capture_on_commit_callbacks, make_product):
+    product = make_product()
     api = auth_client(manager)
     _upload(api, product, _image())
     product.refresh_from_db()
@@ -81,8 +69,8 @@ def test_delete_removes_photo(auth_client, manager, django_capture_on_commit_cal
     assert not product.photo.storage.exists(name)
 
 
-def test_rejects_non_image_and_forged_token(auth_client, manager, api_client):
-    product = _product()
+def test_rejects_non_image_and_forged_token(auth_client, manager, api_client, make_product):
+    product = make_product()
     api = auth_client(manager)
 
     bogus = SimpleUploadedFile("photo.jpg", b"not an image", content_type="image/jpeg")
@@ -92,17 +80,17 @@ def test_rejects_non_image_and_forged_token(auth_client, manager, api_client):
     assert api_client.get(f"/api/product-photos/{product.pk}/?token=forged").status_code == 404
 
 
-def test_photo_upload_requires_catalog_edit(auth_client, operator):
-    product = _product()
+def test_photo_upload_requires_catalog_edit(auth_client, operator, make_product):
+    product = make_product()
 
     assert _upload(auth_client(operator), product, _image()).status_code == 403
 
 
-def test_portal_catalog_shows_photo_url(auth_client, manager, client_user):
+def test_portal_catalog_shows_photo_url(auth_client, manager, client_user, make_product):
     from apps.clients.models import Client
     from apps.warehouse.models import StockItem, Warehouse
 
-    product = _product()
+    product = make_product()
     warehouse = Warehouse.objects.filter(is_default=True).first()
     StockItem.objects.update_or_create(product=product, warehouse=warehouse, defaults={"bags": 10})
     Client.objects.create_with_user(user=client_user, first_name="Портал", phone="x")

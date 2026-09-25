@@ -1,47 +1,37 @@
 import json
-from decimal import Decimal
 from io import StringIO
+from threading import Event
 from unittest.mock import patch
 
 import pytest
-from apps.cameras import ai as camera_ai
-from apps.grain import passage_scale_automation as automation
-from apps.grain import scale
-from apps.grain.management.commands.monitor_passage_scale import _write_heartbeat
-from apps.grain.models import AutomaticPassageCapture, PassageScaleAutomationState
+from apps.grain import outbox_importer
 from django.core.management import call_command
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-def test_atomic_heartbeat_uses_liveness_contract(tmp_path):
-    heartbeat = tmp_path / "monitor" / "heartbeat.json"
-
-    _write_heartbeat(str(heartbeat), "running", now=1_725_350_400.5)
-
-    assert json.loads(heartbeat.read_text(encoding="utf-8")) == {
-        "status": "running",
-        "updated_at": 1_725_350_400.5,
-    }
-    assert list(heartbeat.parent.iterdir()) == [heartbeat]
-
-
-def test_once_disabled_writes_healthy_disabled_heartbeat(settings, tmp_path):
+def test_once_without_collector_writes_healthy_disabled_heartbeat(
+    settings, tmp_path, monkeypatch
+):
     heartbeat = tmp_path / "heartbeat.json"
-    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = False
     settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(heartbeat)
+    monkeypatch.setenv("WEIGHBRIDGE_OUTBOX_DIR", str(tmp_path / "outbox"))
 
-    call_command("monitor_passage_scale", "--once", stdout=StringIO())
+    with patch.object(outbox_importer, "poll_once") as replay:
+        call_command("monitor_passage_scale", "--once", stdout=StringIO())
 
+    replay.assert_not_called()
     assert json.loads(heartbeat.read_text(encoding="utf-8"))["status"] == "disabled"
 
 
 def test_once_dependency_state_writes_degraded_heartbeat(settings, tmp_path):
     heartbeat = tmp_path / "heartbeat.json"
     settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(heartbeat)
-    result = automation.MonitorIteration(state="unavailable")
 
-    with patch.object(automation, "monitor_once", return_value=result):
+    with (
+        patch.object(outbox_importer, "enabled", return_value=True),
+        patch.object(outbox_importer, "poll_once", return_value="unavailable"),
+    ):
         call_command("monitor_passage_scale", "--once", stdout=StringIO())
 
     assert json.loads(heartbeat.read_text(encoding="utf-8"))["status"] == "degraded"
@@ -54,77 +44,13 @@ def test_initial_heartbeat_exists_before_first_monitor_iteration(settings, tmp_p
 
     def inspect_initial_heartbeat():
         assert json.loads(heartbeat.read_text(encoding="utf-8"))["status"] == "running"
-        return automation.MonitorIteration(state="idle")
-
-    with patch.object(
-        automation,
-        "monitor_once",
-        side_effect=inspect_initial_heartbeat,
-    ):
-        call_command("monitor_passage_scale", "--once", stdout=StringIO())
-
-
-@pytest.mark.parametrize(
-    ("phase", "clear_streak"),
-    [
-        (PassageScaleAutomationState.UNARMED, 1),
-        (PassageScaleAutomationState.ARMED, 0),
-        (PassageScaleAutomationState.STABILIZING, 0),
-    ],
-)
-def test_process_start_requires_fresh_clear_before_occupied_capture(
-    settings,
-    tmp_path,
-    phase,
-    clear_streak,
-):
-    heartbeat = tmp_path / "heartbeat.json"
-    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
-    settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(heartbeat)
-    state, _created = PassageScaleAutomationState.objects.update_or_create(
-        scale_number=scale.TRUCK_SCALE_KEY,
-        defaults={
-            "phase": phase,
-            "clear_streak": clear_streak,
-            "stable_streak": (
-                1 if phase == PassageScaleAutomationState.STABILIZING else 0
-            ),
-            "candidate_weight_kg": (
-                Decimal(12000)
-                if phase == PassageScaleAutomationState.STABILIZING
-                else None
-            ),
-        },
-    )
-    occupied = scale.ScaleObservation(
-        state="ready",
-        weight_kg=Decimal(12000),
-        connected=True,
-        stable=True,
-        stale=False,
-        age_seconds=Decimal("0.2"),
-        updated_at="2026-09-03T07:30:00Z",
-    )
+        return "idle"
 
     with (
-        patch.object(
-            scale,
-            "read_truck_scale_observation",
-            return_value=occupied,
-        ),
-        patch.object(scale, "read_truck_scale") as strict_read,
-        patch.object(camera_ai, "recognize_vehicle_from_camera") as recognize,
+        patch.object(outbox_importer, "enabled", return_value=True),
+        patch.object(outbox_importer, "poll_once", side_effect=inspect_initial_heartbeat),
     ):
         call_command("monitor_passage_scale", "--once", stdout=StringIO())
-
-    state.refresh_from_db()
-    assert state.phase == PassageScaleAutomationState.UNARMED
-    assert state.clear_streak == 0
-    assert state.stable_streak == 0
-    assert state.candidate_weight_kg is None
-    assert not AutomaticPassageCapture.objects.exists()
-    strict_read.assert_not_called()
-    recognize.assert_not_called()
 
 
 def test_command_rejects_unsafe_poll_interval():
@@ -138,52 +64,53 @@ def test_command_rejects_unsafe_poll_interval():
         )
 
 
-def test_daemon_polls_during_slow_camera_work(settings, tmp_path):
-    from threading import Event
-    from apps.grain import passage_monitor, weighing_photos
-
-    settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED = True
-    settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(tmp_path / "heartbeat.json")
-    entered, release = Event(), Event()
-    calls = []
-
-    def camera_work():
-        entered.set()
-        assert release.wait(3)
-
-    def poll():
-        calls.append(len(calls))
-        if len(calls) == 2:
-            assert entered.is_set()
-            assert not release.is_set()
-            release.set()
-        if len(calls) == 3:
-            raise KeyboardInterrupt
-        return automation.MonitorIteration(state="idle")
-
-    try:
-        with (
-            patch.object(passage_monitor, "prepare_start"),
-            patch.object(passage_monitor, "poll_once", side_effect=poll),
-            patch.object(passage_monitor, "process_once", side_effect=camera_work),
-            patch.object(weighing_photos, "retry_due_photos", return_value=0),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            call_command("monitor_passage_scale", "--interval", "0.5", stdout=StringIO())
-    finally:
-        release.set()
-    assert len(calls) == 3
-
-
 def test_once_tick_imports_wagon_stops_when_enabled(settings, monkeypatch, tmp_path):
-    from unittest.mock import patch
     from apps.grain import wagon_arch
     settings.WAGON_ARCH_AUTOMATION_ENABLED = True
     settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(tmp_path / "heartbeat.json")
     (tmp_path / "wagon").mkdir()
     monkeypatch.setenv("WEIGHBRIDGE_WAGON_OUTBOX_DIR", str(tmp_path / "wagon"))
-    with patch.object(wagon_arch, "poll_once", return_value={"imported": 0}) as poll, \
-            patch("apps.grain.outbox_importer.enabled", return_value=False), \
-            patch("apps.grain.passage_scale_automation.monitor_once", return_value=type("R", (), {"state": "idle"})()):
+    with (
+        patch.object(wagon_arch, "poll_once", return_value={"imported": 0}) as poll,
+        patch.object(outbox_importer, "enabled", return_value=False),
+    ):
         call_command("monitor_passage_scale", "--once", stdout=StringIO())
     poll.assert_called_once()
+
+
+def test_daemon_lanes_do_not_overlap(settings, tmp_path):
+    from apps.grain import wagon_arch
+    from apps.grain import weighing_identity, weighing_photos
+
+    settings.VEHICLE_PLATE_AUTO_SCALE_HEARTBEAT_FILE = str(tmp_path / "heartbeat.json")
+    release = Event()
+    polls = []
+
+    def slow_photos():
+        assert release.wait(3)
+        return 0
+
+    def poll():
+        polls.append(len(polls))
+        if len(polls) == 3:
+            release.set()
+            raise KeyboardInterrupt
+        return "idle"
+
+    try:
+        with (
+            patch.object(outbox_importer, "enabled", return_value=True),
+            patch.object(outbox_importer, "poll_once", side_effect=poll),
+            patch.object(weighing_photos, "retry_due_photos", side_effect=slow_photos) as photos,
+            patch.object(weighing_identity, "process_once") as identity,
+            patch.object(wagon_arch, "enabled", return_value=False),
+            patch.object(wagon_arch, "poll_once") as wagon,
+            pytest.raises(KeyboardInterrupt),
+        ):
+            call_command("monitor_passage_scale", "--interval", "0.5", stdout=StringIO())
+    finally:
+        release.set()
+    wagon.assert_not_called()
+    # Занятая дорожка не запускается повторно, идентичность — не чаще раза в 5 с.
+    photos.assert_called_once()
+    identity.assert_called_once()

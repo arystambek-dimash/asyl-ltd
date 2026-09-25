@@ -3,13 +3,14 @@ from django.db import connections
 from django.db.models.signals import post_migrate
 
 
-def ensure_compatibility_warehouse(sender, using, **kwargs):
+def ensure_main_warehouse(sender, using, **kwargs):
     """Restore the immutable ``main`` anchor after migrate/flush.
 
     The data migration creates it in production. ``flush`` deliberately
     removes table data in transactional test suites and then emits
-    ``post_migrate``; recreating the anchor there keeps database guards usable
-    without changing whichever warehouse is already the business default.
+    ``post_migrate``; recreating the anchor there keeps cameras without a
+    route and the warehouse lock order working without changing whichever
+    warehouse is already the business default.
     """
     Warehouse = sender.get_model("Warehouse")
     table_names = connections[using].introspection.table_names()
@@ -46,7 +47,7 @@ class WarehouseConfig(AppConfig):
 
     def ready(self):
         post_migrate.connect(
-            ensure_compatibility_warehouse,
+            ensure_main_warehouse,
             sender=self,
-            dispatch_uid="warehouse.ensure_compatibility_warehouse",
+            dispatch_uid="warehouse.ensure_main_warehouse",
         )

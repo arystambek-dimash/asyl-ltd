@@ -3,18 +3,16 @@ import type { Department, Me } from "@/lib/types";
 
 /** «Все отделы» в переключателе кассы — параметр department не отправляется. */
 export const ALL_DEPARTMENTS = "all";
-export const DEPARTMENT_STORAGE_KEY = "asyl_cashier_department";
+const DEPARTMENT_STORAGE_KEY = "asyl_cashier_department";
 
 export interface DepartmentScope {
   /** Отдел из карточки сотрудника: сервер сам режет данные — переключать нечего. */
   assigned: NonNullable<Me["sales_department"]> | null;
-  switchable: boolean;
 }
 
-/** Кто видит переключатель отделов: как на сервере, суперпользователь видит всё даже с отделом в карточке. */
+/** Кто видит переключатель отделов: /auth/me/ отдаёт отдел только тому, кого сервер им ограничивает. */
 export function departmentScope(me: Me | null): DepartmentScope {
-  const assigned = me && !me.is_superuser ? me.sales_department : null;
-  return { assigned, switchable: !assigned };
+  return { assigned: me?.sales_department ?? null };
 }
 
 /** Подпись выбранной кассы для шапки: закреплённый отдел, «Все отделы» или отдел по коду. */

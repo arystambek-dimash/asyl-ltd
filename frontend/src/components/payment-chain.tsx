@@ -5,14 +5,22 @@ import { Badge } from "@/components/ui/badge";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
-import { PAYMENT_METHOD_LABELS, PAYMENT_STAGE_LABELS, PAYMENT_STAGE_TONE } from "@/lib/constants";
+import { PAYMENT_STAGE_TONE } from "@/lib/constants";
 import { ReceiptText } from "lucide-react";
+import type { PaidMethodPart } from "@/components/transactions/paid-method-summary";
 import type { Me, Order, Payment } from "@/lib/types";
 
-export function PaymentStageBadge({ status }: { status: string }) {
+/** Этап кассовой оплаты: тон по статусу, подпись с бэка (status_label). */
+export function PaymentStageBadge({
+  payment,
+  dot = true,
+}: {
+  payment: { status: string; status_label: string };
+  dot?: boolean;
+}) {
   return (
-    <Badge tone={PAYMENT_STAGE_TONE[status] ?? "muted"} dot>
-      {PAYMENT_STAGE_LABELS[status] ?? status}
+    <Badge tone={PAYMENT_STAGE_TONE[payment.status] ?? "muted"} dot={dot}>
+      {payment.status_label}
     </Badge>
   );
 }
@@ -38,46 +46,30 @@ function StageTrace({ p }: { p: Payment }) {
   );
 }
 
-/** Подтверждённые оплаты заказа, свёрнутые по способу: [способ, сумма]. */
-export function paidByMethod(order: Order): [string, number][] {
-  const totals = new Map<string, number>();
+/** Чистая сумма оплаты — за вычетом возвратов, как Payment.net_amount на бэке. */
+export function paymentNetAmount(payment: Pick<Payment, "amount" | "refunded_amount">): number {
+  return Math.max(0, Number(payment.amount) - Number(payment.refunded_amount ?? 0));
+}
+
+/** Подтверждённые оплаты заказа, свёрнутые по способу, — части для PaidMethodSummary. */
+export function paidByMethod(order: Order): (PaidMethodPart & { amount: number })[] {
+  const totals = new Map<string, PaidMethodPart & { amount: number }>();
   for (const payment of order.payments ?? []) {
     if (payment.status !== "confirmed") continue;
     // Та же чистая сумма, из которой сложен paid_total: возврат уменьшает
     // вклад способа, иначе разбивка не сойдётся с итогом заказа.
-    const net = Number(payment.amount) - Number(payment.refunded_amount ?? 0);
+    const net = paymentNetAmount(payment);
     if (net <= 0) continue;
-    totals.set(payment.method, (totals.get(payment.method) ?? 0) + net);
+    const part = totals.get(payment.method) ?? {
+      currency: order.currency,
+      method: payment.method,
+      label: payment.method_label,
+      amount: 0,
+    };
+    part.amount += net;
+    totals.set(payment.method, part);
   }
-  return [...totals.entries()].sort((a, b) => b[1] - a[1]);
-}
-
-/**
- * Из чего сложилась оплата: «300 000 ₸ наличными · 400 000 ₸ QR».
- *
- * Итоговая сумма сама по себе не отвечает на вопрос кассира «чем платили»,
- * а при смешанной оплате это и есть главное, что нужно видеть сразу.
- * Один способ показывать не нужно — он уже подписан рядом с суммой.
- */
-export function PaidMethodBreakdown({ order, className = "" }: { order: Order; className?: string }) {
-  const parts = paidByMethod(order);
-  if (parts.length < 2) return null;
-  return (
-    // Сумма и её способ переносятся только вместе: «300 000 ₸» отдельно от
-    // «Наличные» читается как другая величина. Перенос допустим лишь между
-    // способами, поэтому разделитель живёт внутри своей пары.
-    <div className={`text-[var(--muted-foreground)] ${className}`}>
-      {parts.map(([method, amount], index) => (
-        <span key={method} className="whitespace-nowrap">
-          {index > 0 && <span className="px-1.5">·</span>}
-          <span className="font-medium tabular-nums text-[var(--foreground)]">
-            {formatCurrency(String(amount), order.currency)}
-          </span>{" "}
-          {PAYMENT_METHOD_LABELS[method] || method}
-        </span>
-      ))}
-    </div>
-  );
+  return [...totals.values()].sort((a, b) => b.amount - a.amount);
 }
 
 /**
@@ -126,16 +118,16 @@ export function PaymentChain({ order, me, onChanged }: { order: Order; me: Me | 
                     {formatCurrency(p.amount, order.currency)}
                   </span>
                   {" · "}
-                  {PAYMENT_METHOD_LABELS[p.method] || p.method_label || p.method}
+                  {p.method_label}
                 </div>
               </div>
             </div>
-            <PaymentStageBadge status={p.status} />
+            <PaymentStageBadge payment={p} />
           </div>
           <div className="flex flex-wrap gap-2">
             {p.status === "requested" && p.confirmation_mode !== "automatic" && can(me, "payments.confirm") && (
               <Button size="sm" disabled={busy} onClick={() => act(`/orders/${order.id}/payments/${p.id}/receive/`)}>
-                Отметить получение
+                Оплата поступила
               </Button>
             )}
             {p.status === "received" && p.confirmation_mode !== "automatic" && can(me, "payments.confirm") && (

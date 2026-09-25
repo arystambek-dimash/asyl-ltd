@@ -11,35 +11,43 @@ from decimal import InvalidOperation
 
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
-from django.db.models.signals import post_save
-from django.dispatch import receiver
 from django.http import HttpRequest, JsonResponse
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from .apipay import (
     apply_invoice_status,
     apply_refund_status,
+    invoice_department_code,
+    parse_provider_datetime,
+    positive_provider_id,
     recover_invoice_mapping_from_payload,
 )
-from .models import ApiPayInvoice, ApiPayWebhookEvent, Order
+from .models import ApiPayInvoice, ApiPayQrRefund, ApiPayWebhookEvent
+from .qr_refunds import apply_qr_refund_snapshot, auto_execute_qr_refund
 from apps.sales.models import Department
 
 logger = logging.getLogger(__name__)
 
 MAX_WEBHOOK_BODY_BYTES = 64 * 1024
+# Сколько событий из журнала применяет один проход сверки.
+WEBHOOK_REPLAY_BATCH = 100
 WEBHOOK_RETRY_BASE_SECONDS = 5
 WEBHOOK_RETRY_MAX_SECONDS = 60 * 60
+# После стольких попыток (около полусуток) событие ждёт разбора, а не повтора:
+# оно остаётся в журнале и повторяется раз в час, но уже не считается сбоем
+# сверки и не роняет её здоровье.
+WEBHOOK_MAX_RETRYABLE_ATTEMPTS = 20
+# Повтор не исправит событие, подписанное ключом чужого отдела.
+WEBHOOK_UNRECOVERABLE_ERRORS = frozenset({
+    "invoice_department_mismatch",
+    "qr_refund_department_mismatch",
+})
 INVOICE_EVENTS = frozenset({
     "invoice.status_changed",
     "invoice.qr_scanned",
     "invoice.refunded",
-})
-INVOICE_STATUS_EVENTS = frozenset({
-    "invoice.status_changed",
-    "invoice.qr_scanned",
 })
 # Возврат по Kaspi QR через ссылку покупателю: в событии нет счёта, только сессия.
 QR_REFUND_EVENTS = frozenset({
@@ -83,13 +91,8 @@ def _department_for_signature(
     return None
 
 
-def _invoice_department_code(invoice_record: ApiPayInvoice) -> str:
-    return (
-        Order.all_objects.filter(payments__pk=invoice_record.payment_id)
-        .values_list("department", flat=True)
-        .first()
-        or ""
-    )
+def _same_department(invoice_record: ApiPayInvoice, department: Department) -> bool:
+    return invoice_department_code(invoice_record) == department.code
 
 
 def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
@@ -107,17 +110,19 @@ def _event_observed_at(payload: dict):
         # Older/test integrations may omit it; the transition matrix still
         # protects terminal money states in that case.
         return None
-    if not isinstance(value, str):
-        raise TypeError("event.timestamp is invalid")
-    parsed = parse_datetime(value)
+    parsed = parse_provider_datetime(value)
     if parsed is None:
         raise ValueError("event.timestamp is invalid")
-    return parsed if timezone.is_aware(parsed) else timezone.make_aware(parsed)
+    return parsed
 
 
 def _defer_locked_event(
-    event: ApiPayWebhookEvent, error: str
-) -> None:
+    event: ApiPayWebhookEvent,
+    error: str,
+    *,
+    invoice: ApiPayInvoice | None = None,
+) -> str:
+    """Отложить событие; вернуть исход для статистики: failed или rejected."""
     event.attempt_count += 1
     delay_seconds = min(
         WEBHOOK_RETRY_BASE_SECONDS * (2 ** min(event.attempt_count - 1, 10)),
@@ -125,35 +130,57 @@ def _defer_locked_event(
     )
     event.processing_error = error
     event.next_attempt_at = timezone.now() + timedelta(seconds=delay_seconds)
-    event.save(update_fields=[
-        "attempt_count", "processing_error", "next_attempt_at",
-    ])
+    update_fields = ["attempt_count", "processing_error", "next_attempt_at"]
+    if invoice is not None:
+        event.invoice = invoice
+        update_fields.append("invoice")
+    event.save(update_fields=update_fields)
+    if (
+        error in WEBHOOK_UNRECOVERABLE_ERRORS
+        or event.attempt_count >= WEBHOOK_MAX_RETRYABLE_ATTEMPTS
+    ):
+        return "rejected"
+    return "failed"
 
 
-def _defer_event(event_id: int, error: str) -> None:
+def _mark_processed(
+    event: ApiPayWebhookEvent,
+    *,
+    invoice: ApiPayInvoice | None = None,
+    provider_invoice_id: int | None = None,
+) -> str:
+    event.processed_at = timezone.now()
+    event.processing_error = ""
+    event.next_attempt_at = None
+    update_fields = ["processed_at", "processing_error", "next_attempt_at"]
+    if invoice is not None:
+        event.invoice = invoice
+        update_fields.append("invoice")
+    if provider_invoice_id is not None:
+        event.provider_invoice_id = provider_invoice_id
+        update_fields.append("provider_invoice_id")
+    event.save(update_fields=update_fields)
+    return "processed"
+
+
+def _defer_event(event_id: int, error: str) -> str:
     with transaction.atomic():
         event = ApiPayWebhookEvent.objects.select_for_update().get(pk=event_id)
         if event.processed_at is None:
-            _defer_locked_event(event, error)
+            return _defer_locked_event(event, error)
+    return "failed"
 
 
 def _positive_int(value: object, error_code: str) -> int:
-    # Webhook JSON identifiers are decimal strings or integers. Reject floats
-    # instead of silently truncating e.g. 12.7 to 12.
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise WebhookPayloadError(error_code)
     try:
-        result = int(value)
-    except (TypeError, ValueError) as exc:
+        return positive_provider_id(value)
+    except ValueError as exc:
         raise WebhookPayloadError(error_code) from exc
-    if result <= 0:
-        raise WebhookPayloadError(error_code)
-    return result
 
 
 def _event_metadata(
     payload: dict, event_name: str
-) -> tuple[dict | None, int | None, str | None]:
+) -> tuple[int | None, str | None]:
     """Validate routing fields and build ApiPay's documented dedupe key."""
     if event_name in QR_REFUND_EVENTS:
         qr_refund = payload.get("qr_refund")
@@ -163,9 +190,9 @@ def _event_metadata(
         qr_status = qr_refund.get("status")
         if not isinstance(qr_status, str) or not qr_status or len(qr_status) > 40:
             raise WebhookPayloadError("qr_refund_status_required")
-        return None, None, f"qr_refund:{session_id}:{qr_status}"
+        return None, f"qr_refund:{session_id}:{qr_status}"
     if event_name not in INVOICE_EVENTS:
-        return None, None, None
+        return None, None
 
     invoice_payload = payload.get("invoice")
     if not isinstance(invoice_payload, dict):
@@ -206,7 +233,7 @@ def _event_metadata(
         # Provider statuses are short documented enums. Reject an oversized
         # untrusted value instead of allowing a database truncation collision.
         raise WebhookPayloadError("invalid_status")
-    return invoice_payload, provider_invoice_id, semantic_key
+    return provider_invoice_id, semantic_key
 
 
 def _apply_event(
@@ -215,18 +242,15 @@ def _apply_event(
     payload: dict,
     invoice_payload: dict,
 ) -> None:
-    observed_at = _event_observed_at(payload)
-    if event_name in INVOICE_STATUS_EVENTS:
-        apply_invoice_status(
-            invoice_record, invoice_payload, observed_at=observed_at
-        )
-    elif event_name == "invoice.refunded":
-        # The refund envelope is also authoritative proof that the original
-        # invoice was paid. Apply gross money first so a missed paid webhook
-        # cannot leave the refund attached to an unconfirmed Payment.
-        apply_invoice_status(
-            invoice_record, invoice_payload, observed_at=observed_at
-        )
+    # For invoice.refunded the envelope is also authoritative proof that the
+    # original invoice was paid. Apply gross money first so a missed paid
+    # webhook cannot leave the refund attached to an unconfirmed Payment.
+    apply_invoice_status(
+        invoice_record,
+        invoice_payload,
+        observed_at=_event_observed_at(payload),
+    )
+    if event_name == "invoice.refunded":
         apply_refund_status(invoice_record, payload["refund"])
 
 
@@ -242,18 +266,11 @@ def _replay_one_webhook(event_id: int) -> str:
         if event.event in QR_REFUND_EVENTS:
             return _replay_qr_refund_event(event)
         if event.event not in INVOICE_EVENTS:
-            event.processed_at = timezone.now()
-            event.processing_error = ""
-            event.next_attempt_at = None
-            event.save(update_fields=[
-                "processed_at", "processing_error", "next_attempt_at",
-            ])
-            return "processed"
+            return _mark_processed(event)
 
         invoice_payload = event.payload.get("invoice")
         if not isinstance(invoice_payload, dict):
-            _defer_locked_event(event, "invoice_required")
-            return "failed"
+            return _defer_locked_event(event, "invoice_required")
         provider_invoice_id = event.provider_invoice_id
         if provider_invoice_id is None:
             try:
@@ -261,8 +278,7 @@ def _replay_one_webhook(event_id: int) -> str:
                     invoice_payload.get("id"), "invoice_id_required"
                 )
             except WebhookPayloadError as exc:
-                _defer_locked_event(event, exc.code)
-                return "failed"
+                return _defer_locked_event(event, exc.code)
 
         invoice_record = ApiPayInvoice.objects.filter(
             invoice_id=provider_invoice_id
@@ -275,47 +291,31 @@ def _replay_one_webhook(event_id: int) -> str:
             # This is the expected create-response/webhook race, not an error.
             _defer_locked_event(event, "waiting_for_invoice")
             return "waiting_for_invoice"
-        if (
-            event.department_id is not None
-            and _invoice_department_code(invoice_record) != event.department.code
+        if event.department_id is not None and not _same_department(
+            invoice_record, event.department
         ):
             # Счёт нашёлся позже, но принадлежит другому отделу: событие
             # подписано чужим секретом и деньги по нему не применяются.
-            event.invoice = invoice_record
-            _defer_locked_event(event, "invoice_department_mismatch")
-            event.save(update_fields=["invoice"])
-            return "failed"
+            return _defer_locked_event(
+                event, "invoice_department_mismatch", invoice=invoice_record
+            )
 
         try:
             _apply_event(
                 event.event, invoice_record, event.payload, invoice_payload
             )
         except WEBHOOK_PROCESSING_ERRORS as exc:
-            event.invoice = invoice_record
-            _defer_locked_event(event, str(exc))
-            event.save(update_fields=["invoice"])
-            return "failed"
+            return _defer_locked_event(event, str(exc), invoice=invoice_record)
 
-        event.invoice = invoice_record
-        event.provider_invoice_id = provider_invoice_id
-        event.processed_at = timezone.now()
-        event.processing_error = ""
-        event.next_attempt_at = None
-        event.save(update_fields=[
-            "invoice",
-            "provider_invoice_id",
-            "processed_at",
-            "processing_error",
-            "next_attempt_at",
-        ])
-        return "processed"
+        return _mark_processed(
+            event,
+            invoice=invoice_record,
+            provider_invoice_id=provider_invoice_id,
+        )
 
 
 def _replay_qr_refund_event(event: ApiPayWebhookEvent) -> str:
     """Применить событие QR-возврата под блокировкой события (вызывается из транзакции)."""
-    from .models import ApiPayQrRefund
-    from .qr_refunds import apply_qr_refund_snapshot, auto_execute_qr_refund
-
     qr_payload = event.payload.get("qr_refund") or {}
     session = (
         ApiPayQrRefund.objects.select_related("invoice__payment__order")
@@ -325,29 +325,22 @@ def _replay_qr_refund_event(event: ApiPayWebhookEvent) -> str:
     if session is None:
         _defer_locked_event(event, "waiting_for_qr_refund")
         return "waiting_for_invoice"
-    if event.department_id is not None and _invoice_department_code(session.invoice) != event.department.code:
-        _defer_locked_event(event, "qr_refund_department_mismatch")
-        return "failed"
+    if event.department_id is not None and not _same_department(session.invoice, event.department):
+        return _defer_locked_event(event, "qr_refund_department_mismatch")
     try:
         needs_execute = apply_qr_refund_snapshot(session.pk, qr_payload, source="webhook")
     except WEBHOOK_PROCESSING_ERRORS as exc:
-        _defer_locked_event(event, str(exc))
-        return "failed"
-    event.invoice = session.invoice
-    event.processed_at = timezone.now()
-    event.processing_error = ""
-    event.next_attempt_at = None
-    event.save(update_fields=["invoice", "processed_at", "processing_error", "next_attempt_at"])
+        return _defer_locked_event(event, str(exc))
     if needs_execute:
         # Денежный запрос — только после коммита события и вне его блокировки.
-        transaction.on_commit(lambda: _auto_execute_safely(auto_execute_qr_refund, session.pk))
-    return "processed"
+        transaction.on_commit(lambda: _auto_execute_safely(session.pk))
+    return _mark_processed(event, invoice=session.invoice)
 
 
-def _auto_execute_safely(executor, session_pk: int) -> None:
+def _auto_execute_safely(session_pk: int) -> None:
     try:
-        executor(session_pk)
-    except Exception:  # pragma: no cover - сверка повторит выбор покупки
+        auto_execute_qr_refund(session_pk)
+    except Exception:  # сверка повторит выбор покупки
         logger.exception("ApiPay QR refund auto-execute failed session_pk=%s", session_pk)
 
 
@@ -355,12 +348,11 @@ def replay_pending_apipay_webhooks(
     *,
     provider_invoice_id: int | None = None,
     event_id: int | None = None,
-    limit: int = 100,
 ) -> dict[str, int]:
     """Resolve and apply stored inbox events.
 
-    The function is intentionally public so reconciliation jobs can invoke it,
-    while the post-save hook below closes the normal invoice-creation race.
+    The function is intentionally public so reconciliation jobs can invoke it;
+    invoice mapping in ``apipay`` calls it to close the invoice-creation race.
     Each event is independently locked and committed, so one malformed event
     cannot roll back other provider notifications.
     """
@@ -369,6 +361,7 @@ def replay_pending_apipay_webhooks(
         "already_processed": 0,
         "waiting_for_invoice": 0,
         "failed": 0,
+        "rejected": 0,
     }
     queryset = ApiPayWebhookEvent.objects.filter(processed_at__isnull=True)
     explicit_retry = provider_invoice_id is not None or event_id is not None
@@ -388,68 +381,26 @@ def replay_pending_apipay_webhooks(
             "created_at",
             "pk",
         )
-        .values_list("pk", flat=True)[:max(1, min(limit, 1000))]
+        .values_list("pk", flat=True)[:WEBHOOK_REPLAY_BATCH]
     )
     for pending_event_id in event_ids:
         try:
             outcome = _replay_one_webhook(pending_event_id)
-        except Exception as exc:  # pragma: no cover - defensive observability
+        except Exception as exc:  # defensive observability
             logger.exception(
                 "Unexpected error replaying ApiPay webhook %s",
                 pending_event_id,
             )
+            outcome = "failed"
             try:
-                _defer_event(pending_event_id, str(exc))
+                outcome = _defer_event(pending_event_id, str(exc))
             except Exception:
                 logger.exception(
                     "Unable to defer failed ApiPay webhook %s",
                     pending_event_id,
                 )
-            outcome = "failed"
         stats[outcome] += 1
     return stats
-
-
-def _replay_safely(
-    *, provider_invoice_id: int | None = None, event_id: int | None = None
-) -> None:
-    try:
-        replay_pending_apipay_webhooks(
-            provider_invoice_id=provider_invoice_id,
-            event_id=event_id,
-        )
-    except Exception:  # pragma: no cover - database-level last resort
-        logger.exception(
-            "Unable to start ApiPay webhook replay (invoice=%s, event=%s)",
-            provider_invoice_id,
-            event_id,
-        )
-
-
-@receiver(
-    post_save,
-    sender=ApiPayInvoice,
-    dispatch_uid="orders.replay_apipay_webhooks_after_invoice_mapping",
-)
-def replay_webhooks_after_invoice_mapping(
-    sender, instance: ApiPayInvoice, created: bool, update_fields=None, **kwargs
-) -> None:
-    """Apply a webhook that beat persistence of the provider invoice ID."""
-    del sender, kwargs
-    if instance.invoice_id is None:
-        return
-    if not created and update_fields is not None and "invoice_id" not in update_fields:
-        return
-
-    # Synchronous replay sees changes on this connection (and keeps invoice
-    # creation + payment transition atomic when the caller uses a transaction).
-    _replay_safely(provider_invoice_id=instance.invoice_id)
-    # The second attempt closes the cross-connection ordering where the
-    # webhook inbox transaction commits just after the invoice mapping.
-    provider_invoice_id = instance.invoice_id
-    transaction.on_commit(
-        lambda: _replay_safely(provider_invoice_id=provider_invoice_id)
-    )
 
 
 @csrf_exempt
@@ -481,11 +432,7 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
     ):
         return JsonResponse({"error": "event_required"}, status=400)
     try:
-        (
-            _invoice_payload,
-            provider_invoice_id,
-            semantic_key,
-        ) = _event_metadata(payload, event_name)
+        provider_invoice_id, semantic_key = _event_metadata(payload, event_name)
     except WebhookPayloadError as exc:
         return JsonResponse({"error": exc.code}, status=400)
 
@@ -509,9 +456,8 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
             invoice_record = ApiPayInvoice.objects.filter(
                 invoice_id=provider_invoice_id
             ).first()
-        if (
-            invoice_record is not None
-            and _invoice_department_code(invoice_record) != department.code
+        if invoice_record is not None and not _same_department(
+            invoice_record, department
         ):
             # Подпись отдела A по счёту отдела B: чужой ключ не может двигать
             # деньги этого счёта. Сверка ключом отдела B приведёт его в порядок.
@@ -556,7 +502,7 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
     # create-response/webhook race after the inbox transaction has committed.
     try:
         replay_pending_apipay_webhooks(event_id=webhook_event.pk)
-    except Exception:  # pragma: no cover - durable async fallback
+    except Exception:  # durable async fallback
         logger.exception(
             "Unable to start immediate ApiPay webhook apply event_id=%s",
             webhook_event.pk,

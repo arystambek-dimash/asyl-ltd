@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ErrorAlert } from "@/components/ui/data-state";
+import { ErrorAlert, FormError } from "@/components/ui/data-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -13,9 +13,12 @@ import { useApi } from "@/lib/use-api";
 
 const MAX_SIGNERS = 6;
 
-/** Название точки и подписи внизу накладной — меняются здесь, а не в коде. */
-export function WaybillSettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { data, error: loadError, reload } = useApi<WaybillSettings>(open ? "/loader/waybill-settings/" : null);
+/**
+ * Название точки и подписи внизу накладной — меняются здесь, а не в коде.
+ * Монтируется на время открытия: каждое открытие начинается с сохранённых настроек.
+ */
+export function WaybillSettingsModal({ onClose }: { onClose: () => void }) {
+  const { data, error: loadError, reload } = useApi<WaybillSettings>("/loader/waybill-settings/");
   const [draft, setDraft] = useState<WaybillSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -51,7 +54,7 @@ export function WaybillSettingsModal({ open, onClose }: { open: boolean; onClose
 
   return (
     <Modal
-      open={open}
+      open
       onClose={onClose}
       eyebrow="Отгрузка"
       title="Накладная"
@@ -116,14 +119,7 @@ export function WaybillSettingsModal({ open, onClose }: { open: boolean; onClose
             )}
             <p className="text-xs text-[var(--muted-foreground)]">Строка «Получатель» печатается всегда.</p>
           </div>
-          {error && (
-            <p
-              role="alert"
-              className="rounded-md bg-[var(--destructive)]/10 px-3 py-2 text-sm text-[var(--destructive)]"
-            >
-              {error}
-            </p>
-          )}
+          <FormError message={error} />
         </div>
       )}
     </Modal>

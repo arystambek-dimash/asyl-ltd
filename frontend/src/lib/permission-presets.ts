@@ -1,23 +1,3 @@
-/** Порядок разделов = меню (как `SECTION_ORDER` в backend/apps/sys_permissions/perms.py). */
-export const SECTION_ORDER = [
-  "reports",
-  "orders",
-  "payments",
-  "monoblock",
-  "loader",
-  "warehouse",
-  "silos",
-  "grain",
-  "clients",
-  "stores",
-  "catalog",
-  "tasks",
-  "events",
-  "bots",
-  "employees",
-  "sys_permissions",
-];
-
 export interface PermissionPreset {
   key: string;
   label: string;
@@ -96,10 +76,4 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
 /** Шаблон заменяет выбор; права, которые текущий админ выдать не может, не ставятся. */
 export function applyPreset(preset: PermissionPreset, ungrantable: ReadonlySet<string>): Set<string> {
   return new Set(preset.codes.filter((code) => !ungrantable.has(code)));
-}
-
-/** Индекс раздела в порядке меню; неизвестные разделы — в конце. */
-export function sectionRank(section: string): number {
-  const index = SECTION_ORDER.indexOf(section);
-  return index === -1 ? SECTION_ORDER.length : index;
 }

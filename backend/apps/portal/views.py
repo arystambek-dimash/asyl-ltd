@@ -1,8 +1,8 @@
 from io import BytesIO
 
-from django.db.models import Prefetch, Q
+from django.db.models import Exists, OuterRef, Prefetch
 from django.http import FileResponse
-from django.utils import timezone
+from django.utils.functional import cached_property
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -11,29 +11,31 @@ from rest_framework.response import Response
 from apps.catalog.models import ClientPrice, Product
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
+from apps.common.money import CURRENCY_CODES, DEFAULT_CURRENCY
 from apps.common.permissions import IsClientUser
 from apps.eventlog.services import log_event
 from apps.orders.apipay import (
-    MONEY_RECEIVED_INVOICE_STATUSES,
+    CLOSED_INVOICE_STATUSES,
     ApiPayAPIError,
     ApiPayConfigurationError,
     cancel_invoice,
+    provider_error,
     start_order_payment,
 )
-from apps.orders.invoices import build_invoice_pdf, build_payment_receipt_pdf
+from apps.orders.invoices import build_payment_receipt_pdf
 from apps.orders.models import Order, Payment
 from apps.orders.serializers import TransportNumbersSerializer
 from apps.orders.services import (
+    client_release_invoice_error,
     create_client_payment,
     release_client_payment,
     request_client_debt,
 )
 from apps.orders.transport import set_order_transport
-from apps.warehouse.models import Warehouse
-from apps.warehouse.services import DEFAULT_WAREHOUSE_CODE
+from apps.warehouse.models import StockItem, Warehouse
 from config.throttles import PortalOrderCreateRateThrottle
 
-from .exceptions import Conflict, PaymentProviderError
+from .exceptions import Conflict
 from .serializers import CatalogProductSerializer, PortalOrderSerializer
 
 
@@ -54,43 +56,36 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = CatalogProductSerializer
     permission_classes = [IsClientUser]
 
+    @cached_property
+    def _client(self):
+        # Один запрос на список: id — для цен клиента, валюта — по умолчанию.
+        return Client.objects.filter(user=self.request.user).first()
+
+    @cached_property
     def _currency(self):
         requested = (self.request.query_params.get("currency") or "").upper()
         if requested:
-            if requested not in dict(Order.CURRENCIES):
+            if requested not in CURRENCY_CODES:
                 raise ValidationError({"currency": "Выберите KZT или USD."})
             return requested
-        return (Client.objects.filter(user=self.request.user)
-                .values_list("currency", flat=True).first() or "KZT")
+        return getattr(self._client, "currency", "") or DEFAULT_CURRENCY
 
     def get_queryset(self):
-        client_id = (
-            Client.objects.filter(
-                user=self.request.user)
-            .values_list("id", flat=True).first())
         price_qs = ClientPrice.objects.filter(
-            client_id=client_id, currency=self._currency())
+            client_id=getattr(self._client, "pk", None), currency=self._currency)
         default_warehouse = (
             Warehouse.objects.filter(is_default=True, is_active=True)
-            .only("id", "code")
+            .only("id")
             .order_by("id")
             .first()
         )
         if default_warehouse is None:
             return Product.objects.none()
 
-        stock_scope = Q(stock_items__warehouse_id=default_warehouse.pk)
-        if default_warehouse.code == DEFAULT_WAREHOUSE_CODE:
-            # A rollback image can still leave pre-migration rows without a
-            # warehouse. They belong to the compatibility warehouse only;
-            # moving the default must never move those products implicitly.
-            stock_scope |= Q(stock_items__warehouse__isnull=True)
+        in_stock = StockItem.objects.filter(
+            warehouse_id=default_warehouse.pk, product=OuterRef("pk"), bags__gt=0)
 
-        return (Product.objects.filter(
-                    stock_scope,
-                    is_active=True,
-                    stock_items__bags__gt=0,
-                )
+        return (Product.objects.filter(Exists(in_stock), is_active=True)
                 .prefetch_related(Prefetch(
             "client_prices", queryset=price_qs,
             to_attr="portal_client_prices"))
@@ -98,7 +93,7 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context["currency"] = self._currency()
+        context["currency"] = self._currency
         return context
 
 
@@ -125,7 +120,14 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                     queryset=Payment.objects.select_related("apipay_invoice"),
                 ),
             )
+            # У Order нет Meta.ordering: «Мои заказы» — новые сверху.
+            .order_by("-created_at", "-pk")
         )
+
+    def _order_response(self, order, status_code=status.HTTP_200_OK):
+        # Ответ действия — заказ, перечитанный со всеми prefetch списка.
+        order = self.get_queryset().get(pk=order.pk)
+        return Response(self.get_serializer(order).data, status=status_code)
 
     @action(detail=True, methods=["post"], url_path="pay")
     def pay(self, request, pk=None):
@@ -135,33 +137,20 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             request_client_debt(order, request.user)
         elif method in ("kaspi", "invoice"):
             try:
-                invoice = start_order_payment(
+                start_order_payment(
                     order,
                     request.user,
-                    channel="qr" if method == "kaspi" else "phone",
-                    phone_number=request.data.get("phone_number"),
                     payment_method=method,
+                    phone_number=request.data.get("phone_number"),
                     amount=request.data.get("amount"),
                 )
-            except ApiPayConfigurationError as exc:
-                raise PaymentProviderError({
-                    "detail": "Счёт на оплату временно недоступен.",
-                    "code": "apipay_not_configured",
-                }) from exc
-            except ApiPayAPIError as exc:
-                raise PaymentProviderError({
-                    "detail": exc.message,
-                    "code": exc.error_code,
-                }) from exc
+            except (ApiPayAPIError, ApiPayConfigurationError) as exc:
+                raise provider_error(exc, for_client=True) from exc
         else:
             create_client_payment(
                 order, method, request.user, amount=request.data.get("amount")
             )
-        order = self.get_queryset().get(pk=order.pk)
-        data = self.get_serializer(order).data
-        if method == "kaspi":
-            data["payment_redirect_url"] = invoice.qr_token_url or None
-        return Response(data, status=201)
+        return self._order_response(order, status.HTTP_201_CREATED)
 
     @action(
         detail=True, methods=["post"],
@@ -180,78 +169,25 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                 "code": "payment_not_found",
             }) from exc
         invoice = getattr(payment, "apipay_invoice", None)
-        if (
-                invoice is not None
-                and invoice.status in MONEY_RECEIVED_INVOICE_STATUSES
-        ):
-            raise ValidationError({
-                "detail": (
-                    "Платёж уже получен и обрабатывается. Обновите страницу."
-                ),
-                "code": "payment_already_paid",
-            })
+        # До отмены счёта по номеру: полученные деньги не отпускаем.
+        if error := client_release_invoice_error(invoice):
+            raise ValidationError(error)
         if (
                 invoice is not None
                 and invoice.channel == "phone"
-                and invoice.status not in ("cancelled", "expired", "error", "superseded")
+                and invoice.status not in CLOSED_INVOICE_STATUSES
         ):
             try:
                 cancel_invoice(invoice, user=request.user)
             except ApiPayAPIError as exc:
-                raise PaymentProviderError({
-                    "detail": exc.message,
-                    "code": exc.error_code,
-                }) from exc
-            if invoice.status not in (
-                    "cancelled", "expired", "error", "superseded",
-            ):
+                raise provider_error(exc, for_client=True) from exc
+            if invoice.status not in CLOSED_INVOICE_STATUSES:
                 # ApiPay may acknowledge cancellation asynchronously. Keep the
                 # amount reserved until webhook/reconciliation proves that the
                 # remotely payable invoice is closed.
-                order = self.get_queryset().get(pk=order.pk)
-                return Response(
-                    self.get_serializer(order).data,
-                    status=status.HTTP_202_ACCEPTED,
-                )
+                return self._order_response(order, status.HTTP_202_ACCEPTED)
         release_client_payment(payment, request.user)
-        order = self.get_queryset().get(pk=order.pk)
-        return Response(self.get_serializer(order).data)
-
-    @action(detail=True, methods=["get"], url_path="invoice")
-    def invoice(self, request, pk=None):
-        order = self.get_object()
-        if order.status != "shipped" or order.payment_method != "invoice":
-            raise ValidationError({
-                "detail": "Счет доступен после отгрузки и выбора способа «Счет на оплату»",
-                "code": "invoice_not_available",
-            })
-        missing = []
-        if not order.client.iin.strip():
-            missing.append("ИИН/БИН")
-        if not order.client.display_name:
-            missing.append("название ТОО / ИП")
-        if missing:
-            raise ValidationError({
-                "detail": "Для счета заполните реквизиты клиента: " + ", ".join(missing),
-                "code": "client_requisites_missing",
-            })
-        payment = order.payments.filter(
-            method="invoice", status__in=("requested", "received", "confirmed")
-        ).order_by("-paid_at").first()
-        if payment is None:
-            raise ValidationError({
-                "detail": "Сначала выберите способ оплаты «Счет на оплату»",
-                "code": "invoice_payment_missing",
-            })
-        pdf = build_invoice_pdf(order)
-        log_event(
-            "payment", f"Счет на оплату №{order.id} сформирован",
-            user=request.user, order=order,
-            payload={"payment_id": payment.id, "method": "invoice", "action": "invoice_generated"},
-        )
-        filename = f"schet_na_oplatu_{order.id}_ot_{timezone.localdate():%d.%m.%Y}.pdf"
-        return FileResponse(BytesIO(pdf), content_type="application/pdf",
-                            as_attachment=True, filename=filename)
+        return self._order_response(order)
 
     @action(detail=True, methods=["get"], url_path="receipt")
     def receipt(self, request, pk=None):
@@ -282,8 +218,7 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
     def request_debt(self, request, pk=None):
         order = self.get_object()
         request_client_debt(order, request.user)
-        order = self.get_queryset().get(pk=order.pk)
-        return Response(self.get_serializer(order).data)
+        return self._order_response(order)
 
     @action(detail=True, methods=["patch"], url_path="truck")
     def truck(self, request, pk=None):
@@ -298,4 +233,4 @@ class PortalOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             raise ValidationError({"detail": "Введите номер транспорта", "code": "empty"})
         set_order_transport(
             order, request.user, truck=truck, trailer=serializer.validated_data.get("trailer_number"))
-        return Response(self.get_serializer(order).data)
+        return self._order_response(order)

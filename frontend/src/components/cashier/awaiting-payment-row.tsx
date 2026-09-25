@@ -6,15 +6,12 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import type { Me, Order } from "@/lib/types";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
-import { CashierOrderRow, paidOfTotal } from "./order-row";
+import { OrderDepartmentBadge } from "@/components/ui/department-badge";
+import { CashierRow, paidOfTotal } from "./order-row";
 import type { CashierQueue } from "./use-cashier-queue";
 
-function remainingOf(order: Order): string {
-  return order.remaining_amount ?? String(Number(order.total_amount) - Number(order.paid_total));
-}
-
 /** Почему заказ ждёт оплаты: клиент не выбрал способ, оплата не дошла или ещё идёт. */
-export function awaitingReason(order: Order): { label: string; inProgress: boolean } {
+function awaitingReason(order: Order): { label: string; inProgress: boolean } {
   if ((order.pending_payments?.length ?? 0) > 0) return { label: "Оплата в процессе", inProgress: true };
   return {
     label: order.settlement_intent === "instant" ? "Оплата не завершена" : "Способ оплаты не выбран",
@@ -40,14 +37,23 @@ export function AwaitingPaymentRow({
 }) {
   const [askDebt, setAskDebt] = useState(false);
   const reason = awaitingReason(order);
-  const remaining = remainingOf(order);
 
   return (
-    <CashierOrderRow
-      order={order}
-      amount={remaining}
-      details={[order.shipped_at && `отгружен ${formatDateTime(order.shipped_at)}`, paidOfTotal(order)]}
-      badge={<Badge tone={reason.inProgress ? "primary" : "warning"}>{reason.label}</Badge>}
+    <CashierRow
+      orderId={order.id}
+      amount={order.remaining_amount}
+      currency={order.currency}
+      details={[
+        order.client_name,
+        order.shipped_at && `отгружен ${formatDateTime(order.shipped_at)}`,
+        paidOfTotal(order),
+      ]}
+      badges={
+        <>
+          <Badge tone={reason.inProgress ? "primary" : "warning"}>{reason.label}</Badge>
+          <OrderDepartmentBadge order={order} />
+        </>
+      }
       canOpenOrder={canOpenOrder}
     >
       <OrderPaymentActions order={order} me={me} onChanged={() => void q.reload()} />
@@ -64,7 +70,7 @@ export function AwaitingPaymentRow({
         open={askDebt}
         onClose={() => setAskDebt(false)}
         title={`Оставить заказ #${order.id} в долг?`}
-        description={`${order.client_name ?? "Клиент"}: остаток ${formatCurrency(remaining, order.currency)} уже в «Долгах клиентов». Касса согласует долг — заказ уйдёт из «Ждут оплаты».`}
+        description={`${order.client_name ?? "Клиент"}: остаток ${formatCurrency(order.remaining_amount, order.currency)} уже в «Долгах клиентов». Касса согласует долг — заказ уйдёт из «Ждут оплаты».`}
         confirmLabel="В долг"
         confirmVariant="default"
         busy={q.busy}
@@ -73,6 +79,6 @@ export function AwaitingPaymentRow({
           if (await q.moveToDebt(order)) setAskDebt(false);
         }}
       />
-    </CashierOrderRow>
+    </CashierRow>
   );
 }

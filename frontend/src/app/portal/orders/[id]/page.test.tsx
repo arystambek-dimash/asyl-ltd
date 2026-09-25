@@ -1,9 +1,10 @@
-import { act, render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Suspense, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AxiosError, AxiosHeaders } from "axios";
 import type { PortalOrder } from "@/lib/types";
 
+import { renderRoutePage } from "@/test-utils/route-page";
 import PortalOrderDetail from "./page";
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   reload: vi.fn(),
   setData: vi.fn(),
   setTruck: vi.fn(),
+  payOrder: vi.fn(),
+  downloadReceipt: vi.fn(),
 }));
 
 vi.mock("@/lib/use-api", () => ({
@@ -20,10 +23,10 @@ vi.mock("@/lib/use-visible-polling", () => ({ useVisiblePolling: vi.fn() }));
 vi.mock("@/lib/portal-actions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/portal-actions")>()),
   setTruck: mocks.setTruck,
+  payOrder: mocks.payOrder,
+  downloadReceipt: mocks.downloadReceipt,
 }));
-vi.mock("@/components/layout/app-shell", () => ({
-  AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main>,
-}));
+vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
 const order = (fields: Partial<PortalOrder> = {}): PortalOrder =>
   ({
@@ -43,7 +46,6 @@ const order = (fields: Partial<PortalOrder> = {}): PortalOrder =>
     has_pending_payment: false,
     available_amount: null,
     payment_parts: [],
-    apipay_invoice: null,
     client_phone: "",
     client_country: "Кыргызстан",
     receipt_available: false,
@@ -51,21 +53,23 @@ const order = (fields: Partial<PortalOrder> = {}): PortalOrder =>
     trailer_number: "",
     transport_locked: false,
     debt_requested: false,
-    debt_override: false,
     created_at: "2026-09-23T10:00:00+05:00",
     ...fields,
   }) as PortalOrder;
 
-async function renderPage() {
-  const params = Promise.resolve({ id: "5" });
-  await act(async () => {
-    render(
-      <Suspense fallback={null}>
-        <PortalOrderDetail params={params} />
-      </Suspense>,
-    );
-  });
+function blobError(detail: string): AxiosError {
+  const error = new AxiosError("failed");
+  error.response = {
+    status: 400,
+    statusText: "",
+    data: new Blob([JSON.stringify({ detail })], { type: "application/json" }),
+    headers: new AxiosHeaders(),
+    config: { headers: new AxiosHeaders() },
+  };
+  return error;
 }
+
+const renderPage = () => renderRoutePage(PortalOrderDetail, "5");
 
 describe("портал: номер машины", () => {
   beforeEach(() => {
@@ -151,5 +155,52 @@ describe("портал: машина на территории", () => {
 
     expect(screen.queryByText(/Вагон:/)).not.toBeInTheDocument();
     expect(screen.getByText(/28087658/)).toBeInTheDocument();
+  });
+});
+
+describe("портал: оплата", () => {
+  it("ответ оплаты — заказ целиком: применяется без перечитывания", async () => {
+    const user = userEvent.setup();
+    mocks.reload.mockReset();
+    mocks.setData.mockReset();
+    mocks.order = order({ status: "shipped", available_amount: "100.00" });
+    const paid = order({ status: "shipped", has_pending_payment: true });
+    mocks.payOrder.mockResolvedValue(paid);
+    await renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Kaspi QR/ }));
+
+    expect(mocks.payOrder).toHaveBeenCalledWith(5, "kaspi", { amount: "100", phone_number: undefined });
+    expect(mocks.setData).toHaveBeenCalledWith(paid);
+    expect(mocks.reload).not.toHaveBeenCalled();
+  });
+});
+
+describe("портал: квитанция", () => {
+  it("скачивание не перечитывает заказ", async () => {
+    const user = userEvent.setup();
+    mocks.reload.mockReset();
+    mocks.setData.mockReset();
+    mocks.order = order({ status: "shipped", payment_status: "settled", receipt_available: true });
+    mocks.downloadReceipt.mockResolvedValue(undefined);
+    await renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Скачать квитанцию/ }));
+
+    expect(mocks.downloadReceipt).toHaveBeenCalledWith(5);
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(mocks.setData).not.toHaveBeenCalled();
+  });
+
+  it("не скачалась — клиент видит причину сервера, а не общую ошибку", async () => {
+    const user = userEvent.setup();
+    mocks.order = order({ status: "shipped", payment_status: "settled", receipt_available: true });
+    mocks.downloadReceipt.mockRejectedValue(blobError("Квитанция доступна после оплаты"));
+    await renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Скачать квитанцию/ }));
+
+    expect(mocks.downloadReceipt).toHaveBeenCalledWith(5);
+    expect(await screen.findByText("Квитанция доступна после оплаты")).toBeInTheDocument();
   });
 });

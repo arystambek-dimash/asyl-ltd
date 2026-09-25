@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from pathlib import Path
+
+from apps.common.heartbeat import write_heartbeat
+from config.apipay_reconciliation import (
+    DEFAULT_TASK_LOCK_SECONDS,
+    env_int,
+    reconcile_timing,
+    reconcile_timing_from_env,
+)
 
 from .reconciliation import ReconciliationStats, reconcile_apipay_invoices
 from .refund_reconciliation import (
@@ -24,17 +30,17 @@ from .webhooks import replay_pending_apipay_webhooks
 
 log = logging.getLogger(__name__)
 
-MIN_INTERVAL_SECONDS = 15
 MIN_MONITOR_REQUESTS_PER_MINUTE = 10
 # ApiPay documents 200 requests/minute. Reconciliation may consume at most
 # half, leaving a deterministic 100 requests/minute for live operations.
 MAX_MONITOR_REQUESTS_PER_MINUTE = 100
 MAX_MONITOR_REQUESTS_PER_ITERATION = 50
 DEFAULT_HEARTBEAT_FILE = "/tmp/apipay-monitor-heartbeat"
-DEFAULT_TASK_LOCK_SECONDS = 1_200
 
 InboxStats = dict[str, int]
 # Активных QR-возвратов единицы, а окно после подтверждения покупателем короткое.
+# Каждая сессия — один GET из бюджета итерации (выбор покупки и execute бывают
+# у сессии один раз).
 QR_REFUND_RECONCILE_LIMIT = 5
 InvoiceReconciler = Callable[..., ReconciliationStats]
 RefundReconciler = Callable[..., RefundReconciliationStats]
@@ -43,34 +49,7 @@ QrRefundReconciler = Callable[..., dict[str, int]]
 HeartbeatWriter = Callable[[str, str], None]
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name) or default)
-    except ValueError:
-        log.warning("Invalid integer in %s; using %s", name, default)
-        return default
-
-
-def _request_budget_per_iteration(
-    *,
-    requests_per_minute: int,
-    interval_seconds: int,
-) -> int:
-    requests_per_minute = max(
-        MIN_MONITOR_REQUESTS_PER_MINUTE,
-        min(int(requests_per_minute), MAX_MONITOR_REQUESTS_PER_MINUTE),
-    )
-    interval_seconds = max(MIN_INTERVAL_SECONDS, int(interval_seconds))
-    proportional_budget = requests_per_minute * interval_seconds // 60
-    # One invoice-status batch and one refund snapshot are reserved. The burst
-    # cap prevents a backlog plus a long interval from becoming a traffic spike.
-    return max(
-        2,
-        min(proportional_budget, MAX_MONITOR_REQUESTS_PER_ITERATION),
-    )
-
-
-def _backoff_delay(
+def backoff_delay(
     *,
     interval_seconds: int,
     max_backoff_seconds: int,
@@ -80,20 +59,6 @@ def _backoff_delay(
         return interval_seconds
     multiplier = 2 ** min(failure_streak - 1, 4)
     return min(max_backoff_seconds, interval_seconds * multiplier)
-
-
-def _write_heartbeat(path: str, state: str) -> None:
-    heartbeat = Path(path)
-    heartbeat.parent.mkdir(parents=True, exist_ok=True)
-    temporary = heartbeat.with_name(f".{heartbeat.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(
-            f"{state} {time.time():.6f}\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, heartbeat)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -126,15 +91,13 @@ class ApiPayReconciliationOptions:
         heartbeat_file: str,
         task_lock_seconds: int = DEFAULT_TASK_LOCK_SECONDS,
     ) -> ApiPayReconciliationOptions:
-        interval = max(MIN_INTERVAL_SECONDS, int(interval_seconds))
-        max_backoff = max(interval, int(max_backoff_seconds))
-        # The singleton lease spans the longest retry countdown plus enough
-        # time for the next bounded iteration. The dedicated worker remains the
-        # primary serialization boundary; this lease also guards accidental
-        # duplicate workers and beat messages during a retry chain.
-        minimum_lock_seconds = max_backoff + interval + 60
+        timing = reconcile_timing(
+            interval_seconds=interval_seconds,
+            max_backoff_seconds=max_backoff_seconds,
+            task_lock_seconds=task_lock_seconds,
+        )
         return cls(
-            interval_seconds=interval,
+            interval_seconds=timing.interval_seconds,
             stale_seconds=max(0, int(stale_seconds)),
             lookback_hours=max(1, int(lookback_hours)),
             batch_size=max(1, min(int(batch_size), 500)),
@@ -152,64 +115,64 @@ class ApiPayReconciliationOptions:
                     MAX_MONITOR_REQUESTS_PER_MINUTE,
                 ),
             ),
-            max_backoff_seconds=max_backoff,
+            max_backoff_seconds=timing.max_backoff_seconds,
             heartbeat_file=heartbeat_file.strip() or DEFAULT_HEARTBEAT_FILE,
-            task_lock_seconds=max(
-                minimum_lock_seconds,
-                int(task_lock_seconds),
-            ),
+            task_lock_seconds=timing.task_lock_seconds,
         )
 
     @classmethod
     def from_environment(cls) -> ApiPayReconciliationOptions:
+        timing = reconcile_timing_from_env()
         return cls.build(
-            interval_seconds=_env_int(
-                "APIPAY_RECONCILE_INTERVAL_SECONDS", 30
-            ),
-            stale_seconds=_env_int("APIPAY_RECONCILE_STALE_SECONDS", 30),
-            lookback_hours=_env_int("APIPAY_RECONCILE_LOOKBACK_HOURS", 72),
-            batch_size=_env_int("APIPAY_RECONCILE_BATCH_SIZE", 100),
-            refund_limit=_env_int("APIPAY_REFUND_RECONCILE_LIMIT", 25),
-            refund_orphan_grace_seconds=_env_int(
+            interval_seconds=timing.interval_seconds,
+            stale_seconds=env_int("APIPAY_RECONCILE_STALE_SECONDS", 30),
+            lookback_hours=env_int("APIPAY_RECONCILE_LOOKBACK_HOURS", 72),
+            batch_size=env_int("APIPAY_RECONCILE_BATCH_SIZE", 100),
+            refund_limit=env_int("APIPAY_REFUND_RECONCILE_LIMIT", 25),
+            refund_orphan_grace_seconds=env_int(
                 "APIPAY_REFUND_ORPHAN_GRACE_SECONDS", 15 * 60
             ),
-            refund_sweep_stale_seconds=_env_int(
+            refund_sweep_stale_seconds=env_int(
                 "APIPAY_REFUND_SWEEP_STALE_SECONDS", 15 * 60
             ),
-            requests_per_minute=_env_int(
+            requests_per_minute=env_int(
                 "APIPAY_MONITOR_REQUEST_BUDGET_PER_MINUTE", 80
             ),
-            max_backoff_seconds=_env_int(
-                "APIPAY_MONITOR_MAX_BACKOFF_SECONDS", 300
-            ),
+            max_backoff_seconds=timing.max_backoff_seconds,
             heartbeat_file=os.environ.get(
                 "APIPAY_MONITOR_HEARTBEAT_FILE",
                 DEFAULT_HEARTBEAT_FILE,
             ),
-            task_lock_seconds=_env_int(
-                "APIPAY_RECONCILE_TASK_LOCK_SECONDS",
-                DEFAULT_TASK_LOCK_SECONDS,
-            ),
+            task_lock_seconds=timing.task_lock_seconds,
         )
 
     @property
     def request_budget(self) -> int:
-        return _request_budget_per_iteration(
-            requests_per_minute=self.requests_per_minute,
-            interval_seconds=self.interval_seconds,
-        )
+        # ``build`` already clamped the rate and the interval. One
+        # invoice-status batch, one refund snapshot and one QR refund session
+        # are reserved. The burst cap prevents a backlog plus a long interval
+        # from becoming a traffic spike.
+        proportional_budget = self.requests_per_minute * self.interval_seconds // 60
+        return max(3, min(proportional_budget, MAX_MONITOR_REQUESTS_PER_ITERATION))
+
+    @property
+    def qr_refund_request_budget(self) -> int:
+        return min(QR_REFUND_RECONCILE_LIMIT, self.request_budget - 2)
 
     @property
     def refund_request_budget(self) -> int:
-        return min(self.refund_limit, self.request_budget - 1)
+        return min(
+            self.refund_limit,
+            self.request_budget - 1 - self.qr_refund_request_budget,
+        )
 
     @property
     def invoice_request_budget(self) -> int:
-        return self.request_budget - self.refund_request_budget
-
-    @property
-    def invoice_limit(self) -> int:
-        return self.invoice_request_budget * self.batch_size
+        return (
+            self.request_budget
+            - self.refund_request_budget
+            - self.qr_refund_request_budget
+        )
 
 
 @dataclass(frozen=True)
@@ -252,6 +215,7 @@ class ApiPayReconciliationResult:
             f"inbox_processed={self.inbox.get('processed', 0)} "
             f"inbox_waiting={self.inbox.get('waiting_for_invoice', 0)} "
             f"inbox_failed={self.inbox.get('failed', 0)} "
+            f"inbox_rejected={self.inbox.get('rejected', 0)} "
             f"refund_selected={self.refunds.selected} "
             f"refund_fetched={self.refunds.fetched} "
             f"refund_changed={self.refunds.changed} "
@@ -264,7 +228,8 @@ class ApiPayReconciliationResult:
             f"qr_refund_failed={self.qr_refunds.get('failed', 0)} "
             f"request_budget={self.options.request_budget} "
             f"invoice_request_budget={self.options.invoice_request_budget} "
-            f"refund_request_budget={self.options.refund_request_budget}"
+            f"refund_request_budget={self.options.refund_request_budget} "
+            f"qr_refund_request_budget={self.options.qr_refund_request_budget}"
         )
 
 
@@ -274,7 +239,7 @@ def run_apipay_reconciliation_iteration(
     invoice_reconciler: InvoiceReconciler = reconcile_apipay_invoices,
     refund_reconciler: RefundReconciler = reconcile_apipay_refunds,
     webhook_replayer: WebhookReplayer = replay_pending_apipay_webhooks,
-    heartbeat_writer: HeartbeatWriter = _write_heartbeat,
+    heartbeat_writer: HeartbeatWriter = write_heartbeat,
     qr_refund_reconciler: QrRefundReconciler | None = None,
 ) -> ApiPayReconciliationResult:
     """Run one bounded, heartbeat-observed reconciliation iteration."""
@@ -284,7 +249,6 @@ def run_apipay_reconciliation_iteration(
         inbox = webhook_replayer()
         invoices = invoice_reconciler(
             batch_size=options.batch_size,
-            limit=options.invoice_limit,
             request_budget=options.invoice_request_budget,
             stale_after=timedelta(seconds=options.stale_seconds),
             lookback=timedelta(hours=options.lookback_hours),
@@ -300,7 +264,9 @@ def run_apipay_reconciliation_iteration(
         )
         if qr_refund_reconciler is None:
             from .qr_refunds import reconcile_qr_refunds as qr_refund_reconciler
-        qr_refunds = qr_refund_reconciler(limit=QR_REFUND_RECONCILE_LIMIT)
+        qr_refunds = qr_refund_reconciler(
+            limit=options.qr_refund_request_budget
+        )
         result = ApiPayReconciliationResult(
             options=options,
             invoices=invoices,

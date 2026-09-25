@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Me } from "@/lib/types";
+import { makeMe } from "@/test-utils/factories";
 import { Sidebar } from "./sidebar";
 
 const nav = vi.hoisted(() => ({ pathname: "/portal/catalog" }));
@@ -12,26 +12,8 @@ beforeEach(() => {
   nav.pathname = "/portal/catalog";
 });
 
-const client: Me = {
-  id: 1,
-  username: "client",
-  is_client: true,
-  is_superuser: false,
-
-  permissions: [],
-  position: null,
-  client_id: 1,
-  sales_department: null,
-};
-
-const factoryUser: Me = {
-  ...client,
-  id: 2,
-  username: "factory",
-  is_client: false,
-  client_id: null,
-  permissions: ["warehouse.view", "silos.view", "grain.view"],
-};
+const client = makeMe({ username: "client", is_client: true });
+const factoryUser = makeMe({ id: 2, username: "factory", permissions: ["warehouse.view", "silos.view", "grain.view"] });
 
 function Harness() {
   const [open, setOpen] = useState(false);
@@ -103,7 +85,6 @@ describe("подсветка активного пункта", () => {
     const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["monoblock.view"] }} />);
 
     expect(screen.getByRole("link", { name: "Моноблок" })).toHaveAttribute("href", "/monoblock");
-    expect(screen.queryByRole("link", { name: "Пост погрузки" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Грузчик" })).not.toBeInTheDocument();
 
     rerender(<Sidebar me={{ ...factoryUser, permissions: ["loader.view"] }} />);
@@ -111,18 +92,13 @@ describe("подсветка активного пункта", () => {
     expect(screen.getByRole("link", { name: "Грузчик" })).toHaveAttribute("href", "/loader");
   });
 
-  it("оставляет общий журнал в управлении, без отдельного журнала машин", () => {
+  it("показывает общий журнал в управлении только с правом events.view", () => {
     const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["events.view"] }} />);
 
     expect(screen.getByRole("link", { name: "Журнал" })).toHaveAttribute("href", "/events");
-    expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
 
     rerender(<Sidebar me={{ ...factoryUser, permissions: [] }} />);
     expect(screen.queryByRole("link", { name: "Журнал" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
-
-    rerender(<Sidebar me={{ ...factoryUser, is_superuser: true }} />);
-    expect(screen.queryByRole("link", { name: "Журнал машин" })).not.toBeInTheDocument();
   });
 });
 

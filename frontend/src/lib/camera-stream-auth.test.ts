@@ -8,22 +8,13 @@ vi.mock("@/lib/api", () => ({
 
 import { ensureCameraStreamToken, invalidateCameraStreamToken } from "@/lib/camera-stream-auth";
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 describe("camera stream authorization cache", () => {
   beforeEach(() => {
     invalidateCameraStreamToken();
-    vi.clearAllMocks();
   });
 
   it("shares one token request between camera tiles", async () => {
-    const request = deferred<unknown>();
+    const request = Promise.withResolvers<unknown>();
     mocks.post.mockReturnValueOnce(request.promise);
 
     const first = ensureCameraStreamToken();
@@ -36,7 +27,7 @@ describe("camera stream authorization cache", () => {
   });
 
   it("rejects a late token response after invalidation and fetches again", async () => {
-    const oldRequest = deferred<unknown>();
+    const oldRequest = Promise.withResolvers<unknown>();
     mocks.post.mockReturnValueOnce(oldRequest.promise).mockResolvedValueOnce({});
 
     const oldToken = ensureCameraStreamToken();

@@ -31,14 +31,6 @@ class Department(models.Model):
         db_table = "clients_department"
         ordering = ["created_at", "id"]
 
-    @classmethod
-    def default_code(cls) -> str:
-        row = (
-            cls.objects.filter(is_active=True, is_default=True).first()
-            or cls.objects.filter(is_active=True).first()
-        )
-        return row.code if row else "main"
-
     @staticmethod
     def _reveal(token: str) -> str:
         try:

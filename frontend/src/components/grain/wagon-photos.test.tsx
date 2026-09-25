@@ -99,4 +99,18 @@ describe("weighing photo provenance", () => {
     );
     expect(screen.queryByText("Фото ожидается")).not.toBeInTheDocument();
   });
+
+  it("distinguishes an expected exit photo from a retrying entry photo", () => {
+    render(
+      <WagonPhotos
+        wagon={wagon({
+          entry_weight_kg: 3900,
+          exit_weight_kg: null,
+          weighings: [weighing({ id: 1, source: "scale", manual_reason: "", photo_status: "retrying" })],
+        })}
+      />,
+    );
+    expect(screen.getByText("Фото загружается повторно")).toBeInTheDocument();
+    expect(screen.getByText("появится после взвешивания гружёной")).toBeInTheDocument();
+  });
 });

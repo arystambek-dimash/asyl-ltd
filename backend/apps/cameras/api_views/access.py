@@ -2,7 +2,6 @@ import re
 from typing import ClassVar
 from urllib.parse import parse_qsl, urlsplit
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.utils.crypto import constant_time_compare
@@ -14,6 +13,7 @@ from rest_framework.views import APIView
 from apps.common.permissions import IsStaff
 
 from .. import services
+from .vehicle_runtime import weight_first_stream
 
 CAM_COOKIE = "cam_token"
 CAM_TOKEN_MAX_AGE = 12 * 3600  # секунд
@@ -82,27 +82,13 @@ def _is_valid_camera_stream_source(source: str, *, allow_main: bool = False) -> 
     if allow_main and re.fullmatch(r"cam[1-9][0-9]*main", source):
         return True
     if STAFF_ONLY_CAMERA_MAIN_STREAM_RE.fullmatch(source):
-        if (
-            settings.VEHICLE_PLATE_WEIGHT_FIRST_ENABLED
-            or settings.VEHICLE_PLATE_AUTO_SCALE_ENABLED
-        ):
-            if settings.VEHICLE_PLATE_WEIGHT_FIRST_SOURCE != "main":
-                return False
-            expected = f"{settings.VEHICLE_PLATE_WEIGHT_FIRST_CAMERA}main"
-        else:
-            expected = "cam1main"
-        return source == expected
+        stream = weight_first_stream()
+        if stream is None:
+            return source == "cam1main"
+        camera, stream_source = stream
+        return stream_source == "main" and source == f"{camera}main"
     try:
-        normalized_source = services.normalize_camera_path(source)
-    except ValueError:
-        normalized_source = None
-    if normalized_source == source:
-        return True
-    if not source.endswith("ai"):
-        return False
-    base_source = source[:-2]
-    try:
-        return services.normalize_camera_path(base_source) == base_source
+        return services.normalize_camera_path(source) == source
     except ValueError:
         return False
 

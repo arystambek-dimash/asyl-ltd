@@ -22,16 +22,19 @@ from typing import Any
 from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
 
 from apps.eventlog.services import log_event
 
 from .apipay import (
-    _sync_refund_totals,
+    PROVIDER_REFUND_STATUSES,
     apply_refund_status,
     get_invoice_refunds,
+    parse_provider_datetime,
+    positive_provider_id,
+    positive_provider_money,
 )
 from .models import ApiPayInvoice, ApiPayRefund, Order, Payment, PaymentRefund
+from .refunds import sync_refund_totals
 
 log = logging.getLogger(__name__)
 
@@ -51,57 +54,18 @@ class RefundReconciliationStats:
     failed: int = 0
 
 
-def _provider_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    parsed = parse_datetime(value)
-    if parsed is None:
-        return None
-    return (
-        parsed
-        if timezone.is_aware(parsed)
-        else timezone.make_aware(parsed, dt_timezone.utc)
-    )
-
-
 def _provider_id(payload: dict[str, Any]) -> int:
-    try:
-        raw = payload["id"]
-        if isinstance(raw, bool):
-            raise TypeError
-        decimal_value = Decimal(str(raw))
-        if (
-            not decimal_value.is_finite()
-            or decimal_value != decimal_value.to_integral_value()
-        ):
-            raise ValueError
-        value = int(decimal_value)
-    except (
-        InvalidOperation,
-        KeyError,
-        OverflowError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        raise ValueError("refund id is invalid") from exc
-    if value <= 0:
-        raise ValueError("refund id must be positive")
-    return value
+    return positive_provider_id(payload.get("id"), "refund id")
 
 
 def _provider_amount(payload: dict[str, Any]) -> Decimal:
-    try:
-        value = Decimal(str(payload["amount"])).quantize(Decimal("0.01"))
-    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
-        raise ValueError("refund amount is invalid") from exc
-    if not value.is_finite() or value <= 0:
-        raise ValueError("refund amount must be positive")
-    return value
+    return positive_provider_money(payload.get("amount"), "refund amount")
 
 
 def _provider_status(payload: dict[str, Any]) -> str:
+    # Сверка строже вебхука: строка без статуса делает снимок неполным.
     status = str(payload.get("status") or "")
-    if status not in {"pending", "processing", "completed", "failed"}:
+    if status not in PROVIDER_REFUND_STATUSES:
         raise ValueError("refund status is invalid")
     return status
 
@@ -111,7 +75,7 @@ def _local_sort_key(refund: PaymentRefund):
 
 
 def _provider_sort_key(payload: dict[str, Any]):
-    observed = _provider_datetime(payload.get("created_at"))
+    observed = parse_provider_datetime(payload.get("created_at"))
     return (
         observed or datetime.min.replace(tzinfo=dt_timezone.utc),
         _provider_id(payload),
@@ -161,12 +125,9 @@ def _correlation_matches(
     even if an old provider omitted the optional reason.
     """
     local_rows = list(
-        PaymentRefund.objects.filter(
-            payment_id=record.payment_id,
-            method="apipay",
-            status="pending",
-            provider_refund__isnull=True,
-        ).order_by("created_at", "pk")
+        PaymentRefund.objects.unlinked_apipay_pending()
+        .filter(payment_id=record.payment_id)
+        .order_by("created_at", "pk")
     )
     linked_provider_ids = set(
         PaymentRefund.objects.filter(
@@ -256,12 +217,9 @@ def _release_absent_orphans(
     orphan_grace: timedelta,
 ) -> tuple[int, int]:
     unlinked = list(
-        PaymentRefund.objects.filter(
-            payment_id=record.payment_id,
-            method="apipay",
-            status="pending",
-            provider_refund__isnull=True,
-        ).order_by("created_at", "pk")
+        PaymentRefund.objects.unlinked_apipay_pending()
+        .filter(payment_id=record.payment_id)
+        .order_by("created_at", "pk")
     )
     if not unlinked:
         return 0, 0
@@ -289,12 +247,9 @@ def _release_absent_orphans(
         )
         payment = Payment.objects.select_for_update().get(pk=record.payment_id)
         locked = list(
-            PaymentRefund.objects.select_for_update().filter(
-                pk__in=[row.pk for row in releasable],
-                method="apipay",
-                status="pending",
-                provider_refund__isnull=True,
-            )
+            PaymentRefund.objects.select_for_update()
+            .unlinked_apipay_pending()
+            .filter(pk__in=[row.pk for row in releasable])
         )
         for row in locked:
             row.status = "failed"
@@ -315,7 +270,7 @@ def _release_absent_orphans(
                 },
             )
         payment.order = order
-        _sync_refund_totals(payment, order)
+        sync_refund_totals(payment, order)
     return len(locked), len(unlinked) - len(locked)
 
 
@@ -377,16 +332,8 @@ def _refund_reconciliation_candidates(
     selected = _oldest_refund_candidates(pending, pending_quota)
     selected_ids = {record.pk for record in selected}
 
-    discovery = (
-        base.filter(status__in=REFUND_DISCOVERY_STATUSES)
-        .filter(
-            Q(refund_checked_at__isnull=True)
-            | Q(refund_checked_at__lte=sweep_cutoff)
-        )
-        .exclude(pk__in=selected_ids)
-    )
     discovered = _oldest_refund_candidates(
-        discovery,
+        base.filter(discovery_due).exclude(pk__in=selected_ids),
         limit - len(selected),
     )
     selected.extend(discovered)

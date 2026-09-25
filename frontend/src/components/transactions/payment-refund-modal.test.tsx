@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Payment } from "@/lib/types";
+import { makePayment } from "@/test-utils/factories";
 import { PaymentRefundModal } from "./payment-refund-modal";
 
 const postMock = vi.hoisted(() => vi.fn());
@@ -9,21 +10,6 @@ vi.mock("@/lib/api", () => ({
   api: { post: postMock },
   apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
 }));
-
-function payment(fields: Partial<Payment> = {}): Payment {
-  return {
-    id: 5,
-    order: 1,
-    currency: "KZT",
-    amount: "100000.00",
-    method: "cash",
-    status: "confirmed",
-    paid_at: "2026-09-20T10:00:00Z",
-    recorded_by: null,
-    available_for_refund: "100000.00",
-    ...fields,
-  } as Payment;
-}
 
 beforeEach(() => {
   postMock.mockReset();
@@ -34,7 +20,7 @@ describe("PaymentRefundModal", () => {
   it("refunds the available amount of a payment with a reason", async () => {
     const user = userEvent.setup();
     const onRefunded = vi.fn();
-    const cash = payment();
+    const cash = makePayment();
     render(<PaymentRefundModal payment={cash} onClose={vi.fn()} onRefunded={onRefunded} />);
 
     expect(screen.getByRole("dialog", { name: "Вернуть оплату" })).toBeInTheDocument();
@@ -46,15 +32,14 @@ describe("PaymentRefundModal", () => {
     expect(postMock).toHaveBeenCalledWith("/payment-transactions/5/refund/", {
       amount: "100000.00",
       reason: "Переплата",
-      mode: "auto",
     });
     await waitFor(() => expect(onRefunded).toHaveBeenCalledWith(cash, null));
   });
 
   it("lets the cashier pick which payment of the order to refund", async () => {
     const user = userEvent.setup();
-    const older = payment({ id: 5, available_for_refund: "30000.00" });
-    const newer = payment({ id: 6, method: "kaspi", available_for_refund: "80000.00" });
+    const older = makePayment({ id: 5, available_for_refund: "30000.00" });
+    const newer = makePayment({ id: 6, method: "kaspi", available_for_refund: "80000.00" });
     render(
       <PaymentRefundModal
         payment={newer}
@@ -81,7 +66,7 @@ describe("PaymentRefundModal", () => {
     postMock.mockRejectedValueOnce(new Error("Касса закрыта"));
     const user = userEvent.setup();
     const onRefunded = vi.fn();
-    render(<PaymentRefundModal payment={payment()} onClose={vi.fn()} onRefunded={onRefunded} />);
+    render(<PaymentRefundModal payment={makePayment()} onClose={vi.fn()} onRefunded={onRefunded} />);
 
     await user.type(screen.getByLabelText("Причина"), "Переплата");
     await user.click(screen.getByRole("button", { name: "Оформить возврат" }));
@@ -95,7 +80,7 @@ describe("PaymentRefundModal", () => {
     postMock.mockResolvedValueOnce({ data: { method: "apipay_qr", qr_refund: qr } });
     const user = userEvent.setup();
     const onRefunded = vi.fn();
-    const online = payment({ provider: { channel: "qr" } as Payment["provider"] });
+    const online = makePayment({ provider: { channel: "qr" } as Payment["provider"] });
     render(<PaymentRefundModal payment={online} onClose={vi.fn()} onRefunded={onRefunded} />);
 
     await user.type(screen.getByLabelText("Причина"), "Переплата");

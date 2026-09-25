@@ -12,9 +12,11 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
+from django.core.cache import cache
 from django.utils import timezone
 
 from apps.cameras import continuous
+from apps.cameras.tests.shipping_fakes import recognition_payload, wagon_plate
 from apps.grain import statuses as st
 from apps.grain.models import Wagon
 from apps.grain.services import AUTO_ARRIVAL_GAP, register_detected_arrival
@@ -97,10 +99,13 @@ def _settings(camera="cam3"):
     )
 
 
-def test_poll_opens_an_intake_when_the_plate_is_seen():
-    from django.core.cache import cache
-
+@pytest.fixture
+def fresh_plate_poll():
+    """Опрос таблички начинается с чистого листа: без прошлого времени опроса."""
     cache.delete(continuous.WAGON_PLATE_STATE_KEY)
+
+
+def test_poll_opens_an_intake_when_the_plate_is_seen(fresh_plate_poll):
     with _settings(), patch.object(
         continuous.ai, "wagon_plate_scan",
         return_value={"seen": True, "number": ""},
@@ -111,20 +116,14 @@ def test_poll_opens_an_intake_when_the_plate_is_seen():
     assert Wagon.objects.filter(number_source="camera").count() == 1
 
 
-def test_poll_does_nothing_without_a_camera_role():
-    from django.core.cache import cache
-
-    cache.delete(continuous.WAGON_PLATE_STATE_KEY)
+def test_poll_does_nothing_without_a_camera_role(fresh_plate_poll):
     with _settings(camera=""):
         assert continuous.poll_wagon_plate() == {"skipped": "no_camera"}
     assert not Wagon.objects.exists()
 
 
-def test_poll_treats_an_unreachable_service_as_unknown():
+def test_poll_treats_an_unreachable_service_as_unknown(fresh_plate_poll):
     """Молчание сервиса — не «поезда нет»: рейсы не трогаем."""
-    from django.core.cache import cache
-
-    cache.delete(continuous.WAGON_PLATE_STATE_KEY)
     with _settings(), patch.object(continuous.ai, "wagon_plate_scan", return_value=None):
         result = continuous.poll_wagon_plate()
 
@@ -132,11 +131,8 @@ def test_poll_treats_an_unreachable_service_as_unknown():
     assert not Wagon.objects.exists()
 
 
-def test_poll_respects_its_own_period():
+def test_poll_respects_its_own_period(fresh_plate_poll):
     """Цикл мониторинга крутится чаще, чем нужно спрашивать модель."""
-    from django.core.cache import cache
-
-    cache.delete(continuous.WAGON_PLATE_STATE_KEY)
     with _settings(), patch.object(
         continuous.ai, "wagon_plate_scan",
         return_value={"seen": False, "number": ""},
@@ -152,14 +148,10 @@ def test_poll_respects_its_own_period():
 
 def _supply_with_expected_wagon(number="12345678"):
     """Диспетчер завёл приход заранее: поставка и рейс уже ждут вагон."""
-    from apps.grain.models import GrainSupply, Silo, SiloType
+    from apps.grain.models import GrainSupply
+    from apps.grain.tests.factories import silo_route
 
-    grain_type = SiloType.objects.create(name=f"Тип-{SiloType.objects.count() + 1}")
-    silo = Silo.objects.create(
-        name=f"Силос-{Silo.objects.count() + 1}",
-        total_capacity_kg=500_000,
-        silo_type=grain_type,
-    )
+    grain_type, silo = silo_route()
     supply = GrainSupply.objects.create(
         supplier="ТОО Колос", grain_type=grain_type,
         assigned_silo=silo, expected_total_kg=60_000, status="expected",
@@ -203,11 +195,8 @@ def test_the_same_wagon_is_not_admitted_twice():
     assert Wagon.objects.get().pk == first.pk
 
 
-def test_poll_passes_the_recognised_number_through():
-    from django.core.cache import cache
-
+def test_poll_passes_the_recognised_number_through(fresh_plate_poll):
     _supply_with_expected_wagon("12345678")
-    cache.delete(continuous.WAGON_PLATE_STATE_KEY)
     with _settings(), patch.object(
         continuous.ai, "wagon_plate_scan",
         return_value={"seen": True, "number": "12345678"},
@@ -218,26 +207,64 @@ def test_poll_passes_the_recognised_number_through():
     assert Wagon.objects.get(pk=result["created"]).number == "12345678"
 
 
-def test_only_an_accepted_number_reaches_the_ledger():
-    """Неуверенный OCR не пишет номер: чужой вагон в учёте хуже пустого поля."""
+def wagon_reply(*plates, ocr=True):
+    """Ответ /wagon-number/detect в форме cv-service (plate_recognition.py).
+
+    Каждая табличка — ``(digits, accepted, length_valid, checksum_valid)``.
+    Номер живёт в ``ocr.digits``; верхний ``number`` — лишь первый принятый.
+    """
+    if not ocr:
+        return {
+            "ok": True, "ocr": False, "task": "wagon_plate_detection",
+            "detections": [{"class_name": "wagon_plate", "confidence": 0.91} for _ in plates],
+        }
+    return recognition_payload("wagon_number", [
+        wagon_plate(digits, accepted=accepted, length_valid=length_valid, checksum_valid=checksum_valid)
+        for digits, accepted, length_valid, checksum_valid in plates
+    ])
+
+
+def _scan(payload):
     from apps.cameras import ai
 
-    rejected = {
-        "number": "12345678",
-        "detections": [{"ocr": {"number": "12345678", "accepted": False}}],
+    with patch.object(ai, "camera_frame_jpeg", return_value=b"\xff\xd8\xffjpeg"), \
+            patch.object(ai, "_request", return_value=(200, payload)):
+        return ai.wagon_plate_scan("cam8main")
+
+
+def test_a_valid_number_reaches_the_ledger():
+    assert _scan(wagon_reply(("28055531", True, True, True))) == {
+        "seen": True, "number": "28055531",
     }
-    accepted = {
-        "number": "12345678",
-        "detections": [{"ocr": {"number": "12345678", "accepted": True}}],
+
+
+@pytest.mark.parametrize("plate", [
+    ("28055532", True, True, False),   # уверенно прочитан, контроль не сошёлся
+    ("2805553", True, False, None),    # цифра потерялась
+    ("280555311", True, False, None),  # лишняя цифра
+    ("28055531", False, True, True),   # сама модель не уверена
+])
+def test_an_unverified_number_opens_a_trip_without_a_number(plate):
+    """Чужой вагон в учёте хуже пустого поля: номер заполнит оператор."""
+    assert _scan(wagon_reply(plate)) == {"seen": True, "number": ""}
+
+
+def test_two_different_numbers_in_one_frame_are_not_guessed():
+    reply = wagon_reply(("28055531", True, True, True), ("00123455", True, True, True))
+
+    assert _scan(reply) == {"seen": True, "number": ""}
+
+
+def test_a_plate_without_ocr_still_opens_a_trip():
+    """OCR на ПК выключен: табличка видна — приход заводится без номера."""
+    assert _scan(wagon_reply(("", False, False, None), ocr=False)) == {
+        "seen": True, "number": "",
     }
-
-    assert ai.accepted_plate_number(rejected) == ""
-    assert ai.accepted_plate_number(accepted) == "12345678"
+    assert _scan(wagon_reply(ocr=False)) == {"seen": False, "number": ""}
 
 
-def test_a_plate_without_ocr_reads_as_no_number():
-    """Старый сервис без OCR не должен ломать разбор ответа."""
-    from apps.cameras import ai
+def test_a_reply_outside_the_contract_keeps_the_plate_but_drops_the_number():
+    reply = wagon_reply(("28055531", True, True, True))
+    reply["detections"][0]["ocr"]["digits"] = "00123455"
 
-    assert ai.accepted_plate_number({"detections": [{"bbox": [1, 2, 3, 4]}]}) == ""
-    assert ai.accepted_plate_number({"number": None, "detections": []}) == ""
+    assert _scan(reply) == {"seen": True, "number": ""}

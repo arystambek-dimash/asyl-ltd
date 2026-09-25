@@ -24,7 +24,6 @@ const order = {
   total_amount: "800.00",
   paid_total: "0.00",
   is_fully_paid: false,
-  debt_override: false,
   created_at: "2026-08-02T00:00:00Z",
 } as Order;
 
@@ -61,6 +60,11 @@ describe("OrderPriceCorrectionModal", () => {
     await user.clear(first);
     await user.type(first, "30");
     await user.clear(second);
+    await user.type(second, "40");
+    // 30 × 20 + 40 × 30 — итог по тем же правилам, что оценка заявки.
+    expect(screen.getByText(/^1\s800 ₸$/)).toBeInTheDocument();
+    await user.clear(second);
+    expect(screen.getByText("Не рассчитана")).toBeInTheDocument();
     await user.type(second, "40");
     await user.click(screen.getByRole("button", { name: "Сохранить корректировку" }));
 

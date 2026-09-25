@@ -64,7 +64,7 @@ def test_cleanup_only_untouched_portal_default_and_api_labels(auth_client, manag
     detail = api.get(f"/api/orders/{legacy.pk}/").data
     assert detail["department"] == ""
     assert detail["department_name"] == "Нет отдела"
-    rows = api.get("/api/orders/?status=pending&page=1").data["results"]
+    rows = api.get("/api/orders/?status_group=pending&page=1").data["results"]
     assert (
         next(row for row in rows if row["id"] == legacy.pk)["department_name"]
         == "Нет отдела"

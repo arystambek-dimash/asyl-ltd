@@ -29,14 +29,9 @@ def validate_date_range(date_from: date | None, date_to: date | None) -> None:
 
 
 def parse_date_range(params) -> tuple[date | None, date | None]:
-    """Разобрать период из query-параметров и сразу проверить его.
-
-    Исторически сводный отчёт принимает ``from``/``to``, а остальные списки —
-    ``date_from``/``date_to``. Оба написания читаются везде: старые ссылки
-    продолжают работать, а ``?date_from=`` больше не игнорируется молча.
-    """
-    date_from = parse_iso_date(params.get("date_from") or params.get("from"))
-    date_to = parse_iso_date(params.get("date_to") or params.get("to"))
+    """Разобрать период ``?date_from=``/``?date_to=`` и сразу проверить его."""
+    date_from = parse_iso_date(params.get("date_from"))
+    date_to = parse_iso_date(params.get("date_to"))
     validate_date_range(date_from, date_to)
     return date_from, date_to
 

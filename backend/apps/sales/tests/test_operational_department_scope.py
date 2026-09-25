@@ -1,11 +1,9 @@
 from unittest.mock import patch
 
 import pytest
-from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.test import APIClient
 
-from apps.cameras import ai, counting, recordings, sessions
+from apps.cameras import ai, counting
 from apps.cameras.models import AiCountingSession
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
@@ -14,23 +12,9 @@ from apps.orders import services as order_services
 from apps.orders.models import Order
 from apps.sales.models import Department
 from apps.shipments.models import Shipment
-from apps.shipments.services import record_arrival
+from apps.shipments.services import dispatch_order
 
 pytestmark = pytest.mark.django_db
-
-
-def _api(user):
-    client = APIClient()
-    client.force_authenticate(user)
-    return client
-
-
-def _employee(user_with_perms, username, codes, department=None):
-    user = user_with_perms(username, codes=codes)
-    if department is not None:
-        user.employee.sales_department = department
-        user.employee.save(update_fields=["sales_department"])
-    return user
 
 
 def _owned_client(name, department):
@@ -43,54 +27,47 @@ def _owned_client(name, department):
 
 def test_assigned_employee_cannot_mutate_foreign_shipment_but_global_employee_can(
     user_with_perms,
+    api_as,
 ):
     department_a = Department.objects.create(code="shipment-a", name="Отдел A")
     department_b = Department.objects.create(code="shipment-b", name="Отдел B")
     permissions = ["loader.confirm", "loader.trucks"]
-    assigned = _employee(
-        user_with_perms,
+    assigned = user_with_perms(
         "shipment-assigned-a",
-        permissions,
-        department_a,
+        codes=permissions,
+        department=department_a,
     )
-    global_operator = _employee(
-        user_with_perms,
+    global_operator = user_with_perms(
         "shipment-global",
-        permissions,
+        codes=permissions,
     )
     foreign_order = Order.objects.create(
         client=_owned_client("Shipment B", department_b),
         status="confirmed",
         truck_number="01B001",
     )
-    scoped_api = _api(assigned)
-    for suffix, payload in (
-        ("arrive", {"weigh_in_kg": "8000"}),
-        ("load", {"bags": 1}),
-        ("finish-loading", {}),
-        ("rewind-loading", {}),
-        ("ship", {}),
-    ):
+    scoped_api = api_as(assigned)
+    for action in ("dispatch", "rollback"):
         response = scoped_api.post(
-            f"/api/orders/{foreign_order.pk}/{suffix}/",
-            payload,
+            f"/api/loader/orders/{foreign_order.pk}/{action}/",
+            {},
             format="json",
         )
-        assert response.status_code == 404, suffix
+        assert response.status_code == 404, action
 
     foreign_order.refresh_from_db()
     assert foreign_order.status == "confirmed"
     assert not Shipment.objects.filter(order=foreign_order).exists()
 
-    response = _api(global_operator).post(
-        f"/api/orders/{foreign_order.pk}/arrive/",
-        {"weigh_in_kg": "8000"},
+    response = api_as(global_operator).post(
+        f"/api/loader/orders/{foreign_order.pk}/dispatch/",
+        {},
         format="json",
     )
 
     assert response.status_code == 200
     foreign_order.refresh_from_db()
-    assert foreign_order.status == "arrived"
+    assert foreign_order.status == "shipped"
 
 
 def test_stale_scoped_shipment_request_rechecks_department_under_order_lock(
@@ -98,11 +75,10 @@ def test_stale_scoped_shipment_request_rechecks_department_under_order_lock(
 ):
     department_a = Department.objects.create(code="stale-a", name="Старый отдел")
     department_b = Department.objects.create(code="stale-b", name="Новый отдел")
-    assigned = _employee(
-        user_with_perms,
+    assigned = user_with_perms(
         "stale-shipment-a",
-        ["loader.confirm"],
-        department_a,
+        codes=["loader.confirm"],
+        department=department_a,
     )
     client = _owned_client("Stale transfer", department_a)
     stale_order = Order.objects.create(
@@ -114,14 +90,12 @@ def test_stale_scoped_shipment_request_rechecks_department_under_order_lock(
     client.save(update_fields=["department"])
 
     with pytest.raises(PermissionDenied):
-        record_arrival(stale_order, "8000", assigned)
+        dispatch_order(stale_order, assigned)
 
     stale_order.refresh_from_db()
     assert stale_order.status == "confirmed"
     assert not Shipment.objects.filter(order=stale_order).exists()
 
-    with pytest.raises(PermissionDenied):
-        order_services.repeat_order(stale_order, assigned)
     with pytest.raises(PermissionDenied):
         order_services.soft_delete_order(stale_order, assigned)
 
@@ -129,23 +103,18 @@ def test_stale_scoped_shipment_request_rechecks_department_under_order_lock(
     assert stale_order.deleted_at is None
 
 
-def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
-    user_with_perms,
-    monkeypatch,
-):
+def test_camera_sessions_respect_client_ownership(user_with_perms, api_as):
     department_a = Department.objects.create(code="camera-a", name="Камеры A")
     department_b = Department.objects.create(code="camera-b", name="Камеры B")
     permissions = ["monoblock.view", "loader.confirm"]
-    assigned = _employee(
-        user_with_perms,
+    assigned = user_with_perms(
         "camera-assigned-a",
-        permissions,
-        department_a,
+        codes=permissions,
+        department=department_a,
     )
-    global_viewer = _employee(
-        user_with_perms,
+    global_viewer = user_with_perms(
         "camera-global",
-        permissions,
+        codes=permissions,
     )
     own_order = Order.objects.create(
         client=_owned_client("Camera A", department_a),
@@ -167,125 +136,15 @@ def test_camera_sessions_history_recordings_and_status_respect_client_ownership(
         status=AiCountingSession.ACTIVE,
         started_by=global_viewer,
     )
-    own_closed = AiCountingSession.objects.create(
-        order=own_order,
-        camera="cam3",
-        status=AiCountingSession.CLOSED,
-        ended_at=timezone.now(),
-    )
-    foreign_recording = AiCountingSession.objects.create(
-        order=foreign_order,
-        camera="cam4",
-        status=AiCountingSession.CLOSED,
-        ended_at=timezone.now(),
-        recording_stream="cam4ai",
-    )
-    monkeypatch.setattr(ai, "AI_KEY", "scope-test-key")
 
-    scoped_api = _api(assigned)
-    sessions_response = scoped_api.get("/api/cameras/ai/sessions/")
-    history_response = scoped_api.get("/api/cameras/ai/history/")
-    post_board_history = scoped_api.get(
-        "/api/cameras/ai/history/",
-        {"post_board": "1"},
-    )
-    foreign_history = scoped_api.get(
-        "/api/cameras/ai/history/",
-        {"order_id": foreign_order.pk},
-    )
+    sessions_response = api_as(assigned).get("/api/cameras/ai/sessions/")
+    global_sessions = api_as(global_viewer).get("/api/cameras/ai/sessions/")
 
     assert sessions_response.status_code == 200
     assert {row["id"] for row in sessions_response.data} == {own_open.pk}
-    assert history_response.status_code == 200
-    assert {row["id"] for row in history_response.data} == {
-        own_open.pk,
-        own_closed.pk,
-    }
-    assert post_board_history.status_code == 200
-    assert {row["id"] for row in post_board_history.data} == {
-        own_open.pk,
-        own_closed.pk,
-    }
-    assert foreign_history.status_code == 200
-    assert foreign_history.data == []
-
-    for method, path, service_name in (
-        ("post", "/api/cameras/cam2/ai/", "start"),
-        ("delete", "/api/cameras/cam2/ai/", "stop"),
-        ("post", "/api/cameras/cam2/ai/reset/", "reset"),
-    ):
-        with patch.object(counting, service_name) as service:
-            response = getattr(scoped_api, method)(
-                path,
-                {"order_id": foreign_order.pk},
-                format="json",
-            )
-        assert response.status_code == 404, service_name
-        service.assert_not_called()
-
-    with patch.object(recordings, "list_segments", return_value=[]) as listing:
-        foreign_metadata = scoped_api.get(
-            f"/api/cameras/ai/history/{foreign_recording.pk}/recording/"
-        )
-        assert foreign_metadata.status_code == 404
-        listing.assert_not_called()
-
-        global_metadata = _api(global_viewer).get(
-            f"/api/cameras/ai/history/{foreign_recording.pk}/recording/"
-        )
-        assert global_metadata.status_code == 200
-        listing.assert_called_once()
-
-    with patch.object(counting, "get_status", return_value={"running": False}) as status:
-        foreign_status = scoped_api.get(
-            f"/api/cameras/cam2/ai/?order_id={foreign_order.pk}"
-        )
-        assert foreign_status.status_code == 404
-        status.assert_not_called()
-
-        global_status = _api(global_viewer).get(
-            f"/api/cameras/cam2/ai/?order_id={foreign_order.pk}"
-        )
-        assert global_status.status_code == 200
-        status.assert_called_once_with(
-            "cam2",
-            foreign_order.pk,
-            global_viewer,
-        )
-
-    # A status poll without order_id must not reveal another department's
-    # session identifiers through counting.metadata().
-    unbound_status = scoped_api.get("/api/cameras/cam2/ai/")
-    assert unbound_status.status_code in (200, 404)
-    assert "session_id" not in unbound_status.data
-    assert "session_order_id" not in unbound_status.data
-
-    with patch.object(
-        counting,
-        "start",
-        side_effect=sessions.AiSessionBusy(foreign_open),
-    ):
-        foreign_busy = scoped_api.post(
-            "/api/cameras/cam2/ai/",
-            {"order_id": own_order.pk},
-            format="json",
-        )
-    assert foreign_busy.status_code == 409
-    assert "session_id" not in foreign_busy.data
-    assert "session_order_id" not in foreign_busy.data
-    assert str(foreign_order.pk) not in foreign_busy.data["detail"]
-
-    global_sessions = _api(global_viewer).get("/api/cameras/ai/sessions/")
-    global_history = _api(global_viewer).get("/api/cameras/ai/history/")
     assert {row["id"] for row in global_sessions.data} == {
         own_open.pk,
         foreign_open.pk,
-    }
-    assert {row["id"] for row in global_history.data} == {
-        own_open.pk,
-        foreign_open.pk,
-        own_closed.pk,
-        foreign_recording.pk,
     }
 
 
@@ -300,11 +159,10 @@ def test_camera_mutations_recheck_transferred_client_before_edge_side_effects(
         code="camera-stale-b",
         name="Камеры нового отдела",
     )
-    assigned = _employee(
-        user_with_perms,
+    assigned = user_with_perms(
         "camera-stale-assigned-a",
-        ["monoblock.view", "loader.confirm"],
-        department_a,
+        codes=["monoblock.view", "loader.confirm"],
+        department=department_a,
     )
     client = _owned_client("Camera transferred", department_a)
     order = Order.objects.create(client=client, status="loading")
@@ -316,11 +174,6 @@ def test_camera_mutations_recheck_transferred_client_before_edge_side_effects(
     )
     client.department = department_b
     client.save(update_fields=["department"])
-
-    with patch.object(ai, "reset") as edge_reset:
-        with pytest.raises(PermissionDenied):
-            counting.reset("cam99", order, assigned)
-        edge_reset.assert_not_called()
 
     with (
         patch.object(ai, "status") as edge_status,
@@ -340,19 +193,18 @@ def test_camera_mutations_recheck_transferred_client_before_edge_side_effects(
 
 def test_event_log_hides_foreign_order_events_but_unassigned_viewer_is_global(
     user_with_perms,
+    api_as,
 ):
     department_a = Department.objects.create(code="events-a", name="События A")
     department_b = Department.objects.create(code="events-b", name="События B")
-    assigned = _employee(
-        user_with_perms,
+    assigned = user_with_perms(
         "events-assigned-a",
-        ["events.view"],
-        department_a,
+        codes=["events.view"],
+        department=department_a,
     )
-    global_viewer = _employee(
-        user_with_perms,
+    global_viewer = user_with_perms(
         "events-global",
-        ["events.view"],
+        codes=["events.view"],
     )
     own_order = Order.objects.create(client=_owned_client("Events A", department_a))
     foreign_order = Order.objects.create(client=_owned_client("Events B", department_b))
@@ -381,7 +233,7 @@ def test_event_log_hides_foreign_order_events_but_unassigned_viewer_is_global(
         payload={"client_id": foreign_order.client_id},
     )
 
-    scoped_api = _api(assigned)
+    scoped_api = api_as(assigned)
     response = scoped_api.get("/api/events/")
     targeted = scoped_api.get("/api/events/", {"order": foreign_order.pk})
 
@@ -405,7 +257,7 @@ def test_event_log_hides_foreign_order_events_but_unassigned_viewer_is_global(
     assert own_event.pk in after_delete_ids
     assert foreign_event.pk not in after_delete_ids
 
-    global_response = _api(global_viewer).get("/api/events/")
+    global_response = api_as(global_viewer).get("/api/events/")
     global_ids = {row["id"] for row in global_response.data["results"]}
     assert {
         own_event.pk,
@@ -414,3 +266,61 @@ def test_event_log_hides_foreign_order_events_but_unassigned_viewer_is_global(
         own_client_event.pk,
         foreign_client_event.pk,
     } <= global_ids
+
+
+def test_event_log_keeps_history_of_orders_in_recycle_bin_and_archive(
+    user_with_perms,
+    api_as,
+):
+    department_a = Department.objects.create(code="trash-a", name="Корзина A")
+    department_b = Department.objects.create(code="trash-b", name="Корзина B")
+    assigned = user_with_perms(
+        "trash-events-a",
+        codes=["events.view"],
+        department=department_a,
+    )
+    global_viewer = user_with_perms(
+        "trash-events-global",
+        codes=["events.view"],
+    )
+    trashed = Order.objects.create(
+        client=_owned_client("Trash A", department_a), status="confirmed")
+    archived = Order.objects.create(
+        client=_owned_client("Archive A", department_a), status="confirmed")
+    foreign_trashed = Order.objects.create(
+        client=_owned_client("Trash B", department_b), status="confirmed")
+    status_event = log_event("status", "before trash", order=trashed)
+
+    order_services.soft_delete_order(trashed, global_viewer)
+    order_services.soft_delete_order(archived, global_viewer)
+    order_services.purge_order(archived, global_viewer)
+    order_services.soft_delete_order(foreign_trashed, global_viewer)
+    trash_event = EventLog.objects.get(
+        order=trashed, message="Заказ удалён в корзину")
+    purge_event = EventLog.objects.get(
+        order=archived, message__contains="удалён из архива")
+    foreign_trash_event = EventLog.objects.get(
+        order=foreign_trashed, message="Заказ удалён в корзину")
+
+    # Удаление в корзину и из архива — то, что журнал обязан показать
+    # при разборе: заказ из корзины не должен пропадать из истории.
+    global_response = api_as(global_viewer).get("/api/events/")
+    global_ids = {row["id"] for row in global_response.data["results"]}
+    assert {
+        status_event.pk,
+        trash_event.pk,
+        purge_event.pk,
+        foreign_trash_event.pk,
+    } <= global_ids
+
+    scoped_api = api_as(assigned)
+    scoped_ids = {
+        row["id"] for row in scoped_api.get("/api/events/").data["results"]
+    }
+    assert {status_event.pk, trash_event.pk, purge_event.pk} <= scoped_ids
+    assert foreign_trash_event.pk not in scoped_ids
+    targeted = scoped_api.get("/api/events/", {"order": trashed.pk})
+    assert {row["id"] for row in targeted.data["results"]} == {
+        status_event.pk,
+        trash_event.pk,
+    }

@@ -13,21 +13,30 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.conf import settings
-from django.db import connection, transaction
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.common.locks import advisory_lock
 from apps.eventlog.services import log_event
 from apps.sales.models import Department
 
+from .debt import available_to_pay, order_remaining
 from .models import (
     ApiPayInvoice,
     ApiPayRefund,
     Order,
     Payment,
     PaymentRefund,
+)
+from .refunds import (
+    assert_payment_refundable,
+    required_refund_reason,
+    settle_reserved_refund,
+    sync_refund_totals,
+    validated_refund_amount,
 )
 from .services import (
     assert_order_user_scope,
@@ -43,19 +52,13 @@ log = logging.getLogger(__name__)
 class ApiPayConfigurationError(RuntimeError):
     """У отдела нет ключа ApiPay или у заказа нет отдела."""
 
-    def __init__(self, message: str, *, department_name: str = ""):
-        super().__init__(message)
-        self.department_name = department_name
-
 
 @dataclass(frozen=True)
 class ApiPayCredentials:
-    """Ключ отдела для запросов к ApiPay: адрес провайдера один на всех."""
+    """Ключ отдела для запросов к ApiPay: адрес провайдера один на всех
+    (settings.APIPAY_BASE_URL)."""
 
     api_key: str
-    base_url: str
-    department_id: int
-    department_name: str
 
 
 @dataclass
@@ -69,11 +72,31 @@ class ApiPayAPIError(RuntimeError):
         return self.message
 
 
+def provider_error(exc, *, for_client=False):
+    """Ошибка ApiPay для ответа API — один статус и код в кассе и портале.
+
+    Кассиру сообщение называет отдел, где не подключён Kaspi; клиенту портала
+    внутренности настройки не показываем. Прочие исключения — как есть.
+    """
+    if isinstance(exc, ApiPayConfigurationError):
+        unavailable = "Счёт на оплату временно недоступен."
+        return ValidationError({
+            "detail": unavailable if for_client else (str(exc) or unavailable),
+            "code": "payment_provider_not_configured",
+        })
+    if isinstance(exc, ApiPayAPIError):
+        return ValidationError({"detail": exc.message, "code": exc.error_code})
+    return exc
+
+
 MONEY_RECEIVED_INVOICE_STATUSES = frozenset({"paid", "partially_refunded"})
+# Счёт закрыт: оплатить его уже нельзя (superseded — наша отметка о замене).
+# Поздняя оплата такого счёта всё ещё возможна и ловится сверкой.
+CLOSED_INVOICE_STATUSES = frozenset({"cancelled", "expired", "error", "superseded"})
+# Самый крупный ответ — статусы батча счетов (до 500 штук); тело ошибки короткое.
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_ERROR_RESPONSE_BYTES = 64 * 1024
 INVOICE_RECOVERY_NOT_FOUND_GRACE = timedelta(minutes=30)
-# Backwards-compatible import name for callers/tests written while recovery
-# was QR-only.
-QR_RECOVERY_NOT_FOUND_GRACE = INVOICE_RECOVERY_NOT_FOUND_GRACE
 PROVIDER_INVOICE_STATUSES = frozenset({
     "processing",
     "pending",
@@ -83,6 +106,9 @@ PROVIDER_INVOICE_STATUSES = frozenset({
     "expired",
     "error",
     "partially_refunded",
+})
+PROVIDER_REFUND_STATUSES = frozenset({
+    "pending", "processing", "completed", "failed",
 })
 
 # ApiPay's documented transition graph, extended only where local recovery
@@ -135,6 +161,9 @@ def _invoice_transition_allowed(current: str, incoming: str) -> bool:
     )
 
 
+_INVOICE_ISSUE_ADVISORY_NAMESPACE = 0x415049  # "API"
+
+
 @contextmanager
 def _invoice_issue_mutex(payment_id: int):
     """Serialize one provider POST without holding monetary row locks.
@@ -144,31 +173,13 @@ def _invoice_issue_mutex(payment_id: int):
     sparse duplicate-key 409 response. PostgreSQL releases a session advisory
     lock automatically if the worker connection dies.
     """
-    if connection.vendor != "postgresql":
-        # Production is PostgreSQL. This keeps lightweight alternative test
-        # databases functional, while response merging below remains safe.
-        yield
-        return
-
-    namespace = 0x415049  # "API"
     lock_key = int(payment_id) % 2_147_483_647
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT pg_advisory_lock(%s, %s)",
-            [namespace, lock_key],
-        )
-    try:
+    with advisory_lock(_INVOICE_ISSUE_ADVISORY_NAMESPACE, lock_key):
         yield
-    finally:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_unlock(%s, %s)",
-                [namespace, lock_key],
-            )
 
 
 @contextmanager
-def _provider_scope_fence(order_id: int, user, *, require_live: bool = False):
+def provider_scope_fence(order_id: int, user, *, require_live: bool = False):
     """Serialize department transfer behind one authorized provider call.
 
     The first local reservation transaction is deliberately short. Re-locking
@@ -198,41 +209,36 @@ def normalize_phone(value: str) -> str:
     })
 
 
-def credentials_for_department(department: Department) -> ApiPayCredentials:
-    api_key = department.apipay_api_key
-    if not api_key:
-        raise ApiPayConfigurationError(
-            f"В отделе «{department.name}» не подключён Kaspi (ApiPay)",
-            department_name=department.name,
-        )
-    return ApiPayCredentials(
-        api_key=api_key,
-        base_url=settings.APIPAY_BASE_URL,
-        department_id=department.pk,
-        department_name=department.name,
-    )
-
-
 def credentials_for_department_code(code: str) -> ApiPayCredentials:
     """Ключ отдела по коду заказа; активность не проверяется: старые счета
     отключённого отдела сверяются его же ключом."""
     department = Department.objects.filter(code=code).first() if code else None
     if department is None:
         raise ApiPayConfigurationError("У заказа не указан отдел продаж")
-    return credentials_for_department(department)
+    api_key = department.apipay_api_key
+    if not api_key:
+        raise ApiPayConfigurationError(
+            f"В отделе «{department.name}» не подключён Kaspi (ApiPay)"
+        )
+    return ApiPayCredentials(api_key=api_key)
 
 
 def credentials_for_order(order: Order) -> ApiPayCredentials:
     return credentials_for_department_code(order.department)
 
 
-def credentials_for_invoice(record: ApiPayInvoice) -> ApiPayCredentials:
-    code = (
+def invoice_department_code(record: ApiPayInvoice) -> str:
+    """Код отдела заказа, по которому выставлен счёт (в том числе удалённого)."""
+    return (
         Order.all_objects.filter(payments__pk=record.payment_id)
         .values_list("department", flat=True)
         .first()
+        or ""
     )
-    return credentials_for_department_code(code or "")
+
+
+def credentials_for_invoice(record: ApiPayInvoice) -> ApiPayCredentials:
+    return credentials_for_department_code(invoice_department_code(record))
 
 
 def api_request(
@@ -253,7 +259,7 @@ def api_request(
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(
-        f"{credentials.base_url}/{path.lstrip('/')}",
+        f"{settings.APIPAY_BASE_URL}/{path.lstrip('/')}",
         data=body,
         headers=headers,
         method=method,
@@ -262,12 +268,18 @@ def api_request(
         with urllib.request.urlopen(
             request, timeout=timeout or settings.APIPAY_TIMEOUT_SECONDS
         ) as response:
-            raw = response.read()
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
-        raw = exc.read()
+        raw = exc.read(MAX_ERROR_RESPONSE_BYTES + 1)
         try:
-            error_payload = json.loads(raw.decode("utf-8")) if raw else {}
+            error_payload = (
+                json.loads(raw.decode("utf-8"))
+                if raw and len(raw) <= MAX_ERROR_RESPONSE_BYTES
+                else {}
+            )
         except (UnicodeDecodeError, json.JSONDecodeError):
+            error_payload = {}
+        if not isinstance(error_payload, dict):
             error_payload = {}
         code = str(
             error_payload.get("error_code")
@@ -287,6 +299,10 @@ def api_request(
 
     if not raw:
         return {}
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ApiPayAPIError(
+            502, "invalid_apipay_response", "Платёжный сервис вернул слишком большой ответ", {}
+        )
     try:
         result = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -300,6 +316,63 @@ def api_request(
     return result
 
 
+def positive_provider_id(value: object, field: str = "id") -> int:
+    """Идентификатор ApiPay: целое больше нуля, числом или строкой.
+
+    bool и float отвергаются: int() молча превратил бы True в 1, а 12.7 в 12.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"{field} is invalid")
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{field} is invalid") from exc
+    if result <= 0:
+        raise ValueError(f"{field} is invalid")
+    return result
+
+
+def provider_money(value: object) -> Decimal | None:
+    """Сумма из ответа ApiPay до копеек; None, если это не конечное число."""
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return amount if amount.is_finite() else None
+
+
+def positive_provider_money(value: object, field: str = "amount") -> Decimal:
+    """Сумма ApiPay больше нуля; иначе ValueError."""
+    amount = provider_money(value)
+    if amount is None or amount <= 0:
+        raise ValueError(f"{field} is invalid")
+    return amount
+
+
+def assert_apipay_currency(order: Order) -> None:
+    if order.currency != "KZT":
+        raise ValidationError({
+            "detail": "Оплата через Kaspi доступна только в тенге.",
+            "code": "apipay_kzt_only",
+        })
+
+
+def _validate_invoice_channel(channel: str) -> None:
+    if channel not in {"phone", "qr"}:
+        raise ValidationError({
+            "detail": "Выберите QR или оплату по номеру.",
+            "code": "invalid_payment_channel",
+        })
+
+
+def _require_provider_invoice(record: ApiPayInvoice) -> None:
+    if record.invoice_id is None:
+        raise ValidationError({
+            "detail": "Счёт на оплату ещё не создан.",
+            "code": "invoice_not_created",
+        })
+
+
 def _invoice_payload_from_error(
     exc: ApiPayAPIError,
 ) -> dict[str, Any] | None:
@@ -307,26 +380,32 @@ def _invoice_payload_from_error(
     payload = exc.payload if isinstance(exc.payload, dict) else {}
     nested = payload.get("invoice")
     invoice = dict(nested) if isinstance(nested, dict) else dict(payload)
-    raw_invoice_id = (
-        invoice.get("id")
-        or invoice.get("invoice_id")
-        or payload.get("invoice_id")
-    )
-    if isinstance(raw_invoice_id, bool) or not isinstance(
-        raw_invoice_id, (str, int)
-    ):
-        return None
     try:
-        invoice_id = int(raw_invoice_id)
-        if invoice_id <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
+        invoice["id"] = positive_provider_id(
+            invoice.get("id")
+            or invoice.get("invoice_id")
+            or payload.get("invoice_id")
+        )
+    except ValueError:
         return None
-    invoice["id"] = invoice_id
     # Mapping a returned provider ID is safe even when the error body omits the
     # eventual state. Keep it active until webhook/reconciliation gives truth.
     invoice["status"] = str(invoice.get("status") or "processing")
     return invoice
+
+
+@dataclass
+class _InvoiceIssue:
+    """Выдача счёта, зарезервированная локально (фаза 1 create_invoice)."""
+
+    record: ApiPayInvoice
+    order: Order
+    payment: Payment
+    channel: str
+    phone: str
+    credentials: ApiPayCredentials
+    # Прежняя выдача с потерянным ответом: только поиск, повторный POST опасен.
+    recover_existing: bool
 
 
 def create_invoice(
@@ -334,276 +413,237 @@ def create_invoice(
     *,
     channel: str = "phone",
     phone_number: str | None = None,
-    hydrate_money_response: bool = True,
     user,
 ) -> ApiPayInvoice:
     """Create once, or search-only recover, an ApiPay invoice for a payment."""
-    if channel not in {"phone", "qr"}:
-        raise ValidationError({
-            "detail": "Выберите QR или оплату по номеру.",
-            "code": "invalid_payment_channel",
-        })
+    _validate_invoice_channel(channel)
     with _invoice_issue_mutex(payment.pk):
-        # Phase 1: validate and reserve the local mapping using the same global
-        # monetary lock order as webhooks and payment transitions.
-        with transaction.atomic():
-            order = (
-                Order.all_objects.select_for_update()
-                .select_related("client__user")
-                .get(pk=payment.order_id)
-            )
-            assert_order_user_scope(order, user)
-            locked_payment = Payment.objects.select_for_update().get(
-                pk=payment.pk
-            )
-            locked_payment.order = order
-            record = (
-                ApiPayInvoice.objects.select_for_update()
-                .filter(payment=locked_payment)
-                .first()
-            )
-            if record is not None and record.invoice_id is not None:
-                return record
-            recover_existing_issue = record is not None
-            if record is not None and record.status != "creating":
-                raise ValidationError({
-                    "detail": (
-                        "Ключ прежней операции больше нельзя использовать. "
-                        "Создайте новую платёжную операцию."
-                    ),
-                    "code": "provider_issue_key_retired",
-                })
-            if order.currency != "KZT":
-                raise ValidationError({
-                    "detail": "Счёт на оплату доступен только в тенге.",
-                    "code": "apipay_kzt_only",
-                })
-            # Ключ отдела заказа проверяется до резервирования: без ключа
-            # не должно оставаться записи «creating», которую нечем сверять.
-            credentials = credentials_for_order(order)
-            if record is None:
-                phone = (
-                    normalize_phone(phone_number or order.client.phone)
-                    if channel == "phone"
-                    else ""
-                )
-                record = ApiPayInvoice.objects.create(
-                    payment=locked_payment,
-                    # The trailing version delimiter prevents payment 1 from
-                    # being a substring match for payment 10, 100, etc. The
-                    # exact row filter still supports legacy unsuffixed keys.
-                    idempotency_key=(
-                        f"asyl-payment-{locked_payment.pk}-v1"
-                    ),
-                    status="creating",
-                    channel=channel,
-                    phone_number=phone,
-                )
-            else:
-                # The first POST may have succeeded before its response was
-                # lost. Never change channel or POST again with this key:
-                # ApiPay permits a duplicate phone key after terminal states.
-                channel = record.channel
-                phone = record.phone_number
-                if channel not in {"phone", "qr"}:
-                    raise ValidationError({
-                        "detail": "Канал прежней операции повреждён.",
-                        "code": "invalid_payment_channel",
-                    })
-            if record is not None and record.pk:
-                record_id = record.pk
-            else:  # pragma: no cover - defensive ORM invariant
-                raise RuntimeError("ApiPay invoice reservation was not saved")
-            if not recover_existing_issue:
-                request_payload = {
-                    "amount": float(
-                        Decimal(locked_payment.amount).quantize(
-                            Decimal("0.01")
-                        )
-                    ),
-                    "description": f"Заказ №{order.pk}",
-                    "external_order_id": record.idempotency_key,
-                }
-                if channel == "phone":
-                    request_payload["phone_number"] = phone
-                    # This key protects only the first phone POST while the
-                    # provider invoice is active. Recovery never POSTs again.
-                    request_payload[
-                        "external_order_id_idempotency"
-                    ] = record.idempotency_key
-            else:
-                request_payload = {}
-            order_id = order.pk
+        issue = _reserve_invoice_issue(
+            payment, channel=channel, phone_number=phone_number, user=user
+        )
+        if isinstance(issue, ApiPayInvoice):
+            return issue
+        if issue.recover_existing:
+            return _recover_invoice_issue(issue, user)
+        return _post_invoice(issue, user)
 
-        if recover_existing_issue:
-            # Neither channel is safe to POST again after an ambiguous first
-            # response. Phone idempotency only rejects duplicates while the
-            # previous provider invoice remains active.
-            with _provider_scope_fence(order_id, user):
-                recovered = recover_invoice_issue_mapping(record)
-            if recovered is not None:
-                return recovered
-            record.refresh_from_db()
-            if record.status == "error":
-                raise ApiPayAPIError(
-                    409,
-                    record.error_code or "apipay_invoice_not_found",
-                    record.error_message
-                    or "Создание счёта не подтверждено платёжным сервисом",
-                    record.response_payload,
-                )
-            raise ApiPayAPIError(
-                503,
-                "apipay_issue_recovery_pending",
-                "Статус создаваемого счёта ещё уточняется",
+
+def _reserve_invoice_issue(
+    payment: Payment, *, channel: str, phone_number: str | None, user
+) -> ApiPayInvoice | _InvoiceIssue:
+    """Phase 1: validate and reserve the local mapping using the same global
+    monetary lock order as webhooks and payment transitions.
+
+    Уже привязанный к провайдеру счёт возвращается как есть.
+    """
+    with transaction.atomic():
+        order = (
+            Order.all_objects.select_for_update()
+            .select_related("client__user")
+            .get(pk=payment.order_id)
+        )
+        assert_order_user_scope(order, user)
+        locked_payment = Payment.objects.select_for_update().get(pk=payment.pk)
+        locked_payment.order = order
+        record = (
+            ApiPayInvoice.objects.select_for_update()
+            .filter(payment=locked_payment)
+            .first()
+        )
+        if record is not None and record.invoice_id is not None:
+            return record
+        if record is not None and record.status != "creating":
+            raise ValidationError({
+                "detail": (
+                    "Ключ прежней операции больше нельзя использовать. "
+                    "Создайте новую платёжную операцию."
+                ),
+                "code": "provider_issue_key_retired",
+            })
+        assert_apipay_currency(order)
+        # Ключ отдела заказа проверяется до резервирования: без ключа
+        # не должно оставаться записи «creating», которую нечем сверять.
+        credentials = credentials_for_order(order)
+        recover_existing = record is not None
+        if record is None:
+            phone = (
+                normalize_phone(phone_number or order.client.phone)
+                if channel == "phone"
+                else ""
+            )
+            record = ApiPayInvoice.objects.create(
+                payment=locked_payment,
+                # The trailing version delimiter prevents payment 1 from
+                # being a substring match for payment 10, 100, etc. The
+                # exact row filter still supports legacy unsuffixed keys.
+                idempotency_key=f"asyl-payment-{locked_payment.pk}-v1",
+                status="creating",
+                channel=channel,
+                phone_number=phone,
+            )
+        else:
+            # The first POST may have succeeded before its response was
+            # lost. Never change channel or POST again with this key:
+            # ApiPay permits a duplicate phone key after terminal states.
+            channel = record.channel
+            phone = record.phone_number
+    return _InvoiceIssue(
+        record=record,
+        order=order,
+        payment=locked_payment,
+        channel=channel,
+        phone=phone,
+        credentials=credentials,
+        recover_existing=recover_existing,
+    )
+
+
+def _recover_invoice_issue(issue: _InvoiceIssue, user) -> ApiPayInvoice:
+    # Neither channel is safe to POST again after an ambiguous first
+    # response. Phone idempotency only rejects duplicates while the
+    # previous provider invoice remains active.
+    record = issue.record
+    with provider_scope_fence(issue.order.pk, user):
+        recovered = recover_invoice_issue_mapping(record)
+    if recovered is not None:
+        return recovered
+    record.refresh_from_db()
+    if record.status == "error":
+        raise ApiPayAPIError(
+            409,
+            record.error_code or "apipay_invoice_not_found",
+            record.error_message
+            or "Создание счёта не подтверждено платёжным сервисом",
+            record.response_payload,
+        )
+    raise ApiPayAPIError(
+        503,
+        "apipay_issue_recovery_pending",
+        "Статус создаваемого счёта ещё уточняется",
+        {},
+    )
+
+
+def _post_invoice(issue: _InvoiceIssue, user) -> ApiPayInvoice:
+    """Phase 2 keeps only the Order -> Client authorization fence over the
+    network. Monetary rows remain unlocked, while a department transfer
+    cannot overtake this already-authorized provider side effect."""
+    record = issue.record
+    request_payload = {
+        "amount": float(
+            Decimal(issue.payment.amount).quantize(Decimal("0.01"))
+        ),
+        "description": f"Заказ №{issue.order.pk}",
+        "external_order_id": record.idempotency_key,
+    }
+    if issue.channel == "phone":
+        request_payload["phone_number"] = issue.phone
+        # This key protects only the first phone POST while the provider
+        # invoice is active. Recovery never POSTs again.
+        request_payload[
+            "external_order_id_idempotency"
+        ] = record.idempotency_key
+    path = "/invoices/qr" if issue.channel == "qr" else "/invoices"
+    try:
+        with provider_scope_fence(issue.order.pk, user):
+            response = api_request(
+                "POST", path, request_payload, credentials=issue.credentials
+            )
+    except PermissionDenied:
+        _save_invoice_issue_error(
+            record.pk,
+            issue.payment.pk,
+            ApiPayAPIError(
+                409,
+                "client_department_changed",
+                "Клиент передан в другой отдел до создания счёта",
                 {},
-            )
-
-        # Phase 2 keeps only the Order -> Client authorization fence over the
-        # network. Monetary rows remain unlocked, while a department transfer
-        # cannot overtake this already-authorized provider side effect.
-        path = "/invoices/qr" if channel == "qr" else "/invoices"
-        try:
-            with _provider_scope_fence(order_id, user):
-                response = api_request(
-                    "POST", path, request_payload, credentials=credentials
-                )
-        except PermissionDenied:
-            _save_invoice_issue_error(
-                record_id,
-                payment.pk,
-                ApiPayAPIError(
-                    409,
-                    "client_department_changed",
-                    "Клиент передан в другой отдел до создания счёта",
-                    {},
-                ),
-                ambiguous=False,
-            )
-            raise
-        except ApiPayConfigurationError as exc:
-            _save_invoice_issue_error(
-                record_id,
-                payment.pk,
-                ApiPayAPIError(
-                    503,
-                    "apipay_not_configured",
-                    str(exc),
-                    {},
-                ),
-                ambiguous=False,
-            )
-            raise
-        except ApiPayAPIError as exc:
-            if (
-                exc.status_code == 409
-                and exc.error_code == "duplicate_idempotency_key"
-            ):
-                response = {
-                    "id": exc.payload.get("invoice_id"),
-                    "status": exc.payload.get("status", "processing"),
-                }
-            else:
-                recovered_response = _invoice_payload_from_error(exc)
-                if recovered_response is not None:
-                    response = recovered_response
-                    try:
-                        invoice_id = int(response["id"])
-                    except (KeyError, TypeError, ValueError):
-                        invoice_id = 0
-                    if invoice_id > 0:
-                        record, mapped_now = _merge_invoice_create_response(
-                            record_id=record_id,
-                            payment_id=payment.pk,
-                            invoice_id=invoice_id,
-                            response=response,
-                            channel=channel,
-                            phone=phone,
-                        )
-                        record = _apply_create_response_safely(
-                            record,
-                            response,
-                            hydrate_money_response=hydrate_money_response,
-                        )
-                        if mapped_now:
-                            from .webhooks import (
-                                replay_pending_apipay_webhooks,
-                            )
-
-                            replay_pending_apipay_webhooks(
-                                provider_invoice_id=invoice_id,
-                            )
-                            record.refresh_from_db()
-                        if record.status not in {
-                            "error", "cancelled", "expired",
-                        }:
-                            return record
-                        # The provider ID and terminal evidence are already
-                        # durable. Still surface the original failed issuance
-                        # to the caller instead of reporting a usable invoice.
-                        raise
-                recovered = _save_invoice_issue_error(
-                    record_id, payment.pk, exc
-                )
-                if recovered is not None:
-                    return recovered
-                raise
-
-        try:
-            invoice_id = int(response["id"])
-            if invoice_id <= 0:
-                raise ValueError
-        except (KeyError, TypeError, ValueError) as exc:
-            invalid_response = ApiPayAPIError(
-                502,
-                "invalid_apipay_response",
-                "Платёжный сервис не вернул идентификатор счёта",
-                response,
-            )
-            recovered = _save_invoice_issue_error(
-                record_id, payment.pk, invalid_response
-            )
-            if recovered is not None:
-                return recovered
-            raise invalid_response from exc
-
-        record, mapped_now = _merge_invoice_create_response(
-            record_id=record_id,
-            payment_id=payment.pk,
-            invoice_id=invoice_id,
-            response=response,
-            channel=channel,
-            phone=phone,
+            ),
+            ambiguous=False,
         )
-        record = _apply_create_response_safely(
-            record,
+        raise
+    except ApiPayConfigurationError as exc:
+        _save_invoice_issue_error(
+            record.pk,
+            issue.payment.pk,
+            ApiPayAPIError(503, "apipay_not_configured", str(exc), {}),
+            ambiguous=False,
+        )
+        raise
+    except ApiPayAPIError as exc:
+        if not (
+            exc.status_code == 409
+            and exc.error_code == "duplicate_idempotency_key"
+        ):
+            return _invoice_from_failed_post(issue, exc)
+        response = {
+            "id": exc.payload.get("invoice_id"),
+            "status": exc.payload.get("status", "processing"),
+        }
+
+    try:
+        invoice_id = positive_provider_id(response.get("id"))
+    except ValueError as exc:
+        invalid_response = ApiPayAPIError(
+            502,
+            "invalid_apipay_response",
+            "Платёжный сервис не вернул идентификатор счёта",
             response,
-            hydrate_money_response=hydrate_money_response,
         )
-
-        # Replay outside monetary row locks. Calling the public inbox consumer
-        # directly avoids the Event->Order vs Order->Event signal inversion.
-        if mapped_now:
-            from .webhooks import replay_pending_apipay_webhooks
-
-            replay_pending_apipay_webhooks(
-                provider_invoice_id=invoice_id,
-            )
-            record.refresh_from_db()
-
-        log_event(
-            "payment",
-            f"Счёт на оплату №{invoice_id} создан для заказа №{order_id}",
-            user=locked_payment.recorded_by,
-            order=order,
-            payload={
-                "action": "apipay_invoice_created",
-                "payment_id": locked_payment.pk,
-                "apipay_invoice_id": invoice_id,
-                "status": record.status,
-            },
+        recovered = _save_invoice_issue_error(
+            record.pk, issue.payment.pk, invalid_response
         )
-        return record
+        if recovered is not None:
+            return recovered
+        raise invalid_response from exc
+
+    record = _map_and_apply_invoice(
+        record.pk,
+        issue.payment.pk,
+        invoice_id,
+        response,
+        channel=issue.channel,
+        phone=issue.phone,
+    )
+    log_event(
+        "payment",
+        f"Счёт на оплату №{invoice_id} создан для заказа №{issue.order.pk}",
+        user=issue.payment.recorded_by,
+        order=issue.order,
+        payload={
+            "action": "apipay_invoice_created",
+            "payment_id": issue.payment.pk,
+            "apipay_invoice_id": invoice_id,
+            "status": record.status,
+        },
+    )
+    return record
+
+
+def _invoice_from_failed_post(
+    issue: _InvoiceIssue, exc: ApiPayAPIError
+) -> ApiPayInvoice:
+    """Отказ POST: провайдер мог всё же создать счёт и вернуть его в ошибке."""
+    response = _invoice_payload_from_error(exc)
+    if response is not None:
+        record = _map_and_apply_invoice(
+            issue.record.pk,
+            issue.payment.pk,
+            response["id"],
+            response,
+            channel=issue.channel,
+            phone=issue.phone,
+        )
+        if record.status not in {"error", "cancelled", "expired"}:
+            return record
+        # The provider ID and terminal evidence are already durable. Still
+        # surface the original failed issuance to the caller instead of
+        # reporting a usable invoice.
+        raise exc
+    recovered = _save_invoice_issue_error(issue.record.pk, issue.payment.pk, exc)
+    if recovered is not None:
+        return recovered
+    raise exc
 
 
 def _save_invoice_issue_error(
@@ -689,7 +729,7 @@ def _merge_invoice_create_response(
         # Sparse duplicate-key responses must never erase a rich QR response.
         qr_token_url = str(response.get("qr_token_url") or "")
         qr_image_url = str(response.get("qr_image_url") or "")
-        qr_expires_at = _parsed_datetime(response.get("qr_expires_at"))
+        qr_expires_at = parse_provider_datetime(response.get("qr_expires_at"))
         if qr_token_url:
             updates["qr_token_url"] = qr_token_url
         if qr_image_url:
@@ -697,12 +737,43 @@ def _merge_invoice_create_response(
         if qr_expires_at is not None:
             updates["qr_expires_at"] = qr_expires_at
 
-        # QuerySet.update deliberately avoids firing the invoice-mapping signal
-        # while Order/Payment/Invoice row locks are held.
         ApiPayInvoice.objects.filter(pk=record.pk).update(**updates)
 
     record.refresh_from_db()
     return record, mapped_now
+
+
+def _map_and_apply_invoice(
+    record_id: int,
+    payment_id: int,
+    invoice_id: int,
+    response: dict[str, Any],
+    *,
+    channel: str,
+    phone: str,
+    hydrate_money_response: bool = True,
+) -> ApiPayInvoice:
+    """Привязать id счёта провайдера, применить его ответ и доиграть вебхуки,
+    пришедшие раньше привязки."""
+    record, mapped_now = _merge_invoice_create_response(
+        record_id=record_id,
+        payment_id=payment_id,
+        invoice_id=invoice_id,
+        response=response,
+        channel=channel,
+        phone=phone,
+    )
+    record = _apply_create_response_safely(
+        record, response, hydrate_money_response=hydrate_money_response
+    )
+    if mapped_now:
+        # Runs outside monetary row locks; calling the inbox consumer directly
+        # avoids the Event->Order vs Order->Event lock inversion.
+        from .webhooks import replay_pending_apipay_webhooks
+
+        replay_pending_apipay_webhooks(provider_invoice_id=invoice_id)
+        record.refresh_from_db()
+    return record
 
 
 def recover_invoice_mapping_from_payload(
@@ -725,12 +796,7 @@ def recover_invoice_mapping_from_payload(
     )
     if candidate is None:
         return None
-    try:
-        invoice_id = int(payload["id"])
-        if invoice_id <= 0:
-            raise ValueError
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("invoice.id is invalid") from exc
+    invoice_id = positive_provider_id(payload.get("id"), "invoice.id")
 
     order_id = candidate.payment.order_id
     with transaction.atomic():
@@ -776,10 +842,9 @@ def _hydrate_money_response(
     ):
         return payload
     authoritative = get_invoice(record)
-    try:
-        provider_invoice_id = int(authoritative["id"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("invoice.id is invalid") from exc
+    provider_invoice_id = positive_provider_id(
+        authoritative.get("id"), "invoice.id"
+    )
     if provider_invoice_id != record.invoice_id:
         raise ValueError("invoice.id does not match local invoice")
     return authoritative
@@ -814,22 +879,21 @@ def _apply_create_response_safely(
     return record
 
 
+# Оплата из кабинета клиента: Kaspi — QR, счёт — на номер телефона.
+CLIENT_PAYMENT_CHANNELS = {"kaspi": "qr", "invoice": "phone"}
+
+
 def start_order_payment(
-    order: Order, user, *, channel: str = "phone", phone_number: str | None = None,
-    payment_method: str = "kaspi", amount=None,
+    order: Order, user, *, payment_method: str, phone_number: str | None = None,
+    amount=None,
 ) -> ApiPayInvoice:
     """Validate, create the internal payment, then issue the ApiPay invoice."""
-    if order.currency != "KZT":
-        raise ValidationError({
-            "detail": "Счёт на оплату доступен только в тенге.",
-            "code": "apipay_kzt_only",
-        })
-    if channel not in ("phone", "qr"):
-        raise ValidationError({"detail": "Выберите QR или оплату по номеру."})
+    assert_apipay_currency(order)
+    channel = CLIENT_PAYMENT_CHANNELS.get(payment_method)
+    if channel is None:
+        raise ValidationError({"detail": "Недопустимый способ оплаты по счёту."})
     if channel == "phone":
         normalize_phone(phone_number or order.client.phone)
-    if payment_method not in ("kaspi", "invoice"):
-        raise ValidationError({"detail": "Недопустимый способ оплаты по счёту."})
     payment = create_client_payment(order, payment_method, user, amount=amount)
     try:
         return create_invoice(
@@ -839,15 +903,24 @@ def start_order_payment(
             user=user,
         )
     except (ApiPayAPIError, ApiPayConfigurationError, ValidationError):
-        payment.refresh_from_db()
-        unresolved = ApiPayInvoice.objects.filter(
-            payment=payment,
-            invoice_id__isnull=True,
-            status="creating",
-        ).exists()
-        if payment.status in Payment.IN_PROGRESS_STATUSES and not unresolved:
-            reject_payment(payment, user)
+        reject_unissued_payment(payment, user)
         raise
+
+
+def reject_unissued_payment(payment: Payment, user) -> None:
+    """Отклонить операцию, если счёт провайдеру так и не выставлен.
+
+    Неясный исход первого POST (запись «creating» без id счёта) оставляет
+    резерв: счёт мог появиться у провайдера, его найдёт сверка.
+    """
+    payment.refresh_from_db()
+    unresolved = ApiPayInvoice.objects.filter(
+        payment=payment,
+        invoice_id__isnull=True,
+        status="creating",
+    ).exists()
+    if payment.status in Payment.IN_PROGRESS_STATUSES and not unresolved:
+        reject_payment(payment, user)
 
 
 def get_invoice(record: ApiPayInvoice) -> dict[str, Any]:
@@ -901,7 +974,6 @@ def recover_invoice_issue_mapping(
     record: ApiPayInvoice,
     *,
     checked_at=None,
-    not_found_grace: timedelta = INVOICE_RECOVERY_NOT_FOUND_GRACE,
     max_pages: int | None = None,
     hydrate_money_response: bool = True,
 ) -> ApiPayInvoice | None:
@@ -919,7 +991,6 @@ def recover_invoice_issue_mapping(
         raise ValueError("invoice recovery requires phone or QR channel")
 
     checked_at = checked_at or timezone.now()
-    not_found_grace = max(not_found_grace, timedelta(0))
     credentials = credentials_for_invoice(record)
     per_page = 100
     page = 1
@@ -1022,7 +1093,7 @@ def recover_invoice_issue_mapping(
         page += 1
 
     if not matches:
-        if checked_at - record.created_at >= not_found_grace:
+        if checked_at - record.created_at >= INVOICE_RECOVERY_NOT_FOUND_GRACE:
             # Reuse the global Order -> Payment -> Invoice lock order. If a
             # webhook mapped the invoice after our GET, it wins the recheck.
             previous_evidence = {
@@ -1062,10 +1133,8 @@ def recover_invoice_issue_mapping(
     matches_by_id: dict[int, dict[str, Any]] = {}
     for match in matches:
         try:
-            match_id = int(match["id"])
-            if match_id <= 0:
-                raise ValueError
-        except (KeyError, TypeError, ValueError) as exc:
+            match_id = positive_provider_id(match.get("id"))
+        except ValueError as exc:
             raise ApiPayAPIError(
                 502,
                 "invalid_apipay_response",
@@ -1089,36 +1158,15 @@ def recover_invoice_issue_mapping(
             last_response,
         )
     invoice_id, payload = next(iter(matches_by_id.items()))
-    record, mapped_now = _merge_invoice_create_response(
-        record_id=record.pk,
-        payment_id=record.payment_id,
-        invoice_id=invoice_id,
-        response=payload,
+    return _map_and_apply_invoice(
+        record.pk,
+        record.payment_id,
+        invoice_id,
+        payload,
         channel=record.channel,
         phone=record.phone_number,
-    )
-    record = _apply_create_response_safely(
-        record,
-        payload,
         hydrate_money_response=hydrate_money_response,
     )
-    if mapped_now:
-        from .webhooks import replay_pending_apipay_webhooks
-
-        replay_pending_apipay_webhooks(provider_invoice_id=invoice_id)
-        record.refresh_from_db()
-    return record
-
-
-def recover_qr_invoice_mapping(
-    record: ApiPayInvoice,
-    **kwargs,
-) -> ApiPayInvoice | None:
-    """Compatibility wrapper around the channel-agnostic recovery."""
-    record.refresh_from_db(fields=["channel"])
-    if record.channel != "qr":
-        raise ValueError("QR recovery requires a QR invoice record")
-    return recover_invoice_issue_mapping(record, **kwargs)
 
 
 def check_invoice_statuses(
@@ -1141,11 +1189,7 @@ def get_invoice_refunds(record: ApiPayInvoice) -> dict[str, Any]:
     POST /refund, so ambiguous POST outcomes must be resolved through this
     list rather than by repeating the refund request.
     """
-    if record.invoice_id is None:
-        raise ValidationError({
-            "detail": "Счёт на оплату ещё не создан.",
-            "code": "invoice_not_created",
-        })
+    _require_provider_invoice(record)
     return api_request(
         "GET",
         f"/invoices/{record.invoice_id}/refunds",
@@ -1157,7 +1201,7 @@ def cancel_invoice(record: ApiPayInvoice, *, user) -> ApiPayInvoice:
     order_id = Payment.objects.values_list("order_id", flat=True).get(
         pk=record.payment_id
     )
-    with _provider_scope_fence(order_id, user):
+    with provider_scope_fence(order_id, user):
         locked_record = (
             ApiPayInvoice.objects.select_for_update()
             .select_related("payment")
@@ -1180,11 +1224,7 @@ def _cancel_invoice_locked(record: ApiPayInvoice) -> ApiPayInvoice:
             ),
             "code": "qr_cancel_unsupported",
         })
-    if record.invoice_id is None:
-        raise ValidationError({
-            "detail": "Счёт на оплату ещё не создан.",
-            "code": "invoice_not_created",
-        })
+    _require_provider_invoice(record)
     try:
         response = api_request(
             "POST",
@@ -1242,115 +1282,11 @@ def _cancel_invoice_locked(record: ApiPayInvoice) -> ApiPayInvoice:
     return record
 
 
-def _validated_refund_amount(payment: Payment, amount: object) -> Decimal:
-    raw = payment.available_for_refund if amount in (None, "") else amount
-    try:
-        parsed = Decimal(str(raw))
-        value = parsed.quantize(Decimal("0.01"))
-    except InvalidOperation as exc:
-        raise ValidationError({"detail": "Некорректная сумма возврата."}) from exc
-    if not value.is_finite() or value <= 0:
-        raise ValidationError({"detail": "Сумма возврата должна быть больше нуля."})
-    if parsed != value:
-        raise ValidationError({
-            "detail": "Укажите сумму возврата с точностью не более двух знаков."
-        })
-    if value > payment.available_for_refund:
-        raise ValidationError({
-            "detail": (
-                f"Доступно к возврату: "
-                f"{payment.available_for_refund} {payment.order.currency}."
-            ),
-            "code": "refund_exceeds_available",
-        })
-    return value
-
-
-def _sync_refund_totals(payment: Payment, order: Order) -> None:
-    totals = payment.payment_refunds.values("status").annotate(total=Sum("amount"))
-    by_status = {row["status"]: row["total"] for row in totals}
-    payment.refunded_amount = by_status.get("completed", Decimal(0))
-    payment.pending_refund_amount = by_status.get("pending", Decimal(0))
-    payment.save(update_fields=["refunded_amount", "pending_refund_amount"])
-    sync_payment_status(order)
-
-
-def _fail_reserved_refund(
-    *, refund_id: int, payment_id: int, order_id: int
-) -> None:
-    """Release a reservation after local denial or definitive provider failure."""
-    with transaction.atomic():
-        order = Order.all_objects.select_for_update().get(pk=order_id)
-        payment = Payment.objects.select_for_update().get(pk=payment_id)
-        refund = PaymentRefund.objects.select_for_update().get(pk=refund_id)
-        refund.status = "failed"
-        refund.save(update_fields=["status", "updated_at"])
-        payment.order = order
-        _sync_refund_totals(payment, order)
-
-
-@transaction.atomic
-def create_cash_refund(
-    payment: Payment, user, *, amount: object = None, reason: str = ""
-) -> PaymentRefund:
-    order = lock_live_order(payment.order_id, user)
-    payment = (
-        Payment.objects.select_for_update()
-        .get(pk=payment.pk)
-    )
-    payment.order = order
-    if payment.status != "confirmed":
-        raise ValidationError({
-            "detail": "Вернуть можно только подтверждённую оплату.",
-            "code": "payment_not_confirmed",
-        })
-    reason = reason.strip()
-    if not reason:
-        raise ValidationError({
-            "detail": "Укажите причину возврата.",
-            "code": "refund_reason_required",
-        })
-    value = _validated_refund_amount(payment, amount)
-    refund = PaymentRefund.objects.create(
-        payment=payment,
-        amount=value,
-        method="cash",
-        status="completed",
-        reason=reason[:500],
-        requested_by=user,
-        completed_at=timezone.now(),
-    )
-    _sync_refund_totals(payment, order)
-    log_event(
-        "payment",
-        f"Возврат из кассы {value} {payment.order.currency}",
-        user=user,
-        order=payment.order,
-        payload={
-            "action": "cash_refund_completed",
-            "payment_id": payment.pk,
-            "refund_id": refund.pk,
-            "amount": str(value),
-            "reason": reason[:500],
-        },
-    )
-    return refund
-
-
 def create_refund(
     record: ApiPayInvoice, user, *, amount: object = None, reason: str = ""
 ) -> ApiPayRefund:
-    if record.invoice_id is None:
-        raise ValidationError({
-            "detail": "Счёт на оплату ещё не создан.",
-            "code": "invoice_not_created",
-        })
-    reason = reason.strip()
-    if not reason:
-        raise ValidationError({
-            "detail": "Укажите причину возврата.",
-            "code": "refund_reason_required",
-        })
+    _require_provider_invoice(record)
+    reason = required_refund_reason(reason)
     # Reserve the amount in a short local transaction before the remote call.
     # This prevents two workers from refunding the same balance and avoids
     # holding database locks while ApiPay/Kaspi responds.
@@ -1358,21 +1294,17 @@ def create_refund(
         order = lock_live_order(record.payment.order_id, user)
         payment = Payment.objects.select_for_update().get(pk=record.payment_id)
         payment.order = order
-        if payment.status != "confirmed":
-            raise ValidationError({
-                "detail": "Вернуть можно только подтверждённую оплату.",
-                "code": "payment_not_confirmed",
-            })
+        assert_payment_refundable(payment)
         # ApiPay does not document an idempotency key for refund creation.
         # Keep at most one request without a provider ID in flight per payment:
         # a concurrent retry could otherwise create a second real refund and
         # two same-amount requests cannot be correlated reliably afterwards.
-        if PaymentRefund.objects.select_for_update().filter(
-            payment=payment,
-            method="apipay",
-            status="pending",
-            provider_refund__isnull=True,
-        ).exists():
+        if (
+            PaymentRefund.objects.select_for_update()
+            .unlinked_apipay_pending()
+            .filter(payment=payment)
+            .exists()
+        ):
             raise ValidationError({
                 "detail": (
                     "Предыдущий возврат ещё сверяется с платёжным сервисом. "
@@ -1380,7 +1312,7 @@ def create_refund(
                 ),
                 "code": "refund_submission_in_progress",
             })
-        value = _validated_refund_amount(payment, amount)
+        value = validated_refund_amount(payment, amount)
         # Без ключа отдела возврат не резервируется вовсе.
         credentials = credentials_for_order(order)
         generic_refund = PaymentRefund.objects.create(
@@ -1391,12 +1323,12 @@ def create_refund(
             reason=reason[:500],
             requested_by=user,
         )
-        _sync_refund_totals(payment, order)
+        sync_refund_totals(payment, order)
 
     order_id = order.pk
     payload: dict[str, Any] = {"amount": float(value), "reason": reason[:500]}
     try:
-        with _provider_scope_fence(order_id, user, require_live=True):
+        with provider_scope_fence(order_id, user, require_live=True):
             response = api_request(
                 "POST",
                 f"/invoices/{record.invoice_id}/refund",
@@ -1404,11 +1336,7 @@ def create_refund(
                 credentials=credentials,
             )
     except (PermissionDenied, ValidationError):
-        _fail_reserved_refund(
-            refund_id=generic_refund.pk,
-            payment_id=record.payment_id,
-            order_id=order_id,
-        )
+        settle_reserved_refund(generic_refund.pk, status="failed")
         raise
     except (ApiPayAPIError, ApiPayConfigurationError) as exc:
         # A 4xx response is definitive.  For a timeout/5xx the remote outcome
@@ -1419,19 +1347,13 @@ def create_refund(
             or exc.status_code < 500
         )
         if definitive_failure:
-            _fail_reserved_refund(
-                refund_id=generic_refund.pk,
-                payment_id=record.payment_id,
-                order_id=order_id,
-            )
+            settle_reserved_refund(generic_refund.pk, status="failed")
         raise
 
     refund_payload = response.get("refund") or {}
     try:
-        refund_id = int(refund_payload["id"])
-        if refund_id <= 0:
-            raise ValueError
-    except (KeyError, TypeError, ValueError) as exc:
+        refund_id = positive_provider_id(refund_payload.get("id"))
+    except ValueError as exc:
         # Keep the local reservation: the provider may have accepted the
         # request despite returning a malformed gateway response.
         raise ApiPayAPIError(
@@ -1451,9 +1373,7 @@ def create_refund(
         provider_status = str(refund_payload.get("status") or "")
         response_issue_code = ""
         response_issue_message = ""
-        if provider_status not in {
-            "pending", "processing", "completed", "failed",
-        }:
+        if provider_status not in PROVIDER_REFUND_STATUSES:
             # The POST has already been accepted and returned a provider ID.
             # Preserve the reservation and let the documented GET/webhook
             # converge it instead of surfacing a retryable client error.
@@ -1463,13 +1383,8 @@ def create_refund(
                 "ApiPay returned an unknown refund status; awaiting "
                 "authoritative reconciliation"
             )
-        try:
-            provider_amount = Decimal(str(refund_payload["amount"])).quantize(
-                Decimal("0.01")
-            )
-            if not provider_amount.is_finite() or provider_amount <= 0:
-                raise InvalidOperation
-        except (KeyError, InvalidOperation, TypeError, ValueError):
+        provider_amount = provider_money(refund_payload.get("amount"))
+        if provider_amount is None or provider_amount <= 0:
             provider_amount = value
             provider_status = "pending"
             response_issue_code = "provider_refund_amount_invalid"
@@ -1477,17 +1392,16 @@ def create_refund(
                 "ApiPay returned an invalid refund amount; awaiting "
                 "authoritative reconciliation"
             )
-        else:
-            if provider_amount != value or provider_amount > payment.amount:
-                # Preserve the returned provider mapping, but never let a
-                # malformed synchronous amount change local monetary totals.
-                provider_amount = value
-                provider_status = "pending"
-                response_issue_code = "provider_refund_amount_mismatch"
-                response_issue_message = (
-                    "ApiPay refund amount does not match the reserved amount; "
-                    "awaiting authoritative reconciliation"
-                )
+        elif provider_amount != value or provider_amount > payment.amount:
+            # Preserve the returned provider mapping, but never let a
+            # malformed synchronous amount change local monetary totals.
+            provider_amount = value
+            provider_status = "pending"
+            response_issue_code = "provider_refund_amount_mismatch"
+            response_issue_message = (
+                "ApiPay refund amount does not match the reserved amount; "
+                "awaiting authoritative reconciliation"
+            )
         provider_refund = (
             ApiPayRefund.objects.select_for_update()
             .filter(refund_id=refund_id)
@@ -1578,7 +1492,7 @@ def create_refund(
             "completed_at", "updated_at",
         ])
         payment.order = order
-        _sync_refund_totals(payment, order)
+        sync_refund_totals(payment, order)
     try:
         log_event(
             "payment",
@@ -1620,13 +1534,8 @@ def _select_unlinked_local_refund(
     """
     candidates = list(
         PaymentRefund.objects.select_for_update()
-        .filter(
-            payment=payment,
-            provider_refund__isnull=True,
-            method="apipay",
-            status="pending",
-            amount=amount,
-        )
+        .unlinked_apipay_pending()
+        .filter(payment=payment, amount=amount)
         .order_by("created_at", "pk")
     )
     if not candidates:
@@ -1642,7 +1551,7 @@ def _select_unlinked_local_refund(
             candidates = exact
     if len(candidates) == 1:
         return candidates[0]
-    provider_created_at = _parsed_datetime(payload.get("created_at"))
+    provider_created_at = parse_provider_datetime(payload.get("created_at"))
     if provider_created_at is None:
         return None
     ranked = sorted(
@@ -1676,24 +1585,14 @@ def apply_refund_status(
         pk=record.payment.order_id
     )
     payment = Payment.objects.select_for_update().get(pk=record.payment_id)
-    try:
-        refund_id = int(payload["id"])
-        if refund_id <= 0:
-            raise ValueError
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("refund.id is invalid") from exc
-    try:
-        incoming_amount = Decimal(str(payload["amount"])).quantize(
-            Decimal("0.01")
-        )
-        if not incoming_amount.is_finite() or incoming_amount <= 0:
-            raise InvalidOperation
-    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
-        raise ValueError("refund.amount is invalid") from exc
+    refund_id = positive_provider_id(payload.get("id"), "refund.id")
+    incoming_amount = positive_provider_money(
+        payload.get("amount"), "refund.amount"
+    )
     if incoming_amount > payment.amount:
         raise ValueError("refund.amount exceeds payment amount")
     incoming_status = str(payload.get("status") or "pending")
-    if incoming_status not in {"pending", "processing", "completed", "failed"}:
+    if incoming_status not in PROVIDER_REFUND_STATUSES:
         raise ValueError("refund.status is invalid")
     refund = (
         ApiPayRefund.objects.select_for_update()
@@ -1718,17 +1617,17 @@ def apply_refund_status(
         .values_list("amount", flat=True),
         Decimal(0),
     )
-    completed_cash = (
-        PaymentRefund.objects.filter(
-            payment=payment,
-            method="cash",
-            status="completed",
-        ).aggregate(total=Sum("amount"))["total"]
+    # Возвраты мимо этого счёта (касса, ссылка Kaspi QR) видны только в общем
+    # журнале; завершённые apipay-возвраты уже учтены через record.refunds.
+    completed_outside_invoice = (
+        PaymentRefund.objects.filter(payment=payment, status="completed")
+        .exclude(method="apipay")
+        .aggregate(total=Sum("amount"))["total"]
         or Decimal(0)
     )
     if (
         effective_status == "completed"
-        and completed_other + completed_cash + effective_amount
+        and completed_other + completed_outside_invoice + effective_amount
         > payment.amount
     ):
         raise ValueError("completed refunds exceed payment amount")
@@ -1757,14 +1656,8 @@ def apply_refund_status(
     if generic_refund is None and generic_refund_id is not None:
         generic_refund = (
             PaymentRefund.objects.select_for_update()
-            .filter(
-                pk=generic_refund_id,
-                payment=payment,
-                provider_refund__isnull=True,
-                method="apipay",
-                status="pending",
-                amount=refund.amount,
-            )
+            .unlinked_apipay_pending()
+            .filter(pk=generic_refund_id, payment=payment, amount=refund.amount)
             .first()
         )
         if generic_refund is None:
@@ -1775,13 +1668,12 @@ def apply_refund_status(
             if allow_automatic_link
             else None
         )
-    unlinked_same_amount_exists = PaymentRefund.objects.select_for_update().filter(
-        payment=payment,
-        provider_refund__isnull=True,
-        method="apipay",
-        status="pending",
-        amount=refund.amount,
-    ).exists()
+    unlinked_same_amount_exists = (
+        PaymentRefund.objects.select_for_update()
+        .unlinked_apipay_pending()
+        .filter(payment=payment, amount=refund.amount)
+        .exists()
+    )
     if generic_refund is None and not unlinked_same_amount_exists:
         generic_refund = PaymentRefund(
             payment=payment,
@@ -1804,14 +1696,7 @@ def apply_refund_status(
             generic_refund.completed_at = None
         generic_refund.save()
     payment.order = order
-    _sync_refund_totals(payment, order)
-    record.total_refunded = (
-        record.refunds.filter(status="completed").aggregate(total=Sum("amount"))[
-            "total"
-        ]
-        or Decimal(0)
-    )
-    record.save(update_fields=["total_refunded", "updated_at"])
+    sync_refund_totals(payment, order)
     changed = (
         previous_provider_status != refund.status
         or (
@@ -1845,7 +1730,8 @@ def apply_refund_status(
     return changed
 
 
-def _parsed_datetime(value: object) -> datetime | None:
+def parse_provider_datetime(value: object) -> datetime | None:
+    """Время из ответа ApiPay; без пояса — локальное (TIME_ZONE, Алматы)."""
     if not isinstance(value, str):
         return None
     parsed = parse_datetime(value)
@@ -1854,17 +1740,11 @@ def _parsed_datetime(value: object) -> datetime | None:
     return parsed if timezone.is_aware(parsed) else timezone.make_aware(parsed)
 
 
-def _normalized_datetime(value: object) -> datetime | None:
-    if isinstance(value, datetime):
-        return value if timezone.is_aware(value) else timezone.make_aware(value)
-    return _parsed_datetime(value)
-
-
 def _invoice_payload_observed_at(
     payload: dict[str, Any], explicit: datetime | None
 ) -> datetime | None:
     if explicit is not None:
-        return _normalized_datetime(explicit)
+        return explicit
     status = str(payload.get("status") or "")
     status_time_field = {
         "paid": "paid_at",
@@ -1873,9 +1753,9 @@ def _invoice_payload_observed_at(
         "error": "errored_at",
     }.get(status)
     return (
-        _parsed_datetime(payload.get("updated_at"))
+        parse_provider_datetime(payload.get("updated_at"))
         or (
-            _parsed_datetime(payload.get(status_time_field))
+            parse_provider_datetime(payload.get(status_time_field))
             if status_time_field
             else None
         )
@@ -1911,12 +1791,9 @@ def apply_invoice_status(
             status = "cancelled"
     payload_invoice_id = invoice_payload.get("id")
     if payload_invoice_id is not None:
-        try:
-            provider_invoice_id = int(payload_invoice_id)
-            if provider_invoice_id <= 0:
-                raise ValueError
-        except (TypeError, ValueError) as exc:
-            raise ValueError("invoice.id is invalid") from exc
+        provider_invoice_id = positive_provider_id(
+            payload_invoice_id, "invoice.id"
+        )
         if (
             record.invoice_id is not None
             and provider_invoice_id != record.invoice_id
@@ -1969,7 +1846,7 @@ def apply_invoice_status(
     record.response_payload = invoice_payload
     if status in MONEY_RECEIVED_INVOICE_STATUSES:
         record.paid_at = (
-            _parsed_datetime(invoice_payload.get("paid_at"))
+            parse_provider_datetime(invoice_payload.get("paid_at"))
             or record.paid_at
             or incoming_observed_at
             or timezone.now()
@@ -1981,14 +1858,7 @@ def apply_invoice_status(
             # QR нельзя отозвать у провайдера. Если клиент уже заменил его
             # другим способом, поздняя фактическая оплата имеет приоритет:
             # снимаем только те новые резервы, которые теперь дали бы переплату.
-            confirmed_total = sum(
-                (
-                    row.net_amount for row in Payment.objects.select_for_update()
-                    .filter(order=order, status="confirmed")
-                ),
-                Decimal(0),
-            )
-            capacity = max(Decimal(0), order.total_amount - confirmed_total)
+            capacity = order_remaining(order)
             pending = list(
                 Payment.objects.select_for_update(of=("self",))
                 .select_related("apipay_invoice")
@@ -2005,8 +1875,7 @@ def apply_invoice_status(
                 )
                 if (
                     replacement_invoice is not None
-                    and replacement_invoice.status
-                    not in ("cancelled", "expired", "error", "superseded")
+                    and replacement_invoice.status not in CLOSED_INVOICE_STATUSES
                 ):
                     # This invoice is still externally payable. Keep its
                     # reservation and visibility; reconciliation may cancel a
@@ -2032,27 +1901,8 @@ def apply_invoice_status(
         # ApiPay documents error -> pending as a valid reconciliation. Restore
         # the reservation only when it still fits; otherwise keep the payment
         # visible as rejected and let a later paid event record real money.
-        confirmed_total = sum(
-            (
-                row.net_amount
-                for row in Payment.objects.select_for_update().filter(
-                    order=order, status="confirmed"
-                )
-            ),
-            Decimal(0),
-        )
-        reserved_total = sum(
-            (
-                row.amount
-                for row in Payment.objects.select_for_update().filter(
-                    order=order, status__in=Payment.IN_PROGRESS_STATUSES
-                )
-            ),
-            Decimal(0),
-        )
-        available = max(
-            Decimal(0),
-            order.total_amount - confirmed_total - reserved_total,
+        available = available_to_pay(
+            order, Payment.objects.select_for_update().filter(order=order)
         )
         if payment.amount <= available:
             payment.status = "received" if payment.received_at else "requested"

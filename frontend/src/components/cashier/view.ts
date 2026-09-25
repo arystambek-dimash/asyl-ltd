@@ -2,7 +2,8 @@ import { can } from "@/lib/can";
 import type { Me } from "@/lib/types";
 
 /** Экран кассы: десктоп знает overview/confirm/transactions, телефон — home/report/debts/confirm/transactions/pos/remote. */
-export type CashView = "home" | "overview" | "report" | "debts" | "confirm" | "transactions" | "pos" | "remote";
+const CASH_VIEWS = ["home", "overview", "report", "debts", "confirm", "transactions", "pos", "remote"] as const;
+export type CashView = (typeof CASH_VIEWS)[number];
 export type MobileMenuKey = Exclude<CashView, "home" | "overview" | "pos" | "remote">;
 
 /** Права раздела — RequirePerm пускает при любом из них. */
@@ -36,7 +37,7 @@ export function cashierPerms(me: Me | null): CashierPerms {
   };
 }
 
-export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
+function viewAllowed(view: CashView, perms: CashierPerms): boolean {
   switch (view) {
     case "home":
       return true;
@@ -58,16 +59,6 @@ export function viewAllowed(view: CashView, perms: CashierPerms): boolean {
 /** Порядок пунктов мобильного меню фиксированный — как в спеке. */
 const MOBILE_MENU: MobileMenuKey[] = ["confirm", "debts", "transactions", "report"];
 const DESKTOP_VIEWS: CashView[] = ["overview", "confirm", "transactions"];
-const ALL_VIEWS: readonly string[] = [
-  "home",
-  "overview",
-  "report",
-  "debts",
-  "confirm",
-  "transactions",
-  "pos",
-  "remote",
-];
 
 export function mobileMenu(perms: CashierPerms): MobileMenuKey[] {
   return MOBILE_MENU.filter((key) => viewAllowed(key, perms));
@@ -78,7 +69,7 @@ export function hasHomeScreen(perms: CashierPerms): boolean {
   return mobileMenu(perms).length + (perms.canCreatePayments ? 1 : 0) > 1;
 }
 
-export function defaultView(perms: CashierPerms, mobile: boolean): CashView {
+function defaultView(perms: CashierPerms, mobile: boolean): CashView {
   if (mobile) {
     // Один доступный пункт — открываем его сразу, главная с одной строкой не нужна.
     const menu = mobileMenu(perms);
@@ -90,7 +81,7 @@ export function defaultView(perms: CashierPerms, mobile: boolean): CashView {
 /** Экран из `?view=`: чужие для раскладки значения сводятся по таблице спеки, недоступные — к экрану по умолчанию. */
 export function resolveView(raw: string | null, perms: CashierPerms, mobile: boolean): CashView {
   const fallback = defaultView(perms, mobile);
-  if (!raw || !ALL_VIEWS.includes(raw)) return fallback;
+  if (!raw || !(CASH_VIEWS as readonly string[]).includes(raw)) return fallback;
   let view = raw as CashView;
   if (mobile && view === "overview") view = "home";
   if (!mobile && (view === "home" || view === "report" || view === "debts" || view === "pos" || view === "remote")) {

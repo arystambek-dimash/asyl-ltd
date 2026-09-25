@@ -5,10 +5,7 @@ import { PortalPaymentCard, type PortalPayMethod } from "@/components/portal/por
 import type { PortalPaymentPart } from "@/components/portal/portal-payment-parts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { PlateInput } from "@/components/ui/plate-input";
-import { formatTransportNumber } from "@/components/ui/transport-number";
+import { TransportNumberFields } from "@/components/ui/transport-number-fields";
 import { WagonList } from "@/components/ui/wagon-list";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatusBadge } from "@/components/status-badge";
@@ -18,7 +15,7 @@ import { DataGate } from "@/components/ui/data-state";
 import { FileText, Lock } from "lucide-react";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { apiError } from "@/lib/api";
+import { blobApiError } from "@/lib/api";
 import { formatPortalMoney } from "@/lib/utils";
 import { clientStep, downloadReceipt, payOrder, releasePortalPayment, setTruck } from "@/lib/portal-actions";
 import {
@@ -26,10 +23,12 @@ import {
   isValidWagonNumber,
   sameTransportPair,
   transportBody,
+  transportNumberError,
   transportPairOf,
   type TransportPair,
 } from "@/lib/plates";
 import type { PortalOrder } from "@/lib/types";
+import { orderTransportText } from "@/lib/wagons";
 
 export default function PortalOrderDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -45,14 +44,16 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
   // the visible order current, including later refunds of a settled payment.
   useVisiblePolling(reload, 5_000, !busy);
 
-  async function run(fn: () => Promise<unknown>) {
+  /** Действие заказа. Ответ-заказ применяем, а не перечитываем (экран опрашивается). */
+  async function run(fn: () => Promise<PortalOrder | void>, onError: (message: string) => void = setError) {
     setBusy(true);
-    setError("");
+    onError("");
     try {
-      await fn();
-      await reload();
+      const next = await fn();
+      if (next) setData(next);
     } catch (e) {
-      setError(apiError(e));
+      // run() качает и чек (blob): текст ошибки сервера лежит внутри Blob.
+      onError(await blobApiError(e));
     } finally {
       setBusy(false);
     }
@@ -69,32 +70,20 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
 
   async function saveTransport() {
     if (!order) return;
-    setBusy(true);
-    setError("");
-    try {
-      // Ответ PATCH — заказ целиком: применяем его, а не перечитываем (экран опрашивается).
-      setData(await setTruck(order.id, transportBody(order.transport_type, numbers)));
+    await run(async () => {
+      const next = await setTruck(order.id, transportBody(order.transport_type, numbers));
       setDraft(null);
-    } catch (e) {
-      setError(apiError(e));
-    } finally {
-      setBusy(false);
-    }
+      return next;
+    });
   }
 
   async function confirmRelease() {
     if (!order || !releasePart) return;
-    setBusy(true);
-    setReleaseError("");
-    try {
-      await releasePortalPayment(order.id, releasePart.id);
+    await run(async () => {
+      const next = await releasePortalPayment(order.id, releasePart.id);
       setReleasePart(null);
-      await reload();
-    } catch (e) {
-      setReleaseError(apiError(e));
-    } finally {
-      setBusy(false);
-    }
+      return next;
+    }, setReleaseError);
   }
 
   if (!order)
@@ -138,9 +127,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
             </div>
           </CardHeader>
           <CardContent>
-            <p className="mb-3 text-sm text-[var(--muted-foreground)]">
-              Отдел продаж: {order.department_name || order.department || "Нет отдела"}
-            </p>
+            <p className="mb-3 text-sm text-[var(--muted-foreground)]">Отдел продаж: {order.department_name}</p>
             <Table>
               <THead>
                 <TR>
@@ -217,9 +204,7 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               {order.transport_locked ? (
                 <p className="flex flex-wrap items-center gap-1.5 text-sm">
                   <Lock className="size-4 text-[var(--muted-foreground)]" /> Номер указал менеджер:{" "}
-                  <b className="tabular-nums">
-                    {formatTransportNumber(order.truck_number, order.transport_type, order.trailer_number)}
-                  </b>
+                  <b className="tabular-nums">{orderTransportText(order)}</b>
                 </p>
               ) : (
                 <>
@@ -228,39 +213,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                     попадёт в документы. Если номера пока нет, ничего вводить не нужно: оператор укажет его при
                     отгрузке.
                   </p>
-                  {train ? (
-                    <Input
-                      placeholder="8 цифр"
-                      aria-label="Номер вагона"
-                      inputMode="numeric"
-                      maxLength={8}
-                      value={numbers.truck_number}
-                      onChange={(e) => setDraft({ ...numbers, truck_number: e.target.value })}
-                    />
-                  ) : (
-                    <>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="portal-truck">Тягач</Label>
-                        <PlateInput
-                          id="portal-truck"
-                          warning
-                          defaultCountry={order.client_country}
-                          value={numbers.truck_number}
-                          onChange={(truck_number) => setDraft({ ...numbers, truck_number })}
-                        />
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor="portal-trailer">Прицеп (необязательно)</Label>
-                        <PlateInput
-                          id="portal-trailer"
-                          kind="trailer"
-                          defaultCountry={order.client_country}
-                          value={numbers.trailer_number}
-                          onChange={(trailer_number) => setDraft({ ...numbers, trailer_number })}
-                        />
-                      </div>
-                    </>
-                  )}
+                  <TransportNumberFields
+                    id="portal"
+                    transportType={order.transport_type}
+                    defaultCountry={order.client_country}
+                    value={numbers}
+                    errors={train ? { truck: transportNumberError(numbers.truck_number, "train") } : undefined}
+                    onChange={setDraft}
+                  />
                   <Button
                     className="self-start"
                     disabled={busy || !numbers.truck_number.trim() || wagonInvalid || sameTransportPair(numbers, saved)}

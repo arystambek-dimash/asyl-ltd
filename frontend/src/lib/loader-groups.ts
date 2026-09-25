@@ -1,6 +1,7 @@
 import { can } from "@/lib/can";
-import { shiftIsoDate, type LoaderOrder } from "@/lib/loader";
+import type { LoaderOrder } from "@/lib/loader";
 import type { Me } from "@/lib/types";
+import { formatIsoDayMonth, shiftIsoDate } from "@/lib/utils";
 
 export type LoaderTransport = LoaderOrder["transport_type"];
 
@@ -20,12 +21,7 @@ export function initialLoaderTransport(allowed: LoaderTransport[], stored: strin
   return allowed.find((key) => key === stored) ?? allowed[0] ?? null;
 }
 
-/** День, на который заказ ждут: плановая дата, иначе день создания. */
-export function plannedDay(order: LoaderOrder): string {
-  return order.arrival_date ?? order.created_at.slice(0, 10);
-}
-
-export interface LoaderDayGroup {
+interface LoaderDayGroup {
   day: string;
   /** «ПРОСРОЧЕНО», «СЕГОДНЯ», «ЗАВТРА» или дата — крупная плашка над карточками. */
   label: string;
@@ -35,9 +31,11 @@ export interface LoaderDayGroup {
   orders: LoaderOrder[];
 }
 
-export function shortDate(iso: string): string {
-  const [, month, day] = iso.split("-");
-  return `${day}.${month}`;
+/** Плашка планового дня: «ПРОСРОЧЕНО», «СЕГОДНЯ», «ЗАВТРА»; дальше — пусто, хватает даты. */
+export function plannedDayLabel(day: string, today: string): string {
+  if (day < today) return "ПРОСРОЧЕНО";
+  if (day === today) return "СЕГОДНЯ";
+  return day === shiftIsoDate(today, 1) ? "ЗАВТРА" : "";
 }
 
 /**
@@ -47,15 +45,15 @@ export function shortDate(iso: string): string {
 export function groupByPlannedDay(orders: LoaderOrder[], today: string): LoaderDayGroup[] {
   const byDay = new Map<string, LoaderOrder[]>();
   for (const order of orders) {
-    const day = plannedDay(order);
+    const day = order.planned_on;
     byDay.set(day, [...(byDay.get(day) ?? []), order]);
   }
   return [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([day, group]) => ({
       day,
-      label: day < today ? "ПРОСРОЧЕНО" : day === today ? "СЕГОДНЯ" : day === shiftIsoDate(today, 1) ? "ЗАВТРА" : "",
-      date: shortDate(day),
+      label: plannedDayLabel(day, today),
+      date: formatIsoDayMonth(day),
       overdue: day < today,
       orders: group,
     }));
@@ -75,7 +73,7 @@ export interface LoaderQueueFilter {
  */
 export function inQueueFilter(order: LoaderOrder, filter: LoaderQueueFilter, today: string): boolean {
   if (filter.search) return false;
-  const day = plannedDay(order);
+  const day = order.planned_on;
   return (!filter.overdue || day < today) && (!filter.day || day === filter.day);
 }
 
@@ -84,14 +82,11 @@ export function inQueueFilter(order: LoaderOrder, filter: LoaderQueueFilter, tod
  * порядке: плановый день, затем номер. Строку с тем же номером заменяет.
  */
 export function withQueueRow(rows: LoaderOrder[], row: LoaderOrder): LoaderOrder[] {
-  const key = (order: LoaderOrder) => [plannedDay(order), order.id] as const;
-  const [day, id] = key(row);
-  const rest = rows.filter((order) => order.id !== id);
-  const index = rest.findIndex((order) => {
-    const [otherDay, otherId] = key(order);
-    return otherDay > day || (otherDay === day && otherId > id);
-  });
-  return index === -1 ? [...rest, row] : [...rest.slice(0, index), row, ...rest.slice(index)];
+  return insertOrdered(
+    rows,
+    row,
+    (order) => order.planned_on > row.planned_on || (order.planned_on === row.planned_on && order.id > row.id),
+  );
 }
 
 /** День выезда отгрузки — как его отдал сервер (местное время). */
@@ -120,12 +115,23 @@ export function inHistoryRange(
  * прошедший день встаёт на свой день, а не наверх.
  */
 export function withHistoryRow(rows: LoaderOrder[], row: LoaderOrder): LoaderOrder[] {
-  const key = (order: LoaderOrder) => [order.shipped_at ?? "", order.id] as const;
-  const [shippedAt, id] = key(row);
-  const rest = rows.filter((order) => order.id !== id);
-  const index = rest.findIndex((order) => {
-    const [otherAt, otherId] = key(order);
-    return otherAt < shippedAt || (otherAt === shippedAt && otherId < id);
+  const shippedAt = row.shipped_at ?? "";
+  return insertOrdered(rows, row, (order) => {
+    const otherAt = order.shipped_at ?? "";
+    return otherAt < shippedAt || (otherAt === shippedAt && order.id < row.id);
   });
+}
+
+/**
+ * Вставить строку перед первой, что должна идти после неё; строку с тем же
+ * номером заменяет.
+ */
+function insertOrdered(
+  rows: LoaderOrder[],
+  row: LoaderOrder,
+  goesAfter: (order: LoaderOrder) => boolean,
+): LoaderOrder[] {
+  const rest = rows.filter((order) => order.id !== row.id);
+  const index = rest.findIndex(goesAfter);
   return index === -1 ? [...rest, row] : [...rest.slice(0, index), row, ...rest.slice(index)];
 }

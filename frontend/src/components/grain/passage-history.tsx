@@ -5,7 +5,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
-import { apiFileUrl, formatKg } from "@/lib/grain";
+import { apiFileUrl } from "@/lib/api-file-url";
+import { formatKg, grainTripHref } from "@/lib/grain";
 import { formatDateTime } from "@/lib/utils";
 import { photoStatusLabel, weighingReasonLabel } from "@/lib/weighing-evidence";
 
@@ -13,7 +14,6 @@ type Capture = {
   id: number;
   occurred_at: string;
   weight_kg: number | null;
-  observed_weight_kg: string | null;
   vehicle_number: string;
   status: string;
   action: string;
@@ -107,7 +107,7 @@ export function PassageHistory() {
                   </div>
                 </div>
                 {row.wagon_id ? (
-                  <Link className="underline" href={`/grain/wagons/${row.wagon_id}`}>
+                  <Link className="underline" href={grainTripHref({ id: row.wagon_id, direction: "passage" })}>
                     Открыть рейс
                   </Link>
                 ) : null}

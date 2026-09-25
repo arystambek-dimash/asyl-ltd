@@ -17,7 +17,7 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def product():
-    item = Product.objects.create(name="Мука", color="Red", weight_kg="50", price="100.00")
+    item = Product.objects.create(name="Мука", color="Red", weight_kg="50")
     StockItem.objects.create(product=item, bags=10_000)
     return item
 
@@ -95,15 +95,6 @@ def test_patch_to_train_drops_the_trailer(auth_client, manager, product):
     assert response.status_code == 200, response.data
     order.refresh_from_db()
     assert (order.transport_type, order.truck_number, order.trailer_number) == ("train", "00123456", "")
-
-
-def test_repeat_copies_the_pair(auth_client, manager, product):
-    source = _order(_client(), product, status="shipped", truck_number="07KG695ADT", trailer_number="07KG837PB")
-
-    response = auth_client(manager).post(f"/api/orders/{source.pk}/repeat/", format="json")
-
-    assert response.status_code == 201, response.data
-    assert (response.data["truck_number"], response.data["trailer_number"]) == ("07KG695ADT", "07KG837PB")
 
 
 # ── Быстрый ввод «Фуры» ──────────────────────────────────────────────────────
