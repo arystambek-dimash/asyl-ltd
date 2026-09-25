@@ -62,8 +62,8 @@ def test_wagon_change_splits_loading_that_never_paused_for_the_idle_timeout(star
     assert first.ended_at == at(start, 95) and second.started_at == at(start, 150)
 
 
-@pytest.mark.parametrize("high", [3.5, 6.5, 11.9])
-def test_jolts_people_and_door_alignment_do_not_change_the_wagon(start, wagons, high):
+@pytest.mark.parametrize("high", [3.5, 6.5, 12.0, 17.9])
+def test_jolts_people_and_shifts_of_the_same_wagon_do_not_change_it(start, wagons, high):
     move(start, 100, 140, high=high)
     add_events(start, [0, 95, 200])
     segments.ingest_camera("cam2")

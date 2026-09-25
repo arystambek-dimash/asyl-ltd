@@ -19,12 +19,14 @@ from .models import ShippingTrainMove, ShippingTransportCamera
 log = logging.getLogger(__name__)
 
 # Measured on cam12 25.09.2026 (longest stretch with at least half the zone moving):
-# a wagon taken away 25.8 s, trains passing 39-40.5 s, a wagon pushed in
-# 19.8 s; door alignment of the same wagon 3.5 and 6.5 s, a far-track train
-# behind an empty track 2.5 s. Optical-flow travel is not usable (the ribs of
-# the wagon side alias it), nor is the mean fraction of an episode (weak
-# activity around a real move dilutes it).
-WAGON_CHANGE_MIN_HIGH_SECONDS = 12.0
+# a wagon taken away 25.8 and 56.2 s, a wagon pushed in 19.8 s, trains passing
+# 39-40.5 s; the same wagon aligned at the door 3.5 and 6.5 s and shifted by a
+# few metres mid-loading 8.8 and 12.0 s. A missed change only leaves the idle
+# rule, while a false one splits a wagon whose shifted side may show no number,
+# so the bar sits near the shortest real change. Optical-flow travel is not
+# usable (the ribs of the wagon side alias it), nor is the mean fraction of an
+# episode (weak activity around a real move dilutes it).
+WAGON_CHANGE_MIN_HIGH_SECONDS = 18.0
 WARNING_INTERVAL_SECONDS = 600
 MEASURING = {"online", "awaiting_comparison"}
 _last_warning = {}
