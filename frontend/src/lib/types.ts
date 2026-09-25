@@ -1,5 +1,4 @@
 import type { LineDirection, NormalizedLine, VerificationLine } from "@/lib/camera-counting-line";
-import type { TransportPair } from "@/lib/plates";
 
 export interface Me {
   id: number;
@@ -358,27 +357,6 @@ export interface Order {
   loading_camera?: string;
   deleted_at?: string | null;
   deleted_by_name?: string | null;
-}
-
-/** Строка быстрого ввода «Фуры» (GET /orders/transport-queue/, POST /orders/{id}/transport/). */
-export interface TransportQueueRow {
-  id: number;
-  client: number;
-  client_name: string;
-  client_country: string;
-  status: string;
-  arrival_date: string | null;
-  created_at: string;
-  /** Плановый день: дата приезда, а без неё — день оформления. */
-  planned_on: string;
-  bags: number;
-  truck_number: string;
-  trailer_number: string;
-  /** Номер указал клиент: сотрудник его не меняет. */
-  transport_locked: boolean;
-  /** Прошлые пары клиента — чипы «как в прошлый раз». */
-  transport_suggestions: TransportPair[];
-  plate_warning: string | null;
 }
 
 export interface DashboardOperationalSummary {

@@ -54,15 +54,7 @@ export function PlateBadge({
 }
 
 /** Тягач и прицеп табличками: «[07 KG 695 ADT] / [07 KG 837 PB]». */
-export function PlatePair({
-  truck,
-  trailer = "",
-  size = "md",
-}: {
-  truck: string;
-  trailer?: string;
-  size?: "md" | "lg";
-}) {
+function PlatePair({ truck, trailer = "", size = "md" }: { truck: string; trailer?: string; size?: "md" | "lg" }) {
   if (!trailer) return <PlateBadge value={truck} size={size} />;
   return (
     <span className="inline-flex flex-wrap items-center gap-1">

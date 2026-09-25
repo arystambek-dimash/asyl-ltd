@@ -450,41 +450,6 @@ def awaiting_shipment_bags(warehouse, product_ids, *, exclude_order_id=None) -> 
     return bags
 
 
-# Фильтры быстрого ввода «Фуры»: без номера тягача (любой день) и все на сегодня.
-TRANSPORT_QUEUE_FILTERS = ("missing", "today")
-
-
-def transport_rows(queryset: QuerySet[Order]) -> QuerySet[Order]:
-    """Лёгкая строка «Фур»: клиент, мешки и владелец номера — без истории заказа."""
-    bags = (
-        OrderItem.objects.filter(order_id=OuterRef("pk"))
-        .order_by()
-        .values("order_id")
-        .annotate(value=Sum("quantity"))
-        .values("value")
-    )
-    return (
-        queryset.select_related(None)
-        .prefetch_related(None)
-        .select_related("client__user", "truck_number_set_by")
-        .annotate(planned_on=planned_day(), bags=Coalesce(Subquery(bags), 0))
-    )
-
-
-def transport_queue(queryset: QuerySet[Order], scope: str) -> QuerySet[Order]:
-    """Подтверждённые фуры, которым вводят номер тягача и прицепа.
-
-    ``missing`` — все без номера тягача, старые сверху; ``today`` — все с
-    плановым днём сегодня, с номером и без.
-    """
-    queryset = transport_rows(queryset.filter(status="confirmed", transport_type="truck"))
-    if scope == "today":
-        queryset = queryset.filter(planned_on=timezone.localdate())
-    else:
-        queryset = queryset.filter(truck_number="")
-    return queryset.order_by("planned_on", "id")
-
-
 def recent_transport_pairs(client_ids, *, limit: int) -> dict[int, list[dict]]:
     """Последние пары «тягач + прицеп» клиентов — подсказки «как в прошлый раз».
 

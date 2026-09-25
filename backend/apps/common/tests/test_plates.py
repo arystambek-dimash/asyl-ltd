@@ -11,7 +11,6 @@ from apps.common.plates import (
     normalize_plate,
     plate_match_key,
     plate_search_variants,
-    plate_warning,
 )
 
 # Те же векторы проверяет фронтенд (lib/plates.ts): правила должны совпадать.
@@ -51,16 +50,6 @@ def test_clean_plate_rejects_what_cannot_be_a_plate(raw):
 
 def test_clean_plate_keeps_blank_as_no_number():
     assert clean_plate("  ") == ""
-
-
-@pytest.mark.parametrize(("compact", "warned"), VECTORS["truck_warning"])
-def test_truck_warning_is_soft(compact, warned):
-    assert (plate_warning(compact) is not None) is warned
-
-
-@pytest.mark.parametrize(("compact", "warned"), VECTORS["trailer_warning"])
-def test_trailer_warning_is_soft(compact, warned):
-    assert (plate_warning(compact, kind="trailer") is not None) is warned
 
 
 @pytest.mark.parametrize(("search", "expected"), VECTORS["search_variants"])

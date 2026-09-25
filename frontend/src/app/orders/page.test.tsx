@@ -187,26 +187,12 @@ it("gives staff who confirm orders a «Заявки» tab and keeps a department
   expect(screen.queryByPlaceholderText("Поиск по клиенту, номеру или #ID")).not.toBeInTheDocument();
 });
 
-it("gives staff who edit orders a «Фуры» tab for quick truck numbers", async () => {
-  const user = userEvent.setup();
+it("shows no tabs to staff who edit orders but do not review requests", async () => {
   mocks.me = { permissions: ["orders.view", "orders.edit"] };
   render(<OrdersPage />);
 
-  // Заявки разбирает orders.confirm — без него вкладки нет, «Фуры» есть.
-  expect(screen.queryByRole("tab", { name: /Заявки/ })).not.toBeInTheDocument();
-  await user.click(await screen.findByRole("tab", { name: "Фуры" }));
-
-  expect(mocks.replace).toHaveBeenCalledWith("/orders?tab=trucks", { scroll: false });
-  expect(await screen.findByText("У всех подтверждённых фур есть номер")).toBeInTheDocument();
-  expect(mocks.get).toHaveBeenCalledWith("/orders/transport-queue/?filter=missing", expect.anything());
-  expect(screen.queryByPlaceholderText("Поиск по клиенту, номеру или #ID")).not.toBeInTheDocument();
-
-  // «Фуры» список заказов не трогают: вернулись к нему — он перечитывается, «Машина» свежая.
-  const listRequests = () =>
-    mocks.get.mock.calls.filter(([url]) => new URL(String(url), "http://localhost").pathname === "/orders/").length;
-  const before = listRequests();
-  await user.click(screen.getByRole("tab", { name: "Все заказы" }));
-  await waitFor(() => expect(listRequests()).toBe(before + 1));
+  expect(await screen.findByPlaceholderText("Поиск по клиенту, номеру или #ID")).toBeInTheDocument();
+  expect(screen.queryByRole("tab")).not.toBeInTheDocument();
 });
 
 it("shows a prepayment badge before shipment and «Не оплачен» only after it", async () => {

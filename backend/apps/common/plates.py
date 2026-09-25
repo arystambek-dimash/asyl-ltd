@@ -96,17 +96,6 @@ def is_known_plate(compact: str) -> bool:
     return bool(_matches(normalize_plate(compact)))
 
 
-def plate_warning(compact: str, *, kind: str = "truck") -> str | None:
-    """Мягкая проверка: текст предупреждения или ``None``.
-
-    Форматы прицепов Казахстана и Узбекистана не фиксированы, поэтому прицеп
-    проверяется только жёстким правилом :func:`clean_plate`.
-    """
-    if not normalize_plate(compact) or kind == "trailer" or is_known_plate(compact):
-        return None
-    return "Номер не похож на номера KZ, KG, UZ, RU — проверьте"
-
-
 def is_valid_plate(raw) -> bool:
     """Проходит ли номер жёсткое правило: 4–12 латинских букв и цифр."""
     return bool(_PLATE_RE.fullmatch(normalize_plate(raw)))

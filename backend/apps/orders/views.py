@@ -58,7 +58,6 @@ from .querysets import (
     with_payment_api_relations,
     with_order_amounts, filter_order_search, order_page_sort,
     client_search_q, department_q, filter_order_scope, filter_status_group, order_department,
-    TRANSPORT_QUEUE_FILTERS, transport_queue, transport_rows,
 )
 from .labels import payment_method_label, payment_status_label
 from .reports import summary_report
@@ -66,10 +65,9 @@ from .references import build_order_form_options
 from .statuses import (
     REVIEWABLE_STATUSES, is_financial, is_in_progress, public_status_key, statuses_in_group,
 )
-from .serializers import (ConfirmOrderSerializer, OrderSerializer, OrderTransportRowSerializer,
-                          PaymentSerializer, PaymentQueueSerializer, StatusChangeRequestSerializer,
-                          TransportNumbersSerializer)
-from .transport import set_order_transport, suggestion_pairs, transport_locked
+from .serializers import (ConfirmOrderSerializer, OrderSerializer, PaymentSerializer,
+                          PaymentQueueSerializer, StatusChangeRequestSerializer)
+from .transport import transport_locked
 from .services import (add_payment, confirm_order, confirm_stock_context, reject_order,
                        accountant_confirm_payment, assert_payment_status_open,
                        correct_order_prices,
@@ -644,9 +642,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "department_summary": "orders.view",
         "list_summary": "orders.view",
         "dashboard_operational": "orders.view",
-        # Быстрый ввод номеров «Фуры»: та же правка заказа, что и в форме.
-        "transport_queue": "orders.edit",
-        "transport": "orders.edit",
         "form_options": ("orders.create", "orders.edit"),
         # Календарь отгрузки открыт тем же, кому открыта очередь поста.
         "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
@@ -821,50 +816,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         return Response(
             OrderSerializer(order, context={"request": request}).data
         )
-
-    def _transport_rows(self, rows):
-        return OrderTransportRowSerializer(
-            rows,
-            many=True,
-            context={"request": self.request, "transport_pairs": suggestion_pairs(rows)},
-        ).data
-
-    @action(detail=False, methods=["get"], url_path="transport-queue")
-    def transport_queue(self, request):
-        """«Фуры»: подтверждённые фуры для ввода тягача и прицепа, с подсказками.
-
-        ``filter=missing`` (по умолчанию) — без номера тягача, ``today`` — все
-        фуры на сегодня.
-        """
-        scope = request.query_params.get("filter") or "missing"
-        if scope not in TRANSPORT_QUEUE_FILTERS:
-            raise ValidationError({"detail": "Неизвестный фильтр", "code": "bad_filter"})
-        rows = list(transport_queue(self.get_queryset(), scope))
-        return Response(self._transport_rows(rows))
-
-    @action(detail=True, methods=["post"], url_path="transport")
-    def transport(self, request, pk=None):
-        """Записать тягач и прицеп заказа; ответ — строка «Фур» с предупреждением."""
-        serializer = TransportNumbersSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        order = self.get_object()
-        # Быстрый ввод — для заказов в работе: отгруженный или закрытый заказ
-        # он не правит и клиенту о нём не пишет (правка — в карточке заказа).
-        if not is_in_progress(order.status):
-            raise ValidationError({
-                "detail": "Номер вводится только для заказа в работе",
-                "code": "invalid_status",
-            })
-        # «Фуры» вбивают номера пачкой: клиенту пишет отгрузка, а не каждое сохранение.
-        order, _ = set_order_transport(
-            order,
-            request.user,
-            truck=serializer.validated_data.get("truck_number"),
-            trailer=serializer.validated_data.get("trailer_number"),
-            notify_client=False,
-        )
-        row = transport_rows(self.get_queryset().filter(pk=order.pk)).get()
-        return Response(self._transport_rows([row])[0])
 
     @action(detail=False, methods=["get"], url_path="shipping-calendar")
     def shipping_calendar(self, request):

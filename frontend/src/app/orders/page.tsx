@@ -29,7 +29,6 @@ import { ArchiveDock } from "@/components/orders/archive-dock";
 import { useOrderArchiveActions } from "@/components/orders/use-order-archive-actions";
 import { DepartmentManager } from "@/components/orders/department-manager";
 import { OrderRequestsSection } from "@/components/orders/order-requests";
-import { TruckEntrySection } from "@/components/orders/truck-entry";
 import { useOrderRequests } from "@/components/orders/use-order-requests";
 import { departmentScope } from "@/components/cashier/scope";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
@@ -533,10 +532,9 @@ function OrderTemplatePicker({
   );
 }
 
-type OrdersTab = "orders" | "requests" | "trucks";
+type OrdersTab = "orders" | "requests";
 
-const tabFromQuery = (value: string | null): OrdersTab =>
-  value === "requests" || value === "trucks" ? value : "orders";
+const tabFromQuery = (value: string | null): OrdersTab => (value === "requests" ? value : "orders");
 
 function OrdersPageInner() {
   const router = useRouter();
@@ -587,14 +585,10 @@ function OrdersPageInner() {
   // Заявки клиентов разбирает сотрудник с правом подтверждения; закреплённый за отделом видит свой отдел.
   const canReviewOrders = can(me, "orders.confirm");
   const { assigned } = departmentScope(me);
-  // Быстрый ввод номеров «Фуры» — та же правка заказа, что и в форме (orders.edit).
-  const activeTab: OrdersTab =
-    canReviewOrders && tab === "requests" ? "requests" : canEdit && tab === "trucks" ? "trucks" : "orders";
+  const activeTab: OrdersTab = canReviewOrders && tab === "requests" ? "requests" : "orders";
   const requests = useOrderRequests(canReviewOrders && view === "orders", reload);
   function chooseTab(key: string) {
     const next = tabFromQuery(key);
-    // «Фуры» правят номера без перечитывания списка: вернулись к заказам — «Машина» свежая.
-    if (next === "orders" && activeTab === "trucks") void reload();
     setTab(next);
     router.replace(next === "orders" ? "/orders" : `/orders?tab=${next}`, { scroll: false });
   }
@@ -733,7 +727,7 @@ function OrdersPageInner() {
         />
       ) : (
         <>
-          {(canReviewOrders || canEdit) && (
+          {canReviewOrders && (
             <Tabs
               className="mb-4"
               label="Заказы и заявки"
@@ -742,7 +736,6 @@ function OrdersPageInner() {
                 ...(canReviewOrders
                   ? [{ key: "requests", label: "Заявки", count: requests.loading ? undefined : requests.count }]
                   : []),
-                ...(canEdit ? [{ key: "trucks", label: "Фуры" }] : []),
               ]}
               active={activeTab}
               onChange={chooseTab}
@@ -750,8 +743,6 @@ function OrdersPageInner() {
           )}
           {activeTab === "requests" ? (
             <OrderRequestsSection requests={requests} departments={departments ?? undefined} />
-          ) : activeTab === "trucks" ? (
-            <TruckEntrySection />
           ) : (
             <>
               <Modal

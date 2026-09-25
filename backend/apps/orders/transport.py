@@ -2,7 +2,7 @@
 
 Номер машины хранится в ``Order.truck_number`` (у вагона — 8 цифр),
 полуприцеп — в ``Order.trailer_number``. Все записи пары идут через
-:func:`set_order_transport`: форма заказа, быстрый ввод «Фуры», грузчик и
+:func:`set_order_transport`: форма заказа, грузчик и
 портал клиента сравнивают номера одинаково и не расходятся в правилах.
 """
 
@@ -15,7 +15,6 @@ from apps.common.plates import (
     format_plate_pair,
     normalize_plate,
     plate_match_key,
-    plate_warning,
 )
 from apps.common.wagon_numbers import is_wagon_number
 from apps.eventlog.services import log_event
@@ -200,13 +199,6 @@ def transport_suggestions(order, pairs_by_client) -> list[dict]:
         pair for pair in pairs_by_client.get(order.client_id, ())
         if (plate_match_key(pair["truck_number"]), plate_match_key(pair["trailer_number"])) != own
     ][:TRANSPORT_SUGGESTIONS]
-
-
-def transport_warning(order) -> str | None:
-    """Мягкое предупреждение по номеру тягача или прицепа."""
-    if order.transport_type == "train":
-        return None
-    return plate_warning(order.truck_number) or plate_warning(order.trailer_number, kind="trailer")
 
 
 def transport_on_site(order) -> bool:

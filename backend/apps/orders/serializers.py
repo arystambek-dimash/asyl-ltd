@@ -34,9 +34,7 @@ from .transport import (
     clean_transport_pair,
     order_wagons,
     set_order_transport,
-    transport_locked,
     transport_suggestions,
-    transport_warning,
 )
 
 
@@ -757,44 +755,3 @@ class TransportSuggestionsMixin:
 
     def get_transport_suggestions(self, order):
         return transport_suggestions(order, self.context.get("transport_pairs") or {})
-
-
-class OrderTransportRowSerializer(TransportSuggestionsMixin, serializers.ModelSerializer):
-    """Строка быстрого ввода «Фуры»: без позиций, оплат и истории заказа."""
-
-    client_name = serializers.SerializerMethodField()
-    client_country = serializers.CharField(source="client.country", read_only=True)
-    planned_on = serializers.DateField(read_only=True)
-    bags = serializers.IntegerField(read_only=True)
-    transport_locked = serializers.SerializerMethodField()
-    transport_suggestions = serializers.SerializerMethodField()
-    plate_warning = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Order
-        fields = [
-            "id",
-            "client",
-            "client_name",
-            "client_country",
-            "status",
-            "arrival_date",
-            "created_at",
-            "planned_on",
-            "bags",
-            "truck_number",
-            "trailer_number",
-            "transport_locked",
-            "transport_suggestions",
-            "plate_warning",
-        ]
-        read_only_fields = fields
-
-    def get_client_name(self, order):
-        return order.client.display_name
-
-    def get_transport_locked(self, order):
-        return transport_locked(order, self.context["request"].user)
-
-    def get_plate_warning(self, order):
-        return transport_warning(order)
