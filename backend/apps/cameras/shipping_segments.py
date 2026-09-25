@@ -2,6 +2,8 @@
 
 Counts do not wait for an order, a photo or OCR. Every source event has one
 mapping; identity only groups adjacent segments and never changes bag totals.
+A segment ends after the idle timeout or, on a wagon conveyor, when the train
+changes the wagon (shipping_train_motion), however short the pause.
 """
 from datetime import timedelta
 
@@ -9,7 +11,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.eventlog.services import log_event
-from . import ai
+from . import ai, shipping_train_motion
 from .models import (
     ANALYTICS_SCOPE_SHIPPING, AlwaysOnCounterCursor, AlwaysOnImportedEvent,
     ShippingLoadingCursor, ShippingLoadingEvent, ShippingLoadingSegment,
@@ -44,6 +46,13 @@ def _close_segment(segment):
 def _flush_segment(segment):
     segment.save(update_fields=["total_bags", "last_counted_at", "ended_at"])
     segment.session.save(update_fields=["total_bags", "last_counted_at", "status", "ended_at"])
+
+
+def _same_transport(segment, at, changes):
+    """Whether a bag at ``at`` still belongs to the segment's transport."""
+    if changes is not None and changes.after(segment, at):
+        return False
+    return at - segment.last_counted_at < timedelta(seconds=segment.idle_timeout_seconds)
 
 
 def _new_segment(event, binding, policy):
@@ -82,6 +91,10 @@ def ingest_camera(camera):
     already_mapped = set(ShippingLoadingEvent.objects.filter(event_id__in=[e.pk for e in events]).values_list("event_id", flat=True))
     binding = ShippingTransportCamera.objects.filter(conveyor_camera=camera).first()
     segment = ShippingLoadingSegment.objects.select_related("session").filter(camera=camera).order_by("-first_upstream_event_id", "-pk").first()
+    changes = shipping_train_motion.load_changes(
+        shipping_train_motion.train_camera(binding.recognition_model, binding.number_camera) if binding else None,
+        min([event.occurred_at for event in events] + ([segment.last_counted_at] if segment else [])),
+    )
     mappings = []
     for event in events:
         if not (event.analytics_scope == ANALYTICS_SCOPE_SHIPPING and event.applied_to_analytics and event.occurred_at >= projection.activated_at):
@@ -92,9 +105,7 @@ def ingest_camera(camera):
                 and segment.configured_recognition_model == (binding.recognition_model if binding else "")
                 and segment.loading_zone == (binding.loading_zone if binding else None)
             )
-            continues = segment is not None and configuration_matches and (
-                event.occurred_at - segment.last_counted_at < timedelta(seconds=segment.idle_timeout_seconds)
-            )
+            continues = segment is not None and configuration_matches and _same_transport(segment, event.occurred_at, changes)
             if not continues:
                 if segment is not None and segment.ended_at is None:
                     _flush_segment(segment)
@@ -134,9 +145,15 @@ def close_idle(camera, *, now=None):
         or projection.last_event_id < upstream.last_event_id
     ):
         return None
-    caught_up = upstream.event_caught_up_at
     segment = ShippingLoadingSegment.objects.select_related("session").filter(camera=camera, ended_at__isnull=True).first()
-    if segment is None or caught_up-segment.last_counted_at < timedelta(seconds=segment.idle_timeout_seconds):
+    if segment is None:
+        return None
+    changes = shipping_train_motion.load_changes(
+        shipping_train_motion.train_camera(segment.configured_recognition_model, segment.number_camera),
+        segment.last_counted_at,
+    )
+    # Closes after the idle timeout, or as soon as the train took the wagon.
+    if _same_transport(segment, upstream.event_caught_up_at, changes):
         return None
     _close_segment(segment)
     return segment.pk

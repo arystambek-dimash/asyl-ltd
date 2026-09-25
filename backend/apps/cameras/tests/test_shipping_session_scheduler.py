@@ -42,9 +42,13 @@ def test_failed_camera_does_not_prevent_projection_of_already_imported_events():
         scheduling.event_sync, "sync_camera", side_effect=scheduling.ai.AiUnavailable("offline"),
     ), patch.object(scheduling.event_sync, "mark_sync_failure") as failed, patch.object(
         scheduling.shipping_segments, "ingest_camera",
-    ) as ingest, patch.object(scheduling.shipping_segments, "close_idle") as close:
+    ) as ingest, patch.object(scheduling.shipping_segments, "close_idle") as close, patch.object(
+        scheduling.shipping_train_motion, "poll",
+    ) as poll:
         assert scheduling._sync_and_project("cam2") is True
     failed.assert_called_once()
+    # The train monitor is independent of the bag journal import.
+    poll.assert_called_once_with("cam2")
     assert ingest.call_count == 2
     assert all(call.args == ("cam2",) for call in ingest.call_args_list)
     close.assert_called_once_with("cam2")
@@ -56,6 +60,7 @@ def test_projection_runs_before_network_and_import_is_one_page():
         scheduling.shipping_segments, "ingest_camera", side_effect=lambda camera: calls.append("project"),
     ), patch.object(scheduling.event_sync, "sync_camera", side_effect=lambda camera, **kwargs: calls.append(kwargs)), patch.object(
         scheduling.shipping_segments, "close_idle", side_effect=lambda camera: calls.append("close"),
-    ):
+    ), patch.object(scheduling.shipping_train_motion, "poll", side_effect=lambda camera: calls.append("train")):
         scheduling._sync_and_project("cam2")
-    assert calls == ["project", {"max_pages": 1}, "project", "close"]
+    # Wagon changes are recorded before the imported bags are projected.
+    assert calls == ["project", {"max_pages": 1}, "train", "project", "close"]

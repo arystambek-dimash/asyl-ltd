@@ -1148,3 +1148,22 @@ class ShippingLoadingEvent(models.Model):
     event = models.OneToOneField(AlwaysOnImportedEvent, on_delete=models.PROTECT, related_name="shipping_loading_event")
     segment = models.ForeignKey(ShippingLoadingSegment, on_delete=models.PROTECT, related_name="count_events")
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ShippingTrainMove(models.Model):
+    """One movement episode reported by the train monitor of a number camera (camera-PC time)."""
+
+    camera = models.CharField(max_length=32)
+    started_at = models.DateTimeField()
+    stopped_at = models.DateTimeField()
+    seconds = models.FloatField()
+    # Time in which at least half of the monitored zone moved.
+    high_seconds = models.FloatField()
+    mean_fraction = models.FloatField()
+    interrupted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["camera", "stopped_at"]
+        constraints = [models.UniqueConstraint(fields=["camera", "started_at"], name="shipping_train_move_unique_start")]
+        indexes = [models.Index(fields=["camera", "stopped_at"], name="ship_train_move_stop_idx")]

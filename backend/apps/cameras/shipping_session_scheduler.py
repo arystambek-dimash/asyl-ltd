@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from django.db import close_old_connections, connections
 
-from . import ai, event_sync, shipping_segment_identity, shipping_segments
+from . import ai, event_sync, shipping_segment_identity, shipping_segments, shipping_train_motion
 from .models import MonoblockCameraSettings
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ def _sync_and_project(camera):
             # A network outage does not erase events already committed to CRM.
             event_sync.mark_sync_failure(camera, exc)
             failed = True
+        # Wagon changes first, so the imported bags are split at them.
+        shipping_train_motion.poll(camera)
     shipping_segments.ingest_camera(camera)
     shipping_segments.close_idle(camera)
     return failed
