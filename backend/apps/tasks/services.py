@@ -19,11 +19,32 @@ MAX_ATTACHMENTS_TOTAL_BYTES = 75 * MB
 logger = logging.getLogger(__name__)
 
 
+# Страница «Задачи» открыта с любым из прав раздела — как пункт меню на фронте.
+TASK_PAGE_PERMS = ("tasks.own", "tasks.view", "tasks.create")
+
+
+def can_open_tasks(user) -> bool:
+    return any(user.has_perm_code(code) for code in TASK_PAGE_PERMS)
+
+
+def assignable_employees():
+    """Кому можно поручить задачу: действующие сотрудники, которым открыта страница «Задачи»."""
+    from apps.employees.models import Employee
+
+    return Employee.objects.filter(
+        Q(user__is_superuser=True) | Q(permissions__code__in=TASK_PAGE_PERMS),
+        is_active=True, user__is_active=True, user__is_client=False,
+    ).distinct()
+
+
 def validate_assignee(assignee):
     employee = getattr(assignee, "employee", None)
     if (assignee is None or assignee.is_client or not assignee.is_active
             or not (assignee.is_superuser or (employee and employee.is_active))):
         raise ValidationError({"assignee": "Выберите действующего сотрудника"})
+    if not can_open_tasks(assignee):
+        # Иначе поручение ушло бы тому, кто его не увидит.
+        raise ValidationError({"assignee": "Сотруднику закрыта страница «Задачи»"})
     return assignee
 
 
@@ -40,7 +61,7 @@ def can_act(task, user) -> bool:
 
 
 def visible_tasks_q(user) -> Q:
-    """Свои задачи (поставленные мне или мной) видны всем, чужие — с правом tasks.view."""
+    """Свои задачи (поставленные мне или мной) видны на странице задач, чужие — с правом tasks.view."""
     if user.has_perm_code("tasks.view"):
         return Q()
     return Q(assignee=user) | Q(created_by=user)
@@ -234,9 +255,11 @@ def reopen_task(task: Task, user) -> Task:
 def reassign_task(task: Task, assignee, user) -> Task:
     task = _locked_task(task)
     _assert_still_visible(task, user)
-    validate_assignee(assignee)
+    # Тот же исполнитель — не передача: правка текста или срока задачи того,
+    # кому потом закрыли «Задачи», не должна падать на его проверке.
     if task.assignee_id == assignee.pk:
         return task
+    validate_assignee(assignee)
     task.assignee = assignee
     task.save(update_fields=["assignee", "updated_at"])
     log_event(

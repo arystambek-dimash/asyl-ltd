@@ -1,6 +1,6 @@
-"""Журнал WhatsApp-бота: состояние номера, сообщения, разбор и настройки.
+"""Журнал Telegram-бота: состояние бота, сообщения, разбор и настройки.
 
-Разбор сообщения — тот же экран, что «Вставить отчёт» у грузчика
+Разбор сообщения — тот же экран, что «Отгрузить по отчёту» у грузчика
 (:mod:`apps.bots.preview`): предпросмотр, словари и «Провести» — от имени
 человека, с его правами и отделом.
 """
@@ -20,7 +20,8 @@ from apps.eventlog.services import log_event
 from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
-from .models import BotMessage, WhatsAppBotSettings
+from .messages import EVENT_TYPE, apply_message, ignore_message, status_counts
+from .models import BotMessage, TelegramBotSettings
 from .preview import preview_report, resolution_options
 from .rail import RAIL_TRANSPORT, remember_report_client, remember_report_product
 from .serializers import (
@@ -28,10 +29,9 @@ from .serializers import (
     RailClientNameSerializer,
     RailProductCodeSerializer,
     RailReportSerializer,
-    WhatsAppBotSettingsSerializer,
+    TelegramBotSettingsSerializer,
     rail_report_input,
 )
-from .whatsapp import EVENT_TYPE, apply_message, ignore_message, status_counts
 
 # Короткое число — номер заказа или сообщения; длинное (номер вагона) ищется в тексте.
 _SHORT_NUMBER_DIGITS = 7
@@ -41,29 +41,32 @@ def _search_q(search: str) -> Q:
     digits = search.lstrip("№#").strip()
     if digits.isdigit() and len(digits) <= _SHORT_NUMBER_DIGITS:
         return Q(order_id=int(digits)) | Q(pk=int(digits))
-    return Q(text__icontains=search) | Q(sender_name__icontains=search) | Q(chat_name__icontains=search)
+    return (
+        Q(text__icontains=search) | Q(sender_name__icontains=search) | Q(chat_name__icontains=search)
+        | Q(sender_username__icontains=search.lstrip("@"))
+    )
 
 
 def _status_payload(request) -> dict:
-    row = WhatsAppBotSettings.load()
+    row = TelegramBotSettings.load()
     user = request.user
     return {
-        # WHATSAPP_BOT_ENABLED на сервере; выключен — процесс бота простаивает.
-        "server_enabled": settings.WHATSAPP_BOT_ENABLED,
+        # TELEGRAM_BOT_ENABLED на сервере; выключен — процесс бота простаивает.
+        "server_enabled": settings.TELEGRAM_BOT_ENABLED,
         "runtime_status": row.runtime_status,
         "runtime_error": row.runtime_error,
         "polled_at": row.polled_at,
-        "instance_state": row.instance_state,
-        "instance_state_at": row.instance_state_at,
+        "bot_state": row.bot_state,
+        "bot_username": row.bot_username,
         "counts": status_counts(),
-        "settings": WhatsAppBotSettingsSerializer(row).data,
+        "settings": TelegramBotSettingsSerializer(row).data,
         "can_manage": user.has_perm_code("bots.manage"),
         "can_configure": user.has_perm_code("sys_permissions.manage"),
     }
 
 
-class WhatsAppBotStatusView(PermAPIViewMixin, APIView):
-    """Шапка журнала: состояние номера и процесса, счётчики вкладок, настройки."""
+class TelegramBotStatusView(PermAPIViewMixin, APIView):
+    """Шапка журнала: состояние бота и процесса, счётчики вкладок, настройки."""
 
     required_perms: ClassVar[dict] = {"get": "bots.view"}
 
@@ -71,21 +74,21 @@ class WhatsAppBotStatusView(PermAPIViewMixin, APIView):
         return Response(_status_payload(request))
 
 
-class WhatsAppBotSettingsView(PermAPIViewMixin, APIView):
+class TelegramBotSettingsView(PermAPIViewMixin, APIView):
     """Настройки бота меняет администратор (как настройки камер и накладной)."""
 
     required_perms: ClassVar[dict] = {"put": "sys_permissions.manage"}
 
     def put(self, request):
-        row = WhatsAppBotSettings.load()
-        serializer = WhatsAppBotSettingsSerializer(row, data=request.data, partial=True, context={"request": request})
+        row = TelegramBotSettings.load()
+        serializer = TelegramBotSettingsSerializer(row, data=request.data, partial=True, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         log_event(
             EVENT_TYPE,
-            "Настройки WhatsApp-бота: " + ("проводит отчёты" if row.enabled else "выключен"),
+            "Настройки Telegram-бота: " + ("проводит отчёты" if row.enabled else "выключен"),
             user=request.user,
-            payload={key: serializer.data[key] for key in WhatsAppBotSettings.SETTINGS_FIELDS},
+            payload={key: serializer.data[key] for key in TelegramBotSettings.SETTINGS_FIELDS},
         )
         # Экран применяет ответ, а не перечитывает опрашиваемую шапку.
         return Response(_status_payload(request))

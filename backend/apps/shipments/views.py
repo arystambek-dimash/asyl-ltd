@@ -61,14 +61,14 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "waybill": "loader.view",
         "confirm": "loader.confirm",
         "rollback": "loader.confirm",
-        # «Вставить отчёт» во вкладке «Вагоны»: смотреть и разбирать может
-        # грузчик вагонов, провести — с правами отгрузки (и заказов для нового).
+        # «Отгрузить по отчёту» заказ во вкладке «Вагоны»: смотреть и разбирать
+        # может грузчик вагонов, отгрузить — с правами отгрузки.
         "rail_preview": "loader.view",
         "rail_options": "loader.view",
         "rail_product_code": "loader.view",
         "rail_client_name": "loader.view",
         "rail_apply": "loader.confirm",
-        # «Отправить отчёт» в истории вагонов — Динаре: составить и отправить может
+        # «Отправить отчёт» в истории вагонов — Динаре в Telegram: составить и отправить может
         # каждый, кто видит историю вагонов (область проверяет requested_transport).
         "report_compose": "loader.view",
         "report_send": "loader.view",
@@ -230,10 +230,17 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         return self._row(pk)
 
     def _rail_input(self, serializer_class):
-        """Отчёт из запроса и заказ «Отгрузить по отчёту» (своей области и отдела)."""
+        """Отчёт из запроса и заказ «Отгрузить по отчёту» (своей области и отдела).
+
+        Новый заказ по отчёту у грузчика не создаётся — это делает бот или его
+        журнал; здесь отчёт только отгружает заранее внесённый заказ.
+        """
         # Отчёт о вагонах — вкладка «Вагоны»: без этой области — 403, а не пустой разбор.
         requested_transport(self.request.user, RAIL_TRANSPORT)
-        return rail_report_input(self, serializer_class, self.get_queryset())
+        data, report, order = rail_report_input(self, serializer_class, self.get_queryset())
+        if order is None:
+            raise ValidationError({"order": "Откройте заказ, который отгружаете по отчёту"})
+        return data, report, order
 
     def _rail_preview(self, report, order):
         return Response(preview_report(report, self.request.user, order=order))
@@ -266,8 +273,8 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=["post"], url_path="rail-report/apply")
     def rail_apply(self, request):
-        """«Провести»: новый отчёт — заказ, подтверждение и отгрузка вагонов; с ``order`` —
-        отгрузка этого заказа. Ответ — строка истории: экран применяет её, а не перечитывает."""
+        """«Отгрузить по отчёту»: вагоны, станция и день отчёта — на заказ ``order``.
+        Ответ — строка истории: экран применяет её, а не перечитывает."""
         _, report, order = self._rail_input(RailReportSerializer)
         order = apply_rail_report(report, request.user, order=order)
         return self._row(order.pk)

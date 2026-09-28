@@ -71,9 +71,9 @@ vi.mock("@/lib/loader", async (importOriginal) => ({
 }));
 // Лист отчёта проверен своими тестами; здесь — как страница его открывает и применяет ответ.
 vi.mock("@/components/loader/rail-report-sheet", () => ({
-  RailReportSheet: ({ orderId, onApplied }: { orderId: number | null; onApplied: (row: LoaderOrder) => void }) => (
+  RailReportSheet: ({ orderId, onApplied }: { orderId: number; onApplied: (row: LoaderOrder) => void }) => (
     <div role="dialog" aria-label="Отчёт о вагонах">
-      <span>{orderId === null ? "новый отчёт" : `заказ ${orderId}`}</span>
+      <span>{`заказ ${orderId}`}</span>
       <button type="button" onClick={() => onApplied(mocks.railRow!)}>
         Провести отчёт
       </button>
@@ -615,52 +615,15 @@ describe("LoaderPage", () => {
     expect(screen.getByRole("button", { name: /№626/ })).toBeInTheDocument();
   });
 
-  it("«Вставить отчёт» только во вкладке «Вагоны»: проведённый отчёт — экран отгрузки и строка истории", async () => {
+  it("«Вставить отчёт» убран: новый заказ по отчёту проводит Telegram-бот", async () => {
     const user = userEvent.setup();
-    const queueApply = vi.fn();
-    const historyApply = vi.fn();
-    const today = todayLocalIsoDate();
-    mocks.paged.mockImplementation((url: string | null) => {
-      if (url?.startsWith("/loader/queue/"))
-        return paged([order(625, { transport_type: "train" })], { applyItems: queueApply });
-      if (url?.startsWith("/loader/history/")) return paged([], { applyItems: historyApply });
-      return paged([]);
-    });
-    mocks.railRow = order(700, {
-      status: "shipped",
-      transport_type: "train",
-      shipped_at: `${today}T12:00:00+05:00`,
-      rail_station: "Раустан",
-      wagons: [
-        { number: "28087658", product_label: "Д1с", bags: 1360, weight_kg: "68000.00" },
-        { number: "28087666", product_label: "Д1с", bags: 1360, weight_kg: "68000.00" },
-      ],
-      bags: 2720,
-      total_kg: "136000.00",
-    });
     render(<LoaderPage />);
     expect(screen.queryByRole("button", { name: /Вставить отчёт/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
+    expect(screen.queryByRole("button", { name: /Вставить отчёт/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /История/ }));
-    await user.click(screen.getByRole("button", { name: /Вставить отчёт/ }));
-    expect(screen.getByRole("dialog", { name: "Отчёт о вагонах" })).toHaveTextContent("новый отчёт");
-    // Пока лист открыт, очередь не опрашивается.
-    expect(lastPoll().active).toBe(false);
-
-    await user.click(screen.getByRole("button", { name: "Провести отчёт" }));
-
-    expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
-    expect(screen.getByText("2 вагона · ст. Раустан")).toBeInTheDocument();
-    expect(screen.getByText("28087666")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "Отчёт о вагонах" })).not.toBeInTheDocument();
-    const [shown] = historyApply.mock.calls.at(-1)!;
-    expect(shown([order(690, { shipped_at: `${today}T09:00:00+05:00` })]).map((row: LoaderOrder) => row.id)).toEqual([
-      700, 690,
-    ]);
-    const [left] = queueApply.mock.calls.at(-1)!;
-    expect(left([order(700), order(625)]).map((row: LoaderOrder) => row.id)).toEqual([625]);
-    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Вставить отчёт/ })).not.toBeInTheDocument();
   });
 
   it("ожидающий вагонный заказ отгружается по отчёту из экрана заказа", async () => {
@@ -695,9 +658,6 @@ describe("LoaderPage", () => {
     await user.click(screen.getByRole("button", { name: /№625/ }));
 
     expect(screen.queryByRole("button", { name: /Отгрузить по отчёту/ })).not.toBeInTheDocument();
-    // Проверить отчёт может и тот, кто не отгружает, — лист сам скажет, кто проведёт.
-    await user.click(screen.getByRole("button", { name: /Назад/ }));
-    expect(screen.getByRole("button", { name: /Вставить отчёт/ })).toBeInTheDocument();
   });
 
   it("отправляет отчёт Динаре из истории вагонов: всей историей или одной отгрузкой, отметка — из ответа", async () => {
@@ -733,7 +693,7 @@ describe("LoaderPage", () => {
       status_label: "В очереди",
       sent_at: sentAt,
       order_ids: [366],
-      recipient: { name: "Динара", to: "Динаре", phone: "77011234567" },
+      recipient: { name: "Динара", to: "Динаре", username: "dinara_k" },
       error: "",
     };
     render(<LoaderPage />);

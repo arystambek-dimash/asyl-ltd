@@ -1,17 +1,34 @@
-"""WhatsApp-бот: приём без дублей, автопроведение, разбор, правки, ответы цитатой, журнал."""
+"""Telegram-бот: приём без дублей, доступ по username, автопроведение, разбор, правки, ответы, журнал."""
+from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import pytest
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from apps.bots import llm, whatsapp
-from apps.bots.models import BotMessage, WhatsAppBotSettings
+from apps.bots import llm, messages
+from apps.bots.models import BotChat, BotMessage
 from apps.bots.parsing import parse_rail_report
-from apps.bots.providers.green_api import GreenApiError
-from apps.bots.tests.samples import OWNER_BAGS, OWNER_REPORT, OWNER_WAGONS, report, stock_bags
-from apps.bots.tests.whatsapp_fakes import GROUP, JIN, FakeGreenApi, deleted, edited, incoming
+from apps.bots.tests.samples import (
+    OWNER_BAGS,
+    OWNER_REPORT,
+    OWNER_WAGONS,
+    report,
+    stock_bags,
+)
+from apps.bots.tests.telegram_fakes import (
+    DINARA,
+    DINARA_CHAT,
+    GROUP,
+    JIN,
+    JIN_ID,
+    FakeTelegram,
+    edited,
+    incoming,
+    private,
+)
 from apps.catalog.models import ClientPrice, ProductAlias
 from apps.common import openai_responses
+from apps.common.telegram import TelegramError, TelegramRefused
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order
 from apps.shipments.models import ShipmentWagon
@@ -21,49 +38,74 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def llm_on(settings):
-    settings.WHATSAPP_BOT_LLM_ENABLED = True
+    settings.TELEGRAM_BOT_LLM_ENABLED = True
     settings.OPENAI_API_KEY = "unit-test-only"
 
 
 # --- приём ------------------------------------------------------------------------------------------
 
 
-def test_redelivered_notification_is_stored_once(bot_settings):
-    first = whatsapp.ingest(incoming(OWNER_REPORT), bot_settings)
-    again = whatsapp.ingest(incoming(OWNER_REPORT), bot_settings)
+def test_redelivered_update_is_stored_once():
+    first = messages.ingest(incoming(OWNER_REPORT))
+    again = messages.ingest(incoming(OWNER_REPORT))
 
     assert first.pk == again.pk
     assert BotMessage.objects.count() == 1
-    assert (first.chat_id, first.sender_id, first.status, first.text) == (GROUP, JIN, "received", OWNER_REPORT)
+    assert (first.chat_id, first.sender_id, first.sender_username, first.status, first.text) == (
+        GROUP, JIN_ID, JIN, "received", OWNER_REPORT)
+    assert first.provider_message_id == f"{GROUP}:11"
 
 
-def test_foreign_chat_is_not_stored_but_listed_for_settings(bot_settings):
-    assert whatsapp.ingest(incoming("личное", chat_id="77011234567@c.us"), bot_settings) is None
+def test_same_message_id_in_another_chat_is_another_message():
+    messages.ingest(incoming(OWNER_REPORT))
+    messages.ingest(incoming(OWNER_REPORT, chat_id="-100999"))
 
-    assert BotMessage.objects.count() == 0
-    seen = WhatsAppBotSettings.load().seen_chats
-    assert seen["77011234567@c.us"]["name"] == "Отгрузка вагонов"
+    assert BotMessage.objects.count() == 2
 
 
-def test_group_not_yet_allowed_is_kept_as_skipped_and_can_be_conducted_later(
-    receive, bot_settings, client, product, price, conductor,
+def test_every_chat_is_remembered_for_the_settings():
+    messages.ingest(private("привет"))
+    messages.ingest(incoming("в группе"))
+
+    assert BotChat.objects.get(chat_id=DINARA_CHAT).username == DINARA
+    # В группе пишут разные люди: username у группы не хранится.
+    group = BotChat.objects.get(chat_id=GROUP)
+    assert (group.chat_type, group.title, group.username) == ("supergroup", "Отгрузка вагонов", "")
+
+
+def test_report_of_someone_not_yet_allowed_is_skipped_and_can_be_conducted_later(
+    receive, client, product, price, conductor,
 ):
-    # Группу ещё не выбрали в настройках: отчёт не теряется, но и не проводится.
-    bot_settings.allowed_chat_ids = []
-    bot_settings.save()
-
-    message = receive(incoming(OWNER_REPORT))
+    # Сначала человек пишет боту, потом администратор добавляет его username:
+    # отчёт не теряется, но и не проводится.
+    message = receive(incoming(OWNER_REPORT, sender_username="new_man"))
 
     assert (message.status, message.reply, Order.objects.count()) == ("ignored", "", 0)
-    assert message.issues[0]["code"] == "chat_not_allowed"
-    assert GROUP in WhatsAppBotSettings.load().seen_chats
-    assert whatsapp.apply_message(message, conductor).status == "applied"
+    assert message.issues[0]["code"] == "sender_not_allowed"
+    assert "@new_man" in message.issues[0]["message"]
+    assert messages.apply_message(message, conductor).status == "applied"
+
+
+def test_sender_without_username_is_not_allowed(receive, client, product, price):
+    message = receive(incoming(OWNER_REPORT, sender_username=""))
+
+    assert message.status == "ignored"
+    assert "нет username" in message.issues[0]["message"]
+
+
+def test_allowed_username_in_a_private_chat_is_conducted(receive, bot_settings, client, product, price):
+    bot_settings.allowed_usernames = [JIN, DINARA]
+    bot_settings.save()
+
+    message = receive(private(OWNER_REPORT))
+
+    assert message.status == "applied", message.issues
 
 
 # --- автопроведение ------------------------------------------------------------------------------------
 
 
-def test_owner_report_is_conducted_by_the_bot_and_answered_with_a_quote(receive, bot_user, client, product, price):
+def test_owner_report_is_conducted_by_the_bot_and_answered(receive, bot_user, client, product, price):
     stock = stock_bags(product)
 
     message = receive(incoming(OWNER_REPORT))
@@ -104,7 +146,7 @@ def test_redelivery_after_conducting_changes_nothing(receive, client, product, p
 def test_same_report_in_a_new_message_goes_to_review(receive, client, product, price):
     first = receive(incoming(OWNER_REPORT))
 
-    second = receive(incoming(OWNER_REPORT, message_id="MSG2"))
+    second = receive(incoming(OWNER_REPORT, message_id="12"))
 
     assert Order.objects.count() == 1
     assert second.status == "needs_review"
@@ -138,11 +180,11 @@ def test_bot_needs_its_own_rights(receive, bot_user, client, product, price):
     assert message.reply == "Принято, на проверке: нужна проверка человеком"
 
 
-STRANGER = "77019998877@c.us"
+STRANGER = "stranger"
 
 
 def test_unknown_sender_in_the_group_is_skipped(receive, client, product, price):
-    message = receive(incoming(OWNER_REPORT, sender_id=STRANGER))
+    message = receive(incoming(OWNER_REPORT, sender_username=STRANGER))
 
     assert (message.status, message.reply) == ("ignored", "")
     assert message.issues[0]["code"] == "sender_not_allowed"
@@ -164,13 +206,13 @@ def test_too_long_message_is_rejected(receive):
 
 
 def test_too_long_message_of_an_unknown_sender_is_skipped(receive):
-    message = receive(incoming("x" * 9000, sender_id=STRANGER))
+    message = receive(incoming("x" * 9000, sender_username=STRANGER))
 
     assert (message.status, message.reply) == ("ignored", "")
     assert message.issues[0]["code"] == "sender_not_allowed"
 
 
-# --- правки и удаления --------------------------------------------------------------------------------
+# --- правки --------------------------------------------------------------------------------
 
 
 def test_edit_of_a_conducted_report_goes_to_review_and_is_never_conducted(receive, client, product, price):
@@ -190,9 +232,9 @@ def test_edit_of_a_conducted_report_goes_to_review_and_is_never_conducted(receiv
 
 
 def test_edit_of_an_unknown_sender_is_skipped_without_a_reply(receive, client, product, price):
-    receive(incoming(OWNER_REPORT, sender_id=STRANGER))
+    receive(incoming(OWNER_REPORT, sender_username=STRANGER))
 
-    revision = receive(edited(OWNER_REPORT, sender_id=STRANGER))
+    revision = receive(edited(OWNER_REPORT, sender_username=STRANGER))
 
     assert (revision.status, revision.reply) == ("ignored", "")
     assert revision.issues[0]["code"] == "sender_not_allowed"
@@ -201,51 +243,35 @@ def test_edit_of_an_unknown_sender_is_skipped_without_a_reply(receive, client, p
 def test_unknown_senders_change_of_a_conducted_report_reaches_a_human_silently(receive, client, product, price):
     original = receive(incoming(OWNER_REPORT))
 
-    revision = receive(edited(OWNER_REPORT, sender_id=STRANGER))
+    revision = receive(edited(OWNER_REPORT, sender_username=STRANGER))
 
     assert (revision.status, revision.order_id, revision.reply) == ("needs_review", original.order_id, "")
     assert revision.issues[0]["code"] == "message_edited"
 
 
-def test_delete_of_a_conducted_report_goes_to_review(receive, client, product, price):
-    original = receive(incoming(OWNER_REPORT))
-
-    revision = receive(deleted())
-
-    assert (revision.kind, revision.status, revision.reply) == ("deleted", "needs_review", "")
-    assert revision.issues[0]["code"] == "message_deleted"
-    assert revision.order_id == original.order_id
-
-
-def test_delete_of_chat_talk_is_skipped(receive):
+def test_repeated_edits_are_separate_and_redelivery_is_not(receive):
     receive(incoming("Спасибо"))
-
-    revision = receive(deleted())
-
-    assert revision.status == "ignored"
-
-
-def test_repeated_edits_are_separate_and_redelivery_is_not(receive, bot_settings):
-    receive(incoming("Спасибо"))
-    first = whatsapp.ingest(edited("один", message_id="E1"), bot_settings)
-    again = whatsapp.ingest(edited("один", message_id="E1"), bot_settings)
-    other = whatsapp.ingest(edited("два", message_id="E2"), bot_settings)
+    first_at, second_at = datetime(2026, 9, 19, 9, 31, tzinfo=UTC), datetime(2026, 9, 19, 9, 32, tzinfo=UTC)
+    first = messages.ingest(edited("один", edited_at=first_at))
+    again = messages.ingest(edited("один", edited_at=first_at))
+    other = messages.ingest(edited("два", edited_at=second_at))
 
     assert first.pk == again.pk != other.pk
+    assert first.original == other.original == BotMessage.objects.get(kind="message")
 
 
 # --- сбои и ИИ ---------------------------------------------------------------------------------------
 
 
 def test_crash_is_retried_then_left_for_a_human(receive, bot_settings, bot_user, client, product, price):
-    with patch("apps.bots.whatsapp.apply_rail_report", side_effect=RuntimeError("boom")):
+    with patch("apps.bots.messages.apply_rail_report", side_effect=RuntimeError("boom")):
         message = receive(incoming(OWNER_REPORT))
         assert (message.status, message.attempts, message.reply) == ("failed", 1, "")
         for _ in range(3):
-            whatsapp.process_pending(user=bot_user, bot_settings=bot_settings)
+            messages.process_pending(user=bot_user, bot_settings=bot_settings)
 
     message.refresh_from_db()
-    assert (message.status, message.attempts) == ("failed", whatsapp.MAX_ATTEMPTS)
+    assert (message.status, message.attempts) == ("failed", messages.MAX_ATTEMPTS)
     assert message.error == "RuntimeError: boom"
     assert message.reply == "Принято, на проверке: не удалось провести автоматически"
     assert Order.objects.count() == 0
@@ -299,7 +325,7 @@ def test_human_decision_keeps_the_llm_draft(receive, llm_on, conductor):
     with patch.object(llm, "_request", return_value=answer):
         message = receive(incoming(FREE_TEXT))
 
-    ignored = whatsapp.ignore_message(message, conductor)
+    ignored = messages.ignore_message(message, conductor)
 
     assert (ignored.status, ignored.draft) == ("ignored", message.draft)
     assert ignored.draft
@@ -322,7 +348,7 @@ def _price_mismatch(receive, price):
     assert receive(incoming(first)).status == "applied"
     ClientPrice.objects.filter(pk=price.pk).update(price="10.00")
     second = report(*(f"Д1с-{number}-68 тн" for number in OWNER_WAGONS[6:]))
-    return receive(incoming(second, message_id="MSG2"))
+    return receive(incoming(second, message_id="12"))
 
 
 def test_price_mismatch_reply_has_no_prices(receive, client, product, price):
@@ -344,28 +370,37 @@ def test_price_mismatch_reply_shows_prices_only_when_amounts_are_on(receive, bot
     assert message.reply == f"Принято, на проверке: {message.issues[0]['message']}"
 
 
-def test_replies_are_sent_once_as_quotes(receive, client, product, price):
+def test_replies_are_sent_once_as_answers_to_the_original(receive, client, product, price):
     original = receive(incoming(OWNER_REPORT))
     revision = receive(edited("Спасибо, исправил"))
-    api = FakeGreenApi()
+    api = FakeTelegram()
 
-    assert whatsapp.send_pending_replies(api) == 2
-    assert whatsapp.send_pending_replies(api) == 0
+    assert messages.send_pending_replies(api) == 2
+    assert messages.send_pending_replies(api) == 0
 
     assert api.sent == [
-        (GROUP, original.reply, "MSG1"),
-        # Правку цитировать нельзя — цитата исходного сообщения.
-        (GROUP, revision.reply, "MSG1"),
+        (GROUP, original.reply, f"{GROUP}:11"),
+        # Правка — ответом на исходное сообщение.
+        (GROUP, revision.reply, f"{GROUP}:11"),
     ]
     original.refresh_from_db()
-    assert (original.reply_message_id, original.reply_sent_at is not None) == ("REPLY1", True)
+    assert (original.reply_message_id, original.reply_sent_at is not None) == (f"{GROUP}:1001", True)
+
+
+def test_old_whatsapp_messages_wait_for_no_reply():
+    BotMessage.objects.create(
+        provider="green_api", provider_message_id="MSG1", chat_id="120363043968066561@g.us", reply="Проведено")
+    api = FakeTelegram()
+
+    assert messages.send_pending_replies(api) == 0
+    assert api.sent == []
 
 
 def test_failed_reply_counts_an_attempt_and_keeps_the_processing_error(receive):
     message = receive(incoming(OWNER_REPORT))
 
-    with pytest.raises(GreenApiError):
-        whatsapp.send_pending_replies(FakeGreenApi(fail_send=True))
+    with pytest.raises(TelegramError):
+        messages.send_pending_replies(FakeTelegram(fail_send=True))
 
     message.refresh_from_db()
     assert (message.reply_attempts, message.reply_sent_at) == (1, None)
@@ -373,24 +408,43 @@ def test_failed_reply_counts_an_attempt_and_keeps_the_processing_error(receive):
     assert message.error == ""
 
 
+def test_reply_refused_in_one_chat_does_not_hold_back_the_others(receive, client, product, price):
+    blocked = receive(incoming("Спасибо", chat_id="-100777", message_id="5"))
+    BotMessage.objects.filter(pk=blocked.pk).update(reply="Принято")
+    original = receive(incoming(OWNER_REPORT))
+
+    class BlockedChat(FakeTelegram):
+        def send_message(self, chat_id, text, *, reply_to=""):
+            if chat_id == "-100777":
+                raise TelegramRefused("Telegram sendMessage: HTTP 403 — Forbidden: bot was kicked")
+            return super().send_message(chat_id, text, reply_to=reply_to)
+
+    api = BlockedChat()
+    assert messages.send_pending_replies(api) == 1
+
+    assert api.sent == [(GROUP, original.reply, f"{GROUP}:11")]
+    blocked.refresh_from_db()
+    assert (blocked.reply_attempts, blocked.reply_sent_at) == (1, None)
+
+
 def test_reply_replaced_while_it_was_sent_goes_out_next_round(unknown_code_message, product, conductor):
     message = unknown_code_message
     ProductAlias.objects.create(code="Д1с", product=product)
 
-    class ConductedWhileSending(FakeGreenApi):
-        def send_message(self, chat_id, text, *, quoted_message_id=""):
+    class ConductedWhileSending(FakeTelegram):
+        def send_message(self, chat_id, text, *, reply_to=""):
             if not self.sent:
-                whatsapp.apply_message(message, conductor)
-            return super().send_message(chat_id, text, quoted_message_id=quoted_message_id)
+                messages.apply_message(message, conductor)
+            return super().send_message(chat_id, text, reply_to=reply_to)
 
     api = ConductedWhileSending()
-    whatsapp.send_pending_replies(api)
-    whatsapp.send_pending_replies(api)
+    messages.send_pending_replies(api)
+    messages.send_pending_replies(api)
 
     message.refresh_from_db()
     assert [text for _, text, _ in api.sent] == [
         "Принято, на проверке: Неизвестный код товара «Д1с» — выберите товар", message.reply]
-    assert message.reply.startswith("Проведено:") and message.reply_message_id == "REPLY2"
+    assert message.reply.startswith("Проведено:") and message.reply_message_id == f"{GROUP}:1002"
 
 
 # --- журнал: действия человека ------------------------------------------------------------------------
@@ -399,7 +453,7 @@ def test_reply_replaced_while_it_was_sent_goes_out_next_round(unknown_code_messa
 def test_human_conducts_a_reviewed_message_with_own_rights(unknown_code_message, client, product, conductor):
     ProductAlias.objects.create(code="Д1с", product=product)
 
-    applied = whatsapp.apply_message(unknown_code_message, conductor)
+    applied = messages.apply_message(unknown_code_message, conductor)
 
     assert (applied.status, applied.resolved_by, applied.issues) == ("applied", conductor, [])
     assert applied.order.created_by == conductor
@@ -407,7 +461,7 @@ def test_human_conducts_a_reviewed_message_with_own_rights(unknown_code_message,
     assert applied.parsed["client"] == {"name": client.display_name}
     assert applied.reply.startswith(f"Проведено: заказ №{applied.order_id}")
     assert applied.reply_sent_at is None
-    assert EventLog.objects.filter(event_type="whatsapp_bot", order=applied.order, user=conductor).exists()
+    assert EventLog.objects.filter(event_type="telegram_bot", order=applied.order, user=conductor).exists()
 
 
 def test_human_can_conduct_a_corrected_text(receive, client, product, price, conductor):
@@ -415,10 +469,10 @@ def test_human_can_conduct_a_corrected_text(receive, client, product, price, con
     message = receive(incoming(broken))
     assert message.status == "needs_review"
 
-    applied = whatsapp.apply_message(message, conductor, text=OWNER_REPORT)
+    applied = messages.apply_message(message, conductor, text=OWNER_REPORT)
 
     assert applied.status == "applied"
-    assert EventLog.objects.get(event_type="whatsapp_bot").payload["text"] == OWNER_REPORT
+    assert EventLog.objects.get(event_type="telegram_bot").payload["text"] == OWNER_REPORT
 
 
 def test_human_without_rights_cannot_conduct(unknown_code_message, product, user_with_perms):
@@ -426,7 +480,7 @@ def test_human_without_rights_cannot_conduct(unknown_code_message, product, user
     viewer = user_with_perms("bot-viewer", codes=["orders.create", "orders.confirm"])
 
     with pytest.raises(PermissionDenied):
-        whatsapp.apply_message(unknown_code_message, viewer)
+        messages.apply_message(unknown_code_message, viewer)
 
     unknown_code_message.refresh_from_db()
     assert (unknown_code_message.status, Order.objects.count()) == ("needs_review", 0)
@@ -435,14 +489,14 @@ def test_human_without_rights_cannot_conduct(unknown_code_message, product, user
 def test_bot_retry_does_not_undo_a_human_decision(
     receive, bot_settings, bot_user, client, product, price, conductor,
 ):
-    with patch("apps.bots.whatsapp.apply_rail_report", side_effect=RuntimeError("boom")):
+    with patch("apps.bots.messages.apply_rail_report", side_effect=RuntimeError("boom")):
         message = receive(incoming(OWNER_REPORT))
     assert (message.status, message.attempts) == ("failed", 1)
     # Бот взял сообщение на повтор, а человек тем временем его провёл.
-    stale = whatsapp.pending_messages().get()
-    applied = whatsapp.apply_message(message, conductor)
+    stale = messages.pending_messages().get()
+    applied = messages.apply_message(message, conductor)
 
-    whatsapp.process_message(stale, user=bot_user, bot_settings=bot_settings)
+    messages.process_message(stale, user=bot_user, bot_settings=bot_settings)
 
     message.refresh_from_db()
     assert (message.status, message.order_id, message.resolved_by) == ("applied", applied.order_id, conductor)
@@ -451,10 +505,10 @@ def test_bot_retry_does_not_undo_a_human_decision(
 
 
 def test_bot_does_not_conduct_a_message_a_human_ignored(bot_settings, bot_user, client, product, price, conductor):
-    stale = whatsapp.ingest(incoming(OWNER_REPORT), bot_settings)
-    whatsapp.ignore_message(stale, conductor)
+    stale = messages.ingest(incoming(OWNER_REPORT))
+    messages.ignore_message(stale, conductor)
 
-    whatsapp.process_message(stale, user=bot_user, bot_settings=bot_settings)
+    messages.process_message(stale, user=bot_user, bot_settings=bot_settings)
 
     stale.refresh_from_db()
     assert (stale.status, stale.resolved_by, Order.objects.count()) == ("ignored", conductor, 0)
@@ -463,14 +517,14 @@ def test_bot_does_not_conduct_a_message_a_human_ignored(bot_settings, bot_user, 
 def test_conducted_message_cannot_be_conducted_or_ignored_again(receive, client, product, price, conductor):
     message = receive(incoming(OWNER_REPORT))
 
-    for action in (lambda: whatsapp.apply_message(message, conductor), lambda: whatsapp.ignore_message(message, conductor)):
+    for action in (lambda: messages.apply_message(message, conductor), lambda: messages.ignore_message(message, conductor)):
         with pytest.raises(ValidationError) as raised:
             action()
         assert raised.value.detail["code"] == "bot_message_applied"
 
 
 def test_ignore_keeps_the_reasons_and_who(unknown_code_message, conductor):
-    ignored = whatsapp.ignore_message(unknown_code_message, conductor)
+    ignored = messages.ignore_message(unknown_code_message, conductor)
 
     assert (ignored.status, ignored.resolved_by) == ("ignored", conductor)
     assert ignored.issues[0]["code"] == "product_unknown"
@@ -478,7 +532,7 @@ def test_ignore_keeps_the_reasons_and_who(unknown_code_message, conductor):
 
 def test_status_counts(receive, client, product, price):
     receive(incoming(OWNER_REPORT))
-    receive(incoming(OWNER_REPORT, message_id="MSG2"))
-    receive(incoming("Спасибо", message_id="MSG3"))
+    receive(incoming(OWNER_REPORT, message_id="12"))
+    receive(incoming("Спасибо", message_id="13"))
 
-    assert whatsapp.status_counts() == {"review": 1, "applied": 1, "ignored": 1, "all": 3}
+    assert messages.status_counts() == {"review": 1, "applied": 1, "ignored": 1, "all": 3}

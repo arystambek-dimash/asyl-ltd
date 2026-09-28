@@ -2,10 +2,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
-import { homeFor } from "@/lib/can";
 import { hasAuthTokens, isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
 import { OnboardingTour } from "@/components/onboarding-tour";
-import { Sidebar } from "./sidebar";
+import { homeFor, Sidebar } from "./sidebar";
 import { Topbar, type TopbarBack } from "./topbar";
 
 const INITIAL_SESSION_RETRY_MS = 2_000;

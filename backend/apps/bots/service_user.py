@@ -1,4 +1,4 @@
-"""Сервисный пользователь WhatsApp-бота: от его имени бот проводит отчёты.
+"""Сервисный пользователь Telegram-бота: от его имени бот проводит отчёты.
 
 Права — ровно те, что нужны, чтобы создать и подтвердить вагонный заказ и
 отгрузить вагоны. Цены клиента бот не меняет (``clients.set_price``) и
@@ -13,8 +13,8 @@ from apps.employees.models import Employee
 from apps.sys_permissions.models import Permission
 from apps.sys_permissions.perms import PERMISSIONS
 
-BOT_USERNAME = "whatsapp-bot"
-BOT_FIRST_NAME = "WhatsApp-бот"
+BOT_USERNAME = "telegram-bot"
+BOT_FIRST_NAME = "Telegram-бот"
 BOT_PERMISSION_CODES = ("orders.create", "orders.confirm", "loader.confirm", "loader.wagons")
 _LABELS = {permission["code"]: permission for permission in PERMISSIONS}
 

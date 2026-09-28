@@ -4,12 +4,16 @@ export interface PermissionPreset {
   codes: string[];
 }
 
+/** Главная и «Задачи»: есть в каждом шаблоне и у нового сотрудника, скрыть — снять галочку. */
+const EVERYDAY_CODES = ["dashboard.view", "tasks.own"];
+
 /** Шаблоны ролей: ставят галочки в один клик, дальше права правятся вручную. */
 export const PERMISSION_PRESETS: PermissionPreset[] = [
   {
     key: "cashier",
     label: "Кассир",
     codes: [
+      ...EVERYDAY_CODES,
       "payments.view",
       "payments.create",
       "payments.confirm",
@@ -23,6 +27,7 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
     key: "accountant",
     label: "Бухгалтер",
     codes: [
+      ...EVERYDAY_CODES,
       "reports.view",
       "reports.export",
       "payments.view",
@@ -36,6 +41,7 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
     key: "manager",
     label: "Менеджер",
     codes: [
+      ...EVERYDAY_CODES,
       "orders.view",
       "orders.create",
       "orders.edit",
@@ -57,23 +63,40 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
   {
     key: "loader_trucks",
     label: "Грузчик: фуры",
-    codes: ["loader.view", "loader.confirm", "loader.trucks", "monoblock.view"],
+    codes: [...EVERYDAY_CODES, "loader.view", "loader.confirm", "loader.trucks", "monoblock.view"],
   },
   {
     key: "loader_wagons",
     label: "Грузчик: вагоны",
-    codes: ["loader.view", "loader.confirm", "loader.wagons", "monoblock.view"],
+    codes: [...EVERYDAY_CODES, "loader.view", "loader.confirm", "loader.wagons", "monoblock.view"],
   },
-  { key: "weigher", label: "Весовщик", codes: ["grain.view", "grain.arrive", "grain.weigh", "grain.correct_weighing"] },
+  {
+    key: "weigher",
+    label: "Весовщик",
+    codes: [...EVERYDAY_CODES, "grain.view", "grain.arrive", "grain.weigh", "grain.correct_weighing"],
+  },
   {
     key: "storekeeper",
     label: "Кладовщик",
-    codes: ["warehouse.view", "warehouse.adjust", "silos.view", "catalog.view"],
+    codes: [...EVERYDAY_CODES, "warehouse.view", "warehouse.adjust", "silos.view", "catalog.view"],
   },
-  { key: "observer", label: "Наблюдатель", codes: ["monoblock.view", "orders.view", "reports.view"] },
+  {
+    key: "observer",
+    label: "Наблюдатель",
+    codes: [...EVERYDAY_CODES, "monoblock.view", "orders.view", "reports.view"],
+  },
 ];
+
+function grantable(codes: readonly string[], ungrantable: ReadonlySet<string>): Set<string> {
+  return new Set(codes.filter((code) => !ungrantable.has(code)));
+}
 
 /** Шаблон заменяет выбор; права, которые текущий админ выдать не может, не ставятся. */
 export function applyPreset(preset: PermissionPreset, ungrantable: ReadonlySet<string>): Set<string> {
-  return new Set(preset.codes.filter((code) => !ungrantable.has(code)));
+  return grantable(preset.codes, ungrantable);
+}
+
+/** Права нового сотрудника до выбора шаблона. */
+export function newEmployeePermissions(ungrantable: ReadonlySet<string>): Set<string> {
+  return grantable(EVERYDAY_CODES, ungrantable);
 }

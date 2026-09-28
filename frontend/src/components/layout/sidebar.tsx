@@ -22,10 +22,10 @@ import {
   ScanLine,
   Warehouse,
   Wheat,
-  MessageCircle,
+  Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { canAny, type Perm } from "@/lib/can";
+import { canAny, TASKS_ENTRY_PERMS, type Perm } from "@/lib/can";
 import { CASHIER_ENTRY_PERMS } from "@/components/cashier/view";
 import { focusedElement, restoreFocus, trapTab } from "@/lib/focus";
 import type { Me } from "@/lib/types";
@@ -50,7 +50,7 @@ const STAFF_SECTIONS: NavSection[] = [
   {
     title: "Обзор",
     items: [
-      { href: "/dashboard", label: "Главная", icon: LayoutDashboard },
+      { href: "/dashboard", label: "Главная", icon: LayoutDashboard, perm: "dashboard.view" },
       { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
     ],
   },
@@ -72,17 +72,15 @@ const STAFF_SECTIONS: NavSection[] = [
       { href: "/clients", label: "Клиенты", icon: Users, perm: "clients.view" },
       { href: "/stores", label: "Магазины", icon: Store, perm: "stores.view" },
       { href: "/catalog/products", label: "Товары", icon: Package, perm: "catalog.view" },
-      // Без perm: свои задачи доступны каждому сотруднику, иначе исполнитель
-      // не смог бы открыть то, что ему поручили.
-      { href: "/tasks", label: "Задачи", icon: ListChecks },
+      { href: "/tasks", label: "Задачи", icon: ListChecks, perm: TASKS_ENTRY_PERMS },
     ],
   },
   {
     title: "Управление",
     items: [
       { href: "/events", label: "Журнал", icon: ScrollText, perm: "events.view" },
-      // Отчёты о вагонах из WhatsApp: что бот провёл сам и что ждёт человека.
-      { href: "/management/whatsapp-bot", label: "WhatsApp-бот", icon: MessageCircle, perm: "bots.view" },
+      // Отчёты о вагонах из Telegram: что бот провёл сам и что ждёт человека.
+      { href: "/management/telegram-bot", label: "Telegram-бот", icon: Bot, perm: "bots.view" },
       {
         href: "/management/employees",
         label: "Сотрудники",
@@ -109,6 +107,18 @@ const PORTAL_SECTIONS: NavSection[] = [
     ],
   },
 ];
+
+function sectionsFor(me: Me): NavSection[] {
+  return me.is_client ? PORTAL_SECTIONS : STAFF_SECTIONS;
+}
+
+/** Домашняя страница после входа — первый видимый пункт меню: «Главная», а без неё — первый доступный раздел. */
+export function homeFor(me: Me | null): string {
+  if (!me) return "/login";
+  const items = sectionsFor(me).flatMap((section) => section.items);
+  // Совсем без прав — «Главная»: там сотрудник увидит «Нет доступа».
+  return (items.find((item) => navItemVisible(me, item)) ?? items[0]).href;
+}
 
 // Активен только самый специфичный из совпавших пунктов: без этого на
 // /portal/orders/42 горели бы и вложенный пункт, и «Мои заказы» (/portal/orders).
@@ -150,8 +160,7 @@ function NavLeaf({
 
 function SidebarContent({ me, onNavigate }: { me: Me; onNavigate?: () => void }) {
   const pathname = usePathname();
-  const sections: NavSection[] = me.is_client ? PORTAL_SECTIONS : STAFF_SECTIONS;
-  const visible = sections
+  const visible = sectionsFor(me)
     .map((s) => ({
       ...s,
       items: s.items.filter((item) => navItemVisible(me, item)),

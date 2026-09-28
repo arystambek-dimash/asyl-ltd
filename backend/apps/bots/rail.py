@@ -5,9 +5,9 @@
 цене, не проведён ли отчёт уже (ботом или вручную). Если что-то не сошлось,
 отчёт уходит на разбор человеку — склад, долг и заказы не трогаются.
 
-Этим пользуются и WhatsApp-бот, и «Вставить отчёт» у грузчика: оба проводят
-отчёт одной операцией :func:`conduct_rail_report` с правами своего
-пользователя (у бота — сервисный пользователь без права менять цены).
+Этим пользуются Telegram-бот, его журнал и «Отгрузить по отчёту» у грузчика:
+все проводят отчёт одной операцией :func:`conduct_rail_report` с правами
+своего пользователя (у бота — сервисный пользователь без права менять цены).
 """
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
@@ -40,7 +40,7 @@ from .models import (
     DEFAULT_DUPLICATE_WINDOW_DAYS,
     DEFAULT_PRICE_TOLERANCE_PCT,
     BotClientProfile,
-    WhatsAppBotSettings,
+    TelegramBotSettings,
 )
 from .parsing import RailReport, ReportIssue, bags_for, format_tons
 
@@ -336,7 +336,7 @@ def report_thresholds() -> ReportThresholds:
     """Пороги из настроек бота. Строку настроек не создаёт: на сервере её может
     ещё не быть — тогда значения по умолчанию (±3 дня, 15%)."""
     row = (
-        WhatsAppBotSettings.objects.filter(singleton=True)
+        TelegramBotSettings.objects.filter(singleton=True)
         .values_list("duplicate_window_days", "price_tolerance_pct")
         .first()
     )
@@ -681,8 +681,9 @@ def ship_order_by_report(report: RailReport, order: Order, user) -> Order:
 
 
 def apply_rail_report(report: RailReport, user, *, order: Order | None = None) -> Order:
-    """«Провести» у грузчика и в журнале бота: новый отчёт — заказ, подтверждение
-    и отгрузка; с ``order`` — отгрузка заранее внесённого заказа."""
+    """«Провести» в журнале бота: новый отчёт — заказ, подтверждение и
+    отгрузка; с ``order`` (и «Отгрузить по отчёту» у грузчика) — отгрузка
+    заранее внесённого заказа."""
     if order is None:
         return conduct_rail_report(report, user)
     return ship_order_by_report(report, order, user)

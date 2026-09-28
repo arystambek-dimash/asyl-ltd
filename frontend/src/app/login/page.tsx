@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 import { useAuth } from "@/store/auth";
-import { homeFor } from "@/lib/can";
+import { homeFor } from "@/components/layout/sidebar";
 import { apiError, apiErrorCode } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

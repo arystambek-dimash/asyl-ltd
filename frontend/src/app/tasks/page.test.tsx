@@ -1,11 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import TasksPage from "./page";
 
+const auth = vi.hoisted(() => ({ permissions: ["tasks.create"] }));
 vi.mock("@/store/auth", () => ({
-  useAuth: () => ({ me: { permissions: ["tasks.create"] }, loading: false }),
+  useAuth: () => ({ me: { permissions: auth.permissions }, loading: false }),
 }));
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("@/components/voice-recorder", () => ({ VoiceRecorder: () => null }));
@@ -16,6 +17,27 @@ vi.mock("@/lib/api", () => ({
   api: { get: vi.fn() },
   apiError: () => "Ошибка",
 }));
+
+describe("доступ к странице задач", () => {
+  afterEach(() => {
+    auth.permissions = ["tasks.create"];
+  });
+
+  it("открывается правом на свои задачи", () => {
+    auth.permissions = ["tasks.own"];
+    render(<TasksPage />);
+
+    expect(screen.queryByText("Нет доступа")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Поставить задачу" })).not.toBeInTheDocument();
+  });
+
+  it("без прав раздела показывает «Нет доступа»", () => {
+    auth.permissions = ["orders.view"];
+    render(<TasksPage />);
+
+    expect(screen.getByText("Нет доступа")).toBeInTheDocument();
+  });
+});
 
 describe("Task photos preview", () => {
   it("показывает два снимка с одинаковым именем без коллизии ключей", async () => {

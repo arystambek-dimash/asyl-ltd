@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   CheckCheck,
-  ClipboardPaste,
   Clock3,
   PackageCheck,
   Printer,
@@ -98,9 +97,9 @@ function LoaderPageInner() {
   // Открытый заказ ушёл из очереди без нас (отгружен с другого устройства).
   const [lost, setLost] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // «Вставить отчёт» (orderId null) или «Отгрузить по отчёту» открытого заказа.
-  const [railSheet, setRailSheet] = useState<{ orderId: number | null } | null>(null);
-  // «Отправить отчёт» Динаре: одна отгрузка истории или вся история с фильтрами экрана.
+  // «Отгрузить по отчёту» открытого заказа: новый заказ по отчёту проводит Telegram-бот.
+  const [railSheet, setRailSheet] = useState<{ orderId: number } | null>(null);
+  // «Отправить отчёт» Динаре в Telegram: одна отгрузка истории или вся история с фильтрами экрана.
   const [reportScope, setReportScope] = useState<WagonReportScope | null>(null);
 
   const queueParams: LoaderQueueFilter = {
@@ -359,29 +358,16 @@ function LoaderPageInner() {
               { key: "history", label: "История" },
             ]}
           />
-          {transport === "train" && (
-            // На телефоне обе кнопки — одной строкой на всю ширину, под вкладками.
-            <div className="flex w-full min-w-0 gap-2 sm:w-auto">
-              {/* Отчёт Джин-Сина о вагонах: предпросмотр, разбор и «Провести» — в листе. */}
-              <Button
-                variant="outline"
-                className="h-10 min-w-0 flex-1 px-3 sm:flex-none"
-                onClick={() => setRailSheet({ orderId: null })}
-              >
-                <ClipboardPaste className="size-4" /> Вставить отчёт
-              </Button>
-              {/* Отгрузки показанного периода — отчётом в формате владельца Динаре. */}
-              {view === "history" && (
-                <Button
-                  variant="outline"
-                  className="h-10 min-w-0 flex-1 px-3 sm:flex-none"
-                  disabled={history.items.length === 0}
-                  onClick={() => setReportScope({ date_from: range.from, date_to: range.to, search: debouncedSearch })}
-                >
-                  <Send className="size-4" /> Отправить отчёт
-                </Button>
-              )}
-            </div>
+          {transport === "train" && view === "history" && (
+            // Отгрузки показанного периода — отчётом в формате владельца Динаре в Telegram.
+            <Button
+              variant="outline"
+              className="h-10 w-full min-w-0 px-3 sm:w-auto"
+              disabled={history.items.length === 0}
+              onClick={() => setReportScope({ date_from: range.from, date_to: range.to, search: debouncedSearch })}
+            >
+              <Send className="size-4" /> Отправить отчёт
+            </Button>
           )}
         </div>
         <FormError message={error} className="rounded-xl px-4 py-3" />
@@ -625,7 +611,7 @@ function HistoryList({
               <Button variant="outline" className="h-11 flex-1" onClick={() => onPrint(order.id)}>
                 <Printer className="size-4" /> Накладная
               </Button>
-              {/* Отгрузка вагонов — отчётом в формате владельца Динаре (копия — в окне). */}
+              {/* Отгрузка вагонов — отчётом в формате владельца Динаре в Telegram (копия — в окне). */}
               {order.transport_type === "train" && (
                 <Button variant="outline" className="h-11 flex-1" onClick={() => onSendReport(order)}>
                   <Send className="size-4" /> Отправить отчёт

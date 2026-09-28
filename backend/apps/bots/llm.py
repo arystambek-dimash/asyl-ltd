@@ -2,7 +2,7 @@
 
 Запрос идёт через общий клиент OpenAI (:mod:`apps.common.openai_responses`),
 здесь — только промпт и схема черновика. Включается флагом
-``WHATSAPP_BOT_LLM_ENABLED`` (по умолчанию выключен). Результат — текст в
+``TELEGRAM_BOT_LLM_ENABLED`` (по умолчанию выключен). Результат — текст в
 формате владельца для человека на разборе: бот по нему никогда не проводит.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 _MAX_RESPONSE_BYTES = 256 * 1024
 _INSTRUCTIONS = (
-    "Ты разбираешь сообщение из WhatsApp об отгрузке вагонов с мукой. Верни дату отгрузки "
+    "Ты разбираешь сообщение из Telegram об отгрузке вагонов с мукой. Верни дату отгрузки "
     "(ДД.ММ.ГГГГ, пусто — если её нет), страну, клиента (как в сообщении), станцию назначения "
     "и список вагонов: код товара как в сообщении, номер вагона (8 цифр, как написан) и вес в "
     "тоннах. Ничего не придумывай: чего нет в сообщении — пустая строка или пустой список."
@@ -48,12 +48,12 @@ _SCHEMA = {
 
 
 def enabled() -> bool:
-    return settings.WHATSAPP_BOT_LLM_ENABLED and bool(settings.OPENAI_API_KEY)
+    return settings.TELEGRAM_BOT_LLM_ENABLED and bool(settings.OPENAI_API_KEY)
 
 
 def _request(text: str) -> object:
     body = {
-        "model": settings.WHATSAPP_BOT_LLM_MODEL,
+        "model": settings.TELEGRAM_BOT_LLM_MODEL,
         "store": False,
         "instructions": _INSTRUCTIONS,
         "input": text,
@@ -92,7 +92,7 @@ def draft_report(text: str, *, sent_on: date) -> str:
     try:
         data = _request(text)
     except OpenAIResponseError as exc:
-        log.warning("WhatsApp bot LLM draft failed: %s", exc.code)
+        log.warning("Telegram bot LLM draft failed: %s", exc.code)
         return ""
     if not isinstance(data, dict):
         return ""

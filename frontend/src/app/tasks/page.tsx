@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { CheckCircle2, Clock, ImageIcon, Pencil, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { AttachmentChip } from "@/components/task-attachment";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +20,7 @@ import { api, apiError } from "@/lib/api";
 import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { useConfirmAction } from "@/lib/use-confirm-action";
-import { can } from "@/lib/can";
+import { can, TASKS_ENTRY_PERMS } from "@/lib/can";
 import type { Task, TaskAssignee } from "@/lib/types";
 import { cn, formatDateTime, formatIsoDate } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
@@ -174,6 +175,14 @@ function TaskCard({
 }
 
 export default function TasksPage() {
+  return (
+    <RequirePerm perm={TASKS_ENTRY_PERMS} title="Задачи">
+      <TasksPageInner />
+    </RequirePerm>
+  );
+}
+
+function TasksPageInner() {
   const { me } = useAuth();
   const canCreate = can(me, "tasks.create");
   const [filter, setFilter] = useState<Filter>("pending");

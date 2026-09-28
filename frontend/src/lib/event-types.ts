@@ -2,6 +2,7 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowLeftRight,
+  Bot,
   CalendarClock,
   Camera,
   CircleDot,
@@ -141,7 +142,9 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
     label: "Отчёты о вагонах",
     types: {
       rail_report: { label: "Отчёт о вагонах", icon: TrainFront, color: ring },
-      whatsapp_bot: { label: "WhatsApp-бот", icon: MessageCircle, color: ring },
+      telegram_bot: { label: "Telegram-бот", icon: Bot, color: ring },
+      // События прежнего WhatsApp-бота: backend их больше не пишет.
+      whatsapp_bot: { label: "WhatsApp-бот", icon: MessageCircle, color: muted },
       clients: { label: "Клиенты в отчётах", icon: UsersRound, color: muted },
     },
   },

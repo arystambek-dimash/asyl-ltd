@@ -192,7 +192,7 @@ def parse_rail_report(text) -> RailReport:
     seen: set[str] = set()
 
     for line_no, raw in enumerate(str(text or "").splitlines(), start=1):
-        # split() без аргументов снимает и неразрывные пробелы WhatsApp.
+        # split() без аргументов снимает и неразрывные пробелы мессенджеров.
         line = " ".join(raw.split())
         if not line:
             continue

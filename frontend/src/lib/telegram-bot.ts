@@ -1,10 +1,10 @@
-/** Журнал WhatsApp-бота отчётов о вагонах (GET/POST /bots/whatsapp/…). */
+/** Журнал Telegram-бота отчётов о вагонах (GET/POST /bots/telegram/…). */
 import type { BadgeTone } from "@/lib/constants";
 import type { RailIssue } from "@/lib/rail-report";
 import { formatMoney } from "@/lib/utils";
 import { wagonsWord } from "@/lib/wagons";
 
-export const WHATSAPP_BOT_API = "/bots/whatsapp";
+export const TELEGRAM_BOT_API = "/bots/telegram";
 
 export type BotMessageStatus =
   "received" | "applied" | "needs_review" | "awaiting_confirmation" | "rejected" | "ignored" | "failed";
@@ -22,11 +22,15 @@ export interface BotMessageParsed {
 
 export interface BotMessage {
   id: number;
+  /** telegram; green_api — история прежнего WhatsApp-бота. */
+  provider: string;
   kind: BotMessageKind;
   status: BotMessageStatus;
   chat_name: string;
   sender_id: string;
   sender_name: string;
+  /** Username отправителя в Telegram без «@»; по нему — доступ к боту. */
+  sender_username: string;
   text: string;
   sent_at: string | null;
   received_at: string;
@@ -44,34 +48,47 @@ export interface BotMessage {
   resolved_at: string | null;
 }
 
-export interface WhatsAppBotSettings {
+/** Чат, откуда писали боту: личный (с username собеседника) или группа. */
+interface BotChat {
+  id: string;
+  type: string;
+  title: string;
+  username: string;
+  at: string;
+}
+
+export interface TelegramBotSettings {
   enabled: boolean;
-  allowed_chat_ids: string[];
-  allowed_sender_ids: string[];
+  /** Кто пользуется ботом: username в Telegram без «@». */
+  allowed_usernames: string[];
   show_amounts_in_reply: boolean;
   /** Дубль вагона: тот же номер отгружен в пределах ± стольких дней от даты отчёта (по умолчанию 3). */
   duplicate_window_days: number;
   price_tolerance_pct: string;
-  /** «Отправить отчёт» в истории грузчика: кому (по умолчанию «Динара») и номер — цифры с кодом страны. */
+  /** «Отправить отчёт» в истории грузчика: кому (по умолчанию «Динара») и её username без «@». */
   report_recipient_name: string;
-  report_recipient_phone: string;
+  report_recipient_username: string;
+  /** Получатель уже написал боту /start — бот может ему отправить. */
+  report_recipient_started: boolean;
   updated_at: string;
-  /** Недавние чаты бота — выбрать группу, не зная её идентификатора. */
-  seen_chats: { id: string; name: string; at: string | null }[];
+  /** Недавно писали боту — добавить username в допущенные, не набирая его. */
+  recent_chats: BotChat[];
 }
 
 export type BotTab = "review" | "applied" | "ignored" | "all";
 
-export interface WhatsAppBotStatus {
-  /** WHATSAPP_BOT_ENABLED на сервере. */
+export interface TelegramBotStatus {
+  /** TELEGRAM_BOT_ENABLED на сервере. */
   server_enabled: boolean;
   runtime_status: "" | "running" | "degraded" | "disabled";
   runtime_error: string;
   polled_at: string | null;
-  instance_state: string;
-  instance_state_at: string | null;
+  /** getMe: authorized — токен рабочий, unauthorized — Telegram его отверг. */
+  bot_state: string;
+  /** Username бота без «@» — по нему бота находят в Telegram. */
+  bot_username: string;
   counts: Record<BotTab, number>;
-  settings: WhatsAppBotSettings;
+  settings: TelegramBotSettings;
 }
 
 export const MESSAGE_STATUS: Record<BotMessageStatus, { label: string; tone: BadgeTone }> = {
@@ -89,14 +106,10 @@ export const MESSAGE_KIND: Record<Exclude<BotMessageKind, "message">, string> = 
   deleted: "Удалено",
 };
 
-/** Состояния номера в Green-API. */
-export const INSTANCE_STATES: Record<string, string> = {
+/** Состояние токена бота (getMe). */
+export const BOT_STATES: Record<string, string> = {
   authorized: "Подключён",
-  notAuthorized: "Не авторизован — отсканируйте QR-код в кабинете Green-API",
-  blocked: "Заблокирован WhatsApp",
-  sleepMode: "Спящий режим — телефон офлайн",
-  starting: "Запускается",
-  yellowCard: "Ограничен WhatsApp (жёлтая карточка)",
+  unauthorized: "Telegram отверг токен — проверьте TELEGRAM_BOT_TOKEN",
 };
 
 /** Бот пишет состояние раз в полминуты; дольше трёх минут тишины — процесс не отвечает. */
@@ -109,9 +122,13 @@ interface BotHealth {
 }
 
 /** Что сейчас с ботом — одной строкой для шапки журнала. */
-export function botHealth(status: WhatsAppBotStatus, now: number = Date.now()): BotHealth {
+export function botHealth(status: TelegramBotStatus, now: number = Date.now()): BotHealth {
   if (!status.server_enabled) {
-    return { tone: "muted", label: "Выключен на сервере", detail: "WHATSAPP_BOT_ENABLED=1 в .env включает бота" };
+    return {
+      tone: "muted",
+      label: "Выключен на сервере",
+      detail: "TELEGRAM_BOT_ENABLED=1 и TELEGRAM_BOT_TOKEN в .env включают бота",
+    };
   }
   const polled = status.polled_at ? new Date(status.polled_at).getTime() : null;
   if (polled === null || now - polled > BOT_STALE_MS) {
@@ -125,11 +142,11 @@ export function botHealth(status: WhatsAppBotStatus, now: number = Date.now()): 
     return {
       tone: "muted",
       label: "Выключен в настройках",
-      detail: "Сообщения копятся у Green-API до суток",
+      detail: "Сообщения ждут в Telegram до суток",
     };
   }
   if (status.runtime_status === "degraded") {
-    return { tone: "warning", label: "Нет связи с WhatsApp", detail: status.runtime_error || "Повторяем попытки" };
+    return { tone: "warning", label: "Нет связи с Telegram", detail: status.runtime_error || "Повторяем попытки" };
   }
   return { tone: "success", label: "Проводит отчёты", detail: `Опрос ${agoLabel(polled, now)}` };
 }
@@ -162,9 +179,9 @@ export function textToConduct(message: BotMessage): string {
   return message.draft || message.text;
 }
 
-/** Разбор сообщения — тот же лист, что «Вставить отчёт» у грузчика, со своими адресами. */
+/** Разбор сообщения — тот же лист, что «Отгрузить по отчёту» у грузчика, со своими адресами. */
 export function messageApi(id: number): string {
-  return `${WHATSAPP_BOT_API}/messages/${id}`;
+  return `${TELEGRAM_BOT_API}/messages/${id}`;
 }
 
 /** «Провести»: проведённое и удалённое — уже нет; пропущенное по ошибке — можно. */
@@ -186,14 +203,29 @@ export function inTab(message: BotMessage, tab: BotTab): boolean {
   return message.status === tab;
 }
 
-/** Поле «по одному в строке» → список без пустых и повторов. */
-export function parseIdList(text: string): string[] {
+/** «@Dinara_K» или ссылка t.me → «dinara_k»: username сравнивается без регистра и «@». */
+export function normalizeUsername(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^(https?:\/\/)?t\.me\//, "")
+    .replace(/^@/, "");
+}
+
+/** Поле «по одному в строке» → username без «@», пустых и повторов. */
+export function parseUsernames(text: string): string[] {
   return Array.from(
     new Set(
       text
-        .split(/[\n,;]+/)
-        .map((value) => value.trim())
+        .split(/[\s,;]+/)
+        .map(normalizeUsername)
         .filter(Boolean),
     ),
   );
+}
+
+/** «Джин-Син (@jin_sin)» — кто прислал сообщение. */
+export function senderLabel(message: BotMessage): string {
+  const name = message.sender_name || message.sender_id;
+  return message.sender_username ? `${name} (@${message.sender_username})` : name;
 }

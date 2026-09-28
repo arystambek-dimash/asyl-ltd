@@ -1,4 +1,4 @@
-/** «Вставить отчёт» у грузчика: предпросмотр отчёта о вагонах (POST /loader/rail-report/…). */
+/** Разбор отчёта о вагонах: «Отгрузить по отчёту» у грузчика (POST /loader/rail-report/…) и журнал бота. */
 
 import { formatIsoDate } from "@/lib/utils";
 

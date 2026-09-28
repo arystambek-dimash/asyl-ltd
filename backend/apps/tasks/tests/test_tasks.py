@@ -24,8 +24,8 @@ def boss(user_with_perms):
 
 @pytest.fixture
 def worker(user_with_perms):
-    """Исполнитель без прав на задачи."""
-    return user_with_perms("worker")
+    """Исполнитель: видит только свои задачи (``tasks.own``)."""
+    return user_with_perms("worker", ["tasks.own"])
 
 
 def _photo(name="foto.jpg"):
@@ -38,8 +38,9 @@ def _voice(name="golos.ogg"):
 
 def test_assignee_list_uses_user_names_and_sorts_them(auth_client, user_with_perms):
     viewer = user_with_perms("assignee-viewer", ["employees.view"])
-    zhan = user_with_perms("assignee-zhan")
-    alia = user_with_perms("assignee-alia")
+    hidden = user_with_perms("assignee-hidden", ["orders.view"])
+    zhan = user_with_perms("assignee-zhan", ["tasks.own"])
+    alia = user_with_perms("assignee-alia", ["tasks.own"])
     for user, first, last in ((zhan, "Жан", "Аманов"), (alia, "Алия", "Серикова")):
         user.first_name, user.last_name = first, last
         user.save(update_fields=["first_name", "last_name"])
@@ -52,6 +53,9 @@ def test_assignee_list_uses_user_names_and_sorts_them(auth_client, user_with_per
     assert names_by_id[alia.pk] == "Алия Серикова"
     ordered_ids = [row["id"] for row in response.data]
     assert ordered_ids.index(alia.pk) < ordered_ids.index(zhan.pk)
+    # Без страницы «Задачи» поручение не увидеть — такого сотрудника в списке нет.
+    assert hidden.pk not in names_by_id
+    assert viewer.pk not in names_by_id
 
 
 # ── Постановка ───────────────────────────────────────────────────────
@@ -132,8 +136,8 @@ def test_complete_is_idempotent(boss, worker):
 
 
 def test_former_assignee_cannot_close_task_after_reassignment(user_with_perms, boss):
-    former = user_with_perms("worker4b")
-    replacement = user_with_perms("worker4c")
+    former = user_with_perms("worker4b", ["tasks.own"])
+    replacement = user_with_perms("worker4c", ["tasks.own"])
     stale = create_task(title="Задача", body="", assignee=former, user=boss)
 
     reassign_task(stale, replacement, boss)
@@ -156,8 +160,8 @@ def test_edit_of_stale_task_keeps_concurrent_completion(boss):
 # ── Границы доступа ──────────────────────────────────────────────────
 
 def test_worker_sees_only_own_tasks(auth_client, user_with_perms, boss):
-    mine = user_with_perms("worker6")
-    other = user_with_perms("worker6b")
+    mine = user_with_perms("worker6", ["tasks.own"])
+    other = user_with_perms("worker6b", ["tasks.own"])
     create_task(title="Моя", body="", assignee=mine, user=boss)
     create_task(title="Чужая", body="", assignee=other, user=boss)
 
@@ -165,6 +169,39 @@ def test_worker_sees_only_own_tasks(auth_client, user_with_perms, boss):
 
     titles = [row["title"] for row in response.json()]
     assert titles == ["Моя"]
+
+
+@pytest.mark.parametrize("code", ["tasks.own", "tasks.view", "tasks.create"])
+def test_task_page_opens_with_any_section_permission(auth_client, user_with_perms, code):
+    user = user_with_perms(f"page-{code}", [code])
+
+    assert auth_client(user).get("/api/tasks/").status_code == 200
+
+
+def test_task_page_is_closed_without_section_permissions(auth_client, user_with_perms, boss):
+    hidden = user_with_perms("no-tasks", ["orders.view"])
+    task = create_task(title="Своя", body="", assignee=boss, user=boss)
+    Task.objects.filter(pk=task.pk).update(assignee=hidden)
+    client = auth_client(hidden)
+
+    assert client.get("/api/tasks/").status_code == 403
+    assert client.get(f"/api/tasks/{task.pk}/").status_code == 403
+    assert client.post(f"/api/tasks/{task.pk}/complete/").status_code == 403
+
+
+def test_task_cannot_go_to_employee_without_task_page(auth_client, user_with_perms, boss, worker):
+    from rest_framework.exceptions import ValidationError
+
+    hidden = user_with_perms("no-tasks-assignee", ["orders.view"])
+
+    with pytest.raises(ValidationError):
+        create_task(title="Не увидит", body="", assignee=hidden, user=boss)
+    task = create_task(title="Задача", body="", assignee=worker, user=boss)
+    response = auth_client(boss).patch(f"/api/tasks/{task.pk}/", {"assignee": hidden.pk}, format="json")
+
+    assert response.status_code == 400
+    task.refresh_from_db()
+    assert task.assignee == worker
 
 
 def test_tasks_view_permission_opens_every_task(auth_client, user_with_perms, boss, worker):
@@ -178,7 +215,7 @@ def test_tasks_view_permission_opens_every_task(auth_client, user_with_perms, bo
 
 
 def test_creating_without_permission_is_denied(auth_client, user_with_perms, worker):
-    other = user_with_perms("worker8b")
+    other = user_with_perms("worker8b", ["tasks.own"])
 
     response = auth_client(worker).post(
         "/api/tasks/", {"title": "Через API", "assignee": other.pk}, format="json")
@@ -310,7 +347,7 @@ def test_visible_user_can_renew_an_expired_attachment_url(boss, worker):
 
 
 def test_attachment_url_cannot_be_renewed_through_an_invisible_task(user_with_perms, boss, worker):
-    stranger = user_with_perms("stranger-private-renew")
+    stranger = user_with_perms("stranger-private-renew", ["tasks.own"])
     task = create_task(
         title="Частное вложение",
         body="",
@@ -484,7 +521,7 @@ def test_shared_attachment_file_is_deleted_after_last_reference(
 # ── Правка и удаление ────────────────────────────────────────────────
 
 def test_creator_edits_task(auth_client, user_with_perms, boss, worker):
-    other = user_with_perms("worker15b")
+    other = user_with_perms("worker15b", ["tasks.own"])
     task = create_task(title="Опечятка", body="", assignee=worker, user=boss)
 
     response = auth_client(boss).patch(
@@ -533,3 +570,13 @@ def test_client_cannot_become_assignee_on_edit(auth_client, boss, worker, client
     assert response.status_code == 400
     task.refresh_from_db()
     assert task.assignee == worker
+
+
+def test_task_of_someone_whose_tasks_page_was_closed_can_still_be_edited(boss, worker):
+    """«Задачи» скрыли от исполнителя: его задачу правят (текст, срок), исполнитель тот же."""
+    task = create_task(title="Проверить вагоны", assignee=worker, user=boss)
+    worker.employee.permissions.filter(code="tasks.own").delete()
+
+    edited = update_task(task, {"title": "Проверить вагоны 29.09", "assignee": worker}, boss)
+
+    assert (edited.title, edited.assignee_id) == ("Проверить вагоны 29.09", worker.pk)

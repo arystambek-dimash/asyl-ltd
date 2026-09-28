@@ -102,7 +102,7 @@ backend/
     eventlog/        # неизменяемый журнал событий (log_event)
     cameras/         # go2rtc, AI-подсчёт, health-мониторинг, алерты
     grain/           # приход зерна вагонами, силосы, автовесы вывоза
-    bots/            # WhatsApp-бот отчётов о вагонах (Green-API)
+    bots/            # Telegram-бот отчётов о вагонах (Bot API, долгий опрос)
     tasks/           # задачи сотрудников
 frontend/
   src/app/           # страницы (App Router), см. раздел «Фронтенд»
@@ -182,6 +182,7 @@ sales_department.
 
 | Раздел | Коды |
 |---|---|
+| Главная | `dashboard.view` |
 | Отчёты | `reports.view / export` |
 | Заказы | `orders.view / create / edit / confirm / confirm_all / correct_price / rollback` |
 | Касса | `payments.view / create / confirm` |
@@ -192,9 +193,9 @@ sales_department.
 | Клиенты | `clients.view / create / edit / delete / set_price / manage_access` |
 | Магазины | `stores.view / create / edit / delete` |
 | Товары | `catalog.view / create / edit` |
-| Задачи | `tasks.view / create` |
+| Задачи | `tasks.own / view / create` |
 | Журнал | `events.view` |
-| WhatsApp-бот | `bots.view / manage` |
+| Telegram-бот | `bots.view / manage` |
 | Сотрудники / Администрирование | `employees.view / manage`, `sys_permissions.manage` |
 
 Ролей и наследования прав нет: итоговый доступ сотрудника равен его прямому
@@ -525,7 +526,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | Роут | Что делает |
 |---|---|
 | `/login`, `/register` | вход (JWT в localStorage), регистрация клиента |
-| `/dashboard` | вкладки «Аналитика» (KPI: склад, отгрузки за 14 дней, выручка/поступления, долги; графики; live-очередь отгрузки; топ должников) и «Камеры» (стена камер) |
+| `/dashboard` | Главная (`dashboard.view`): вкладки «Аналитика» (KPI: склад, отгрузки за 14 дней, выручка/поступления, долги; графики; live-очередь отгрузки; топ должников) и «Камеры» (стена камер) |
 | `/orders` | вкладки «Заказы» / «Корзина» (восстановление удалённых); поиск, фильтры по статусу/отделу; создание и редактирование через `OrderForm` |
 | `/orders/[id]` | деталь заказа: позиции, цепочка оплат (`PaymentChain`), номер машины, действия по статусу |
 | `/accounting` | «Касса», экран выбирается `?view=`: на десктопе `overview` («Общее»/«Долги»: аналитика кассы, должники, «Проверить просрочки»), `confirm` («Оплаты»), `transactions`; на телефоне ещё `home`, `debts`, `report`, `pos` (Kaspi QR) и `remote` (удалённый счёт) |
@@ -538,11 +539,11 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `/monoblock` | Моноблок (только просмотр, `monoblock.view`): очередь машин и вагонов, камеры и AI-подсчёт; печать сегментов отгрузки |
 | `/loader` | Грузчик: вкладки «Фуры» / «Вагоны» по правам `loader.trucks` / `loader.wagons`, очередь «К отгрузке» и «История», кнопка «Отгружено», накладная PDF, отчёты о вагонах |
 | `/grain`, `/grain/passages`, `/grain/wagons/[id]`, `/grain/orientation` | приход зерна вагонами, автовесы вывоза (рейсы, накладная рейса), разметка ориентации |
-| `/tasks` | задачи: свои — каждому сотруднику, всех — с `tasks.view` |
+| `/tasks` | задачи (любое из `tasks.own / view / create`): свои — с `tasks.own`, всех — с `tasks.view` |
 | `/shipping` | устаревшая ссылка; сервер перенаправляет на `/monoblock` |
 | `/reports` | выручка и поступления по валютам, период и фильтр по отделу |
 | `/management/employees` | сотрудники, отделы и персональные системные права |
-| `/management/whatsapp-bot` | журнал WhatsApp-бота отчётов о вагонах: проведённые и ждущие человека |
+| `/management/telegram-bot` | журнал Telegram-бота отчётов о вагонах: проведённые и ждущие человека; настройки — кто пользуется ботом (username) и кому уходит «Отправить отчёт» |
 | `/events` | журнал событий с фильтрами, группировка по дням |
 | `/portal/catalog`, `/portal/cart`, `/portal/orders`, `…/[id]` | портал клиента: каталог с остатками, корзина (старый адрес `/portal/orders/new` перенаправляется сюда), свои заказы, оплата, номер машины, запрос долга |
 
@@ -553,7 +554,8 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
   (Zustand): `me`, `login`, `loadMe`, `refreshMe` (тихое обновление прав).
 - **Права**: `can(me, code)`; `<RequirePerm code=…>` закрывает страницу
   заглушкой «Нет доступа»; сайдбар строится из прав; `homeFor(me)` разводит
-  по домашним страницам (клиент → `/portal/catalog`, сотрудник → `/dashboard`).
+  по домашним страницам (клиент → `/portal/catalog`, сотрудник → первый видимый
+  пункт меню: `/dashboard`, а без `dashboard.view` — первый доступный раздел).
 - **UI-кит** (`components/ui`): Button/Input/Select/Modal/ConfirmDialog,
   Table + SortableHeader, Badge/StatusBadge/PaymentStageBadge, KPI-карточки,
   PlateInput (госномер одним полем: флаг страны, маски тягача и прицепа),
@@ -576,7 +578,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 | `camera-monitor` | тот же образ backend, `manage.py monitor_cameras` |
 | `ai-stock-monitor` | тот же образ backend, `manage.py post_always_on_stock`; приходует на склад завершённые смены AI 24/7 |
 | `shipping-transport-monitor` | тот же образ backend, `manage.py monitor_shipping_sessions`; группирует счёт отгрузки в сессии и простои |
-| `whatsapp-bot` | тот же образ backend, `manage.py run_whatsapp_bot`; отчёты о вагонах из Green-API, без `WHATSAPP_BOT_ENABLED=1` простаивает |
+| `telegram-bot` | тот же образ backend, `manage.py run_telegram_bot`; отчёты о вагонах из Telegram, команды `/start` и `/report`, отправка «Отправить отчёт»; без `TELEGRAM_BOT_ENABLED=1` и `TELEGRAM_BOT_TOKEN` простаивает |
 | `passage-scale-monitor` | тот же образ backend, `manage.py monitor_passage_scale`; импортирует очередь независимого сборщика весов (`deploy/weighbridge/`, при маркере `/var/lib/weighbridge/enabled`), досылает фото, проверяет номера и ведёт вагонную арку |
 | `celery-payments` | Celery worker только очереди `payments`, concurrency/prefetch = 1; сверка ApiPay |
 | `celery-orientation` | отдельная очередь `orientation`, concurrency/prefetch = 1; экспорт разметки и фото на Camera-PC |

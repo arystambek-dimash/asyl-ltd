@@ -31,7 +31,7 @@ vi.mock("@/store/auth", () => ({
 }));
 
 vi.mock("@/components/onboarding-tour", () => ({ OnboardingTour: () => null }));
-vi.mock("./sidebar", () => ({ Sidebar: () => null }));
+vi.mock("./sidebar", () => ({ Sidebar: () => null, homeFor: () => "/dashboard" }));
 vi.mock("./topbar", () => ({ Topbar: () => null }));
 
 describe("AppShell cross-tab authentication", () => {

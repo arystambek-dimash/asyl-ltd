@@ -6,59 +6,67 @@ import { ErrorAlert } from "@/components/ui/data-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
-import { PhoneInput } from "@/components/ui/phone-input";
 import { Textarea } from "@/components/ui/textarea";
 import { api, apiError } from "@/lib/api";
 import { PHONE_INPUT_TEXT } from "@/lib/utils";
-import { parseIdList, WHATSAPP_BOT_API, type WhatsAppBotSettings, type WhatsAppBotStatus } from "@/lib/whatsapp-bot";
+import {
+  normalizeUsername,
+  parseUsernames,
+  TELEGRAM_BOT_API,
+  type TelegramBotSettings,
+  type TelegramBotStatus,
+} from "@/lib/telegram-bot";
 
 /**
- * Настройки бота (администратор): включить, какие чаты и отправители
- * разрешены, суммы в ответе, окно дублей (± дней от даты отчёта), допуск цены
- * и кому уходит «Отправить отчёт» из истории грузчика (имя и номер WhatsApp).
+ * Настройки бота (администратор): включить, кто пользуется ботом (username
+ * в Telegram), суммы в ответе, окно дублей (± дней от даты отчёта), допуск
+ * цены и кому уходит «Отправить отчёт» из истории грузчика (имя и username).
  * Ответ PUT — вся шапка журнала: экран применяет его, а не перечитывает
  * опрашиваемый статус.
  */
 export function BotSettingsModal({
   settings,
+  botUsername,
   onClose,
   onSaved,
 }: {
-  settings: WhatsAppBotSettings;
+  settings: TelegramBotSettings;
+  /** Username бота без «@» — подсказка, кому писать /start. */
+  botUsername: string;
   onClose: () => void;
-  onSaved: (status: WhatsAppBotStatus) => void;
+  onSaved: (status: TelegramBotStatus) => void;
 }) {
   const [enabled, setEnabled] = useState(settings.enabled);
-  const [chats, setChats] = useState(settings.allowed_chat_ids.join("\n"));
-  const [senders, setSenders] = useState(settings.allowed_sender_ids.join("\n"));
+  const [usernames, setUsernames] = useState(settings.allowed_usernames.map((name) => `@${name}`).join("\n"));
   const [showAmounts, setShowAmounts] = useState(settings.show_amounts_in_reply);
   const [windowDays, setWindowDays] = useState(String(settings.duplicate_window_days));
   const [tolerance, setTolerance] = useState(String(Number(settings.price_tolerance_pct)));
   const [reportName, setReportName] = useState(settings.report_recipient_name);
-  // Сервер хранит цифры с кодом страны; поле показывает номер по маске страны.
-  const [reportPhone, setReportPhone] = useState(
-    settings.report_recipient_phone ? `+${settings.report_recipient_phone}` : "",
+  const [reportUsername, setReportUsername] = useState(
+    settings.report_recipient_username ? `@${settings.report_recipient_username}` : "",
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const chatIds = parseIdList(chats);
-  const chatNames = new Map(settings.seen_chats.map((chat) => [chat.id, chat.name]));
-  const suggestions = settings.seen_chats.filter((chat) => !chatIds.includes(chat.id));
+  const allowed = parseUsernames(usernames);
+  // Недавно писали боту лично — их username добавляется одним нажатием.
+  const suggestions = settings.recent_chats.filter(
+    (chat) => chat.type === "private" && chat.username && !allowed.includes(chat.username),
+  );
+  const botName = botUsername ? `@${botUsername}` : "бота";
 
   async function save() {
     setBusy(true);
     setError("");
     try {
-      const { data } = await api.put<WhatsAppBotStatus>(`${WHATSAPP_BOT_API}/settings/`, {
+      const { data } = await api.put<TelegramBotStatus>(`${TELEGRAM_BOT_API}/settings/`, {
         enabled,
-        allowed_chat_ids: chatIds,
-        allowed_sender_ids: parseIdList(senders),
+        allowed_usernames: allowed,
         show_amounts_in_reply: showAmounts,
         duplicate_window_days: Number(windowDays),
         price_tolerance_pct: tolerance.replace(",", "."),
         report_recipient_name: reportName,
-        report_recipient_phone: reportPhone,
+        report_recipient_username: normalizeUsername(reportUsername),
       });
       onSaved(data);
     } catch (cause) {
@@ -74,9 +82,9 @@ export function BotSettingsModal({
       onClose={onClose}
       variant="sheet"
       className="max-w-xl"
-      eyebrow="WhatsApp-бот"
+      eyebrow="Telegram-бот"
       title="Настройки бота"
-      description="Бот проводит отчёты только из разрешённых чатов и только от разрешённых отправителей."
+      description="Бот проводит отчёты и отвечает на команды только тем, чей username указан ниже."
       footer={
         <>
           <Button variant="ghost" disabled={busy} onClick={onClose}>
@@ -95,35 +103,26 @@ export function BotSettingsModal({
           <span>
             <span className="font-medium">Бот проводит отчёты</span>
             <span className="block text-[12px] text-[var(--muted-foreground)]">
-              Выключен — сообщения ждут у Green-API до суток и проводятся, когда бот снова включат.
+              Выключен — сообщения ждут в Telegram до суток и проводятся, когда бота снова включат.
             </span>
           </span>
         </label>
 
         <Field
-          label="Чаты"
-          htmlFor="bot-chats"
-          hint="Группа «Отгрузка вагонов» (…@g.us), по одной в строке. Нет идентификатора — включите бота и напишите в группу: она появится ниже, а её сообщения до выбора — в «Пропущено»."
+          label="Кто пользуется ботом"
+          htmlFor="bot-usernames"
+          hint={`Username в Telegram, по одному в строке: @d1maaash. Человек пишет ${botName} — в личку или в группу, где есть бот.`}
         >
           <Textarea
             mono
-            id="bot-chats"
-            rows={2}
+            id="bot-usernames"
+            rows={3}
             spellCheck={false}
-            value={chats}
-            onChange={(event) => setChats(event.target.value)}
+            value={usernames}
+            onChange={(event) => setUsernames(event.target.value)}
             className="rounded-md"
           />
         </Field>
-        {chatIds.some((id) => chatNames.get(id)) && (
-          <ul className="-mt-2 flex flex-col gap-0.5 text-[12px] text-[var(--muted-foreground)]">
-            {chatIds.map((id) => (
-              <li key={id}>
-                <span className="font-mono">{id}</span> — {chatNames.get(id) || "чат ещё не писал боту"}
-              </li>
-            ))}
-          </ul>
-        )}
         {suggestions.length > 0 && (
           <div className="-mt-1 flex flex-col gap-1.5">
             <span className="text-[12px] text-[var(--muted-foreground)]">Недавно писали боту:</span>
@@ -133,30 +132,21 @@ export function BotSettingsModal({
                   key={chat.id}
                   variant="outline"
                   size="sm"
-                  onClick={() => setChats((current) => [...parseIdList(current), chat.id].join("\n"))}
+                  onClick={() =>
+                    setUsernames((current) =>
+                      [...parseUsernames(current), chat.username].map((name) => `@${name}`).join("\n"),
+                    )
+                  }
                 >
-                  <Plus /> {chat.name || chat.id}
+                  <Plus /> {chat.title ? `${chat.title} (@${chat.username})` : `@${chat.username}`}
                 </Button>
               ))}
             </div>
           </div>
         )}
-
-        <Field
-          label="Отправители"
-          htmlFor="bot-senders"
-          hint="Кто присылает отчёты: номер телефона (+998 90 111 22 33) или идентификатор, по одному в строке."
-        >
-          <Textarea
-            mono
-            id="bot-senders"
-            rows={2}
-            spellCheck={false}
-            value={senders}
-            onChange={(event) => setSenders(event.target.value)}
-            className="rounded-md"
-          />
-        </Field>
+        <p className="-mt-2 text-[12px] text-[var(--muted-foreground)]">
+          В группе бот видит отчёты, если в @BotFather у него выключен Group Privacy или он администратор группы.
+        </p>
 
         <label className="flex cursor-pointer items-center gap-3 rounded-xl border p-3 text-sm">
           <input type="checkbox" checked={showAmounts} onChange={(event) => setShowAmounts(event.target.checked)} />
@@ -199,8 +189,8 @@ export function BotSettingsModal({
           <div className="text-sm">
             <span className="font-medium">Кому «Отправить отчёт»</span>
             <span className="block text-[12px] text-[var(--muted-foreground)]">
-              Кнопка в истории грузчика (вкладка «Вагоны»). Без номера бот пишет в первую разрешённую группу, а когда
-              бот выключен, WhatsApp откроет выбор чата.
+              Кнопка в истории грузчика (вкладка «Вагоны»). Бот пишет человеку, только если тот хоть раз написал{" "}
+              {botName} (/start); иначе у грузчика откроется её чат в Telegram с готовым текстом.
             </span>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -213,8 +203,28 @@ export function BotSettingsModal({
                 className={PHONE_INPUT_TEXT}
               />
             </Field>
-            <Field label="Номер WhatsApp" htmlFor="bot-report-phone">
-              <PhoneInput id="bot-report-phone" value={reportPhone} onChange={setReportPhone} />
+            <Field
+              label="Username в Telegram"
+              htmlFor="bot-report-username"
+              hint={
+                settings.report_recipient_username &&
+                normalizeUsername(reportUsername) === settings.report_recipient_username
+                  ? settings.report_recipient_started
+                    ? "Писала боту — отчёты уйдут ботом."
+                    : `Ещё не писала ${botName} — попросите нажать /start.`
+                  : undefined
+              }
+            >
+              <Input
+                id="bot-report-username"
+                maxLength={64}
+                placeholder="@dinara"
+                spellCheck={false}
+                autoCapitalize="none"
+                value={reportUsername}
+                onChange={(event) => setReportUsername(event.target.value)}
+                className={PHONE_INPUT_TEXT}
+              />
             </Field>
           </div>
         </section>

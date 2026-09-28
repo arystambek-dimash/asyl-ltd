@@ -6,7 +6,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.permissions import HasPerm, IsStaff, PermAPIViewMixin
+from apps.common.permissions import HasPerm, PermAPIViewMixin
 from apps.common.signed_media import SignedMediaView
 
 from .attachments import (
@@ -18,19 +18,25 @@ from .serializers import (
     TaskAttachmentSerializer,
     TaskSerializer,
 )
-from .services import can_delete_task, complete_task, reopen_task, visible_tasks_q
+from .services import (
+    TASK_PAGE_PERMS,
+    assignable_employees,
+    can_delete_task,
+    complete_task,
+    reopen_task,
+    visible_tasks_q,
+)
 
 
 class TaskViewSet(viewsets.ModelViewSet):
     """Задачи сотрудников.
 
-    Свои задачи (поставленные мне или мной) видны без отдельного права —
-    иначе исполнитель не смог бы прочитать то, что ему поручили. Право
-    tasks.view открывает чужие задачи, tasks.create — постановку.
+    Страница открыта с любым из прав раздела (TASK_PAGE_PERMS): tasks.own —
+    свои задачи (поставленные мне или мной), tasks.view — ещё и чужие,
+    tasks.create — постановка.
     """
 
     serializer_class = TaskSerializer
-    permission_classes = [IsStaff]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
@@ -47,7 +53,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ("create", "partial_update"):
             return [HasPerm("tasks.create")]
-        return super().get_permissions()
+        return [HasPerm(*TASK_PAGE_PERMS)]
 
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
@@ -85,15 +91,12 @@ class TaskViewSet(viewsets.ModelViewSet):
 
 
 class TaskAssigneeListView(PermAPIViewMixin, APIView):
-    """Кому можно поручить задачу — активные сотрудники."""
+    """Кому можно поручить задачу — см. assignable_employees."""
 
     required_perms = {"get": ("tasks.create", "employees.view")}
 
     def get(self, request):
-        from apps.employees.models import Employee
-        rows = (Employee.objects.filter(is_active=True, user__is_active=True, user__is_client=False)
-                .select_related("user")
-                .order_by("user__first_name", "user__last_name"))
+        rows = assignable_employees().select_related("user").order_by("user__first_name", "user__last_name")
         return Response([
             {
                 "id": row.user_id,

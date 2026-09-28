@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyText, whatsappLink } from "./clipboard";
+import { copyText, telegramLink, whatsappLink } from "./clipboard";
 
 describe("copyText", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -29,5 +29,14 @@ describe("whatsappLink", () => {
       "https://wa.me/77011234567?text=%D0%A1%D1%82.%201%20%D0%B2%D0%B0%D0%B3%D0%BE%D0%BD%0A%D0%941%D1%81",
     );
     expect(whatsappLink("", "a&b")).toBe("https://wa.me/?text=a%26b");
+  });
+});
+
+describe("telegramLink", () => {
+  it("ссылка Telegram — в чат по username или с выбором чата", () => {
+    expect(telegramLink("dinara_k", "Ст. 1 вагон\nД1с")).toBe(
+      "https://t.me/dinara_k?text=%D0%A1%D1%82.%201%20%D0%B2%D0%B0%D0%B3%D0%BE%D0%BD%0A%D0%941%D1%81",
+    );
+    expect(telegramLink("", "a&b")).toBe("https://t.me/share/url?url=a%26b");
   });
 });

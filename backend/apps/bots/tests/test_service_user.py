@@ -1,6 +1,13 @@
 """Сервисный пользователь бота: без входа, только права проведения отчётов."""
-import pytest
+import importlib
+from types import SimpleNamespace
 
+import pytest
+from django.apps import apps as django_apps
+from django.contrib.auth import get_user_model
+from django.db import connection
+
+from apps.bots.models import TelegramBotSettings
 from apps.bots.service_user import BOT_PERMISSION_CODES, BOT_USERNAME, ensure_bot_user
 from apps.sales.models import Department
 
@@ -49,3 +56,27 @@ def test_ensure_is_idempotent():
 
     assert first.pk == second.pk
     assert type(first).objects.filter(username=BOT_USERNAME).count() == 1
+
+
+# --- миграция 0010: WhatsApp-бот → Telegram-бот ---------------------------------------------------
+
+MIGRATION = importlib.import_module("apps.bots.migrations.0010_telegram_bot")
+SCHEMA_EDITOR = SimpleNamespace(connection=connection)
+
+
+def test_whatsapp_bot_user_becomes_the_telegram_bot_and_keeps_its_orders():
+    old = get_user_model().objects.create(username="whatsapp-bot", first_name="WhatsApp-бот")
+
+    MIGRATION.rename_bot_user(django_apps, SCHEMA_EDITOR)
+
+    old.refresh_from_db()
+    assert (old.username, old.first_name) == (BOT_USERNAME, "Telegram-бот")
+    assert ensure_bot_user().pk == old.pk
+
+
+def test_the_owner_is_the_bots_first_user():
+    """Решение владельца: ботом сразу пользуется @d1maaash — и в миграции, и в новой строке настроек."""
+    assert TelegramBotSettings.objects.get().allowed_usernames == ["d1maaash"]
+    TelegramBotSettings.objects.all().delete()
+
+    assert TelegramBotSettings.load().allowed_usernames == ["d1maaash"]

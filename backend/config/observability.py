@@ -153,7 +153,13 @@ def scrub_sensitive_data(value: Any) -> Any:
     return value
 
 
+# Telegram Bot API ставит токен бота в путь запроса (/bot<id>:<secret>/getUpdates):
+# SDK пишет такие адреса в breadcrumbs, а ключ «url» секретным не считается.
+_TELEGRAM_BOT_TOKEN = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
+
+
 def _without_url_private_parts(value: str) -> str:
+    value = _TELEGRAM_BOT_TOKEN.sub(f"/bot{REDACTED}", value)
     if not (
         value.startswith(("http://", "https://", "/"))
         and ("?" in value or "#" in value)

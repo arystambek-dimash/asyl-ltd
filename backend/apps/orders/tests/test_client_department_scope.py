@@ -69,6 +69,7 @@ def ownership_scope(user_with_perms):
             "monoblock.view",
             "loader.confirm",
             "orders.rollback",
+            "dashboard.view",
         ],
         department=first_department,
     )

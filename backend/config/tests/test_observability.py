@@ -86,6 +86,24 @@ def test_sensitive_key_scrubbing_is_recursive_and_normalizes_headers():
     assert source["request"]["headers"]["Authorization"] == "Bearer secret"
 
 
+def test_telegram_bot_tokens_never_leave_in_breadcrumbs_or_messages():
+    """Токен бота стоит в пути запроса Bot API — SDK пишет его в breadcrumb httplib."""
+    token = "8622877486:AAG-secret_Token"
+    event = {
+        "breadcrumbs": {"values": [{
+            "category": "httplib",
+            "data": {"url": f"https://api.telegram.org/bot{token}/getUpdates", "method": "POST"},
+        }]},
+        "exception": {"values": [{"value": f"URL can't contain control characters. '/bot{token}/getMe'"}]},
+    }
+
+    scrubbed = observability.scrub_event(event)
+
+    assert token not in json.dumps(scrubbed)
+    assert scrubbed["breadcrumbs"]["values"][0]["data"]["url"] == (
+        "https://api.telegram.org/bot[Filtered]/getUpdates")
+
+
 def test_sentry_is_not_initialized_without_a_dsn(monkeypatch):
     initialize = Mock()
     monkeypatch.setattr(observability.sentry_sdk, "init", initialize)

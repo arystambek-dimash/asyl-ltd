@@ -24,6 +24,7 @@ import {
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { MoneyTrendChart, TREND_GRID_PROPS, trendXAxisProps } from "@/components/charts/money-trend-chart";
 import { AppShell } from "@/components/layout/app-shell";
+import { RequirePerm } from "@/components/require-perm";
 import { StatusBadge } from "@/components/status-badge";
 import { CHART_TOOLTIP_STYLE as TOOLTIP_STYLE } from "@/components/ui/chart-tooltip";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -597,6 +598,14 @@ function AnalyticsView({ userId }: { userId: number }) {
 }
 
 export default function DashboardPage() {
+  return (
+    <RequirePerm perm="dashboard.view" title="Главная">
+      <DashboardPageInner />
+    </RequirePerm>
+  );
+}
+
+function DashboardPageInner() {
   const { me } = useAuth();
   const userId = me?.id;
   const showCameras = can(me, "monoblock.view");

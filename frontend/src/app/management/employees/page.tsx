@@ -33,7 +33,12 @@ import { StatCard } from "@/components/ui/stat-card";
 import { EmptyRow, Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { PERMISSION_PRESETS, applyPreset, type PermissionPreset } from "@/lib/permission-presets";
+import {
+  PERMISSION_PRESETS,
+  applyPreset,
+  newEmployeePermissions,
+  type PermissionPreset,
+} from "@/lib/permission-presets";
 import type { Department, Employee, Permission } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useConfirmAction } from "@/lib/use-confirm-action";
@@ -90,7 +95,7 @@ function EmployeesPageInner() {
     if (!canManageSecurity) return;
     setEditing(null);
     setForm(emptyForm);
-    setSelectedPermissions(new Set());
+    setSelectedPermissions(newEmployeePermissions(ungrantable));
     setSalesEmployee(false);
     setStep(1);
     setError("");

@@ -3,7 +3,10 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import DashboardPage from "./page";
 
-vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { id: 1, permissions: [] }, loading: false }) }));
+const auth = vi.hoisted(() => ({ permissions: ["dashboard.view"] }));
+vi.mock("@/store/auth", () => ({
+  useAuth: () => ({ me: { id: 1, permissions: auth.permissions }, loading: false }),
+}));
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("next/link", () => import("@/test-utils/next-link"));
 // Графики к ссылкам отношения не имеют, а в jsdom у них нет размеров.
@@ -59,7 +62,18 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
   }),
 }));
 
-afterEach(() => localStorage.clear());
+afterEach(() => {
+  localStorage.clear();
+  auth.permissions = ["dashboard.view"];
+});
+
+it("без права на главную показывает «Нет доступа» вместо сводки", () => {
+  auth.permissions = ["orders.view"];
+  render(<DashboardPage />);
+
+  expect(screen.getByText("Нет доступа")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /Подтвердить оплаты/ })).not.toBeInTheDocument();
+});
 
 it("ведёт из «Нужно решить» и сводки долга сразу на нужный экран кассы", async () => {
   render(<DashboardPage />);

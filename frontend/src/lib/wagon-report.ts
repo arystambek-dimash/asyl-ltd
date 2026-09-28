@@ -1,15 +1,16 @@
 /** «Отправить отчёт» в истории вагонов у грузчика (GET/POST /loader/wagon-report/…). */
 import type { LoaderOrder } from "@/lib/loader";
-import { composePhone, parsePhone } from "@/lib/phone";
 import { formatTime } from "@/lib/utils";
 
 export const WAGON_REPORT_API = "/loader/wagon-report";
 
-/** Как уйдёт отчёт: ботом (очередь на сервере) или ссылкой WhatsApp с этого телефона. */
+/** Как уйдёт отчёт: Telegram-ботом (очередь на сервере) или ссылкой Telegram с этого телефона. */
 export type WagonReportDelivery = "bot" | "link";
+/** Почему ссылкой: бот выключен или не работает, нет username получателя, получатель не писал боту. */
+type WagonReportLinkReason = "" | "bot_off" | "no_username" | "not_started";
 /**
  * Что с отправленным отчётом: в очереди бота, бот отправляет, отправлен ботом,
- * не ушёл, неизвестно, ушёл ли (WhatsApp не ответил), или отдан ссылкой.
+ * не ушёл, неизвестно, ушёл ли (Telegram не ответил), или отдан ссылкой.
  */
 export type WagonReportStatus = "queued" | "sending" | "sent" | "failed" | "unknown" | "link";
 
@@ -18,10 +19,8 @@ interface WagonReportRecipient {
   name: string;
   /** В дательном падеже — для «Отправить Динаре». */
   to: string;
-  /** Только цифры с кодом страны; пусто — номер не указан. */
-  phone: string;
-  /** Бот без номера пишет в эту группу. */
-  chat_name?: string;
+  /** Username в Telegram без «@»; пусто — не указан. */
+  username: string;
 }
 
 /** Ответ «Составить отчёт»: текст в формате владельца, заказы, кому и как. */
@@ -30,6 +29,7 @@ export interface WagonReportDraft {
   order_ids: number[];
   recipient: WagonReportRecipient;
   delivery: WagonReportDelivery;
+  reason: WagonReportLinkReason;
 }
 
 /** Ответ «Отправить»: экран применяет его к строкам истории. */
@@ -54,17 +54,23 @@ export function composeUrl(scope: WagonReportScope): string {
   return `${WAGON_REPORT_API}/compose/?${query}`;
 }
 
-/** «+7 701 123-45-67» из цифр номера. */
-function phoneLabel(digits: string): string {
-  return digits ? composePhone(parsePhone(`+${digits}`, null)) : "";
+/** Строка «Кому» в окне отправки. */
+export function recipientLine(draft: Pick<WagonReportDraft, "recipient">): string {
+  const { recipient } = draft;
+  if (recipient.username) return `${recipient.to} · @${recipient.username}`;
+  return `${recipient.to} · username не указан — выберите чат в Telegram`;
 }
 
-/** Строка «Кому» в окне отправки. */
-export function recipientLine(draft: Pick<WagonReportDraft, "recipient" | "delivery">): string {
-  const { recipient, delivery } = draft;
-  if (recipient.phone) return `${recipient.to} · ${phoneLabel(recipient.phone)}`;
-  if (delivery === "bot") return `${recipient.to} · в группу «${recipient.chat_name || "WhatsApp"}»`;
-  return `${recipient.to} · номер не указан — выберите чат в WhatsApp`;
+const LINK_REASONS: Record<Exclude<WagonReportLinkReason, "">, string> = {
+  bot_off: "Бот сейчас не отправляет — откроется Telegram с готовым текстом.",
+  no_username: "В настройках бота не указан username получателя — откроется выбор чата в Telegram.",
+  not_started: "Получатель ещё не писал боту (/start) — откроется её чат в Telegram с готовым текстом.",
+};
+
+/** Как уйдёт отчёт — строкой под «Кому». */
+export function deliveryHint(draft: Pick<WagonReportDraft, "delivery" | "reason">): string {
+  if (draft.delivery === "bot" || !draft.reason) return "Отправит Telegram-бот.";
+  return LINK_REASONS[draft.reason];
 }
 
 /** Ключ нажатия «Отправить»: повтор того же запроса сервер не отправит второй раз. */
@@ -102,14 +108,14 @@ export function reportMark(order: LoaderOrder): ReportMark | null {
   if (order.report_status === "queued") return { tone: "muted", text: `Бот отправит${to} · ${time}` };
   if (order.report_status === "sending") return { tone: "muted", text: `Бот отправляет${to} · ${time}` };
   if (order.report_status === "failed") {
-    return { tone: "destructive", text: `Не отправлено${to}: ${order.report_error || "ошибка WhatsApp"}` };
+    return { tone: "destructive", text: `Не отправлено${to}: ${order.report_error || "ошибка Telegram"}` };
   }
   if (order.report_status === "unknown") {
     // Сообщение могло уйти: повторная отправка без проверки задвоила бы отчёт.
     const reason = order.report_error ? ` (${order.report_error})` : "";
     return {
       tone: "destructive",
-      text: `Не подтверждено${to}: проверьте WhatsApp, прежде чем отправлять снова${reason}`,
+      text: `Не подтверждено${to}: проверьте Telegram, прежде чем отправлять снова${reason}`,
     };
   }
   return { tone: "success", text: `Отправлено${to} ${time}` };

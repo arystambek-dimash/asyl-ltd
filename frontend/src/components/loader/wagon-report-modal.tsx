@@ -1,15 +1,16 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ClipboardCopy, LoaderCircle, MessageCircle, Send } from "lucide-react";
+import { CheckCircle2, ClipboardCopy, ExternalLink, LoaderCircle, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { api, apiError, apiErrorCode } from "@/lib/api";
-import { copyText, whatsappLink } from "@/lib/clipboard";
+import { copyText, telegramLink } from "@/lib/clipboard";
 import {
   composeUrl,
+  deliveryHint,
   newSendKey,
   recipientLine,
   WAGON_REPORT_API,
@@ -22,13 +23,14 @@ import {
 /**
  * «Отправить отчёт» из истории вагонов: сервер составляет отчёт в формате
  * владельца (одна отгрузка или весь период экрана), текст можно поправить и
- * скопировать. «Отправить Динаре»: бот включён — сообщение встаёт в его
- * очередь; иначе открывается WhatsApp с готовым текстом (вкладка — прямо в
- * нажатии, иначе браузер счёл бы её всплывающим окном), а сервер только
- * отмечает отправку. WhatsApp уже открыт, а отметка не записалась — повтор
- * только отмечает («Отметить отправленным»), второй раз WhatsApp открывает
- * отдельная кнопка: иначе Динара получила бы отчёт дважды. Ответ отправки —
- * отметка для строк истории (onSent). Ошибки — внутри окна.
+ * скопировать. «Отправить Динаре»: Telegram-бот может ей написать —
+ * сообщение встаёт в его очередь; иначе открывается её чат в Telegram с
+ * готовым текстом (вкладка — прямо в нажатии, иначе браузер счёл бы её
+ * всплывающим окном), а сервер только отмечает отправку. Telegram уже открыт,
+ * а отметка не записалась — повтор только отмечает («Отметить
+ * отправленным»), второй раз Telegram открывает отдельная кнопка: иначе
+ * Динара получила бы отчёт дважды. Ответ отправки — отметка для строк
+ * истории (onSent). Ошибки — внутри окна.
  */
 export function WagonReportModal({
   scope,
@@ -47,7 +49,7 @@ export function WagonReportModal({
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<WagonReportSent | null>(null);
   const [copied, setCopied] = useState<"" | "ok" | "failed">("");
-  // WhatsApp с этим текстом уже открыт: повтор после сбоя отметки его не открывает.
+  // Telegram с этим текстом уже открыт: повтор после сбоя отметки его не открывает.
   const [linkOpened, setLinkOpened] = useState(false);
   // Ключ нажатия: повтор после обрыва связи не отправит отчёт второй раз.
   const sendKey = useRef(newSendKey());
@@ -105,15 +107,15 @@ export function WagonReportModal({
     }
   }
 
-  function openWhatsApp(phone: string) {
-    window.open(whatsappLink(phone, text), "_blank", "noopener");
+  function openTelegram(username: string) {
+    window.open(telegramLink(username, text), "_blank", "noopener");
   }
 
   function send() {
     if (!canSend || !draft) return;
     if (draft.delivery === "link" && !linkOpened) {
       // Синхронно в нажатии: после ожидания ответа браузер заблокировал бы вкладку.
-      openWhatsApp(draft.recipient.phone);
+      openTelegram(draft.recipient.username);
       setLinkOpened(true);
     }
     void record(draft.delivery);
@@ -150,15 +152,15 @@ export function WagonReportModal({
           >
             <ClipboardCopy /> {copied === "ok" ? "Скопировано" : "Скопировать"}
           </Button>
-          {/* WhatsApp не открылся (закрыли вкладку) — открыть ещё раз, без второй отметки. */}
+          {/* Telegram не открылся (закрыли вкладку) — открыть ещё раз, без второй отметки. */}
           {(sent?.status === "link" || (linkOpened && !sent)) && (
             <Button
               variant="outline"
               className="max-sm:grow"
               disabled={busy}
-              onClick={() => openWhatsApp(sent?.recipient.phone ?? draft?.recipient.phone ?? "")}
+              onClick={() => openTelegram(sent?.recipient.username ?? draft?.recipient.username ?? "")}
             >
-              <MessageCircle /> Открыть WhatsApp ещё раз
+              <ExternalLink /> Открыть Telegram ещё раз
             </Button>
           )}
           {sent?.status !== "link" && (
@@ -176,9 +178,7 @@ export function WagonReportModal({
           <p className="text-sm">
             <span className="text-[var(--muted-foreground)]">Кому: </span>
             <span className="font-medium">{recipientLine(draft)}</span>
-            {draft.delivery === "bot" && (
-              <span className="block text-[12px] text-[var(--muted-foreground)]">Отправит WhatsApp-бот.</span>
-            )}
+            <span className="block text-[12px] text-[var(--muted-foreground)]">{deliveryHint(draft)}</span>
           </p>
         )}
         {empty && (
@@ -215,7 +215,7 @@ export function WagonReportModal({
           >
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[var(--success)]" />
             {sent.status === "link"
-              ? `Открыли WhatsApp — отправьте сообщение ${sent.recipient.to}. Отгрузки отмечены как отправленные.`
+              ? `Открыли Telegram — отправьте сообщение ${sent.recipient.to}. Отгрузки отмечены как отправленные.`
               : sent.status === "queued"
                 ? `В очереди — бот отправит ${sent.recipient.to} в течение минуты.`
                 : `${sent.status_label}: ${sent.recipient.to}.`}

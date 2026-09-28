@@ -123,9 +123,9 @@ x-backend-environment: &backend-environment
   APIPAY_RECONCILE_TASK_LOCK_SECONDS: ${APIPAY_RECONCILE_TASK_LOCK_SECONDS:-1200}
   APIPAY_MONITOR_HEARTBEAT_FILE: ${APIPAY_MONITOR_HEARTBEAT_FILE:-/tmp/apipay-monitor-heartbeat}
   APIPAY_MONITOR_HEARTBEAT_MAX_AGE_SECONDS: ${APIPAY_MONITOR_HEARTBEAT_MAX_AGE_SECONDS:-600}
-  # WhatsApp-бот отчётов о вагонах: флаг виден и журналу в CRM («выключен на
-  # сервере»). Ключи инстанса Green-API — только у сервиса whatsapp-bot.
-  WHATSAPP_BOT_ENABLED: ${WHATSAPP_BOT_ENABLED:-0}
+  # Telegram-бот отчётов о вагонах: флаг виден и журналу в CRM («выключен на
+  # сервере»). Токен бота — только у сервиса telegram-bot.
+  TELEGRAM_BOT_ENABLED: ${TELEGRAM_BOT_ENABLED:-0}
 
 # CI supplies an immutable digest reference. The all-zero fallback cannot
 # resolve to a real manifest: `ps`/`exec` remain usable for an existing
@@ -399,43 +399,42 @@ services:
       - data
       - default
 
-  whatsapp-bot:
+  telegram-bot:
     image: *backend-image
     environment:
       <<: *backend-environment
-      APP_SERVICE: whatsapp-bot
-      # Всё необязательно: без WHATSAPP_BOT_ENABLED=1 процесс простаивает,
-      # без ключей включённый бот честно пишет «degraded».
-      WHATSAPP_BOT_API_URL: ${WHATSAPP_BOT_API_URL:-}
-      WHATSAPP_BOT_INSTANCE_ID: ${WHATSAPP_BOT_INSTANCE_ID:-}
-      WHATSAPP_BOT_API_TOKEN: ${WHATSAPP_BOT_API_TOKEN:-}
-      WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS: ${WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS:-20}
-      WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS: ${WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS:-180}
-      WHATSAPP_BOT_LLM_ENABLED: ${WHATSAPP_BOT_LLM_ENABLED:-0}
-      WHATSAPP_BOT_LLM_MODEL: ${WHATSAPP_BOT_LLM_MODEL:-}
+      APP_SERVICE: telegram-bot
+      # Всё необязательно: без TELEGRAM_BOT_ENABLED=1 процесс простаивает,
+      # без токена включённый бот честно пишет «degraded».
+      TELEGRAM_BOT_API_URL: ${TELEGRAM_BOT_API_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_POLL_TIMEOUT_SECONDS: ${TELEGRAM_BOT_POLL_TIMEOUT_SECONDS:-25}
+      TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS: ${TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS:-180}
+      TELEGRAM_BOT_LLM_ENABLED: ${TELEGRAM_BOT_LLM_ENABLED:-0}
+      TELEGRAM_BOT_LLM_MODEL: ${TELEGRAM_BOT_LLM_MODEL:-}
     # Миграции и сервисный пользователь — после здорового backend.
     entrypoint: []
-    command: ["python", "manage.py", "run_whatsapp_bot"]
+    command: ["python", "manage.py", "run_telegram_bot"]
     depends_on:
       backend:
         condition: service_healthy
       db:
         condition: service_healthy
     init: true
-    # Долгий опрос провайдера длится до receiveTimeout + 10 с.
+    # Долгий опрос Telegram длится до timeout + 10 с.
     stop_grace_period: 60s
     tmpfs:
-      - /tmp/whatsapp-bot:rw,noexec,nosuid,nodev,size=1m,mode=1777
-    # Живость цикла: сбой Green-API или неавторизованный номер — degraded, не рестарт.
+      - /tmp/telegram-bot:rw,noexec,nosuid,nodev,size=1m,mode=1777
+    # Живость цикла: сбой Telegram или отвергнутый токен — degraded, не рестарт.
     healthcheck:
-      test: ["CMD", "python", "/app/whatsapp_bot_healthcheck.py"]
+      test: ["CMD", "python", "/app/telegram_bot_healthcheck.py"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
     restart: unless-stopped
     logging: *default-logging
-    # data — база; default — выход в интернет к Green-API и OpenAI.
+    # data — база; default — выход в интернет к Telegram и OpenAI.
     networks:
       - data
       - default

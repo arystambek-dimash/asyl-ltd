@@ -1,15 +1,16 @@
-"""WhatsApp-бот отчётов о вагонах: приём сообщений, проведение, ответы, журнал.
+"""Telegram-бот отчётов о вагонах: приём сообщений, проведение, ответы, журнал.
 
-Процесс бота (``run_whatsapp_bot``) забирает уведомления у провайдера
-(:mod:`apps.bots.providers.green_api`), записывает сообщение в базу
-(:func:`ingest` — идемпотентно по идентификатору провайдера) и только потом
+Процесс бота (``run_telegram_bot``) забирает обновления у Telegram
+(:mod:`apps.bots.providers.telegram`), записывает сообщение в базу
+(:func:`ingest` — идемпотентно по идентификатору сообщения) и только потом
 подтверждает приём. Дальше :func:`process_pending` разбирает отчёт и, если
-всё сошлось, проводит его сам — той же операцией, что «Вставить отчёт» у
-грузчика (:func:`apps.bots.rail.conduct_rail_report`), от имени сервисного
+всё сошлось и отправитель допущен (его username в настройках бота),
+проводит его сам — той же операцией, что «Провести» в журнале
+(:func:`apps.bots.rail.conduct_rail_report`), от имени сервисного
 пользователя без права менять цены. Иначе сообщение ждёт человека в журнале
-(«На проверке»). Правки и удаления отчётов бот не проводит — только на
-разбор. Ответ в чат — цитатой исходного сообщения, отправляется отдельным
-шагом (:func:`send_pending_replies`), пока не получится.
+(«На проверке»). Правки отчётов бот не проводит — только на разбор. Ответ в
+чат — ответом на исходное сообщение, отправляется отдельным шагом
+(:func:`send_pending_replies`), пока не получится.
 
 Сообщение бот обрабатывает под блокировкой его строки — как и «Провести» /
 «Игнорировать» в журнале: решение человека бот не перетирает, а порядок
@@ -28,13 +29,19 @@ from rest_framework.exceptions import APIException, PermissionDenied, Validation
 
 from apps.clients.models import Client
 from apps.common.money import MONEY_PLACES
+from apps.common.telegram import (
+    TelegramClient,
+    TelegramError,
+    TelegramRefused,
+    message_ref,
+)
 from apps.common.text import group_digits, plural_ru
 from apps.eventlog.services import log_event
 from apps.orders.models import Order
 from apps.orders.transport import order_wagons
 
 from . import llm
-from .models import BotMessage, WhatsAppBotSettings
+from .models import BotChat, BotMessage, TelegramBotSettings
 from .parsing import (
     KG_PER_TON,
     RAIL_REPORT_MAX_LENGTH,
@@ -44,7 +51,7 @@ from .parsing import (
     format_tons,
     parse_rail_report,
 )
-from .providers.green_api import GreenApiClient, GreenApiError, IncomingMessage
+from .providers.telegram import IncomingMessage
 from .rail import PRICE_MISMATCH, apply_rail_report, resolve_report
 
 log = logging.getLogger(__name__)
@@ -55,8 +62,7 @@ MAX_REPLY_ATTEMPTS = 5
 # В ответе «на проверке» — первые причины, остальные числом.
 REPLY_ISSUES = 3
 REPLY_MAX_LENGTH = 1000
-SEEN_CHATS_LIMIT = 20
-EVENT_TYPE = "whatsapp_bot"
+EVENT_TYPE = "telegram_bot"
 # Причины, при которых отчёт не разобрался по формату, — повод для черновика ИИ.
 STRUCTURE_ISSUES = frozenset({
     "header_missing", "station_missing", "no_wagons", "unknown_line", "bad_date",
@@ -70,80 +76,59 @@ NOT_APPLIED = "not_applied"
 FAILED_REPLY = "Принято, на проверке: не удалось провести автоматически"
 
 
-# --- настройки и приём --------------------------------------------------------------------------
+# --- приём -------------------------------------------------------------------------------------
 
 
-def _chat_allowed(bot_settings: WhatsAppBotSettings, chat_id: str) -> bool:
-    return chat_id in (bot_settings.allowed_chat_ids or [])
-
-
-def _sender_allowed(bot_settings: WhatsAppBotSettings, sender_id: str) -> bool:
-    return sender_id in (bot_settings.allowed_sender_ids or [])
-
-
-def _is_group(chat_id: str) -> bool:
-    return chat_id.endswith("@g.us")
-
-
-def remember_seen_chat(bot_settings: WhatsAppBotSettings, incoming: IncomingMessage) -> None:
-    """Недавние чаты для настроек: идентификатор группы не надо знать заранее."""
-    seen = dict(bot_settings.seen_chats or {})
-    seen[incoming.chat_id] = {"name": incoming.chat_name, "at": timezone.now().isoformat()}
-    recent = sorted(seen.items(), key=lambda item: item[1].get("at") or "", reverse=True)[:SEEN_CHATS_LIMIT]
-    bot_settings.seen_chats = dict(recent)
-    WhatsAppBotSettings.objects.filter(pk=bot_settings.pk).update(seen_chats=bot_settings.seen_chats)
+def remember_chat(incoming: IncomingMessage) -> None:
+    """Чат, откуда писали боту: по username находится чат получателя отчётов."""
+    BotChat.objects.update_or_create(chat_id=incoming.chat_id, defaults={
+        "chat_type": incoming.chat_type[:20],
+        "title": incoming.chat_name[:200],
+        # username собеседника — только у личного чата; в группе пишут разные люди.
+        "username": incoming.sender_username if incoming.is_private else "",
+        "last_message_at": timezone.now(),
+    })
 
 
 def _provider_id(incoming: IncomingMessage) -> str:
-    # Правка и удаление — отдельные записи: не совпадают с исходным сообщением
-    # и между собой (каждая правка — своё время), но повтор доставки — тот же.
+    # Правка — отдельная запись: не совпадает с исходным сообщением и другими
+    # правками (у каждой своё время), но повтор доставки — та же.
+    ref = message_ref(incoming.chat_id, incoming.message_id)
     if incoming.kind == BotMessage.MESSAGE:
-        return incoming.message_id
-    stamp = int(incoming.sent_at.timestamp()) if incoming.sent_at else 0
-    return f"{incoming.kind}:{incoming.message_id}:{stamp}"
+        return ref
+    stamp = int(incoming.edited_at.timestamp()) if incoming.edited_at else 0
+    return f"{incoming.kind}:{ref}:{stamp}"
 
 
-def ingest(incoming: IncomingMessage, bot_settings: WhatsAppBotSettings) -> BotMessage | None:
+def ingest(incoming: IncomingMessage) -> BotMessage:
     """Записать сообщение; повтор доставки — та же запись.
 
-    Разрешённый чат — к разбору. Группа, которой нет в настройках, — сразу
-    «Пропущено»: группа попадает в «недавние» только с первым сообщением, и
-    отчёты, пришедшие до того, как её выбрали, не теряются — их проводят из
-    журнала. Личные сообщения чужих чатов не хранятся: остаётся только чат в
-    «недавних».
+    Доступ к боту проверяет разбор (:func:`process_pending`) по настройкам на
+    момент разбора: отчёт от ещё не допущенного человека не теряется — он
+    «Пропущено», и его проводят из журнала.
     """
-    remember_seen_chat(bot_settings, incoming)
-    allowed = _chat_allowed(bot_settings, incoming.chat_id)
-    if not allowed and not _is_group(incoming.chat_id):
-        return None
-    skipped = {} if allowed else {
-        "status": BotMessage.IGNORED,
-        "issues": [_note(
-            "chat_not_allowed", "Чат не в списке разрешённых — выберите его в настройках бота",
-            subject=incoming.chat_id)],
-    }
+    remember_chat(incoming)
     original = None
-    if incoming.target_id:
+    if incoming.kind == BotMessage.EDITED:
         original = BotMessage.objects.filter(
-            provider=BotMessage.PROVIDER_GREEN_API,
-            chat_id=incoming.chat_id,
-            provider_message_id=incoming.target_id,
+            provider=BotMessage.PROVIDER_TELEGRAM,
+            provider_message_id=message_ref(incoming.chat_id, incoming.message_id),
             kind=BotMessage.MESSAGE,
         ).first()
     message, _ = BotMessage.objects.get_or_create(
-        provider=BotMessage.PROVIDER_GREEN_API,
+        provider=BotMessage.PROVIDER_TELEGRAM,
         provider_message_id=_provider_id(incoming),
         defaults={
             "chat_id": incoming.chat_id,
             "chat_name": incoming.chat_name[:200],
             "sender_id": incoming.sender_id[:128],
             "sender_name": incoming.sender_name[:200],
+            "sender_username": incoming.sender_username[:64],
             "kind": incoming.kind,
             "original": original,
             # Длиннее отчёта не бывает: храним начало, сообщение — «Отклонено».
             "text": incoming.text[: RAIL_REPORT_MAX_LENGTH + 1],
             "sent_at": incoming.sent_at,
-            **skipped,
         },
     )
     return message
@@ -255,9 +240,9 @@ def _error_issue(exc: APIException) -> dict:
     return _note(NOT_APPLIED, f"Не проведено: {_error_text(exc.detail)}")
 
 
-def _mark_applied(message: BotMessage, order: Order, bot_settings: WhatsAppBotSettings) -> None:
-    """Проведено: «Проведено: …» цитатой исходного сообщения."""
-    # Цитата — исходное сообщение; удалось ли её отправить — дело бота.
+def _mark_applied(message: BotMessage, order: Order, bot_settings: TelegramBotSettings) -> None:
+    """Проведено: «Проведено: …» ответом на исходное сообщение."""
+    # Ответ — на исходное сообщение; удалось ли его отправить — дело бота.
     reply = applied_reply(order, show_amounts=bot_settings.show_amounts_in_reply) if _quote_id(message) else ""
     _finish(message, BotMessage.APPLIED, order=order, reply=reply)
 
@@ -268,20 +253,13 @@ def _revises_applied(message: BotMessage) -> bool:
 
 
 def _review_revision(message: BotMessage, *, quote: bool) -> None:
-    """Правка или удаление отчёта — всегда к человеку (бот их не проводит).
+    """Правка отчёта — всегда к человеку (бот правки не проводит).
 
-    ``quote`` — ответить в чат (только разрешённому отправителю).
+    ``quote`` — ответить в чат (только допущенному отправителю).
     """
     original = message.original
     applied = f" — по нему уже проведён заказ №{original.order_id}, проверьте заказ" if (
         original is not None and original.order_id) else ""
-    if message.kind == BotMessage.DELETED:
-        if original is None or original.status == BotMessage.IGNORED:
-            _finish(message, BotMessage.IGNORED)
-            return
-        _finish(message, BotMessage.NEEDS_REVIEW, order=original.order, issues=[
-            _note("message_deleted", f"Сообщение удалено отправителем{applied}", order_id=original.order_id)])
-        return
     report = parse_rail_report(message.text)
     if not is_report_candidate(report, message.text) and (original is None or original.status == BotMessage.IGNORED):
         _finish(message, BotMessage.IGNORED)
@@ -290,7 +268,7 @@ def _review_revision(message: BotMessage, *, quote: bool) -> None:
     issue = _note(
         "message_edited", f"Сообщение изменено после отправки{applied}",
         order_id=original.order_id if original is not None else None)
-    # Цитировать можно только сообщение, которое бот видел.
+    # Отвечать можно только на сообщение, которое бот видел.
     reply = review_reply([issue]) if original is not None and quote else ""
     _finish(message, BotMessage.NEEDS_REVIEW, order=original.order if original else None,
             issues=[issue], reply=reply)
@@ -314,15 +292,21 @@ def _lock_pending(message: BotMessage) -> BotMessage | None:
     return BotMessage.objects.select_for_update().filter(_PENDING, pk=message.pk).first()
 
 
-def _process(message: BotMessage, *, user, bot_settings: WhatsAppBotSettings) -> None:
+def _not_allowed_note(message: BotMessage) -> dict:
+    if not message.sender_username:
+        return _note("sender_not_allowed", "У отправителя нет username в Telegram — боту он не допущен",
+                     subject=message.sender_id)
+    return _note("sender_not_allowed", f"@{message.sender_username} не допущен к боту — добавьте его в настройках",
+                 subject=f"@{message.sender_username}")
+
+
+def _process(message: BotMessage, *, user, bot_settings: TelegramBotSettings) -> None:
     """Разбор и проведение сообщения, заблокированного :func:`_lock_pending`."""
-    sender_allowed = _sender_allowed(bot_settings, message.sender_id)
-    # Бот слушает только разрешённых отправителей. Исключение — правка или
-    # удаление проведённого отчёта (например, админ группы удалил отчёт):
-    # это видит человек, но в чат бот не отвечает.
+    sender_allowed = bot_settings.allows(message.sender_username)
+    # Бот слушает только допущенных. Исключение — правка проведённого
+    # отчёта: это видит человек, но в чат бот не отвечает.
     if not sender_allowed and not _revises_applied(message):
-        _finish(message, BotMessage.IGNORED, issues=[
-            _note("sender_not_allowed", "Отправитель не в списке разрешённых", subject=message.sender_id)])
+        _finish(message, BotMessage.IGNORED, issues=[_not_allowed_note(message)])
         return
     if message.kind != BotMessage.MESSAGE:
         _review_revision(message, quote=sender_allowed)
@@ -343,8 +327,8 @@ def _process(message: BotMessage, *, user, bot_settings: WhatsAppBotSettings) ->
             with transaction.atomic():
                 order = apply_rail_report(report, user)
         except (ValidationError, PermissionDenied) as exc:
-            # Отчёт мог провести человек у грузчика («Вставить отчёт»):
-            # свежие причины важнее текста отказа.
+            # Отчёт мог провести человек в журнале: свежие причины важнее
+            # текста отказа.
             resolved = resolve_report(report, user=user)
             issues = [issue.as_dict() for issue in resolved.issues] or [_error_issue(exc)]
         else:
@@ -396,7 +380,7 @@ def _attach_draft(message: BotMessage) -> BotMessage:
     return locked
 
 
-def process_message(message: BotMessage, *, user, bot_settings: WhatsAppBotSettings) -> BotMessage:
+def process_message(message: BotMessage, *, user, bot_settings: TelegramBotSettings) -> BotMessage:
     """Разобрать и, если всё сошлось, провести отчёт от имени сервисного ``user``.
 
     Сообщение, которое уже решил человек, бот пропускает (см. :func:`_lock_pending`).
@@ -410,12 +394,12 @@ def process_message(message: BotMessage, *, user, bot_settings: WhatsAppBotSetti
     except (OperationalError, InterfaceError):
         raise
     except Exception as exc:  # сбой одного сообщения не останавливает бота
-        log.exception("WhatsApp bot message %s failed", message.pk)
+        log.exception("Telegram bot message %s failed", message.pk)
         return _fail(message, exc)
     return _attach_draft(locked)
 
 
-def process_pending(*, user, bot_settings: WhatsAppBotSettings, limit: int = 20) -> int:
+def process_pending(*, user, bot_settings: TelegramBotSettings, limit: int = 20) -> int:
     messages = list(pending_messages()[:limit])
     for message in messages:
         process_message(message, user=user, bot_settings=bot_settings)
@@ -428,12 +412,13 @@ def _quote_id(message: BotMessage) -> str:
     return message.original.provider_message_id if message.original_id else ""
 
 
-def send_pending_replies(client: GreenApiClient, *, limit: int = 10) -> int:
-    """Отправить ответы цитатой. Сбой провайдера — попытка засчитана, ошибка наверх.
+def send_pending_replies(client: TelegramClient, *, limit: int = 10) -> int:
+    """Отправить ответы на сообщения. Сбой Telegram — попытка засчитана, ошибка наверх;
+    отказ в одном чате (бот заблокирован, чата нет) — попытка засчитана, дальше следующий.
 
     Текст сбоя в ``error`` сообщения не пишется: там причина сбоя обработки
-    (:func:`_fail`), а сбой Green-API видно в состоянии бота и в «не отправлен
-    (попыток: N)» у ответа.
+    (:func:`_fail`), а сбой Telegram видно в состоянии бота и в «не отправлен
+    (попыток: N)» у ответа. Сообщения прежнего WhatsApp-бота ответов не ждут.
 
     Отправленным отмечается только тот ответ, что ушёл: если, пока он уходил,
     человек провёл сообщение («Проведено» после «на проверке»), новый ответ
@@ -441,13 +426,17 @@ def send_pending_replies(client: GreenApiClient, *, limit: int = 10) -> int:
     """
     sent = 0
     messages = BotMessage.objects.filter(
-        reply_sent_at__isnull=True, reply_attempts__lt=MAX_REPLY_ATTEMPTS,
+        provider=BotMessage.PROVIDER_TELEGRAM, reply_sent_at__isnull=True, reply_attempts__lt=MAX_REPLY_ATTEMPTS,
     ).exclude(reply="").select_related("original").order_by("pk")[:limit]
     for message in messages:
         same_reply = BotMessage.objects.filter(pk=message.pk, reply=message.reply, reply_sent_at__isnull=True)
         try:
-            reply_id = client.send_message(message.chat_id, message.reply, quoted_message_id=_quote_id(message))
-        except GreenApiError:
+            reply_id = client.send_message(message.chat_id, message.reply, reply_to=_quote_id(message))
+        except TelegramRefused as exc:
+            log.warning("Telegram bot reply %s refused: %s", message.pk, exc)
+            same_reply.update(reply_attempts=F("reply_attempts") + 1, updated_at=timezone.now())
+            continue
+        except TelegramError:
             same_reply.update(reply_attempts=F("reply_attempts") + 1, updated_at=timezone.now())
             raise
         same_reply.update(reply_message_id=reply_id[:160], reply_sent_at=timezone.now(), updated_at=timezone.now())
@@ -473,21 +462,21 @@ def apply_message(message: BotMessage, user, *, text: str | None = None, order: 
 
     ``text`` — исправленный текст (или черновик ИИ); без него — как пришло.
     ``order`` — «Отгрузить по отчёту» похожий ручной заказ. В чат уходит
-    «Проведено: …» цитатой исходного сообщения.
+    «Проведено: …» ответом на исходное сообщение.
     """
     message = _lock_open(message)
     if message.kind == BotMessage.DELETED:
         raise ValidationError({"detail": "Удалённое сообщение не проводится", "code": "bot_message_deleted"})
     source = message.text if text is None else text
     report = parse_rail_report(source)
-    bot_settings = WhatsAppBotSettings.load()
+    bot_settings = TelegramBotSettings.load()
     applied = apply_rail_report(report, user, order=order)
     message.parsed = report_summary(report, applied.client)
     message.resolved_by, message.resolved_at = user, timezone.now()
     _mark_applied(message, applied, bot_settings)
     log_event(
         EVENT_TYPE,
-        f"Сообщение WhatsApp проведено вручную: заказ №{applied.pk}",
+        f"Сообщение бота проведено вручную: заказ №{applied.pk}",
         user=user,
         order=applied,
         payload={"message_id": message.pk, **({"text": source} if source != message.text else {})},

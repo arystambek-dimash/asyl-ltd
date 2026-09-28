@@ -28,14 +28,14 @@ describe("PermissionPicker", () => {
       <PermissionPicker
         perms={[
           perm("stores.view", "Магазины: Просмотр", "Магазины"),
-          perm("bots.view", "WhatsApp-бот: Журнал", "WhatsApp-бот"),
+          perm("bots.view", "Telegram-бот: Журнал", "Telegram-бот"),
         ]}
         selected={new Set()}
         onToggle={vi.fn()}
       />,
     );
 
-    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["Магазины", "WhatsApp-бот"]);
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["Магазины", "Telegram-бот"]);
   });
 
   it("сохраняет порядок разделов с сервера (порядок меню), а не сортирует по алфавиту", () => {
@@ -57,5 +57,23 @@ describe("PermissionPicker", () => {
       "Моноблок",
       "Задачи",
     ]);
+  });
+
+  it("даёт отдельно скрыть «Главную» и страницу «Задачи»", () => {
+    render(
+      <PermissionPicker
+        perms={[
+          perm("dashboard.view", "Главная: Доступ", "Главная"),
+          perm("tasks.own", "Задачи: Доступ (свои задачи)", "Задачи"),
+          perm("tasks.view", "Задачи: Задачи всех сотрудников", "Задачи"),
+        ]}
+        selected={new Set(["tasks.own"])}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["Главная", "Задачи"]);
+    expect(screen.getByRole("button", { name: "Доступ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Доступ (свои задачи)" })).toBeInTheDocument();
   });
 });

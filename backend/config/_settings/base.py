@@ -596,40 +596,38 @@ VEHICLE_ORIENTATION_LOADED_MIN_KG = 6000
 VEHICLE_ORIENTATION_EXPORT_BATCH = 300
 VEHICLE_ORIENTATION_SAMPLE_MAX_AGE_DAYS = 60
 
-# WhatsApp-бот отчётов о вагонах (apps/bots): Green-API в режиме опроса —
-# без публичного вебхука, очередь уведомлений у провайдера держит сутки и
-# переживает перезагрузки сервера. Выключен по умолчанию: процесс
-# run_whatsapp_bot живёт, пишет heartbeat и к провайдеру не ходит. Ключи
-# инстанса — только в .env; без них включённый бот честно пишет «degraded».
-WHATSAPP_BOT_ENABLED = env_flag(os.environ.get("WHATSAPP_BOT_ENABLED", "0"))
-WHATSAPP_BOT_API_URL = (
-    os.environ.get("WHATSAPP_BOT_API_URL", "").strip() or "https://api.green-api.com"
+# Telegram-бот отчётов о вагонах (apps/bots): Bot API в режиме долгого
+# опроса getUpdates — без публичного вебхука; неподтверждённые обновления
+# Telegram держит сутки, так что перезагрузка сервера ничего не теряет.
+# Выключен по умолчанию: процесс run_telegram_bot живёт, пишет heartbeat и
+# к Telegram не ходит. Токен бота — только в .env сервиса бота; без него
+# включённый бот честно пишет «degraded».
+TELEGRAM_BOT_ENABLED = env_flag(os.environ.get("TELEGRAM_BOT_ENABLED", "0"))
+TELEGRAM_BOT_API_URL = (
+    os.environ.get("TELEGRAM_BOT_API_URL", "").strip() or "https://api.telegram.org"
 ).rstrip("/")
-if not WHATSAPP_BOT_API_URL.startswith("https://"):
-    raise ValueError("WHATSAPP_BOT_API_URL must be an https:// URL")
-WHATSAPP_BOT_INSTANCE_ID = os.environ.get("WHATSAPP_BOT_INSTANCE_ID", "").strip()
-if WHATSAPP_BOT_INSTANCE_ID and not WHATSAPP_BOT_INSTANCE_ID.isdigit():
-    raise ValueError("WHATSAPP_BOT_INSTANCE_ID must contain digits only")
-WHATSAPP_BOT_API_TOKEN = os.environ.get("WHATSAPP_BOT_API_TOKEN", "").strip()
-# Долгий опрос receiveNotification: сколько провайдер ждёт нового сообщения.
-WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS = _bounded_int_env(
-    "WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS", 20, 5, 60
+if not TELEGRAM_BOT_API_URL.startswith("https://"):
+    raise ValueError("TELEGRAM_BOT_API_URL must be an https:// URL")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+# Долгий опрос getUpdates: сколько Telegram ждёт нового сообщения.
+TELEGRAM_BOT_POLL_TIMEOUT_SECONDS = _bounded_int_env(
+    "TELEGRAM_BOT_POLL_TIMEOUT_SECONDS", 25, 5, 50
 )
-WHATSAPP_BOT_HEARTBEAT_FILE = os.environ.get(
-    "WHATSAPP_BOT_HEARTBEAT_FILE", "/tmp/whatsapp-bot/heartbeat.json"
+TELEGRAM_BOT_HEARTBEAT_FILE = os.environ.get(
+    "TELEGRAM_BOT_HEARTBEAT_FILE", "/tmp/telegram-bot/heartbeat.json"
 ).strip()
-if not WHATSAPP_BOT_HEARTBEAT_FILE.startswith("/"):
-    raise ValueError("WHATSAPP_BOT_HEARTBEAT_FILE must be absolute")
-WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS = _bounded_int_env(
-    "WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS", 180, 30, 3600
+if not TELEGRAM_BOT_HEARTBEAT_FILE.startswith("/"):
+    raise ValueError("TELEGRAM_BOT_HEARTBEAT_FILE must be absolute")
+TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS = _bounded_int_env(
+    "TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS", 180, 30, 3600
 )
-if WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS < 2 * WHATSAPP_BOT_RECEIVE_TIMEOUT_SECONDS + 30:
+if TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS < 2 * TELEGRAM_BOT_POLL_TIMEOUT_SECONDS + 30:
     raise ValueError(
-        "WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS must cover two receive timeouts plus 30 seconds"
+        "TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS must cover two poll timeouts plus 30 seconds"
     )
 # ИИ разбирает только сообщения, у которых не разобралась структура, и
 # пишет черновик на проверку — никогда не проводит. Выключен по умолчанию.
-WHATSAPP_BOT_LLM_ENABLED = env_flag(os.environ.get("WHATSAPP_BOT_LLM_ENABLED", "0"))
-WHATSAPP_BOT_LLM_MODEL = (
-    os.environ.get("WHATSAPP_BOT_LLM_MODEL", "").strip() or WEIGHING_AI_MODEL or "gpt-5-mini"
+TELEGRAM_BOT_LLM_ENABLED = env_flag(os.environ.get("TELEGRAM_BOT_LLM_ENABLED", "0"))
+TELEGRAM_BOT_LLM_MODEL = (
+    os.environ.get("TELEGRAM_BOT_LLM_MODEL", "").strip() or WEIGHING_AI_MODEL or "gpt-5-mini"
 )

@@ -25,6 +25,8 @@ vi.mock("@/lib/use-api", () => ({
 }));
 
 const REPORT = "сб 19.09.26 Узбекистан ООО OSIYO NAV NIHOL\nСт. Раустан 1 вагон\nД1с-28087658-68 тн";
+/** Новый заказ по отчёту проводят в журнале бота — лист открывается с адресами сообщения. */
+const JOURNAL = "/bots/telegram/messages/7";
 
 function preview(fields: Partial<RailPreview> = {}): RailPreview {
   return {
@@ -98,17 +100,17 @@ describe("RailReportSheet", () => {
     mocks.apiUrls = [];
   });
 
-  it("проверяет отчёт без записи и проводит его, отдавая строку истории экрану", async () => {
+  it("проверяет отчёт без записи и проводит его новым заказом, отдавая строку экрану", async () => {
     const user = userEvent.setup();
     const onApplied = vi.fn();
     const row = { id: 77, status: "shipped" };
     mocks.post.mockResolvedValueOnce({ data: preview() }).mockResolvedValueOnce({ data: row });
-    render(<RailReportSheet onClose={vi.fn()} onApplied={onApplied} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={onApplied} />);
 
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/preview/", { text: REPORT });
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/preview/`, { text: REPORT });
     const table = await screen.findByRole("table", { name: "Вагоны отчёта" });
     expect(within(table).getByText("28087658")).toBeInTheDocument();
     expect(within(table).getByLabelText("номер верный")).toBeInTheDocument();
@@ -119,11 +121,11 @@ describe("RailReportSheet", () => {
 
     await user.click(screen.getByRole("button", { name: "Провести" }));
 
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/apply/", { text: REPORT });
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/apply/`, { text: REPORT });
     expect(onApplied).toHaveBeenCalledWith(row);
   });
 
-  it("журнал WhatsApp-бота: текст сообщения проверяется сразу, адреса — сообщения", async () => {
+  it("журнал Telegram-бота: текст сообщения проверяется сразу, адреса — сообщения", async () => {
     const user = userEvent.setup();
     const onApplied = vi.fn();
     const row = { id: 7, status: "applied" };
@@ -131,7 +133,7 @@ describe("RailReportSheet", () => {
     mocks.post.mockResolvedValueOnce({ data: row });
     render(
       <RailReportSheet
-        api="/bots/whatsapp/messages/7"
+        api="/bots/telegram/messages/7"
         initialText={REPORT}
         title="Провести сообщение"
         onClose={vi.fn()}
@@ -142,37 +144,37 @@ describe("RailReportSheet", () => {
     expect(screen.getByLabelText("Текст отчёта")).toHaveValue(REPORT);
     expect(await screen.findByText("Неизвестный код товара «Д1с»")).toBeInTheDocument();
     expect(mocks.post).toHaveBeenCalledTimes(1);
-    expect(mocks.post).toHaveBeenLastCalledWith("/bots/whatsapp/messages/7/preview/", { text: REPORT });
-    expect(mocks.apiUrls).toContain("/bots/whatsapp/messages/7/options/");
+    expect(mocks.post).toHaveBeenLastCalledWith("/bots/telegram/messages/7/preview/", { text: REPORT });
+    expect(mocks.apiUrls).toContain("/bots/telegram/messages/7/options/");
 
     await user.selectOptions(screen.getByLabelText("«Д1с»"), "5");
     await user.click(screen.getByRole("button", { name: "Запомнить" }));
-    expect(mocks.post).toHaveBeenLastCalledWith("/bots/whatsapp/messages/7/product-codes/", {
+    expect(mocks.post).toHaveBeenLastCalledWith("/bots/telegram/messages/7/product-codes/", {
       text: REPORT,
       code: "Д1с",
       product: 5,
     });
 
     await user.click(await screen.findByRole("button", { name: "Провести" }));
-    expect(mocks.post).toHaveBeenLastCalledWith("/bots/whatsapp/messages/7/apply/", { text: REPORT });
+    expect(mocks.post).toHaveBeenLastCalledWith("/bots/telegram/messages/7/apply/", { text: REPORT });
     expect(onApplied).toHaveBeenCalledWith(row);
   });
 
   it("запоминает неизвестный код товара и применяет свежий предпросмотр из ответа", async () => {
     const user = userEvent.setup();
     mocks.post.mockResolvedValueOnce({ data: unknownProduct() }).mockResolvedValueOnce({ data: preview() });
-    render(<RailReportSheet onClose={vi.fn()} onApplied={vi.fn()} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={vi.fn()} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
     expect(await screen.findByText("Неизвестный код товара «Д1с»")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Провести" })).toBeDisabled();
-    expect(mocks.apiUrls).toContain("/loader/rail-report/options/");
+    expect(mocks.apiUrls).toContain(`${JOURNAL}/options/`);
 
     await user.selectOptions(screen.getByLabelText("«Д1с»"), "5");
     await user.click(screen.getByRole("button", { name: "Запомнить" }));
 
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/product-codes/", {
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/product-codes/`, {
       text: REPORT,
       code: "Д1с",
       product: 5,
@@ -186,7 +188,7 @@ describe("RailReportSheet", () => {
     mocks.post.mockResolvedValueOnce({
       data: { ...unknownProduct(), can_remember_products: false, can_remember_clients: false },
     });
-    render(<RailReportSheet onClose={vi.fn()} onApplied={vi.fn()} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={vi.fn()} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
@@ -212,7 +214,7 @@ describe("RailReportSheet", () => {
         }),
       })
       .mockResolvedValueOnce({ data: preview({ currency: "KZT" }) });
-    render(<RailReportSheet onClose={vi.fn()} onApplied={vi.fn()} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={vi.fn()} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
@@ -221,7 +223,7 @@ describe("RailReportSheet", () => {
     await user.selectOptions(screen.getByLabelText("Валюта"), "KZT");
     await user.click(screen.getByRole("button", { name: "Запомнить" }));
 
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/client-names/", {
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/client-names/`, {
       text: REPORT,
       client_name: "OSIYO Ташкент",
       client: 9,
@@ -242,7 +244,7 @@ describe("RailReportSheet", () => {
       .mockRejectedValueOnce(new Error("Отчёт нужно проверить"))
       .mockResolvedValueOnce({ data: duplicate });
     const onApplied = vi.fn();
-    render(<RailReportSheet onClose={vi.fn()} onApplied={onApplied} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={onApplied} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
     await user.click(await screen.findByRole("button", { name: "Провести" }));
@@ -251,7 +253,7 @@ describe("RailReportSheet", () => {
     // Над кнопками внизу, а не в прокручиваемом теле: длинный отчёт не уводит ошибку из вида.
     expect(document.querySelector("[data-modal-scroll-body]")).not.toContainElement(error);
     expect(await screen.findByText("Вагон 28087658 уже отгружен")).toBeInTheDocument();
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/preview/", { text: REPORT });
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/preview/`, { text: REPORT });
     expect(onApplied).not.toHaveBeenCalled();
   });
 
@@ -260,7 +262,7 @@ describe("RailReportSheet", () => {
     mocks.post
       .mockResolvedValueOnce({ data: unknownProduct() })
       .mockRejectedValueOnce(new Error("Код «Д1с» уже у товара «Мука первый сорт»"));
-    render(<RailReportSheet onClose={vi.fn()} onApplied={vi.fn()} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={vi.fn()} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
@@ -278,27 +280,27 @@ describe("RailReportSheet", () => {
       .mockResolvedValueOnce({ data: duplicate })
       .mockResolvedValueOnce({ data: preview({ order_id: 7 }) })
       .mockResolvedValueOnce({ data: duplicate });
-    render(<RailReportSheet onClose={vi.fn()} onApplied={vi.fn()} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={vi.fn()} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
     await user.click(await screen.findByRole("button", { name: "Отгрузить заказ №7 по этому отчёту" }));
 
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/preview/", { text: REPORT, order: 7 });
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/preview/`, { text: REPORT, order: 7 });
     expect(await screen.findByRole("button", { name: "Отгрузить по отчёту" })).toBeEnabled();
     expect(screen.getByText("Вагоны · заказ №7")).toBeInTheDocument();
 
     // Передумали — обратно к новому заказу по тому же тексту.
     await user.click(screen.getByRole("button", { name: "← Провести отчёт новым заказом" }));
 
-    expect(mocks.post).toHaveBeenLastCalledWith("/loader/rail-report/preview/", { text: REPORT });
-    expect(await screen.findByText("Вагоны · отчёт из WhatsApp")).toBeInTheDocument();
+    expect(mocks.post).toHaveBeenLastCalledWith(`${JOURNAL}/preview/`, { text: REPORT });
+    expect(await screen.findByText("Вагоны · отчёт")).toBeInTheDocument();
   });
 
   it("уже отгруженный ручной заказ — только предупреждение, без «Отгрузить по отчёту»", async () => {
     const user = userEvent.setup();
     mocks.post.mockResolvedValueOnce({ data: manualDuplicates([7], []) });
-    render(<RailReportSheet onClose={vi.fn()} onApplied={vi.fn()} />);
+    render(<RailReportSheet api={JOURNAL} onClose={vi.fn()} onApplied={vi.fn()} />);
     await paste(user);
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 

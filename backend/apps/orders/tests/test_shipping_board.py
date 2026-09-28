@@ -218,10 +218,11 @@ def test_post_board_rejects_garbage_day(auth_client, operator):
 
 
 def test_dashboard_operational_returns_authoritative_data(
-    auth_client, operator
+    auth_client, operator, get_permission
 ):
     from apps.eventlog.models import EventLog
 
+    operator.employee.permissions.add(get_permission("dashboard.view"))
     client = Client.objects.create_with_user(
         first_name="Dashboard", last_name="Operator", phone="4"
     )
@@ -249,6 +250,16 @@ def test_dashboard_operational_returns_authoritative_data(
     assert response.data["days"] == [
         {"date": today, "bags": 12, "orders": 1}
     ]
+
+
+@pytest.mark.parametrize("codes", [["orders.view"], ["dashboard.view"]])
+def test_dashboard_operational_needs_the_dashboard_and_orders(auth_client, user_with_perms, codes):
+    """Сводка питает только «Главную»: без права на неё или без заказов — 403."""
+    user = user_with_perms("dashboard-half", codes=codes)
+
+    response = auth_client(user).get("/api/orders/dashboard-operational/")
+
+    assert response.status_code == 403
 
 
 def test_post_board_search_matches_the_trailer(auth_client, operator):

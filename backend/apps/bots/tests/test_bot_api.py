@@ -1,21 +1,26 @@
-"""Журнал WhatsApp-бота: права, вкладки, разбор и «Провести» от имени человека, настройки."""
+"""Журнал Telegram-бота: права, вкладки, разбор и «Провести» от имени человека, настройки."""
 import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 
-from apps.bots import whatsapp
-from apps.bots.models import BotMessage, WhatsAppBotSettings
-from apps.bots.tests.samples import CONDUCT_CODES, OWNER_DAY, OWNER_REPORT, manual_train_order
-from apps.bots.tests.whatsapp_fakes import GROUP, incoming
+from apps.bots import messages
+from apps.bots.models import BotMessage, TelegramBotSettings
+from apps.bots.tests.samples import (
+    CONDUCT_CODES,
+    OWNER_DAY,
+    OWNER_REPORT,
+    manual_train_order,
+)
+from apps.bots.tests.telegram_fakes import DINARA, JIN, incoming, private
 from apps.catalog.models import ProductAlias
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
-STATUS = "/api/bots/whatsapp/status/"
-SETTINGS = "/api/bots/whatsapp/settings/"
-MESSAGES = "/api/bots/whatsapp/messages/"
+STATUS = "/api/bots/telegram/status/"
+SETTINGS = "/api/bots/telegram/settings/"
+MESSAGES = "/api/bots/telegram/messages/"
 
 
 def _url(message, action=""):
@@ -53,14 +58,15 @@ def test_viewer_sees_but_cannot_conduct_or_ignore(auth_client, viewer, unknown_c
 
 
 def test_status_shows_the_process_counts_and_settings(auth_client, viewer, bot_settings, settings):
-    settings.WHATSAPP_BOT_ENABLED = True
-    WhatsAppBotSettings.objects.update(instance_state="authorized", runtime_status="running")
+    settings.TELEGRAM_BOT_ENABLED = True
+    TelegramBotSettings.objects.update(bot_state="authorized", bot_username="asyl_bot", runtime_status="running")
 
     data = auth_client(viewer).get(STATUS).data
 
-    assert (data["server_enabled"], data["runtime_status"], data["instance_state"]) == (True, "running", "authorized")
+    assert (data["server_enabled"], data["runtime_status"], data["bot_state"], data["bot_username"]) == (
+        True, "running", "authorized", "asyl_bot")
     assert data["counts"] == {"review": 0, "applied": 0, "ignored": 0, "all": 0}
-    assert data["settings"]["allowed_chat_ids"] == [GROUP]
+    assert data["settings"]["allowed_usernames"] == [JIN]
     assert (data["can_manage"], data["can_configure"]) == (False, False)
 
 
@@ -69,8 +75,8 @@ def test_status_shows_the_process_counts_and_settings(auth_client, viewer, bot_s
 
 def test_tabs_and_search(auth_client, reviewer, receive, client, product, price):
     applied = receive(incoming(OWNER_REPORT))
-    review = receive(incoming(OWNER_REPORT, message_id="MSG2"))
-    thanks = receive(incoming("Спасибо", message_id="MSG3"))
+    review = receive(incoming(OWNER_REPORT, message_id="12"))
+    thanks = receive(incoming("Спасибо", message_id="13"))
     api = auth_client(reviewer)
 
     def ids(query=""):
@@ -83,6 +89,7 @@ def test_tabs_and_search(auth_client, reviewer, receive, client, product, price)
     assert ids(f"?status=all&search={applied.order_id}") == [applied.pk]
     assert ids("?status=all&search=28087658") == [review.pk, applied.pk]
     assert ids("?status=all&search=Спасибо") == [thanks.pk]
+    assert len(ids("?status=all&search=@Jin_sin")) == 3
     row = api.get(f"{MESSAGES}?status=applied").data[0]
     assert (row["order"], row["status"], row["sender_name"], row["parsed"]["wagons"]) == (
         applied.order_id, "applied", "Джин-Син", 12)
@@ -90,14 +97,14 @@ def test_tabs_and_search(auth_client, reviewer, receive, client, product, price)
 
 def test_list_is_paged_without_a_query_per_row(auth_client, reviewer, bot_settings, conductor):
     for index in range(3):
-        message = whatsapp.ingest(incoming(f"Спасибо {index}", message_id=f"M{index}"), bot_settings)
-        whatsapp.ignore_message(message, conductor)
+        message = messages.ingest(incoming(f"Спасибо {index}", message_id=str(100 + index)))
+        messages.ignore_message(message, conductor)
     api = auth_client(reviewer)
     with CaptureQueriesContext(connection) as few:
         assert api.get(f"{MESSAGES}?status=all&page=1").status_code == 200
     for index in range(3, 12):
-        message = whatsapp.ingest(incoming(f"Спасибо {index}", message_id=f"M{index}"), bot_settings)
-        whatsapp.ignore_message(message, conductor)
+        message = messages.ingest(incoming(f"Спасибо {index}", message_id=str(100 + index)))
+        messages.ignore_message(message, conductor)
 
     with CaptureQueriesContext(connection) as many:
         response = api.get(f"{MESSAGES}?status=all&page=1&page_size=50")
@@ -191,55 +198,45 @@ def test_settings_are_changed_only_by_an_administrator(auth_client, reviewer, bo
 
     assert auth_client(reviewer).put(SETTINGS, body, format="json").status_code == 403
 
-    WhatsAppBotSettings.objects.update(instance_state="authorized", runtime_status="running")
+    TelegramBotSettings.objects.update(bot_state="authorized", runtime_status="running")
     response = auth_client(boss).put(SETTINGS, {
         "enabled": False,
-        "allowed_chat_ids": [GROUP, GROUP],
-        "allowed_sender_ids": ["+998 90 111 22 33", "77011234567@c.us"],
+        "allowed_usernames": ["@D1maaash", "d1maaash", "https://t.me/jin_sin"],
         "show_amounts_in_reply": True,
         "duplicate_window_days": 7,
         "price_tolerance_pct": "10",
+        "report_recipient_name": "  Динара  ",
+        "report_recipient_username": "@Dinara_K",
     }, format="json")
 
     assert response.status_code == 200, response.data
-    row = WhatsAppBotSettings.load()
-    assert (row.enabled, row.allowed_chat_ids, row.show_amounts_in_reply, row.duplicate_window_days) == (
-        False, [GROUP], True, 7)
-    assert row.allowed_sender_ids == ["998901112233@c.us", "77011234567@c.us"]
+    row = TelegramBotSettings.load()
+    assert (row.enabled, row.allowed_usernames, row.show_amounts_in_reply, row.duplicate_window_days) == (
+        False, ["d1maaash", "jin_sin"], True, 7)
+    assert (row.report_recipient_name, row.report_recipient_username) == ("Динара", DINARA)
     assert row.updated_by == boss
     # Состояние процесса пишет только бот — сохранение настроек его не трогает.
-    assert (row.instance_state, row.runtime_status) == ("authorized", "running")
-    assert response.data["settings"]["allowed_sender_ids"] == row.allowed_sender_ids
-    assert EventLog.objects.filter(event_type="whatsapp_bot", user=boss).exists()
+    assert (row.bot_state, row.runtime_status) == ("authorized", "running")
+    assert response.data["settings"]["allowed_usernames"] == row.allowed_usernames
+    assert EventLog.objects.filter(event_type="telegram_bot", user=boss).exists()
 
 
-@pytest.mark.parametrize(("value", "stored"), [
-    # Казахстанский номер как его набирают дома: 8 — выход на 7.
-    ("8 701 123 45 67", "77011234567@c.us"),
-    ("+7 701 123 45 67", "77011234567@c.us"),
-    ("+998 90 111 22 33", "998901112233@c.us"),
-    # С плюсом номер уже международный: +84 (Вьетнам) не трогаем.
-    ("+84 912 345 678", "84912345678@c.us"),
-    (GROUP, GROUP),
-])
-def test_sender_numbers_are_stored_as_whatsapp_sees_them(auth_client, boss, bot_settings, value, stored):
-    response = auth_client(boss).put(SETTINGS, {"allowed_sender_ids": [value]}, format="json")
-
-    assert response.status_code == 200, response.data
-    assert WhatsAppBotSettings.load().allowed_sender_ids == [stored]
-
-
-@pytest.mark.parametrize("value", ["not a chat", "123@example.com", "@g.us"])
-def test_bad_chat_ids_are_refused(auth_client, boss, bot_settings, value):
-    response = auth_client(boss).put(SETTINGS, {"allowed_chat_ids": [value]}, format="json")
+@pytest.mark.parametrize("value", ["not a username", "@ab", "@1dinara", "dinara-k"])
+def test_bad_usernames_are_refused(auth_client, boss, bot_settings, value):
+    response = auth_client(boss).put(SETTINGS, {"allowed_usernames": [value]}, format="json")
 
     assert response.status_code == 400
-    assert WhatsAppBotSettings.load().allowed_chat_ids == [GROUP]
+    assert TelegramBotSettings.load().allowed_usernames == [JIN]
 
 
-def test_seen_chats_help_to_pick_the_group(auth_client, viewer, bot_settings):
-    whatsapp.ingest(incoming("привет", chat_id="120363000000000001@g.us"), bot_settings)
+def test_recent_chats_and_whether_the_recipient_started_the_bot(auth_client, viewer, bot_settings):
+    bot_settings.report_recipient_username = DINARA
+    bot_settings.save()
+    api = auth_client(viewer)
+    assert api.get(STATUS).data["settings"]["report_recipient_started"] is False
 
-    chats = auth_client(viewer).get(STATUS).data["settings"]["seen_chats"]
+    messages.ingest(private("/start"))
 
-    assert {"id": "120363000000000001@g.us", "name": "Отгрузка вагонов"}.items() <= chats[0].items()
+    data = api.get(STATUS).data["settings"]
+    assert data["report_recipient_started"] is True
+    assert {"type": "private", "username": DINARA}.items() <= data["recent_chats"][0].items()

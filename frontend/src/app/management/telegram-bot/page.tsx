@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, EyeOff, MessageCircle, PackageCheck, Settings, Sparkles } from "lucide-react";
+import { Bot, ChevronDown, EyeOff, PackageCheck, Settings, Sparkles } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { IssueList, RailReportSheet } from "@/components/loader/rail-report-sheet";
 import { RequirePerm } from "@/components/require-perm";
@@ -12,7 +12,7 @@ import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
 import { Tabs } from "@/components/ui/tabs";
-import { BotSettingsModal } from "@/components/whatsapp-bot/bot-settings-modal";
+import { BotSettingsModal } from "@/components/telegram-bot/bot-settings-modal";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { withBack } from "@/lib/navigation";
@@ -23,24 +23,25 @@ import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { cn, formatDateTime, PHONE_INPUT_TEXT } from "@/lib/utils";
 import {
   botHealth,
+  BOT_STATES,
   canConduct,
   canIgnore,
   inTab,
-  INSTANCE_STATES,
   MESSAGE_KIND,
   MESSAGE_STATUS,
   messageApi,
   messageSummary,
+  senderLabel,
+  TELEGRAM_BOT_API,
   textToConduct,
-  WHATSAPP_BOT_API,
   type BotMessage,
   type BotTab,
-  type WhatsAppBotStatus,
-} from "@/lib/whatsapp-bot";
+  type TelegramBotStatus,
+} from "@/lib/telegram-bot";
 import { useAuth } from "@/store/auth";
 
-const PAGE = "/management/whatsapp-bot";
-const STATUS_URL = `${WHATSAPP_BOT_API}/status/`;
+const PAGE = "/management/telegram-bot";
+const STATUS_URL = `${TELEGRAM_BOT_API}/status/`;
 const POLL_MS = 15_000;
 const TABS: { key: BotTab; label: string }[] = [
   { key: "review", label: "На проверке" },
@@ -49,24 +50,24 @@ const TABS: { key: BotTab; label: string }[] = [
   { key: "all", label: "Все" },
 ];
 
-export default function WhatsAppBotPage() {
+export default function TelegramBotPage() {
   return (
-    <RequirePerm perm="bots.view" title="WhatsApp-бот">
-      <WhatsAppBotJournal />
+    <RequirePerm perm="bots.view" title="Telegram-бот">
+      <TelegramBotJournal />
     </RequirePerm>
   );
 }
 
-function WhatsAppBotJournal() {
+function TelegramBotJournal() {
   const { me } = useAuth();
-  const status = useApi<WhatsAppBotStatus>(STATUS_URL);
+  const status = useApi<TelegramBotStatus>(STATUS_URL);
   const [tab, setTab] = useState<BotTab>("review");
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounced(search);
   const url = useMemo(() => {
     const query = new URLSearchParams({ status: tab });
     if (debouncedSearch) query.set("search", debouncedSearch);
-    return `${WHATSAPP_BOT_API}/messages/?${query}`;
+    return `${TELEGRAM_BOT_API}/messages/?${query}`;
   }, [tab, debouncedSearch]);
   const messages = usePagedApi<BotMessage>(url, 50);
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -123,9 +124,9 @@ function WhatsAppBotJournal() {
   const canManage = can(me, "bots.manage");
   return (
     <AppShell
-      title="WhatsApp-бот"
+      title="Telegram-бот"
       section="Управление"
-      description="Отчёты о вагонах из группы в WhatsApp: всё, что сошлось, бот проводит сам — остальное ждёт здесь."
+      description="Отчёты о вагонах из Telegram: всё, что сошлось, бот проводит сам — остальное ждёт здесь."
       actions={
         can(me, "sys_permissions.manage") && (
           <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
@@ -155,7 +156,7 @@ function WhatsAppBotJournal() {
           <SearchInput
             wrapperClassName="sm:w-72"
             aria-label="Поиск по сообщениям"
-            placeholder="Текст, отправитель, № заказа"
+            placeholder="Текст, @username, № заказа"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className={PHONE_INPUT_TEXT}
@@ -170,7 +171,7 @@ function WhatsAppBotJournal() {
           <p className="text-sm text-[var(--muted-foreground)]">Загрузка…</p>
         ) : messages.items.length === 0 ? (
           <Card className="flex flex-col items-center gap-2 px-6 py-10 text-center">
-            <MessageCircle className="size-6 text-[var(--muted-foreground)]" />
+            <Bot className="size-6 text-[var(--muted-foreground)]" />
             <p className="text-sm text-[var(--muted-foreground)]">
               {tab === "review" ? "Проверять нечего — бот всё провёл сам." : "Сообщений нет."}
             </p>
@@ -207,7 +208,7 @@ function WhatsAppBotJournal() {
         <RailReportSheet<BotMessage>
           api={messageApi(conducting.id)}
           initialText={textToConduct(conducting)}
-          eyebrow={`WhatsApp · ${conducting.sender_name || conducting.sender_id}`}
+          eyebrow={`${conducting.provider === "telegram" ? "Telegram" : "WhatsApp"} · ${senderLabel(conducting)}`}
           title="Провести сообщение"
           onClose={() => setConducting(null)}
           onApplied={(row) => {
@@ -219,6 +220,7 @@ function WhatsAppBotJournal() {
       {settingsOpen && data && (
         <BotSettingsModal
           settings={data.settings}
+          botUsername={data.bot_username}
           onClose={() => setSettingsOpen(false)}
           onSaved={(next) => {
             setStatus(next);
@@ -230,7 +232,7 @@ function WhatsAppBotJournal() {
   );
 }
 
-function StatusCard({ status, now }: { status: WhatsAppBotStatus; now: number }) {
+function StatusCard({ status, now }: { status: TelegramBotStatus; now: number }) {
   const health = botHealth(status, now);
   const { settings } = status;
   return (
@@ -243,22 +245,26 @@ function StatusCard({ status, now }: { status: WhatsAppBotStatus; now: number })
           <span className="min-w-0 truncate text-[13px] text-[var(--muted-foreground)]">{health.detail}</span>
         </div>
         <p className="mt-1.5 text-[13px]">
-          Номер:{" "}
-          <span className={cn(status.instance_state !== "authorized" && "text-[var(--warning)]")}>
-            {status.instance_state
-              ? (INSTANCE_STATES[status.instance_state] ?? status.instance_state)
-              : "состояние неизвестно"}
+          Бот:{" "}
+          {status.bot_username && (
+            <a
+              href={`https://t.me/${status.bot_username}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium underline-offset-2 hover:underline"
+            >
+              @{status.bot_username}
+            </a>
+          )}{" "}
+          <span className={cn(status.bot_state !== "authorized" && "text-[var(--warning)]")}>
+            {status.bot_state ? (BOT_STATES[status.bot_state] ?? status.bot_state) : "состояние неизвестно"}
           </span>
         </p>
       </div>
-      <dl className="grid shrink-0 grid-cols-3 gap-4 text-[12px] sm:text-right">
+      <dl className="grid shrink-0 grid-cols-2 gap-4 text-[12px] sm:text-right">
         <div>
-          <dt className="text-[var(--muted-foreground)]">Чатов</dt>
-          <dd className="text-sm font-semibold tabular-nums">{settings.allowed_chat_ids.length}</dd>
-        </div>
-        <div>
-          <dt className="text-[var(--muted-foreground)]">Отправителей</dt>
-          <dd className="text-sm font-semibold tabular-nums">{settings.allowed_sender_ids.length}</dd>
+          <dt className="text-[var(--muted-foreground)]">Пользуются</dt>
+          <dd className="text-sm font-semibold tabular-nums">{settings.allowed_usernames.length}</dd>
         </div>
         <div>
           <dt className="text-[var(--muted-foreground)]">На проверке</dt>
@@ -307,7 +313,7 @@ function MessageRow({
           </div>
           <p className="mt-1 truncate text-sm font-medium">{messageSummary(message)}</p>
           <p className="mt-0.5 truncate text-[12px] text-[var(--muted-foreground)]">
-            {message.sender_name || message.sender_id}
+            {senderLabel(message)}
             {message.chat_name && message.chat_name !== message.sender_name && ` · ${message.chat_name}`} ·{" "}
             {formatDateTime(message.sent_at ?? message.received_at)}
             {message.issues.length > 0 && message.status !== "applied" && ` · ${message.issues[0].message}`}

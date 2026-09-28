@@ -7,15 +7,17 @@ import {
   inTab,
   messageApi,
   messageSummary,
-  parseIdList,
+  normalizeUsername,
+  parseUsernames,
+  senderLabel,
   textToConduct,
-  type WhatsAppBotStatus,
-} from "./whatsapp-bot";
+  type TelegramBotStatus,
+} from "./telegram-bot";
 import { makeBotMessage, makeBotStatus } from "@/test-utils/factories";
 
 const NOW = new Date("2026-09-23T10:00:00Z").getTime();
 
-const status = (fields: Partial<WhatsAppBotStatus> = {}) =>
+const status = (fields: Partial<TelegramBotStatus> = {}) =>
   makeBotStatus({ polled_at: new Date(NOW - 20_000).toISOString(), ...fields });
 
 describe("botHealth", () => {
@@ -77,7 +79,7 @@ describe("decisions", () => {
   it("draft wins over the original text", () => {
     expect(textToConduct(makeBotMessage({ draft: "черновик" }))).toBe("черновик");
     expect(textToConduct(makeBotMessage())).toBe(makeBotMessage().text);
-    expect(messageApi(7)).toBe("/bots/whatsapp/messages/7");
+    expect(messageApi(7)).toBe("/bots/telegram/messages/7");
   });
 });
 
@@ -92,12 +94,18 @@ describe("inTab", () => {
   });
 });
 
-describe("parseIdList", () => {
-  it("one per line, commas too, no blanks or repeats", () => {
-    expect(parseIdList(" 120363@g.us \n\n+998 90 111 22 33, 120363@g.us;77011234567@c.us")).toEqual([
-      "120363@g.us",
-      "+998 90 111 22 33",
-      "77011234567@c.us",
+describe("usernames", () => {
+  it("one per line, commas too, without «@», case, blanks or repeats", () => {
+    expect(parseUsernames(" @D1maaash \n\nhttps://t.me/jin_sin, d1maaash;@Dinara_K")).toEqual([
+      "d1maaash",
+      "jin_sin",
+      "dinara_k",
     ]);
+    expect(normalizeUsername(" t.me/Dinara_K ")).toBe("dinara_k");
+  });
+
+  it("sender shows the username when it is set", () => {
+    expect(senderLabel(makeBotMessage())).toBe("Джин-Син (@jin_sin)");
+    expect(senderLabel(makeBotMessage({ sender_username: "", sender_name: "" }))).toBe("501");
   });
 });

@@ -20,3 +20,20 @@ class BotPermissionsMigrationTests(PermissionMigrationTestCase):
         labels = dict(Permission.objects.filter(section="bots").values_list("code", "label"))
         assert labels == {"bots.view": "WhatsApp-бот: Журнал сообщений",
                           "bots.manage": "WhatsApp-бот: Провести и пропустить сообщение"}
+
+
+class BotPermissionsTelegramLabelTests(PermissionMigrationTestCase):
+    """WhatsApp-бот → Telegram-бот: права у сотрудников те же, подписи новые."""
+
+    rbac_from = "0029_dashboard_tasks_permissions"
+    rbac_to = "0030_bots_telegram_label"
+
+    def seed(self):
+        self.reviewer = self.employee("mig-bot-reviewer", "bots.view", "bots.manage")
+
+    def test_rights_stay_and_labels_name_telegram(self):
+        assert self.codes(self.reviewer) == {"bots.view", "bots.manage"}
+        Permission = self.apps.get_model("rbac", "Permission")
+        labels = dict(Permission.objects.filter(section="bots").values_list("code", "label"))
+        assert labels == {"bots.view": "Telegram-бот: Журнал сообщений",
+                          "bots.manage": "Telegram-бот: Провести и пропустить сообщение"}

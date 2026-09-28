@@ -31,9 +31,12 @@ def test_permissions_list_follows_the_catalog_order_with_section_labels(admin_cl
     catalog = [permission["code"] for permission in PERMISSIONS]
     listed = [item["code"] for item in response.data if item["code"] in catalog]
     assert listed == catalog
+    # Главная — первый пункт меню, поэтому и в пикере её право первое.
+    assert response.data[0]["code"] == "dashboard.view"
     labels = {item["section"]: item["section_label"] for item in response.data}
+    assert labels["dashboard"] == "Главная"
     assert labels["stores"] == "Магазины"
-    assert labels["bots"] == "WhatsApp-бот"
+    assert labels["bots"] == "Telegram-бот"
 
 
 def test_permissions_list_puts_codes_outside_the_catalog_last(admin_client):

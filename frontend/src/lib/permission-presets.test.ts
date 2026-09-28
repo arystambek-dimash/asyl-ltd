@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PERMISSION_PRESETS, applyPreset } from "./permission-presets";
+import { PERMISSION_PRESETS, applyPreset, newEmployeePermissions } from "./permission-presets";
 
 describe("permission presets", () => {
   it("replace the selection but skip codes the admin cannot grant", () => {
@@ -17,5 +17,16 @@ describe("permission presets", () => {
     expect(loaders[0].codes).not.toContain("loader.wagons");
     expect(loaders[1].codes).toContain("loader.wagons");
     expect(loaders[1].codes).not.toContain("loader.trucks");
+  });
+
+  it("keep «Главная» and «Задачи» in every template: hiding them is a manual untick", () => {
+    for (const preset of PERMISSION_PRESETS) {
+      expect(preset.codes).toEqual(expect.arrayContaining(["dashboard.view", "tasks.own"]));
+    }
+  });
+
+  it("pre-select both pages for a new employee unless the admin cannot grant them", () => {
+    expect(newEmployeePermissions(new Set())).toEqual(new Set(["dashboard.view", "tasks.own"]));
+    expect(newEmployeePermissions(new Set(["dashboard.view"]))).toEqual(new Set(["tasks.own"]));
   });
 });

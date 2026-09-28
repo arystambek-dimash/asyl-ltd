@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeMe } from "@/test-utils/factories";
-import { Sidebar } from "./sidebar";
+import { homeFor, Sidebar } from "./sidebar";
 
 const nav = vi.hoisted(() => ({ pathname: "/portal/catalog" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
@@ -99,6 +99,51 @@ describe("подсветка активного пункта", () => {
 
     rerender(<Sidebar me={{ ...factoryUser, permissions: [] }} />);
     expect(screen.queryByRole("link", { name: "Журнал" })).not.toBeInTheDocument();
+  });
+});
+
+describe("«Главная» и «Задачи» по правам", () => {
+  it("скрывает оба пункта без прав и показывает их с правами", () => {
+    const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["orders.view"] }} />);
+
+    expect(screen.queryByRole("link", { name: "Главная" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Задачи" })).not.toBeInTheDocument();
+
+    rerender(<Sidebar me={{ ...factoryUser, permissions: ["dashboard.view", "tasks.own"] }} />);
+    expect(screen.getByRole("link", { name: "Главная" })).toHaveAttribute("href", "/dashboard");
+    expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("href", "/tasks");
+  });
+
+  it.each(["tasks.view", "tasks.create"])("открывает «Задачи» и правом %s", (code) => {
+    render(<Sidebar me={{ ...factoryUser, permissions: [code] }} />);
+
+    expect(screen.getByRole("link", { name: "Задачи" })).toHaveAttribute("href", "/tasks");
+  });
+
+  it("суперпользователь видит оба пункта без отдельных прав", () => {
+    render(<Sidebar me={makeMe({ is_superuser: true })} />);
+
+    expect(screen.getByRole("link", { name: "Главная" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Задачи" })).toBeInTheDocument();
+  });
+});
+
+describe("homeFor", () => {
+  it("ведёт на главную, если она открыта, клиента — в кабинет", () => {
+    expect(homeFor(null)).toBe("/login");
+    expect(homeFor(makeMe({ permissions: ["dashboard.view", "orders.view"] }))).toBe("/dashboard");
+    expect(homeFor(makeMe({ is_superuser: true }))).toBe("/dashboard");
+    expect(homeFor(client)).toBe("/portal/catalog");
+  });
+
+  it("без главной ведёт в первый видимый раздел меню", () => {
+    expect(homeFor(makeMe({ permissions: ["tasks.own", "loader.view"] }))).toBe("/loader");
+    expect(homeFor(makeMe({ permissions: ["tasks.own"] }))).toBe("/tasks");
+    expect(homeFor(makeMe({ permissions: ["payments.create", "orders.view"] }))).toBe("/orders");
+  });
+
+  it("совсем без прав — на главную, где сотрудник увидит «Нет доступа»", () => {
+    expect(homeFor(makeMe())).toBe("/dashboard");
   });
 });
 

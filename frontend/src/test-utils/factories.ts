@@ -1,6 +1,6 @@
 import type { LoaderOrder } from "@/lib/loader";
 import type { Department, Me, Order, Payment, QrRefundState, ReportDay } from "@/lib/types";
-import type { BotMessage, WhatsAppBotSettings, WhatsAppBotStatus } from "@/lib/whatsapp-bot";
+import type { BotMessage, TelegramBotSettings, TelegramBotStatus } from "@/lib/telegram-bot";
 
 /** Сотрудник без прав и отдела; в тесте переопределяются только важные ему поля. */
 export function makeMe(overrides: Partial<Me> = {}): Me {
@@ -150,32 +150,32 @@ export function makeReportDay(overrides: Partial<ReportDay> = {}): ReportDay {
   };
 }
 
-/** Настройки бота WhatsApp: включён, чаты и отправители не ограничены, отчёты — Динаре. */
-export function makeBotSettings(overrides: Partial<WhatsAppBotSettings> = {}): WhatsAppBotSettings {
+/** Настройки Telegram-бота: включён, пользуется владелец, отчёты — Динаре (username не указан). */
+export function makeBotSettings(overrides: Partial<TelegramBotSettings> = {}): TelegramBotSettings {
   return {
     enabled: true,
-    allowed_chat_ids: [],
-    allowed_sender_ids: [],
+    allowed_usernames: ["d1maaash"],
     show_amounts_in_reply: false,
     duplicate_window_days: 3,
     price_tolerance_pct: "15.00",
     report_recipient_name: "Динара",
-    report_recipient_phone: "",
+    report_recipient_username: "",
+    report_recipient_started: false,
     updated_at: "2026-09-23T09:00:00Z",
-    seen_chats: [],
+    recent_chats: [],
     ...overrides,
   };
 }
 
 /** Состояние запущенного бота без сообщений; время последнего опроса задаёт тест. */
-export function makeBotStatus(overrides: Partial<WhatsAppBotStatus> = {}): WhatsAppBotStatus {
+export function makeBotStatus(overrides: Partial<TelegramBotStatus> = {}): TelegramBotStatus {
   return {
     server_enabled: true,
     runtime_status: "running",
     runtime_error: "",
     polled_at: null,
-    instance_state: "authorized",
-    instance_state_at: null,
+    bot_state: "authorized",
+    bot_username: "asyl_bot",
     counts: { review: 0, applied: 0, ignored: 0, all: 0 },
     settings: makeBotSettings(),
     ...overrides,
@@ -186,11 +186,13 @@ export function makeBotStatus(overrides: Partial<WhatsAppBotStatus> = {}): Whats
 export function makeBotMessage(overrides: Partial<BotMessage> = {}): BotMessage {
   return {
     id: 7,
+    provider: "telegram",
     kind: "message",
     status: "needs_review",
     chat_name: "Отгрузка вагонов",
-    sender_id: "998901112233@c.us",
+    sender_id: "501",
     sender_name: "Джин-Син",
+    sender_username: "jin_sin",
     text: "сб 19.09.26 Узбекистан ООО OSIYO NAV NIHOL\nСт. Раустан 12 вагон",
     sent_at: "2026-09-19T09:30:00Z",
     received_at: "2026-09-19T09:30:02Z",

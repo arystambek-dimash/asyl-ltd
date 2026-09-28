@@ -16,6 +16,8 @@ def test_codes_are_unique():
 
 def test_known_codes_are_present():
     expected = {
+        "dashboard.view",
+        "tasks.own",
         "orders.create",
         "orders.rollback",
         "monoblock.view",

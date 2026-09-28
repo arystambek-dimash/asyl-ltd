@@ -1,15 +1,15 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { BotMessage, WhatsAppBotStatus } from "@/lib/whatsapp-bot";
+import type { BotMessage, TelegramBotStatus } from "@/lib/telegram-bot";
 import { pagedState } from "@/test-utils/api";
 import { makeBotMessage, makeBotSettings, makeBotStatus } from "@/test-utils/factories";
 
-import WhatsAppBotPage from "./page";
+import TelegramBotPage from "./page";
 
 const mocks = vi.hoisted(() => ({
   permissions: ["bots.view", "bots.manage"] as string[],
-  status: null as WhatsAppBotStatus | null,
+  status: null as TelegramBotStatus | null,
   setStatus: vi.fn(),
   paged: vi.fn(),
   post: vi.fn(),
@@ -63,14 +63,16 @@ vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"))
 
 const NOW = Date.now();
 
-const status = (fields: Partial<WhatsAppBotStatus> = {}) =>
+const status = (fields: Partial<TelegramBotStatus> = {}) =>
   makeBotStatus({
     polled_at: new Date(NOW - 10_000).toISOString(),
     counts: { review: 1, applied: 3, ignored: 0, all: 4 },
     settings: makeBotSettings({
-      allowed_chat_ids: ["120363043968066561@g.us"],
-      allowed_sender_ids: ["998901112233@c.us"],
-      seen_chats: [{ id: "120363000000000001@g.us", name: "Склад", at: null }],
+      allowed_usernames: ["d1maaash"],
+      recent_chats: [
+        { id: "501", type: "private", title: "Джин-Син", username: "jin_sin", at: "2026-09-28T09:00:00Z" },
+        { id: "-100500", type: "supergroup", title: "Отгрузка вагонов", username: "", at: "2026-09-28T08:00:00Z" },
+      ],
     }),
     ...fields,
   });
@@ -99,30 +101,31 @@ beforeEach(() => {
   mocks.paged.mockReturnValue(paged([message()]));
 });
 
-describe("WhatsApp-бот: журнал", () => {
+describe("Telegram-бот: журнал", () => {
   it("shows the bot state and the review tab by default, polling quietly", () => {
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     expect(screen.getByText("Проводит отчёты")).toBeInTheDocument();
     expect(screen.getByText("Подключён")).toBeInTheDocument();
-    expect(mocks.paged).toHaveBeenCalledWith("/bots/whatsapp/messages/?status=review", 50);
+    expect(screen.getByRole("link", { name: "@asyl_bot" })).toHaveAttribute("href", "https://t.me/asyl_bot");
+    expect(mocks.paged).toHaveBeenCalledWith("/bots/telegram/messages/?status=review", 50);
     expect(screen.getByRole("tab", { name: /На проверке/ })).toHaveAttribute("aria-selected", "true");
     expect(mocks.polling.at(-1)).toEqual({ interval: 15_000, active: true });
     expect(screen.getByText("ООО OSIYO NAV NIHOL · ст. Раустан · 12 вагонов · 816 т")).toBeInTheDocument();
-    // Чат виден в строке: по нему же ищет поиск журнала.
-    expect(screen.getByText(/Джин-Син · Отгрузка вагонов ·/)).toBeInTheDocument();
+    // Отправитель с username и чат видны в строке: по ним же ищет поиск журнала.
+    expect(screen.getByText(/Джин-Син \(@jin_sin\) · Отгрузка вагонов ·/)).toBeInTheDocument();
   });
 
   it("switches tabs by server filter", async () => {
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("tab", { name: "Проведено" }));
 
-    expect(mocks.paged).toHaveBeenLastCalledWith("/bots/whatsapp/messages/?status=applied", 50);
+    expect(mocks.paged).toHaveBeenLastCalledWith("/bots/telegram/messages/?status=applied", 50);
   });
 
   it("expanded row shows text, reasons and reply; «Провести» opens the report sheet with the message", async () => {
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { expanded: false }));
 
@@ -133,7 +136,7 @@ describe("WhatsApp-бот: журнал", () => {
     await userEvent.click(screen.getByRole("button", { name: /Провести/ }));
 
     expect(mocks.sheet).toHaveBeenCalledWith(
-      expect.objectContaining({ api: "/bots/whatsapp/messages/7", initialText: message().text }),
+      expect.objectContaining({ api: "/bots/telegram/messages/7", initialText: message().text }),
     );
     // Пока человек решает, опрос не перетирает список.
     expect(mocks.polling.at(-1)?.active).toBe(false);
@@ -151,7 +154,7 @@ describe("WhatsApp-бот: журнал", () => {
 
   it("AI draft is what gets conducted", async () => {
     mocks.paged.mockReturnValue(paged([message({ status: "awaiting_confirmation", draft: "черновик отчёта" })]));
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { expanded: false }));
     expect(screen.getByText("черновик отчёта")).toBeInTheDocument();
@@ -163,12 +166,12 @@ describe("WhatsApp-бот: журнал", () => {
   it("ignore applies the answer; errors stay in the row", async () => {
     const ignored = message({ status: "ignored", resolved_by_name: "Динара", resolved_at: "2026-09-19T10:00:00Z" });
     mocks.post.mockResolvedValueOnce({ data: ignored });
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
     await userEvent.click(screen.getByRole("button", { expanded: false }));
 
     await userEvent.click(screen.getByRole("button", { name: /Игнорировать/ }));
 
-    expect(mocks.post).toHaveBeenCalledWith("/bots/whatsapp/messages/7/ignore/");
+    expect(mocks.post).toHaveBeenCalledWith("/bots/telegram/messages/7/ignore/");
     const update = mocks.applyItems.mock.calls[0][0] as (items: BotMessage[]) => BotMessage[];
     expect(update([message()])).toEqual([]);
 
@@ -180,7 +183,7 @@ describe("WhatsApp-бот: журнал", () => {
   it("viewer without bots.manage sees no decisions; conducted row links to its order", async () => {
     mocks.permissions = ["bots.view"];
     mocks.paged.mockReturnValue(paged([message({ status: "applied", order: 41, issues: [] })]));
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { expanded: false }));
 
@@ -188,7 +191,7 @@ describe("WhatsApp-бот: журнал", () => {
     expect(screen.queryByRole("button", { name: /Игнорировать/ })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Открыть заказ №41" })).toHaveAttribute(
       "href",
-      "/orders/41?back=%2Fmanagement%2Fwhatsapp-bot",
+      "/orders/41?back=%2Fmanagement%2Ftelegram-bot",
     );
   });
 
@@ -196,7 +199,7 @@ describe("WhatsApp-бот: журнал", () => {
     mocks.permissions = ["bots.view", "bots.manage", "sys_permissions.manage"];
     const saved = status({ settings: { ...status().settings, enabled: false } });
     mocks.put.mockResolvedValueOnce({ data: saved });
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
     // Дубль вагона — ± дней от даты отчёта, а не «любой повтор за две недели».
@@ -204,57 +207,73 @@ describe("WhatsApp-бот: журнал", () => {
     expect(
       screen.getByText("Вагон уже отгружен в пределах ± стольких дней от даты отчёта — на проверку."),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("Кто пользуется ботом")).toHaveValue("@d1maaash");
     await userEvent.click(screen.getByRole("checkbox", { name: /Бот проводит отчёты/ }));
-    await userEvent.click(screen.getByRole("button", { name: /Склад/ }));
+    // Писавшего боту лично добавляют одним нажатием; группа в подсказки не попадает.
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: /Отгрузка вагонов/ })).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: /@jin_sin/ }));
     await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
 
     await waitFor(() => expect(mocks.setStatus).toHaveBeenCalledWith(saved));
-    expect(mocks.put).toHaveBeenCalledWith("/bots/whatsapp/settings/", {
+    expect(mocks.put).toHaveBeenCalledWith("/bots/telegram/settings/", {
       enabled: false,
-      allowed_chat_ids: ["120363043968066561@g.us", "120363000000000001@g.us"],
-      allowed_sender_ids: ["998901112233@c.us"],
+      allowed_usernames: ["d1maaash", "jin_sin"],
       show_amounts_in_reply: false,
       duplicate_window_days: 3,
       price_tolerance_pct: "15",
       report_recipient_name: "Динара",
-      report_recipient_phone: "",
+      report_recipient_username: "",
     });
   });
 
   it("administrator sets who gets the wagon report", async () => {
     mocks.permissions = ["bots.view", "bots.manage", "sys_permissions.manage"];
     mocks.put.mockResolvedValueOnce({ data: status() });
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
     const name = screen.getByLabelText("Имя");
     expect(name).toHaveValue("Динара");
     await userEvent.clear(name);
     await userEvent.type(name, "Динара Б.");
-    await userEvent.type(screen.getByLabelText("Номер WhatsApp"), "7011234567");
+    await userEvent.type(screen.getByLabelText("Username в Telegram"), "@Dinara_K");
     await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
 
     await waitFor(() => expect(mocks.put).toHaveBeenCalled());
     const body = mocks.put.mock.calls[0][1];
     expect(body.report_recipient_name).toBe("Динара Б.");
-    expect(body.report_recipient_phone.replace(/\D/g, "")).toBe("77011234567");
+    expect(body.report_recipient_username).toBe("dinara_k");
+  });
+
+  it("settings tell whether the recipient has started the bot", async () => {
+    mocks.permissions = ["bots.view", "sys_permissions.manage"];
+    mocks.status = status({
+      settings: makeBotSettings({ report_recipient_username: "dinara_k", report_recipient_started: false }),
+    });
+    render(<TelegramBotPage />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
+
+    expect(screen.getByLabelText("Username в Telegram")).toHaveValue("@dinara_k");
+    expect(screen.getByText("Ещё не писала @asyl_bot — попросите нажать /start.")).toBeInTheDocument();
   });
 
   it("settings errors stay inside the modal", async () => {
     mocks.permissions = ["bots.view", "bots.manage", "sys_permissions.manage"];
-    mocks.put.mockRejectedValueOnce(new Error("«x» — не номер WhatsApp и не идентификатор чата"));
-    render(<WhatsAppBotPage />);
+    mocks.put.mockRejectedValueOnce(new Error("«x y» — не username Telegram (например, @dinara_k)"));
+    render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
     await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
 
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("«x» — не номер WhatsApp и не идентификатор чата")).toBeInTheDocument();
+    expect(within(dialog).getByText("«x y» — не username Telegram (например, @dinara_k)")).toBeInTheDocument();
   });
 
   it("server switch is explained", () => {
     mocks.status = status({ server_enabled: false });
-    render(<WhatsAppBotPage />);
+    render(<TelegramBotPage />);
 
     expect(screen.getByText("Выключен на сервере")).toBeInTheDocument();
   });

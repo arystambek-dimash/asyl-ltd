@@ -641,13 +641,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "fixate": "orders.edit",
         "department_summary": "orders.view",
         "list_summary": "orders.view",
-        "dashboard_operational": "orders.view",
         "form_options": ("orders.create", "orders.edit"),
         # Календарь отгрузки открыт тем же, кому открыта очередь поста.
         "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
     }
 
     def get_permissions(self):
+        if self.action == "dashboard_operational":
+            # Сводка питает только «Главную»: без неё страница закрыта, без заказов — нечего считать.
+            return [HasPerm("dashboard.view", "orders.view", require_all=True)]
         if (
             self.action == "list"
             and self.request.query_params.get("post_board") == "1"

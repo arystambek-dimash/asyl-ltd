@@ -1,15 +1,13 @@
 """Отчёт о вагонах → клиент, товары, цены, дубли → заказ, отгрузка, склад, долг."""
-import importlib
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from django.apps import apps as django_apps
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from apps.bots.models import BotClientProfile, WhatsAppBotSettings
+from apps.bots.models import BotClientProfile, TelegramBotSettings
 from apps.bots.parsing import parse_rail_report
 from apps.bots.rail import (
     conduct_rail_report,
@@ -344,7 +342,7 @@ def test_price_tolerance_comes_from_the_bot_settings(client, product, price):
     _shipped_before(client, product, 30, unit_price="7.00")
     assert _resolve().ok
 
-    WhatsAppBotSettings.objects.create(price_tolerance_pct=5)
+    TelegramBotSettings.objects.update_or_create(singleton=True, defaults={"price_tolerance_pct": 5})
 
     assert issue_codes(_resolve()) == ["price_mismatch"]
 
@@ -410,32 +408,22 @@ def test_wagon_is_a_duplicate_only_within_three_days_of_the_report_date(
 
 
 def test_duplicate_window_comes_from_the_bot_settings(client, product, price):
-    WhatsAppBotSettings.objects.create(duplicate_window_days=10)
+    TelegramBotSettings.objects.update_or_create(singleton=True, defaults={"duplicate_window_days": 10})
     _shipped_wagon(client, product, day=OWNER_DAY - timedelta(days=10))
 
     assert issue_codes(_resolve()) == ["wagon_already_shipped"]
-    WhatsAppBotSettings.objects.update(duplicate_window_days=3)
+    TelegramBotSettings.objects.update(duplicate_window_days=3)
     assert _resolve().ok
 
 
 def test_duplicate_window_without_the_settings_row_is_three_days(client, product, price):
+    TelegramBotSettings.objects.all().delete()
     _shipped_wagon(client, product, day=OWNER_DAY - timedelta(days=4))
 
     assert _resolve().ok
-    # Чтение настройки строку не создаёт: на проде её может ещё не быть.
-    assert not WhatsAppBotSettings.objects.exists()
-    assert WhatsAppBotSettings.load().duplicate_window_days == 3
-
-
-@pytest.mark.parametrize(("stored", "migrated"), [(14, 3), (7, 7)])
-def test_old_default_window_moves_to_three_days(stored, migrated):
-    """Старое «14 дней» (отклонено владельцем) становится ±3; своё значение администратора остаётся."""
-    migration = importlib.import_module("apps.bots.migrations.0005_whatsapp_bot_duplicate_window_3_days")
-    WhatsAppBotSettings.objects.create(duplicate_window_days=stored)
-
-    migration.forwards(django_apps, None)
-
-    assert WhatsAppBotSettings.load().duplicate_window_days == migrated
+    # Чтение настройки строку не создаёт.
+    assert not TelegramBotSettings.objects.exists()
+    assert TelegramBotSettings.load().duplicate_window_days == 3
 
 
 def test_wagon_of_a_deleted_order_is_not_a_duplicate(client, product, price):

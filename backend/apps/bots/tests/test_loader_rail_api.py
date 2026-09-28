@@ -1,5 +1,5 @@
-"""«Вставить отчёт» у грузчика: предпросмотр без записи, разрешение неизвестного, «Провести»,
-«Отгрузить по отчёту» и вагоны в истории, поиске и списке заказов."""
+"""Разбор отчёта о вагонах: предпросмотр без записи, разрешение неизвестного и «Провести» в журнале
+бота, «Отгрузить по отчёту» у грузчика и вагоны в истории, поиске и списке заказов."""
 from datetime import timedelta
 from decimal import Decimal
 
@@ -8,7 +8,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from apps.bots.models import BotClientProfile, WhatsAppBotSettings
+from apps.bots.models import BotClientProfile, BotMessage, TelegramBotSettings
 from apps.bots.tests.samples import (
     CONDUCT_CODES,
     OWNER_BAGS,
@@ -29,15 +29,37 @@ from apps.orders.models import Order
 
 pytestmark = pytest.mark.django_db
 
-PREVIEW = "/api/loader/rail-report/preview/"
-APPLY = "/api/loader/rail-report/apply/"
-PRODUCT_CODES = "/api/loader/rail-report/product-codes/"
-CLIENT_NAMES = "/api/loader/rail-report/client-names/"
-OPTIONS = "/api/loader/rail-report/options/"
+# У грузчика — только «Отгрузить по отчёту» заранее внесённого заказа.
+LOADER_PREVIEW = "/api/loader/rail-report/preview/"
+LOADER_APPLY = "/api/loader/rail-report/apply/"
+LOADER_PRODUCT_CODES = "/api/loader/rail-report/product-codes/"
+LOADER_CLIENT_NAMES = "/api/loader/rail-report/client-names/"
+LOADER_OPTIONS = "/api/loader/rail-report/options/"
 
 
 def _post(api, url, **body):
     return api.post(url, {"text": OWNER_REPORT, **body}, format="json")
+
+
+class Sheet:
+    """Разбор сообщения в журнале бота — новый заказ по отчёту проводят здесь."""
+
+    def __init__(self, message):
+        base = f"/api/bots/telegram/messages/{message.pk}/"
+        self.preview, self.apply, self.options = f"{base}preview/", f"{base}apply/", f"{base}options/"
+        self.product_codes, self.client_names = f"{base}product-codes/", f"{base}client-names/"
+
+
+@pytest.fixture
+def sheet():
+    return Sheet(BotMessage.objects.create(
+        provider_message_id="-100:1", chat_id="-100", text=OWNER_REPORT, status=BotMessage.NEEDS_REVIEW))
+
+
+@pytest.fixture
+def conductor(user_with_perms):
+    """Проводит отчёты в журнале бота: права проведения и журнала."""
+    return user_with_perms("rail-conductor", codes=[*CONDUCT_CODES, "bots.view", "bots.manage"])
 
 
 def _report_order(client, product, numbers, *, day=None):
@@ -49,10 +71,10 @@ def _report_order(client, product, numbers, *, day=None):
 # --- предпросмотр ---------------------------------------------------------------------------------
 
 
-def test_preview_shows_what_will_be_conducted_and_writes_nothing(auth_client, client, product, price, conductor):
+def test_preview_shows_what_will_be_conducted_and_writes_nothing(sheet, auth_client, client, product, price, conductor):
     aliases = ProductAlias.objects.count()
 
-    response = _post(auth_client(conductor), PREVIEW)
+    response = _post(auth_client(conductor), sheet.preview)
 
     assert response.status_code == 200, response.data
     data = response.data
@@ -78,10 +100,10 @@ def test_preview_shows_what_will_be_conducted_and_writes_nothing(auth_client, cl
     assert stock_bags(product) == 20000
 
 
-def test_preview_marks_a_wagon_number_with_a_wrong_check_digit(auth_client, client, product, price, conductor):
+def test_preview_marks_a_wagon_number_with_a_wrong_check_digit(sheet, auth_client, client, product, price, conductor):
     text = report(*(f"Д1с-{number}-68 тн" for number in OWNER_WAGONS[:11]), "Д1с-28087766-68 тн")
 
-    data = auth_client(conductor).post(PREVIEW, {"text": text}, format="json").data
+    data = auth_client(conductor).post(sheet.preview, {"text": text}, format="json").data
 
     assert data["wagons"][-1]["number_status"] == "check_digit"
     (issue,) = data["issues"]
@@ -89,54 +111,54 @@ def test_preview_marks_a_wagon_number_with_a_wrong_check_digit(auth_client, clie
     assert (data["ok"], data["can_apply"]) == (False, False)
 
 
-def test_preview_total_waits_for_every_wagon(auth_client, client, product, price, conductor):
+def test_preview_total_waits_for_every_wagon(sheet, auth_client, client, product, price, conductor):
     text = report(*(f"Д1с-{number}-68 тн" for number in OWNER_WAGONS[:2]), f"Б2-{OWNER_WAGONS[2]}-68 тн")
 
-    data = auth_client(conductor).post(PREVIEW, {"text": text}, format="json").data
+    data = auth_client(conductor).post(sheet.preview, {"text": text}, format="json").data
 
     # Два вагона из трёх распознаны: частичная сумма выглядела бы итогом отчёта.
     assert (data["totals"]["tons"], data["totals"]["bags"], data["totals"]["amount"]) == ("204", 2720, None)
     assert data["unresolved"]["products"] == ["Б2"]
 
 
-def test_empty_and_overlong_text_is_an_input_error(auth_client, conductor):
+def test_empty_and_overlong_text_is_an_input_error(sheet, auth_client, conductor):
     api = auth_client(conductor)
 
-    assert api.post(PREVIEW, {"text": "  "}, format="json").data["detail"]["text"] == ["Вставьте текст отчёта"]
-    assert api.post(PREVIEW, {"text": "Д" * 8193}, format="json").status_code == 400
+    assert api.post(sheet.preview, {"text": "  "}, format="json").data["detail"]["text"] == ["Вставьте текст отчёта"]
+    assert api.post(sheet.preview, {"text": "Д" * 8193}, format="json").status_code == 400
 
 
 def test_report_sheet_is_the_wagons_tab(auth_client, client, product, price, user_with_perms):
     api = auth_client(user_with_perms(
         "trucks", codes=["loader.view", "loader.confirm", "loader.trucks", "orders.create", "orders.confirm"]))
 
-    assert _post(api, PREVIEW).status_code == 403
-    assert api.get(OPTIONS).status_code == 403
-    assert _post(api, APPLY).status_code == 403
+    assert _post(api, LOADER_PREVIEW).status_code == 403
+    assert api.get(LOADER_OPTIONS).status_code == 403
+    assert _post(api, LOADER_APPLY).status_code == 403
     assert not Order.objects.exists()
 
 
 def test_report_sheet_needs_the_loader_page(auth_client, client, product, price, user_with_perms):
     api = auth_client(user_with_perms("no-page", codes=["loader.wagons", "orders.create", "orders.confirm"]))
 
-    assert _post(api, PREVIEW).status_code == 403
-    assert api.get(OPTIONS).status_code == 403
+    assert _post(api, LOADER_PREVIEW).status_code == 403
+    assert api.get(LOADER_OPTIONS).status_code == 403
 
 
 # --- разрешение неизвестного --------------------------------------------------------------------
 
 
-def test_unknown_product_code_is_remembered_from_the_sheet(auth_client, client, product, price, conductor):
+def test_unknown_product_code_is_remembered_from_the_sheet(sheet, auth_client, client, product, price, conductor):
     ProductAlias.objects.all().delete()
     api = auth_client(conductor)
 
-    data = _post(api, PREVIEW).data
+    data = _post(api, sheet.preview).data
     assert data["unresolved"]["products"] == ["Д1с"]
     assert data["wagons"][0]["product_id"] is None
     assert (data["can_remember_products"], data["can_apply"]) == (True, False)
-    assert {"id": product.pk, "label": str(product), "weight_kg": "50.00"} in api.get(OPTIONS).data["products"]
+    assert {"id": product.pk, "label": str(product), "weight_kg": "50.00"} in api.get(sheet.options).data["products"]
 
-    response = _post(api, PRODUCT_CODES, code="Д1с", product=product.pk)
+    response = _post(api, sheet.product_codes, code="Д1с", product=product.pk)
 
     assert response.status_code == 200, response.data
     assert (response.data["ok"], response.data["can_apply"]) == (True, True)
@@ -144,10 +166,10 @@ def test_unknown_product_code_is_remembered_from_the_sheet(auth_client, client, 
     assert (alias.code, alias.spelling, alias.product, alias.created_by) == ("Д1C", "Д1с", product, conductor)
 
 
-def test_sheet_does_not_take_a_code_from_another_live_product(auth_client, client, product, price, conductor):
+def test_sheet_does_not_take_a_code_from_another_live_product(sheet, auth_client, client, product, price, conductor):
     other = Product.objects.create(name="Мука первый сорт", color="Red", weight_kg="50")
 
-    response = _post(auth_client(conductor), PRODUCT_CODES, code="Д1с", product=other.pk)
+    response = _post(auth_client(conductor), sheet.product_codes, code="Д1с", product=other.pk)
 
     # Бот списывает склад по словарю: перенести код — только на странице «Товары».
     assert response.status_code == 400
@@ -156,33 +178,33 @@ def test_sheet_does_not_take_a_code_from_another_live_product(auth_client, clien
 
 
 def test_sheet_gives_the_code_of_an_archived_product_to_the_picked_one(
-    auth_client, client, product, price, conductor,
+    sheet, auth_client, client, product, price, conductor,
 ):
     Product.objects.filter(pk=product.pk).update(is_active=False)
     other = Product.objects.create(name="Мука первый сорт", color="Red", weight_kg="50")
     api = auth_client(conductor)
-    assert _post(api, PREVIEW).data["unresolved"]["products"] == ["Д1с"]
+    assert _post(api, sheet.preview).data["unresolved"]["products"] == ["Д1с"]
 
-    response = _post(api, PRODUCT_CODES, code="Д1с", product=other.pk)
+    response = _post(api, sheet.product_codes, code="Д1с", product=other.pk)
 
     assert response.status_code == 200, response.data
     assert response.data["unresolved"]["products"] == []
     assert ProductAlias.objects.get().product == other
 
 
-def test_unknown_client_is_remembered_with_its_currency(auth_client, client, product, conductor):
+def test_unknown_client_is_remembered_with_its_currency(sheet, auth_client, client, product, conductor):
     ClientPrice.objects.create(client=client, product=product, currency="KZT", price="3500")
     text = OWNER_REPORT.replace("ООО OSIYO NAV NIHOL", "OSIYO Ташкент")
     api = auth_client(conductor)
 
-    data = api.post(PREVIEW, {"text": text}, format="json").data
+    data = api.post(sheet.preview, {"text": text}, format="json").data
     assert data["unresolved"]["client"] == "OSIYO Ташкент"
     assert data["client"] is None
     assert {"id": client.pk, "name": "ООО OSIYO NAV NIHOL", "currency": "USD", "department_name": "Экспорт"} in (
-        api.get(OPTIONS).data["clients"])
+        api.get(sheet.options).data["clients"])
 
     response = api.post(
-        CLIENT_NAMES, {"text": text, "client_name": "OSIYO Ташкент", "client": client.pk, "currency": "KZT"},
+        sheet.client_names, {"text": text, "client_name": "OSIYO Ташкент", "client": client.pk, "currency": "KZT"},
         format="json")
 
     assert response.status_code == 200, response.data
@@ -196,45 +218,45 @@ def test_unknown_client_is_remembered_with_its_currency(auth_client, client, pro
     assert EventLog.objects.filter(event_type="clients", user=conductor, payload__currency="KZT").exists()
 
 
-def test_client_of_another_department_cannot_be_picked(auth_client, client, product, price, conductor):
+def test_client_of_another_department_cannot_be_picked(sheet, auth_client, client, product, price, conductor):
     move_to_retail(conductor)
     api = auth_client(conductor)
 
-    response = _post(api, CLIENT_NAMES, client_name="OSIYO", client=client.pk, currency="USD")
+    response = _post(api, sheet.client_names, client_name="OSIYO", client=client.pk, currency="USD")
 
     assert response.status_code == 400
     assert "client" in response.data["detail"]
     assert not BotClientProfile.objects.exists()
-    assert api.get(OPTIONS).data["clients"] == []
+    assert api.get(sheet.options).data["clients"] == []
 
 
-def test_name_of_another_departments_client_cannot_be_repointed(auth_client, client, product, price, conductor, boss):
+def test_name_of_another_departments_client_cannot_be_repointed(sheet, auth_client, client, product, price, conductor, boss):
     own = Client.objects.create_with_user(first_name="Свой", phone="+7 700 000 00 01", department=move_to_retail(conductor))
     profile = BotClientProfile.objects.create(name="OSIYO", client=client, currency="USD", created_by=boss)
     text = OWNER_REPORT.replace("ООО OSIYO NAV NIHOL", "OSIYO")
     api = auth_client(conductor)
-    assert api.post(PREVIEW, {"text": text}, format="json").data["can_remember_clients"] is False
+    assert api.post(sheet.preview, {"text": text}, format="json").data["can_remember_clients"] is False
 
     response = api.post(
-        CLIENT_NAMES, {"text": text, "client_name": "OSIYO", "client": own.pk, "currency": "KZT"}, format="json")
+        sheet.client_names, {"text": text, "client_name": "OSIYO", "client": own.pk, "currency": "KZT"}, format="json")
 
     # Иначе все отчёты «OSIYO» (и бота) списали бы склад и долг на клиента розницы.
     assert response.status_code == 403
     profile.refresh_from_db()
     assert (profile.client, profile.currency) == (client, "USD")
     # Название из карточки клиента другого отдела — тоже его.
-    by_card = _post(api, CLIENT_NAMES, client_name="ООО OSIYO NAV NIHOL", client=own.pk, currency="KZT")
+    by_card = _post(api, sheet.client_names, client_name="ООО OSIYO NAV NIHOL", client=own.pk, currency="KZT")
     assert by_card.status_code == 403
     assert BotClientProfile.objects.count() == 1
 
 
 def test_preview_of_another_departments_client_hides_prices_and_orders(
-    auth_client, client, product, price, conductor,
+    sheet, auth_client, client, product, price, conductor,
 ):
     manual_train_order(client, product, arrival_date=OWNER_DAY)
     move_to_retail(conductor)
 
-    data = _post(auth_client(conductor), PREVIEW).data
+    data = _post(auth_client(conductor), sheet.preview).data
 
     assert [issue["code"] for issue in data["issues"]] == ["client_other_department"]
     assert (data["ok"], data["can_apply"], data["can_remember_clients"]) == (False, False, False)
@@ -242,12 +264,12 @@ def test_preview_of_another_departments_client_hides_prices_and_orders(
     assert (data["items"][0]["unit_price"], data["totals"]["amount"], data["shippable_orders"]) == (None, None, [])
 
 
-def test_only_a_waiting_manual_duplicate_is_offered_for_shipping(auth_client, client, product, price, conductor):
+def test_only_a_waiting_manual_duplicate_is_offered_for_shipping(sheet, auth_client, client, product, price, conductor):
     waiting = manual_train_order(client, product, arrival_date=OWNER_DAY)
     shipped = manual_train_order(client, product, arrival_date=OWNER_DAY)
     Order.objects.filter(pk=shipped.pk).update(status="shipped")
 
-    data = _post(auth_client(conductor), PREVIEW).data
+    data = _post(auth_client(conductor), sheet.preview).data
 
     duplicates = {issue["order_id"] for issue in data["issues"] if issue["code"] == "manual_order_duplicate"}
     assert duplicates == {waiting.pk, shipped.pk}
@@ -256,14 +278,16 @@ def test_only_a_waiting_manual_duplicate_is_offered_for_shipping(auth_client, cl
 
 
 @pytest.mark.parametrize(("setting", "duplicate"), [(None, False), (10, True)])
-def test_loader_uses_the_bot_duplicate_window(auth_client, client, product, price, conductor, setting, duplicate):
-    """Дубль вагона — в живом заказе с датой ±N дней от даты отчёта; N — из настроек бота (без строки — 3)."""
+def test_journal_uses_the_bot_duplicate_window(
+    sheet, auth_client, client, product, price, conductor, setting, duplicate,
+):
+    """Дубль вагона — в живом заказе с датой ±N дней от даты отчёта; N — из настроек бота (по умолчанию 3)."""
     if setting is not None:
-        WhatsAppBotSettings.objects.create(duplicate_window_days=setting)
+        TelegramBotSettings.objects.update(duplicate_window_days=setting)
     earlier = _report_order(client, product, [OWNER_WAGONS[0]], day=OWNER_DAY - timedelta(days=10))
 
-    data = _post(auth_client(conductor), PREVIEW).data
-    apply = _post(auth_client(conductor), APPLY)
+    data = _post(auth_client(conductor), sheet.preview).data
+    apply = _post(auth_client(conductor), sheet.apply)
 
     duplicates = [issue["order_id"] for issue in data["issues"] if issue["code"] == "wagon_already_shipped"]
     assert duplicates == ([earlier.pk] if duplicate else [])
@@ -271,61 +295,73 @@ def test_loader_uses_the_bot_duplicate_window(auth_client, client, product, pric
 
 
 @pytest.mark.parametrize(("tolerance", "mismatch"), [(None, False), ("5", True), ("30", False)])
-def test_loader_uses_the_bot_price_tolerance(auth_client, client, product, price, conductor, tolerance, mismatch):
-    """Допуск цены — из настроек бота, как у бота и в журнале (без строки — 15%)."""
+def test_journal_uses_the_bot_price_tolerance(
+    sheet, auth_client, client, product, price, conductor, tolerance, mismatch,
+):
+    """Допуск цены — из настроек бота, как у самого бота (по умолчанию 15%)."""
     if tolerance is not None:
-        WhatsAppBotSettings.objects.create(price_tolerance_pct=tolerance)
+        TelegramBotSettings.objects.update(price_tolerance_pct=tolerance)
     earlier = _report_order(client, product, [OWNER_WAGONS[0]], day=OWNER_DAY - timedelta(days=30))
     # 7,50 против 7,00 в прошлом вагонном заказе — разница 7%.
     earlier.items.update(unit_price="7.00")
 
-    data = _post(auth_client(conductor), PREVIEW).data
-    apply = _post(auth_client(conductor), APPLY)
+    data = _post(auth_client(conductor), sheet.preview).data
+    apply = _post(auth_client(conductor), sheet.apply)
 
     mismatches = [issue["order_id"] for issue in data["issues"] if issue["code"] == "price_mismatch"]
     assert mismatches == ([earlier.pk] if mismatch else [])
     assert apply.status_code == (400 if mismatch else 200), apply.data
 
 
-def test_wagon_loader_sees_the_report_but_cannot_teach_the_dictionary(
+def test_wagon_loader_ships_by_report_but_cannot_teach_the_dictionary(
     auth_client, client, product, price, wagon_loader,
 ):
     ProductAlias.objects.all().delete()
+    order = manual_train_order(client, product)
     api = auth_client(wagon_loader)
 
-    data = _post(api, PREVIEW).data
+    data = _post(api, LOADER_PREVIEW, order=order.pk).data
     assert (data["can_apply"], data["can_remember_products"], data["can_remember_clients"]) == (False, False, False)
-    assert api.get(OPTIONS).data == {"products": [], "clients": []}
+    assert api.get(LOADER_OPTIONS).data == {"products": [], "clients": []}
 
-    assert _post(api, PRODUCT_CODES, code="Д1с", product=product.pk).status_code == 403
-    assert _post(api, CLIENT_NAMES, client_name="OSIYO", client=client.pk, currency="USD").status_code == 403
+    assert _post(api, LOADER_PRODUCT_CODES, order=order.pk, code="Д1с", product=product.pk).status_code == 403
+    assert _post(
+        api, LOADER_CLIENT_NAMES, order=order.pk, client_name="OSIYO", client=client.pk, currency="USD",
+    ).status_code == 403
     assert not ProductAlias.objects.exists()
     assert not BotClientProfile.objects.exists()
 
 
-# --- «Провести» --------------------------------------------------------------------------------------
+def test_loader_does_not_create_an_order_from_a_pasted_report(auth_client, client, product, price, wagon_loader):
+    """«Вставить отчёт» у грузчика убран: новый заказ по отчёту проводит бот или его журнал."""
+    api = auth_client(wagon_loader)
+
+    for url in (LOADER_PREVIEW, LOADER_APPLY):
+        response = _post(api, url)
+        assert response.status_code == 400
+        assert "order" in response.data["detail"]
+    assert not Order.objects.exists()
 
 
-def test_apply_conducts_the_report_and_answers_with_the_history_row(auth_client, client, product, price, conductor):
-    response = _post(auth_client(conductor), APPLY)
+# --- «Провести» в журнале бота --------------------------------------------------------------------------------------
+
+
+def test_apply_conducts_the_report_as_the_reviewer(sheet, auth_client, client, product, price, conductor):
+    response = _post(auth_client(conductor), sheet.apply)
 
     assert response.status_code == 200, response.data
     order = Order.objects.get()
-    row = response.data
-    assert (row["id"], row["status"], row["transport_type"], row["rail_station"]) == (
-        order.pk, "shipped", "train", "Раустан")
-    assert [wagon["number"] for wagon in row["wagons"]] == list(OWNER_WAGONS)
-    assert row["wagons"][0] == {
-        "number": OWNER_WAGONS[0], "product_label": str(product), "bags": 1360, "weight_kg": "68000.00"}
-    assert row["bags"] == OWNER_BAGS
-    assert (row["report_sent_at"], row["report_status"]) == (None, "")
+    assert (response.data["status"], response.data["order"]) == ("applied", order.pk)
+    assert (order.status, order.transport_type, order.rail_station, order.created_by) == (
+        "shipped", "train", "Раустан", conductor)
+    assert list(order.shipment.wagons.values_list("number", flat=True)) == list(OWNER_WAGONS)
     assert stock_bags(product) == 20000 - OWNER_BAGS
 
 
-def test_apply_of_a_report_needing_review_writes_nothing(auth_client, client, price, conductor):
+def test_apply_of_a_report_needing_review_writes_nothing(sheet, auth_client, client, price, conductor):
     ProductAlias.objects.all().delete()
 
-    response = _post(auth_client(conductor), APPLY)
+    response = _post(auth_client(conductor), sheet.apply)
 
     assert response.status_code == 400
     assert response.data["code"] == "rail_report_needs_review"
@@ -333,11 +369,14 @@ def test_apply_of_a_report_needing_review_writes_nothing(auth_client, client, pr
 
 
 # Весь набор прав проведения — test_rail; здесь — отказ сервиса и право кнопки «Провести».
-@pytest.mark.parametrize("missing", ["orders.create", "loader.confirm"])
-def test_apply_needs_order_and_shipping_rights(auth_client, client, product, price, user_with_perms, missing):
-    user = user_with_perms("limited", codes=[code for code in CONDUCT_CODES if code != missing])
+@pytest.mark.parametrize("missing", ["orders.create", "loader.confirm", "bots.manage"])
+def test_apply_needs_order_shipping_and_journal_rights(
+    sheet, auth_client, client, product, price, user_with_perms, missing,
+):
+    codes = [*CONDUCT_CODES, "bots.view", "bots.manage"]
+    user = user_with_perms("limited", codes=[code for code in codes if code != missing])
 
-    assert _post(auth_client(user), APPLY).status_code == 403
+    assert _post(auth_client(user), sheet.apply).status_code == 403
     assert not Order.objects.exists()
 
 
@@ -348,11 +387,11 @@ def test_waiting_wagon_order_ships_by_report_without_order_rights(auth_client, c
     order = manual_train_order(client, product)
     api = auth_client(wagon_loader)
 
-    preview = _post(api, PREVIEW, order=order.pk).data
+    preview = _post(api, LOADER_PREVIEW, order=order.pk).data
     assert (preview["order_id"], preview["ok"], preview["can_apply"]) == (order.pk, True, True)
     assert preview["items"][0]["unit_price"] == "7.40"
 
-    response = _post(api, APPLY, order=order.pk)
+    response = _post(api, LOADER_APPLY, order=order.pk)
 
     assert response.status_code == 200, response.data
     assert (response.data["id"], response.data["status"]) == (order.pk, "shipped")
@@ -364,9 +403,9 @@ def test_order_report_with_other_bags_is_shown_and_refused(auth_client, client, 
     order = manual_train_order(client, product, bags=4080)
     api = auth_client(wagon_loader)
 
-    preview = _post(api, PREVIEW, order=order.pk).data
+    preview = _post(api, LOADER_PREVIEW, order=order.pk).data
     assert [issue["code"] for issue in preview["issues"]] == ["rail_bags_mismatch"]
-    assert _post(api, APPLY, order=order.pk).status_code == 400
+    assert _post(api, LOADER_APPLY, order=order.pk).status_code == 400
     order.refresh_from_db()
     assert order.status == "confirmed"
 
@@ -375,7 +414,7 @@ def test_order_of_another_department_is_not_found(auth_client, client, product, 
     move_to_retail(wagon_loader)
     order = manual_train_order(client, product)
 
-    assert _post(auth_client(wagon_loader), PREVIEW, order=order.pk).status_code == 404
+    assert _post(auth_client(wagon_loader), LOADER_PREVIEW, order=order.pk).status_code == 404
 
 
 # --- вагоны в истории, поиске и заказах ---------------------------------------------------------

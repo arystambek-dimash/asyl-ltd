@@ -1,11 +1,12 @@
 """Клиент, товар и цена из отчёта владельца, грузчики вагонов и включённый бот — общие для тестов бота."""
 import pytest
+from django.utils import timezone
 
-from apps.bots import whatsapp
-from apps.bots.models import WhatsAppBotSettings
+from apps.bots import messages
+from apps.bots.models import BotChat, TelegramBotSettings
 from apps.bots.service_user import ensure_bot_user
 from apps.bots.tests.samples import CONDUCT_CODES, OWNER_REPORT
-from apps.bots.tests.whatsapp_fakes import DINARA, GROUP, JIN, bot_alive, incoming
+from apps.bots.tests.telegram_fakes import DINARA, DINARA_CHAT, JIN, bot_alive, incoming
 from apps.catalog.models import ClientPrice, Product, ProductAlias
 from apps.clients.models import Client
 from apps.sales.models import Department
@@ -57,21 +58,26 @@ def wagon_viewer(user_with_perms):
 
 @pytest.fixture
 def bot_settings():
-    """Бот включён в журнале: группа отгрузки и Джин-Син допущены."""
-    row = WhatsAppBotSettings.load()
+    """Бот включён в журнале, Джин-Син допущен."""
+    row = TelegramBotSettings.load()
     row.enabled = True
-    row.allowed_chat_ids = [GROUP]
-    row.allowed_sender_ids = [JIN]
+    row.allowed_usernames = [JIN]
     row.save()
     return row
 
 
 @pytest.fixture
-def bot_on(settings, bot_settings):
+def dinara_started():
+    """Динара написала боту /start — у бота есть её личный чат."""
+    return BotChat.objects.create(
+        chat_id=DINARA_CHAT, chat_type="private", title="Динара", username=DINARA, last_message_at=timezone.now())
+
+
+@pytest.fixture
+def bot_on(settings, bot_settings, dinara_started):
     """Бот включён на сервере и жив, отчёты о вагонах — Динаре."""
-    settings.WHATSAPP_BOT_ENABLED = True
-    bot_settings.report_recipient_phone = DINARA
-    bot_settings.seen_chats = {GROUP: {"name": "Отгрузка вагонов", "at": "2026-09-24T07:00:00+05:00"}}
+    settings.TELEGRAM_BOT_ENABLED = True
+    bot_settings.report_recipient_username = DINARA
     bot_alive(bot_settings).save()
     return bot_settings
 
@@ -83,13 +89,12 @@ def bot_user():
 
 @pytest.fixture
 def receive(bot_settings, bot_user):
-    """Бот принял сообщение и прошёл очередь; ``None`` — сообщение не сохранено."""
+    """Бот принял сообщение и прошёл очередь."""
 
     def _receive(message):
-        stored = whatsapp.ingest(message, bot_settings)
-        whatsapp.process_pending(user=bot_user, bot_settings=bot_settings)
-        if stored is not None:
-            stored.refresh_from_db()
+        stored = messages.ingest(message)
+        messages.process_pending(user=bot_user, bot_settings=bot_settings)
+        stored.refresh_from_db()
         return stored
 
     return _receive

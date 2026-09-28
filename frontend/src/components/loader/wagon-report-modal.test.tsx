@@ -17,17 +17,18 @@ const TEXT = "чт 24.09.26 Узбекистан ООО OSIYO NAV NIHOL\nСт. 1
 const draft = (fields: Partial<WagonReportDraft> = {}): WagonReportDraft => ({
   text: TEXT,
   order_ids: [366],
-  recipient: { name: "Динара", to: "Динаре", phone: "", chat_name: "" },
+  recipient: { name: "Динара", to: "Динаре", username: "" },
   delivery: "link",
+  reason: "no_username",
   ...fields,
 });
 
 const sent = (fields: Partial<WagonReportSent> = {}): WagonReportSent => ({
   status: "link",
-  status_label: "Ссылкой WhatsApp",
+  status_label: "Ссылкой",
   sent_at: "2026-09-24T07:45:00+05:00",
   order_ids: [366],
-  recipient: { name: "Динара", to: "Динаре", phone: "" },
+  recipient: { name: "Динара", to: "Динаре", username: "" },
   error: "",
   ...fields,
 });
@@ -50,7 +51,7 @@ describe("WagonReportModal", () => {
     vi.unstubAllGlobals();
   });
 
-  it("составляет отчёт одной отгрузки и без номера получателя открывает выбор чата в WhatsApp", async () => {
+  it("составляет отчёт одной отгрузки и без username получателя открывает выбор чата в Telegram", async () => {
     const user = userEvent.setup();
     const onSent = vi.fn();
     const result = sent();
@@ -61,30 +62,31 @@ describe("WagonReportModal", () => {
     expect(mocks.get).toHaveBeenCalledWith("/loader/wagon-report/compose/?order=366");
     const field = await screen.findByLabelText("Текст отчёта");
     expect(field).toHaveValue(TEXT);
-    expect(screen.getByText("Динаре · номер не указан — выберите чат в WhatsApp")).toBeInTheDocument();
+    expect(screen.getByText("Динаре · username не указан — выберите чат в Telegram")).toBeInTheDocument();
+    expect(screen.getByText(/не указан username получателя/)).toBeInTheDocument();
 
-    // Поправленный текст уходит в WhatsApp и в отметку.
+    // Поправленный текст уходит в Telegram и в отметку.
     await user.type(field, "{end}\nОстальное завтра");
     await user.click(screen.getByRole("button", { name: "Отправить Динаре" }));
 
     const edited = `${TEXT}\nОстальное завтра`;
-    expect(open).toHaveBeenCalledWith(`https://wa.me/?text=${encodeURIComponent(edited)}`, "_blank", "noopener");
+    expect(open).toHaveBeenCalledWith(`https://t.me/share/url?url=${encodeURIComponent(edited)}`, "_blank", "noopener");
     expect(mocks.post).toHaveBeenCalledWith("/loader/wagon-report/send/", {
       order_ids: [366],
       text: edited,
       delivery: "link",
       key: expect.stringMatching(/^[A-Za-z0-9_-]{8,64}$/),
     });
-    expect(await screen.findByRole("status")).toHaveTextContent("Открыли WhatsApp — отправьте сообщение Динаре");
+    expect(await screen.findByRole("status")).toHaveTextContent("Открыли Telegram — отправьте сообщение Динаре");
     expect(onSent).toHaveBeenCalledWith(result);
 
     // Вкладку закрыли — открыть ещё раз можно, второй отметки нет.
-    await user.click(screen.getByRole("button", { name: /Открыть WhatsApp ещё раз/ }));
+    await user.click(screen.getByRole("button", { name: /Открыть Telegram ещё раз/ }));
     expect(open).toHaveBeenCalledTimes(2);
     expect(mocks.post).toHaveBeenCalledTimes(1);
   });
 
-  it("отметка не записалась после открытого WhatsApp — повтор только отмечает, WhatsApp второй раз не открывается", async () => {
+  it("отметка не записалась после открытого Telegram — повтор только отмечает, Telegram второй раз не открывается", async () => {
     const user = userEvent.setup();
     const onSent = vi.fn();
     const result = sent();
@@ -96,11 +98,11 @@ describe("WagonReportModal", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Нет связи с сервером");
     expect(open).toHaveBeenCalledTimes(1);
-    // Текст уже ушёл в WhatsApp — его не правят.
+    // Текст уже ушёл в Telegram — его не правят.
     expect(screen.getByLabelText("Текст отчёта")).toHaveAttribute("readonly");
 
     // Вкладку закрыли — открыть ещё раз можно отдельно, без отметки.
-    await user.click(screen.getByRole("button", { name: /Открыть WhatsApp ещё раз/ }));
+    await user.click(screen.getByRole("button", { name: /Открыть Telegram ещё раз/ }));
     expect(open).toHaveBeenCalledTimes(2);
     expect(mocks.post).toHaveBeenCalledTimes(1);
 
@@ -109,30 +111,34 @@ describe("WagonReportModal", () => {
     expect(open).toHaveBeenCalledTimes(2);
     expect(mocks.post).toHaveBeenCalledTimes(2);
     expect(mocks.post.mock.calls[1][1]).toEqual(mocks.post.mock.calls[0][1]);
-    expect(await screen.findByRole("status")).toHaveTextContent("Открыли WhatsApp — отправьте сообщение Динаре");
+    expect(await screen.findByRole("status")).toHaveTextContent("Открыли Telegram — отправьте сообщение Динаре");
     expect(onSent).toHaveBeenCalledWith(result);
   });
 
-  it("с номером открывает чат Динары", async () => {
+  it("с username открывает чат Динары, пока она не написала боту", async () => {
     const user = userEvent.setup();
-    mocks.get.mockResolvedValue({ data: draft({ recipient: { name: "Динара", to: "Динаре", phone: "77011234567" } }) });
+    mocks.get.mockResolvedValue({
+      data: draft({ recipient: { name: "Динара", to: "Динаре", username: "dinara_k" }, reason: "not_started" }),
+    });
     mocks.post.mockResolvedValue({ data: sent() });
     render(<WagonReportModal scope={{ order: 366 }} onClose={vi.fn()} onSent={vi.fn()} />);
 
-    expect(await screen.findByText(/^Динаре · \+7/)).toBeInTheDocument();
+    expect(await screen.findByText("Динаре · @dinara_k")).toBeInTheDocument();
+    expect(screen.getByText(/не писал боту \(\/start\)/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Отправить Динаре" }));
 
-    expect(open.mock.calls[0][0]).toMatch(/^https:\/\/wa\.me\/77011234567\?text=/);
+    expect(open.mock.calls[0][0]).toMatch(/^https:\/\/t\.me\/dinara_k\?text=/);
   });
 
-  it("отчёт за период уходит в очередь бота без вкладки WhatsApp", async () => {
+  it("отчёт за период уходит в очередь бота без вкладки Telegram", async () => {
     const user = userEvent.setup();
     const onSent = vi.fn();
     mocks.get.mockResolvedValue({
       data: draft({
         order_ids: [366, 367],
         delivery: "bot",
-        recipient: { name: "Динара", to: "Динаре", phone: "", chat_name: "Отгрузка вагонов" },
+        reason: "",
+        recipient: { name: "Динара", to: "Динаре", username: "dinara_k" },
       }),
     });
     mocks.post.mockResolvedValue({
@@ -147,7 +153,8 @@ describe("WagonReportModal", () => {
     );
 
     expect(mocks.get).toHaveBeenCalledWith("/loader/wagon-report/compose/?date_from=2026-09-18&date_to=2026-09-24");
-    expect(await screen.findByText("Динаре · в группу «Отгрузка вагонов»")).toBeInTheDocument();
+    expect(await screen.findByText("Динаре · @dinara_k")).toBeInTheDocument();
+    expect(screen.getByText("Отправит Telegram-бот.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Отправить Динаре" }));
 
     expect(open).not.toHaveBeenCalled();
@@ -161,20 +168,20 @@ describe("WagonReportModal", () => {
     const user = userEvent.setup();
     const onSent = vi.fn();
     mocks.get
-      .mockResolvedValueOnce({ data: draft({ delivery: "bot" }) })
+      .mockResolvedValueOnce({ data: draft({ delivery: "bot", reason: "" }) })
       .mockResolvedValueOnce({ data: draft({ text: "другой текст" }) });
     mocks.post.mockRejectedValueOnce(
-      failure("Бот сейчас не отправляет сообщения — отправьте отчёт через WhatsApp", "report_bot_unavailable"),
+      failure("Бот сейчас не может отправить отчёт — отправьте его через Telegram", "report_bot_unavailable"),
     );
     render(<WagonReportModal scope={{ order: 366 }} onClose={vi.fn()} onSent={onSent} />);
 
     await user.click(await screen.findByRole("button", { name: "Отправить Динаре" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Бот сейчас не отправляет сообщения");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Бот сейчас не может отправить отчёт");
     await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
     // Текст, который человек видел (и мог поправить), остаётся.
     expect(screen.getByLabelText("Текст отчёта")).toHaveValue(TEXT);
-    expect(await screen.findByText("Динаре · номер не указан — выберите чат в WhatsApp")).toBeInTheDocument();
+    expect(await screen.findByText("Динаре · username не указан — выберите чат в Telegram")).toBeInTheDocument();
     expect(onSent).not.toHaveBeenCalled();
   });
 

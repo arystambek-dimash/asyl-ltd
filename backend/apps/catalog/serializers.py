@@ -12,7 +12,7 @@ class ProductSerializer(serializers.ModelSerializer):
     label = serializers.SerializerMethodField()
     color_label = serializers.CharField(source="get_color_display", read_only=True)
     photo_url = serializers.SerializerMethodField()
-    # Коды товара в отчётах о вагонах («Д1с») — словарь бота и «Вставить отчёт».
+    # Коды товара в отчётах о вагонах («Д1с») — словарь бота и разбора отчёта.
     aliases = serializers.SerializerMethodField()
 
     class Meta:

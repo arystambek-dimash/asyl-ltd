@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
 from django.conf import settings
+
+from apps.common.telegram import TelegramClient, TelegramError
 
 log = logging.getLogger(__name__)
 
@@ -64,23 +65,15 @@ def send(event: str, payload: dict) -> Delivery:
 
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         configured = True
-        # application/x-www-form-urlencoded avoids assumptions about Telegram's
-        # JSON parser and keeps the payload small.
-        body = urllib.parse.urlencode(
-            {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "disable_notification": "false",
-            }
-        ).encode()
         try:
-            _post(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                body,
-                {"Content-Type": "application/x-www-form-urlencoded"},
+            client = TelegramClient(
+                token=TELEGRAM_BOT_TOKEN,
+                token_name="CAMERA_ALERT_TELEGRAM_BOT_TOKEN",
+                request_timeout=TIMEOUT_SECONDS,
             )
+            client.send_message(TELEGRAM_CHAT_ID, message)
             successes += 1
-        except OSError as exc:
+        except TelegramError as exc:
             errors.append(f"telegram: {type(exc).__name__}")
             log.exception("Camera Telegram alert delivery failed")
 

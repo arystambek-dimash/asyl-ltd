@@ -18,10 +18,16 @@ DEFAULT_DUPLICATE_WINDOW_DAYS = 3
 DEFAULT_PRICE_TOLERANCE_PCT = Decimal("15")
 # Кому «Отправить отчёт» из истории грузчика (решение владельца, 24.09).
 DEFAULT_REPORT_RECIPIENT = "Динара"
-# Удачный круг процесса бота (runtime_status) и номер, который может
-# отправлять сообщения (instance_state), — их пишет runner.
+# Удачный круг процесса бота (runtime_status) и рабочий токен бота
+# (bot_state), — их пишет runner.
 RUNTIME_RUNNING = "running"
-INSTANCE_AUTHORIZED = "authorized"
+BOT_AUTHORIZED = "authorized"
+# Администратор бота по умолчанию (решение владельца, 28.09).
+DEFAULT_ALLOWED_USERNAMES = ("d1maaash",)
+
+
+def default_allowed_usernames() -> list[str]:
+    return list(DEFAULT_ALLOWED_USERNAMES)
 
 
 class BotClientProfile(models.Model):
@@ -30,7 +36,7 @@ class BotClientProfile(models.Model):
     «ООО OSIYO NAV NIHOL» в шапке отчёта → клиент CRM и валюта цены. Профиль
     нужен, когда название в отчёте не совпадает с карточкой клиента или валюта
     отгрузки отличается от валюты клиента по умолчанию. Пополняется при
-    разборе отчёта (бот и «Вставить отчёт» у грузчика).
+    разборе отчёта (журнал бота и «Отгрузить по отчёту» у грузчика).
     """
 
     # Название как в отчёте — для людей; сравнение — по ключу.
@@ -62,12 +68,13 @@ class BotMessage(models.Model):
     """Сообщение из чата бота: отчёт о вагонах, правка или удаление отчёта.
 
     Одна строка на сообщение провайдера — повторная доставка того же
-    уведомления (очередь Green-API отдаёт его, пока бот не подтвердит приём)
-    ничего не проводит второй раз. ``status`` — что с сообщением сделали:
-    провели сами, отправили человеку на разбор или пропустили.
+    обновления (Telegram отдаёт его, пока бот не подтвердит приём) ничего не
+    проводит второй раз. ``status`` — что с сообщением сделали: провели сами,
+    отправили человеку на разбор или пропустили. Строки с провайдером
+    ``green_api`` — история прежнего WhatsApp-бота.
     """
 
-    PROVIDER_GREEN_API = "green_api"
+    PROVIDER_TELEGRAM = "telegram"
 
     RECEIVED = "received"
     APPLIED = "applied"
@@ -93,15 +100,18 @@ class BotMessage(models.Model):
 
     MESSAGE = "message"
     EDITED = "edited"
+    # Удаление присылал только WhatsApp; Telegram ботам удаления не сообщает.
     DELETED = "deleted"
     KINDS = [(MESSAGE, "Сообщение"), (EDITED, "Изменено"), (DELETED, "Удалено")]
 
-    provider = models.CharField(max_length=20, default=PROVIDER_GREEN_API)
+    provider = models.CharField(max_length=20, default=PROVIDER_TELEGRAM)
     provider_message_id = models.CharField(max_length=160)
     chat_id = models.CharField(max_length=128)
     chat_name = models.CharField(max_length=200, blank=True, default="")
     sender_id = models.CharField(max_length=128, blank=True, default="")
     sender_name = models.CharField(max_length=200, blank=True, default="")
+    # Username отправителя в Telegram (без «@», нижний регистр): по нему — доступ к боту.
+    sender_username = models.CharField(max_length=64, blank=True, default="", db_default="")
     kind = models.CharField(max_length=10, choices=KINDS, default=MESSAGE)
     # Правка или удаление — исходное сообщение, если бот его видел.
     original = models.ForeignKey(
@@ -152,29 +162,28 @@ class BotMessage(models.Model):
         return f"{self.get_kind_display()} {self.provider_message_id} ({self.get_status_display()})"
 
 
-class WhatsAppBotSettings(SingletonModel):
-    """Настройки WhatsApp-бота и его состояние — одна строка на приложение.
+class TelegramBotSettings(SingletonModel):
+    """Настройки Telegram-бота и его состояние — одна строка на приложение.
 
     Настройки правит администратор (``sys_permissions.manage``); поля
-    состояния (номер, последний опрос, недавние чаты) пишет только процесс
-    бота — отдельными ``update``, чтобы не перетирать друг друга.
+    состояния (username бота, последний опрос) пишет только процесс бота —
+    отдельными ``update``, чтобы не перетирать друг друга.
     """
 
     enabled = models.BooleanField(default=False)
-    # Чаты (группа «Отгрузка вагонов») и отправители, чьи отчёты бот разбирает.
-    allowed_chat_ids = models.JSONField(default=list, blank=True)
-    allowed_sender_ids = models.JSONField(default=list, blank=True)
+    # Кто пользуется ботом: username в Telegram без «@», нижним регистром.
+    # Отчёты от остальных бот не проводит, а команды им не отвечают.
+    allowed_usernames = models.JSONField(default=default_allowed_usernames, blank=True)
     show_amounts_in_reply = models.BooleanField(default=False)
     # ±дней от даты отчёта (см. DEFAULT_DUPLICATE_WINDOW_DAYS).
     duplicate_window_days = models.PositiveSmallIntegerField(default=DEFAULT_DUPLICATE_WINDOW_DAYS)
     # См. DEFAULT_PRICE_TOLERANCE_PCT.
     price_tolerance_pct = models.DecimalField(max_digits=5, decimal_places=2, default=DEFAULT_PRICE_TOLERANCE_PCT)
     # «Отправить отчёт» в истории грузчика: кому (имя для кнопки «Отправить
-    # Динаре») и номер WhatsApp — только цифры с кодом страны. Без номера бот
-    # пишет в первую разрешённую группу, а ссылка открывает выбор чата.
-    report_recipient_name = models.CharField(
-        max_length=60, default=DEFAULT_REPORT_RECIPIENT, db_default=DEFAULT_REPORT_RECIPIENT)
-    report_recipient_phone = models.CharField(max_length=15, blank=True, default="", db_default="")
+    # Динаре») и её username. Бот пишет ей, когда она хоть раз написала боту
+    # (/start), — иначе ссылка открывает её чат в Telegram с готовым текстом.
+    report_recipient_name = models.CharField(max_length=60, default=DEFAULT_REPORT_RECIPIENT)
+    report_recipient_username = models.CharField(max_length=64, blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
@@ -184,37 +193,63 @@ class WhatsAppBotSettings(SingletonModel):
     runtime_status = models.CharField(max_length=20, blank=True, default="")
     runtime_error = models.CharField(max_length=300, blank=True, default="")
     polled_at = models.DateTimeField(null=True, blank=True)
-    instance_state = models.CharField(max_length=40, blank=True, default="")
-    instance_state_at = models.DateTimeField(null=True, blank=True)
-    # Недавние чаты, откуда писали боту: {chat_id: {"name", "at"}} — чтобы
-    # выбрать группу в настройках, не зная её идентификатора.
-    seen_chats = models.JSONField(default=dict, blank=True)
+    # getMe: authorized — токен рабочий, unauthorized — Telegram его отверг.
+    bot_state = models.CharField(max_length=40, blank=True, default="")
+    bot_state_at = models.DateTimeField(null=True, blank=True)
+    bot_username = models.CharField(max_length=64, blank=True, default="")
 
     # Настройки, которые правит администратор (экран, журнал событий).
     SETTINGS_FIELDS = (
-        "enabled", "allowed_chat_ids", "allowed_sender_ids", "show_amounts_in_reply",
-        "duplicate_window_days", "price_tolerance_pct", "report_recipient_name", "report_recipient_phone",
+        "enabled", "allowed_usernames", "show_amounts_in_reply", "duplicate_window_days",
+        "price_tolerance_pct", "report_recipient_name", "report_recipient_username",
     )
-    # Что сохраняет правка настроек: состояние номера и опроса пишет процесс бота.
+    # Что сохраняет правка настроек: состояние бота пишет его процесс.
     CONFIG_FIELDS = (*SETTINGS_FIELDS, "updated_by", "updated_at")
 
     def is_alive(self, now=None) -> bool:
-        """Процесс бота работает: последний круг удачный, номер готов, и круг не старше heartbeat.
+        """Процесс бота работает: последний круг удачный, токен рабочий, и круг не старше heartbeat.
 
-        Веб-серверу не видны ни ключи Green-API, ни WHATSAPP_BOT_ENABLED
-        контейнера бота — только его круги: без ключей бот пишет «degraded»,
-        а остановленный или выключенный у себя перестаёт их отмечать.
+        Веб-серверу не видны ни токен, ни TELEGRAM_BOT_ENABLED контейнера
+        бота — только его круги: без токена бот пишет «degraded», а
+        остановленный или выключенный у себя перестаёт их отмечать.
         """
-        max_age = timedelta(seconds=settings.WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS)
+        max_age = timedelta(seconds=settings.TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS)
         return (
             self.runtime_status == RUNTIME_RUNNING
-            and self.instance_state == INSTANCE_AUTHORIZED
+            and self.bot_state == BOT_AUTHORIZED
             and self.polled_at is not None
             and (now or timezone.now()) - self.polled_at <= max_age
         )
 
+    def allows(self, username: str) -> bool:
+        return bool(username) and username in (self.allowed_usernames or [])
+
     def __str__(self):
-        return "Настройки WhatsApp-бота"
+        return "Настройки Telegram-бота"
+
+
+class BotChat(models.Model):
+    """Чат, откуда писали боту: личный или группа — одна строка на чат.
+
+    Telegram-бот может написать человеку только в чат, который тот открыл
+    сам (/start), — по username отсюда находится чат получателя отчётов.
+    Недавние чаты показываются в настройках: username не надо знать заранее.
+    """
+
+    chat_id = models.CharField(max_length=32, unique=True)
+    # private, group, supergroup.
+    chat_type = models.CharField(max_length=20)
+    title = models.CharField(max_length=200, blank=True, default="")
+    # У личного чата — username собеседника (без «@», нижний регистр).
+    username = models.CharField(max_length=64, blank=True, default="")
+    last_message_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-last_message_at", "-pk"]
+        indexes = [models.Index(fields=["username"], name="bots_chat_username_idx")]
+
+    def __str__(self):
+        return self.title or self.chat_id
 
 
 class OutgoingMessage(models.Model):
@@ -227,7 +262,7 @@ class OutgoingMessage(models.Model):
     Отказ провайдера повторяется до предела и оставляет «Не отправлено» с
     ошибкой; бот не взял строку вовремя — тоже «Не отправлено». Ответа нет
     (сообщение могло уйти) или бот прервался посреди отправки — «Не
-    подтверждено»: без повтора, человек проверяет WhatsApp. Ссылкой WhatsApp —
+    подтверждено»: без повтора, человек проверяет Telegram. Ссылкой —
     сообщение отправил человек со своего телефона: бот такую строку не трогает.
     """
 
@@ -243,14 +278,15 @@ class OutgoingMessage(models.Model):
         (SENT, "Отправлено"),
         (FAILED, "Не отправлено"),
         (UNKNOWN, "Не подтверждено"),
-        (LINK, "Ссылкой WhatsApp"),
+        (LINK, "Ссылкой"),
     ]
 
     key = models.CharField(max_length=64, unique=True)
     # Кому — как в настройках бота на момент отправки.
     recipient_name = models.CharField(max_length=60)
-    phone = models.CharField(max_length=15, blank=True, default="")
-    # Чат бота (номер@c.us или группа@g.us); у ссылки — пусто.
+    # Кому в Telegram: username без «@» (у строк прежнего WhatsApp-бота — пусто).
+    username = models.CharField(max_length=64, blank=True, default="", db_default="")
+    # Чат бота; у ссылки — пусто.
     chat_id = models.CharField(max_length=128, blank=True, default="")
     text = models.TextField()
     # Заказы отчёта — для журнала; отметка «отправлено» — в их отгрузках.

@@ -5,7 +5,7 @@ import heartbeat_healthcheck
 import passage_scale_monitor_healthcheck
 import pytest
 import shipping_transport_monitor_healthcheck
-import whatsapp_bot_healthcheck
+import telegram_bot_healthcheck
 
 from apps.common import heartbeat as heartbeat_module
 from apps.common.heartbeat import (
@@ -93,9 +93,9 @@ def test_stale_or_future_heartbeat_is_unhealthy(tmp_path, updated_at, reason):
             ("error",),
         ),
         (
-            whatsapp_bot_healthcheck,
-            "WHATSAPP_BOT_HEARTBEAT_FILE",
-            "WHATSAPP_BOT_HEARTBEAT_MAX_AGE_SECONDS",
+            telegram_bot_healthcheck,
+            "TELEGRAM_BOT_HEARTBEAT_FILE",
+            "TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS",
             ("disabled", "running", "degraded"),
             ("stopped",),
         ),

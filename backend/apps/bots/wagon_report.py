@@ -6,29 +6,29 @@
 заказа и его позиции — «без номера», если номер не записан). Несколько
 заказов — блоки по дню отгрузки, клиенту и станции через пустую строку, по
 времени отгрузки. Коды товаров и названия клиентов читаются одним запросом
-на всю страницу или период.
+на всю страницу или период. Тот же текст бот присылает по команде /report
+(:func:`period_report`).
 
-Кому (:func:`report_recipient`) — из настроек WhatsApp-бота («Динара» и её
-номер). Бот включён (флаг сервера WHATSAPP_BOT_ENABLED и выключатель в
-журнале) и его процесс работает (свежий удачный круг) — сообщение встаёт в
-очередь (:class:`~apps.bots.models.OutgoingMessage`), и процесс бота
-отправляет его сам (:func:`send_pending_reports`); без номера получателя бот
-пишет в первую разрешённую группу. Иначе экран открывает ссылку wa.me с
-текстом — отправляет человек со своего телефона (без номера — сам выбирает
-чат). Ключи Green-API есть только у процесса бота: веб-сервер сам в WhatsApp
+Кому (:func:`report_recipient`) — из настроек Telegram-бота («Динара» и её
+username). Бот включён (флаг сервера TELEGRAM_BOT_ENABLED и выключатель в
+журнале), его процесс работает (свежий удачный круг), а получатель хоть раз
+написал боту (/start, :class:`~apps.bots.models.BotChat`) — сообщение встаёт
+в очередь (:class:`~apps.bots.models.OutgoingMessage`), и процесс бота
+отправляет его сам (:func:`send_pending_reports`). Иначе экран открывает чат
+получателя в Telegram с готовым текстом — отправляет человек со своего
+телефона. Токен бота есть только у процесса бота: веб-сервер сам в Telegram
 не пишет. В обоих случаях отгрузки помечаются «отчёт отправлен», а в журнал
 заказа пишется событие.
 
 Бот не взял отчёт за :data:`REPORT_QUEUE_TIMEOUT` — «Не отправлено», и позже
 бот его уже не отправит: грузчик отправляет ещё раз. Отправка без ответа
-провайдера не повторяется сама (:func:`send_pending_reports`).
+Telegram не повторяется сама (:func:`send_pending_reports`).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
-from urllib.parse import quote
 
 from django.conf import settings
 from django.db import transaction
@@ -37,30 +37,43 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import ProductAlias
+from apps.common.telegram import (
+    TelegramClient,
+    TelegramError,
+    TelegramOutcomeUnknown,
+    TelegramRefused,
+    split_text,
+)
 from apps.common.text import match_key
 from apps.eventlog.services import log_event
+from apps.orders.models import Order
 from apps.orders.transport import order_wagons
 from apps.shipments.models import Shipment
 
-from .models import BotClientProfile, OutgoingMessage, WhatsAppBotSettings
+from .models import BotChat, BotClientProfile, OutgoingMessage, TelegramBotSettings
 from .parsing import KG_PER_TON, format_rail_report
-from .providers.green_api import GreenApiClient, GreenApiError, GreenApiOutcomeUnknown
+from .providers.telegram import PRIVATE
 from .rail import RAIL_TRANSPORT
 
-# Как отправить: ботом (очередь) или ссылкой WhatsApp с телефона человека.
+# Как отправить: ботом (очередь) или ссылкой Telegram с телефона человека.
 BOT = "bot"
 LINK = "link"
 DELIVERIES = (BOT, LINK)
+# Почему не ботом: бот выключен или не работает, username получателя не
+# задан, получатель ещё не написал боту /start.
+BOT_OFF = "bot_off"
+NO_USERNAME = "no_username"
+NOT_STARTED = "not_started"
 # Строка заказа без номера вагона.
 NO_NUMBER = "без номера"
 # Отчёт за период — не больше стольких отгрузок: за неделю их десятки.
 REPORT_MAX_ORDERS = 300
-# Предел текста Green-API sendMessage.
+# Длинный отчёт бот отправляет несколькими сообщениями Telegram (до 4096 знаков).
 REPORT_TEXT_MAX_LENGTH = 20000
 # Отказ провайдера повторяется на следующих кругах бота, потом — «Не отправлено».
 MAX_SEND_ATTEMPTS = 5
-# Бот не взял отчёт из очереди за это время (процесс остановлен, нет ключей
-# Green-API) — «Не отправлено»: грузчик отправит ещё раз, бот его уже не шлёт.
+# Бот не взял отчёт из очереди за это время (процесс остановлен, нет токена
+# Telegram) — «Не отправлено»: грузчик отправит ещё раз, бот его уже не шлёт.
 REPORT_QUEUE_TIMEOUT = timedelta(minutes=10)
 STALE_QUEUE_ERROR = f"бот не отправил за {int(REPORT_QUEUE_TIMEOUT.total_seconds()) // 60} минут"
 # Отправка идёт не дольше тайм-аута запроса (15 с); дольше — бот прервался
@@ -68,7 +81,6 @@ STALE_QUEUE_ERROR = f"бот не отправил за {int(REPORT_QUEUE_TIMEOU
 SENDING_TIMEOUT = timedelta(minutes=2)
 INTERRUPTED_ERROR = "бот прервался во время отправки"
 EVENT_TYPE = "rail_report"
-_WHATSAPP_LINK = "https://wa.me/"
 _VOWELS = "аеёиоуыэюя"
 
 
@@ -180,6 +192,22 @@ def compose_rail_report(orders) -> ComposedReport:
     )
 
 
+def period_report(date_from: date, date_to: date) -> ComposedReport:
+    """Отчёт по всем отгрузкам вагонов за период (по дню выезда) — для /report бота."""
+    orders = (
+        Order.objects.filter(
+            transport_type=RAIL_TRANSPORT,
+            status="shipped",
+            shipment__shipped_at__date__gte=date_from,
+            shipment__shipped_at__date__lte=date_to,
+        )
+        .select_related("client__user", "shipment")
+        .prefetch_related("items__product", "shipment__wagons__product")
+        .order_by("shipment__shipped_at", "id")
+    )
+    return compose_rail_report(orders[:REPORT_MAX_ORDERS])
+
+
 # --- кому и как ----------------------------------------------------------------------------------
 
 
@@ -210,69 +238,70 @@ def recipient_to(name: str) -> str:
 class ReportRecipient:
     name: str
     to: str  # дательный падеж: «Динаре»
-    phone: str  # только цифры с кодом страны или пусто
+    username: str  # без «@» или пусто
     delivery: str  # BOT или LINK
-    chat_id: str = ""  # у бота: номер@c.us или группа@g.us
-    chat_name: str = ""  # у бота без номера: название группы
+    # Почему ссылкой, а не ботом (BOT_OFF, NO_USERNAME, NOT_STARTED); у бота — пусто.
+    reason: str = ""
+    chat_id: str = ""  # у бота: личный чат получателя
 
     def payload(self) -> dict:
-        return {"name": self.name, "to": self.to, "phone": self.phone, "chat_name": self.chat_name}
+        return {"name": self.name, "to": self.to, "username": self.username}
 
 
-def bot_sends(bot_settings: WhatsAppBotSettings) -> bool:
+def bot_sends(bot_settings: TelegramBotSettings) -> bool:
     """Бот отправляет сам: включён на сервере и в журнале, и его процесс работает."""
-    return bool(settings.WHATSAPP_BOT_ENABLED and bot_settings.enabled and bot_settings.is_alive())
+    return bool(settings.TELEGRAM_BOT_ENABLED and bot_settings.enabled and bot_settings.is_alive())
 
 
-def report_recipient(bot_settings: WhatsAppBotSettings | None = None) -> ReportRecipient:
+def private_chat_id(username: str) -> str:
+    """Личный чат человека с ботом по username; пусто — он ещё не писал боту."""
+    if not username:
+        return ""
+    chat = BotChat.objects.filter(chat_type=PRIVATE, username=username).order_by("-last_message_at").first()
+    return chat.chat_id if chat is not None else ""
+
+
+def report_recipient(bot_settings: TelegramBotSettings | None = None) -> ReportRecipient:
     """Кому и как отправить отчёт сейчас.
 
-    Бот включён и работает — ботом: на номер получателя, а без номера — в
-    первую разрешённую группу (иначе в первый разрешённый чат). Некуда, бот
-    выключен или не отмечает круги — ссылкой WhatsApp.
+    Бот включён и работает, а получатель писал боту — ботом в его личный
+    чат. Иначе — ссылкой Telegram с телефона человека.
     """
-    row = bot_settings or WhatsAppBotSettings.load()
-    name = row.report_recipient_name
-    phone = row.report_recipient_phone
-    chat_id = chat_name = ""
-    if bot_sends(row):
-        if phone:
-            chat_id = f"{phone}@c.us"
-        else:
-            chats = list(row.allowed_chat_ids or [])
-            chat_id = next((chat for chat in chats if chat.endswith("@g.us")), chats[0] if chats else "")
-            chat_name = ((row.seen_chats or {}).get(chat_id) or {}).get("name", "") if chat_id else ""
+    row = bot_settings or TelegramBotSettings.load()
+    name, username = row.report_recipient_name, row.report_recipient_username
+    chat_id = private_chat_id(username)
+    if not bot_sends(row):
+        reason = BOT_OFF
+    elif not username:
+        reason = NO_USERNAME
+    elif not chat_id:
+        reason = NOT_STARTED
+    else:
+        reason = ""
     return ReportRecipient(
-        name=name, to=recipient_to(name), phone=phone, delivery=BOT if chat_id else LINK,
-        chat_id=chat_id, chat_name=chat_name,
+        name=name, to=recipient_to(name), username=username, delivery=LINK if reason else BOT,
+        reason=reason, chat_id="" if reason else chat_id,
     )
-
-
-def whatsapp_link(phone: str, text: str) -> str:
-    """Ссылка wa.me с готовым текстом: на номер или, без номера, с выбором чата."""
-    return f"{_WHATSAPP_LINK}{phone}?text={quote(text, safe='')}"
 
 
 def report_draft(orders) -> dict:
     """Ответ «Составить отчёт»: текст, заказы, кому и как он уйдёт."""
     report = compose_rail_report(orders)
     recipient = report_recipient()
-    draft = {
+    return {
         "text": report.text,
         "order_ids": report.order_ids,
         "recipient": recipient.payload(),
         "delivery": recipient.delivery,
+        "reason": recipient.reason,
     }
-    if recipient.delivery == LINK:
-        draft["link"] = whatsapp_link(recipient.phone, report.text)
-    return draft
 
 
 # --- отправка ------------------------------------------------------------------------------------
 
 
 def _how(message: OutgoingMessage) -> str:
-    return "через WhatsApp" if message.status == OutgoingMessage.LINK else "ботом WhatsApp"
+    return "ссылкой Telegram" if message.status == OutgoingMessage.LINK else "Telegram-ботом"
 
 
 _STATUS_LABELS = dict(OutgoingMessage.STATUSES)
@@ -303,11 +332,9 @@ def sent_payload(message: OutgoingMessage) -> dict:
         "sent_at": message.created_at,
         "order_ids": list(message.order_ids),
         "recipient": {"name": message.recipient_name, "to": recipient_to(message.recipient_name),
-                      "phone": message.phone},
+                      "username": message.username},
         "error": error,
     }
-    if message.status == OutgoingMessage.LINK:
-        payload["link"] = whatsapp_link(message.phone, message.text)
     return payload
 
 
@@ -316,8 +343,8 @@ def send_wagon_report(orders, text: str, user, *, delivery: str, key: str) -> Ou
     """Отправить отчёт по отгрузкам ``orders``: в очередь бота или отметить отправку ссылкой.
 
     ``delivery`` — как его отправляет экран. Ссылка уже открыта на телефоне —
-    её только записываем. Ботом — только пока бот включён: иначе отказ, и
-    экран предложит ссылку. ``key`` — ключ нажатия: повтор возвращает то же
+    её только записываем. Ботом — только пока бот может отправить: иначе
+    отказ, и экран предложит ссылку. ``key`` — ключ нажатия: повтор возвращает то же
     сообщение без второй отправки и второго события.
     """
     existing = OutgoingMessage.objects.filter(key=key).first()
@@ -326,13 +353,13 @@ def send_wagon_report(orders, text: str, user, *, delivery: str, key: str) -> Ou
     recipient = report_recipient()
     if delivery == BOT and recipient.delivery != BOT:
         raise ValidationError({
-            "detail": "Бот сейчас не отправляет сообщения — отправьте отчёт через WhatsApp",
+            "detail": "Бот сейчас не может отправить отчёт — отправьте его через Telegram",
             "code": "report_bot_unavailable",
         })
     bot = delivery == BOT
     message, created = OutgoingMessage.objects.get_or_create(key=key, defaults={
         "recipient_name": recipient.name,
-        "phone": recipient.phone,
+        "username": recipient.username,
         "chat_id": recipient.chat_id if bot else "",
         "text": text,
         "order_ids": [order.pk for order in orders],
@@ -364,16 +391,37 @@ def _expire_stale(now) -> None:
     ).update(status=OutgoingMessage.UNKNOWN, error=INTERRUPTED_ERROR, updated_at=now)
 
 
-def send_pending_reports(client: GreenApiClient, *, limit: int = 5) -> int:
-    """Круг бота: отправить отчёты из очереди. Сбой провайдера — попытка засчитана, ошибка наверх.
+def _send_parts(client: TelegramClient, message: OutgoingMessage) -> str:
+    """Отправить отчёт частями по 4096 знаков; вернуть ref первой части.
+
+    Сбой после первой ушедшей части — :class:`TelegramOutcomeUnknown`:
+    повтор задвоил бы уже полученное начало отчёта.
+    """
+    parts = split_text(message.text)
+    first = ""
+    for number, part in enumerate(parts, start=1):
+        try:
+            ref = client.send_message(message.chat_id, part)
+        except TelegramError as exc:
+            if number == 1:
+                raise
+            raise TelegramOutcomeUnknown(f"ушла часть отчёта ({number - 1} из {len(parts)}): {exc}") from exc
+        first = first or ref
+    return first
+
+
+def send_pending_reports(client: TelegramClient, *, limit: int = 5) -> int:
+    """Круг бота: отправить отчёты из очереди. Сбой Telegram — попытка засчитана, ошибка
+    наверх; отказ в чате получателя (4xx) — попытка засчитана, дальше следующий отчёт.
 
     Перед отправкой строка забирается («Отправляется») — только если она ещё
     в очереди и не просрочена. Отправленное помечается сразу и больше не
-    уходит. Отказ провайдера (сообщение точно не ушло) — снова в очередь, а
+    уходит. Отказ Telegram (сообщение точно не ушло) — снова в очередь, а
     после :data:`MAX_SEND_ATTEMPTS` отказов — «Не отправлено». Ответа нет
-    (тайм-аут, обрыв, 5xx: сообщение могло уйти) — «Не подтверждено» без
-    повтора, иначе Динара получила бы отчёт дважды; так же — строка, на
-    которой бот прервался. Оба случая видны в истории грузчика.
+    (тайм-аут, обрыв, 5xx: сообщение могло уйти) или ушла только часть
+    длинного отчёта — «Не подтверждено» без повтора, иначе Динара получила бы
+    отчёт дважды; так же — строка, на которой бот прервался. Оба случая видны
+    в истории грузчика.
     """
     now = timezone.now()
     _expire_stale(now)
@@ -388,19 +436,22 @@ def send_pending_reports(client: GreenApiClient, *, limit: int = 5) -> int:
             continue
         sending = OutgoingMessage.objects.filter(pk=message.pk, status=OutgoingMessage.SENDING)
         try:
-            provider_id = client.send_message(message.chat_id, message.text)
-        except GreenApiOutcomeUnknown as exc:
+            provider_id = _send_parts(client, message)
+        except TelegramOutcomeUnknown as exc:
             sending.update(
                 status=OutgoingMessage.UNKNOWN, attempts=F("attempts") + 1, error=str(exc)[:500],
                 updated_at=timezone.now(),
             )
             raise
-        except GreenApiError as exc:
+        except TelegramError as exc:
             last = message.attempts + 1 >= MAX_SEND_ATTEMPTS
             sending.update(
                 attempts=F("attempts") + 1, error=str(exc)[:500], updated_at=timezone.now(),
                 status=OutgoingMessage.FAILED if last else OutgoingMessage.QUEUED,
             )
+            # Отказ в этом чате (бот заблокирован, чата нет) — дело одного отчёта.
+            if isinstance(exc, TelegramRefused):
+                continue
             raise
         sent_at = timezone.now()
         # Ушло — значит «Отправлено», даже если строку успели счесть прерванной.

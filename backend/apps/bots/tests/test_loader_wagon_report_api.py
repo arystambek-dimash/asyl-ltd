@@ -6,9 +6,9 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from apps.bots.models import OutgoingMessage, WhatsAppBotSettings
+from apps.bots.models import OutgoingMessage, TelegramBotSettings
 from apps.bots.tests.samples import train_order
-from apps.bots.tests.whatsapp_fakes import DINARA
+from apps.bots.tests.telegram_fakes import DINARA, DINARA_CHAT
 from apps.bots.wagon_report import REPORT_QUEUE_TIMEOUT
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
@@ -21,6 +21,7 @@ pytestmark = pytest.mark.django_db
 COMPOSE = "/api/loader/wagon-report/compose/"
 SEND = "/api/loader/wagon-report/send/"
 HISTORY = "/api/loader/history/"
+SETTINGS = "/api/bots/telegram/settings/"
 
 
 def _shipped(client, product, *, truck_number="12345678", bags=8160, day=None, hour=12, wagons=(), station=""):
@@ -53,9 +54,8 @@ def test_compose_one_order_shipped_by_the_button(api, client, product):
     text = f"{header}\nСт. 1 вагон\nД1с-12345678-408 тн"
     assert response.data["text"] == text
     assert response.data["order_ids"] == [order.pk]
-    assert response.data["recipient"] == {"name": "Динара", "to": "Динаре", "phone": "", "chat_name": ""}
-    assert response.data["delivery"] == "link"
-    assert response.data["link"].startswith("https://wa.me/?text=")
+    assert response.data["recipient"] == {"name": "Динара", "to": "Динаре", "username": ""}
+    assert (response.data["delivery"], response.data["reason"]) == ("link", "bot_off")
 
 
 def test_compose_the_history_filter_groups_the_period(api, client, product):
@@ -131,7 +131,6 @@ def test_send_by_link_marks_the_history_rows(api, client, product, wagon_viewer)
     assert response.status_code == 200, response.data
     data = response.data
     assert (data["status"], data["order_ids"], data["recipient"]["to"]) == ("link", [o.pk for o in orders], "Динаре")
-    assert data["link"].startswith("https://wa.me/?text=%D1%81%D0%B1")
     assert data["sent_at"] is not None
     rows = {row["id"]: row for row in api.get(HISTORY, {"transport": "train"}).data}
     for order in orders:
@@ -149,9 +148,9 @@ def test_send_by_bot_queues_once_per_press(api, client, product, bot_on):
 
     assert (first.status_code, again.status_code) == (200, 200)
     assert (first.data["status"], first.data["status_label"]) == ("queued", "В очереди")
-    assert "link" not in first.data
+    assert first.data["recipient"]["username"] == DINARA
     message = OutgoingMessage.objects.get()
-    assert (message.chat_id, message.status) == (f"{DINARA}@c.us", "queued")
+    assert (message.chat_id, message.status) == (DINARA_CHAT, "queued")
     assert EventLog.objects.filter(event_type="rail_report").count() == 1
     row = api.get(HISTORY, {"transport": "train"}).data[0]
     assert (row["report_status"], row["report_sent_to"]) == ("queued", "Динаре")
@@ -182,21 +181,21 @@ def test_send_validates_its_input(api, client, product):
 def test_history_rows_of_a_failed_bot_report_show_the_error(api, client, product, bot_on):
     order = _shipped(client, product)
     _send(api, [order], delivery="bot")
-    OutgoingMessage.objects.update(status=OutgoingMessage.FAILED, error="Green-API sendMessage: HTTP 500")
+    OutgoingMessage.objects.update(status=OutgoingMessage.FAILED, error="Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user")
 
     row = api.get(HISTORY, {"transport": "train"}).data[0]
 
-    assert (row["report_status"], row["report_error"]) == ("failed", "Green-API sendMessage: HTTP 500")
+    assert (row["report_status"], row["report_error"]) == ("failed", "Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user")
 
 
 def test_bot_that_stopped_polling_is_not_offered(api, client, product, bot_on):
     """Флаги бота включены, но его процесс давно не отмечал круги — отчёт уходит ссылкой, а не в вечную очередь."""
     order = _shipped(client, product)
-    WhatsAppBotSettings.objects.update(polled_at=timezone.now() - timedelta(hours=1))
+    TelegramBotSettings.objects.update(polled_at=timezone.now() - timedelta(hours=1))
 
     draft = api.get(COMPOSE, {"order": order.pk}).data
 
-    assert draft["delivery"] == "link" and draft["link"].startswith(f"https://wa.me/{DINARA}?text=")
+    assert (draft["delivery"], draft["reason"], draft["recipient"]["username"]) == ("link", "bot_off", DINARA)
     assert _send(api, [order], delivery="bot").data["code"] == "report_bot_unavailable"
 
 
@@ -239,46 +238,44 @@ def admin_api(auth_client, user_with_perms):
 
 
 def test_recipient_is_edited_in_the_bot_settings(admin_api, api, client, product):
-    response = admin_api.put("/api/bots/whatsapp/settings/", {
-        "report_recipient_name": "  Динара  ", "report_recipient_phone": "8 701 123 45 67",
+    response = admin_api.put(SETTINGS, {
+        "report_recipient_name": "  Динара  ", "report_recipient_username": "@Dinara_K",
     }, format="json")
 
     assert response.status_code == 200, response.data
     assert response.data["settings"]["report_recipient_name"] == "Динара"
-    assert response.data["settings"]["report_recipient_phone"] == DINARA
+    assert response.data["settings"]["report_recipient_username"] == DINARA
     order = _shipped(client, product)
-    draft = api.get(COMPOSE, {"order": order.pk}).data
-    assert draft["recipient"]["phone"] == DINARA
-    assert draft["link"].startswith(f"https://wa.me/{DINARA}?text=")
+    assert api.get(COMPOSE, {"order": order.pk}).data["recipient"]["username"] == DINARA
 
 
 @pytest.mark.parametrize(("body", "field"), [
-    ({"report_recipient_phone": "123"}, "report_recipient_phone"),
-    ({"report_recipient_phone": "+7 701 123 45 67 89 01 23"}, "report_recipient_phone"),
+    ({"report_recipient_username": "+7 701 123 45 67"}, "report_recipient_username"),
+    ({"report_recipient_username": "@ab"}, "report_recipient_username"),
     ({"report_recipient_name": " "}, "report_recipient_name"),
 ])
 def test_recipient_settings_are_validated(admin_api, body, field):
-    response = admin_api.put("/api/bots/whatsapp/settings/", body, format="json")
+    response = admin_api.put(SETTINGS, body, format="json")
 
     assert response.status_code == 400
     assert field in response.data["detail"]
-    row = WhatsAppBotSettings.load()
-    assert (row.report_recipient_name, row.report_recipient_phone) == ("Динара", "")
+    row = TelegramBotSettings.load()
+    assert (row.report_recipient_name, row.report_recipient_username) == ("Динара", "")
 
 
-def test_recipient_phone_can_be_cleared(admin_api):
-    row = WhatsAppBotSettings.load()
-    row.report_recipient_phone = DINARA
+def test_recipient_username_can_be_cleared(admin_api):
+    row = TelegramBotSettings.load()
+    row.report_recipient_username = DINARA
     row.save()
 
-    response = admin_api.put("/api/bots/whatsapp/settings/", {"report_recipient_phone": ""}, format="json")
+    response = admin_api.put(SETTINGS, {"report_recipient_username": ""}, format="json")
 
     assert response.status_code == 200
-    assert WhatsAppBotSettings.load().report_recipient_phone == ""
+    assert TelegramBotSettings.load().report_recipient_username == ""
 
 
 def test_loader_cannot_change_the_recipient(api):
-    response = api.put("/api/bots/whatsapp/settings/", {"report_recipient_phone": DINARA}, format="json")
+    response = api.put(SETTINGS, {"report_recipient_username": DINARA}, format="json")
 
     assert response.status_code == 403
 

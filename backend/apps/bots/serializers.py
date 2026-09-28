@@ -1,4 +1,4 @@
-"""Вход «Вставить отчёт» и «Отправить отчёт» у грузчика и журнала WhatsApp-бота, строки журнала и настройки бота."""
+"""Вход разбора отчёта у грузчика и в журнале Telegram-бота, «Отправить отчёт», строки журнала и настройки бота."""
 import re
 from decimal import Decimal
 
@@ -7,12 +7,12 @@ from rest_framework import serializers
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.clients.phone import clean_phone
 from apps.common.money import CURRENCY_CHOICES
 from apps.sales.access import scope_by_client_department
 
-from .models import BotMessage, WhatsAppBotSettings
+from .models import BotChat, BotMessage, TelegramBotSettings
 from .parsing import RAIL_REPORT_MAX_LENGTH, RailReport, parse_rail_report
+from .providers.telegram import PRIVATE, normalize_username
 from .wagon_report import DELIVERIES, REPORT_MAX_ORDERS, REPORT_TEXT_MAX_LENGTH
 
 
@@ -89,10 +89,10 @@ class WagonReportSendSerializer(serializers.Serializer):
         error_messages={
             "blank": "Текст отчёта пуст",
             "required": "Текст отчёта пуст",
-            "max_length": "Отчёт слишком длинный для WhatsApp — выберите период короче",
+            "max_length": "Отчёт слишком длинный — выберите период короче",
         },
     )
-    # Как экран отправляет: ботом или уже открытой ссылкой WhatsApp.
+    # Как экран отправляет: ботом или уже открытой ссылкой Telegram.
     delivery = serializers.ChoiceField(choices=DELIVERIES)
     # Ключ нажатия: повтор того же запроса не отправит отчёт второй раз.
     key = serializers.RegexField(r"^[A-Za-z0-9_-]{8,64}$")
@@ -102,7 +102,7 @@ class WagonReportSendSerializer(serializers.Serializer):
 
 
 class BotMessageSerializer(serializers.ModelSerializer):
-    """Строка журнала WhatsApp-бота."""
+    """Строка журнала бота."""
 
     order = serializers.IntegerField(source="order_id", read_only=True, allow_null=True)
     original = serializers.IntegerField(source="original_id", read_only=True, allow_null=True)
@@ -111,7 +111,7 @@ class BotMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = BotMessage
         fields = [
-            "id", "kind", "status", "chat_name", "sender_id", "sender_name", "text",
+            "id", "provider", "kind", "status", "chat_name", "sender_id", "sender_name", "sender_username", "text",
             "sent_at", "received_at", "parsed", "issues", "draft", "order", "original",
             "reply", "reply_sent_at", "reply_attempts", "error",
             "resolved_by_name", "resolved_at",
@@ -123,88 +123,72 @@ class BotMessageSerializer(serializers.ModelSerializer):
         return (user.get_full_name() or user.username) if user is not None else ""
 
 
-# Идентификатор WhatsApp: номер@c.us, группа@g.us или скрытый номер@lid.
-_WHATSAPP_ID = re.compile(r"^[0-9]{5,24}(-[0-9]+)?@(c\.us|g\.us|lid)$")
-WHATSAPP_ID_LIMIT = 20
-# 8 XXX XXX XX XX — номер Казахстана, набранный без кода страны.
-_LOCAL_KZ_DIGITS = 11
+# Username в Telegram: 5–32 знака, латиница, цифры и «_».
+_USERNAME = re.compile(r"^[a-z][a-z0-9_]{3,31}$")
+USERNAME_LIMIT = 50
+RECENT_CHATS = 20
 
 
-def whatsapp_phone_digits(value: str) -> str:
-    """«+7 701 123-45-67» → «77011234567»: цифры номера с кодом страны, как у Green-API.
-
-    «8 701 123 45 67» (казахстанский номер без кода страны) → «77011234567»:
-    Green-API присылает отправителя с кодом 7, и номер с 8 молча не совпал бы
-    ни с одним отчётом. С плюсом номер уже международный и не меняется.
-    """
-    value = "".join(str(value).split())
-    digits = re.sub(r"[^0-9]", "", value)
-    if not value.startswith("+") and len(digits) == _LOCAL_KZ_DIGITS and digits.startswith("8"):
-        digits = "7" + digits[1:]
-    return digits
+def clean_username(value: str) -> str:
+    """«@Dinara_K» → «dinara_k»; не username — ошибка с тем, что ввели."""
+    username = normalize_username(value)
+    if not _USERNAME.match(username):
+        raise serializers.ValidationError(f"«{value}» — не username Telegram (например, @dinara_k)")
+    return username
 
 
-def normalize_whatsapp_id(value: str) -> str:
-    """«+998 90 111 22 33» → «998901112233@c.us»; готовый идентификатор — как есть."""
-    value = "".join(str(value).split()).lower()
-    if "@" not in value:
-        digits = whatsapp_phone_digits(value)
-        value = f"{digits}@c.us" if digits else value
-    if not _WHATSAPP_ID.match(value):
-        raise serializers.ValidationError(f"«{value}» — не номер WhatsApp и не идентификатор чата")
-    return value
-
-
-class WhatsAppIdListField(serializers.ListField):
+class UsernameListField(serializers.ListField):
     def __init__(self, **kwargs):
-        super().__init__(child=serializers.CharField(max_length=128), max_length=WHATSAPP_ID_LIMIT, **kwargs)
+        super().__init__(child=serializers.CharField(max_length=64), max_length=USERNAME_LIMIT, **kwargs)
 
     def to_internal_value(self, data):
         # Порядок как ввели, без повторов.
-        return list(dict.fromkeys(normalize_whatsapp_id(value) for value in super().to_internal_value(data)))
+        return list(dict.fromkeys(clean_username(value) for value in super().to_internal_value(data)))
 
 
-class WhatsAppBotSettingsSerializer(serializers.ModelSerializer):
-    allowed_chat_ids = WhatsAppIdListField(required=False)
-    allowed_sender_ids = WhatsAppIdListField(required=False)
+class TelegramBotSettingsSerializer(serializers.ModelSerializer):
+    allowed_usernames = UsernameListField(required=False)
     # Дубль вагона — ±дней от даты отчёта (у бота, у грузчика и в журнале).
     duplicate_window_days = serializers.IntegerField(min_value=1, max_value=60, required=False)
     price_tolerance_pct = serializers.DecimalField(
         max_digits=5, decimal_places=2, min_value=Decimal("0"), max_value=Decimal("100"), required=False,
     )
-    # «Отправить отчёт» в истории грузчика: кому и номер WhatsApp (цифры с кодом страны).
+    # «Отправить отчёт» в истории грузчика: кому и его username в Telegram.
     report_recipient_name = serializers.CharField(
         max_length=60, required=False,
         error_messages={"blank": "Укажите, кому отправлять отчёт о вагонах"},
     )
-    report_recipient_phone = serializers.CharField(max_length=40, required=False, allow_blank=True)
-    seen_chats = serializers.SerializerMethodField()
+    report_recipient_username = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    # Получатель отчётов уже написал боту — бот может ему отправить.
+    report_recipient_started = serializers.SerializerMethodField()
+    recent_chats = serializers.SerializerMethodField()
 
     class Meta:
-        model = WhatsAppBotSettings
-        fields = [*WhatsAppBotSettings.SETTINGS_FIELDS, "updated_at", "seen_chats"]
-        read_only_fields = ["updated_at", "seen_chats"]
+        model = TelegramBotSettings
+        fields = [*TelegramBotSettings.SETTINGS_FIELDS, "updated_at", "report_recipient_started", "recent_chats"]
+        read_only_fields = ["updated_at"]
 
     def validate_report_recipient_name(self, value: str) -> str:
         return " ".join(value.split())
 
-    def validate_report_recipient_phone(self, value: str) -> str:
-        """Пусто — без номера; иначе номер полностью (правила номеров клиентов) → только цифры."""
-        if not value.strip():
-            return ""
-        clean_phone(value)
-        return whatsapp_phone_digits(value)
+    def validate_report_recipient_username(self, value: str) -> str:
+        return clean_username(value) if value.strip() else ""
 
-    def get_seen_chats(self, row) -> list[dict]:
-        """Недавние чаты бота — выбрать группу, не зная её идентификатора."""
+    def get_report_recipient_started(self, row) -> bool:
+        username = row.report_recipient_username
+        return bool(username) and BotChat.objects.filter(chat_type=PRIVATE, username=username).exists()
+
+    def get_recent_chats(self, row) -> list[dict]:
+        """Недавно писали боту — добавить username в допущенные, не набирая его."""
         return [
-            {"id": chat_id, "name": (info or {}).get("name", ""), "at": (info or {}).get("at")}
-            for chat_id, info in (row.seen_chats or {}).items()
+            {"id": chat.chat_id, "type": chat.chat_type, "title": chat.title, "username": chat.username,
+             "at": chat.last_message_at}
+            for chat in BotChat.objects.order_by("-last_message_at", "-pk")[:RECENT_CHATS]
         ]
 
     def update(self, instance, validated_data):
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.updated_by = self.context["request"].user
-        instance.save(update_fields=list(WhatsAppBotSettings.CONFIG_FIELDS))
+        instance.save(update_fields=list(TelegramBotSettings.CONFIG_FIELDS))
         return instance
