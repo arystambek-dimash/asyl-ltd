@@ -1,5 +1,5 @@
 "use client";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Label } from "@/components/ui/label";
 import { PlateInput } from "@/components/ui/plate-input";
 import { WagonNumberInput } from "@/components/ui/wagon-number-input";
@@ -10,14 +10,19 @@ import { cn, PHONE_INPUT_TEXT } from "@/lib/utils";
 /** Ошибка поля: текст — показать под полем; true — только подсветить поле. */
 type FieldProblem = string | boolean | null | undefined;
 
+/** Вид машины — только в интерфейсе: для API и газель, и фура — «truck». */
+export type TruckKind = "fura" | "gazelle";
+
 /**
- * Номер транспорта заказа: у вагона — 8 цифр, у машины — тягач и прицеп.
+ * Номер транспорта заказа: у вагона — 8 цифр, у фуры — тягач и прицеп, у газели —
+ * один номер машины и прицеп по галочке «Есть прицеп».
  * У вагона номер лежит в ``truck_number``; оформление (пробелы, дефисы) отбрасывается
  * при вводе — см. WagonNumberInput. Enter в поле тягача переводит к прицепу.
  */
 export function TransportNumberFields({
   id,
   transportType,
+  truckKind = "fura",
   value,
   onChange,
   defaultCountry,
@@ -31,6 +36,7 @@ export function TransportNumberFields({
   /** Префикс id полей: «<id>-truck», «<id>-trailer», «<id>-wagon». */
   id: string;
   transportType: Order["transport_type"];
+  truckKind?: TruckKind;
   value: TransportPair;
   onChange: (value: TransportPair) => void;
   /** Страна клиента — маска пустого номера машины. */
@@ -46,6 +52,7 @@ export function TransportNumberFields({
   className?: string;
 }) {
   const trailerRef = useRef<HTMLInputElement>(null);
+  const [trailerChecked, setTrailerChecked] = useState(false);
   const problem = (field: "truck" | "trailer") => {
     const message = errors?.[field];
     const errorId = `${id}-${field}-error`;
@@ -84,11 +91,14 @@ export function TransportNumberFields({
   }
 
   const trailer = problem("trailer");
+  const gazelle = truckKind === "gazelle";
+  // У газели прицеп — по галочке; записанный номер прицепа держит её включённой.
+  const withTrailer = !gazelle || trailerChecked || value.trailer_number !== "";
   return (
     <div className={cn("grid gap-3", className)}>
       <div>
         <Label htmlFor={`${id}-truck`} className={labelClassName}>
-          Тягач
+          {gazelle ? "Номер машины" : "Тягач"}
         </Label>
         <PlateInput
           id={`${id}-truck`}
@@ -108,26 +118,44 @@ export function TransportNumberFields({
           }}
         />
         {truck.error}
+        {gazelle && (
+          <label className="mt-2 flex w-fit cursor-pointer items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="size-4 accent-[var(--primary)]"
+              checked={withTrailer}
+              disabled={disabled}
+              onChange={(event) => {
+                setTrailerChecked(event.target.checked);
+                if (!event.target.checked) onChange({ ...value, trailer_number: "" });
+              }}
+            />
+            Есть прицеп
+          </label>
+        )}
+        {!withTrailer && hintLine}
       </div>
-      <div>
-        <Label htmlFor={`${id}-trailer`} className={labelClassName}>
-          Прицеп (необязательно)
-        </Label>
-        <PlateInput
-          ref={trailerRef}
-          id={`${id}-trailer`}
-          kind="trailer"
-          size={size}
-          defaultCountry={defaultCountry}
-          disabled={disabled}
-          aria-invalid={trailer.invalid}
-          aria-describedby={trailer.describedBy}
-          value={value.trailer_number}
-          onChange={(trailer_number) => onChange({ ...value, trailer_number })}
-        />
-        {trailer.error}
-        {hintLine}
-      </div>
+      {withTrailer && (
+        <div>
+          <Label htmlFor={`${id}-trailer`} className={labelClassName}>
+            {gazelle ? "Прицеп" : "Прицеп (необязательно)"}
+          </Label>
+          <PlateInput
+            ref={trailerRef}
+            id={`${id}-trailer`}
+            kind="trailer"
+            size={size}
+            defaultCountry={defaultCountry}
+            disabled={disabled}
+            aria-invalid={trailer.invalid}
+            aria-describedby={trailer.describedBy}
+            value={value.trailer_number}
+            onChange={(trailer_number) => onChange({ ...value, trailer_number })}
+          />
+          {trailer.error}
+          {hintLine}
+        </div>
+      )}
     </div>
   );
 }

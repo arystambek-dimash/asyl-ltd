@@ -1,5 +1,6 @@
 import type { FixationDraft } from "@/components/orders/fixation-fields";
 import type { PayNowDraft } from "@/components/orders/pay-now";
+import type { TruckKind } from "@/components/ui/transport-number-fields";
 import type { Order } from "@/lib/types";
 
 /**
@@ -15,6 +16,8 @@ export interface OrderDraft {
   store: string;
   warehouse: string;
   transport: "truck" | "train";
+  /** Газель или фура — выбор формы, для API обе «truck»; в черновиках до разделения поля нет. */
+  truckKind?: TruckKind;
   truck: string;
   /** Прицеп (тягач + прицеп); в черновиках до прицепа поля нет. */
   trailer?: string;

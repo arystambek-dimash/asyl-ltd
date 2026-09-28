@@ -321,6 +321,29 @@ describe("OrderForm reference data resilience", () => {
     );
   });
 
+  it("splits the truck into a gazelle and a fura that both go to the API as a truck", async () => {
+    const user = userEvent.setup();
+    render(
+      <OrderForm
+        template={numberOrder({ transport_type: "truck", truck_number: "" })}
+        onCancel={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: "Фура" })).toHaveAttribute("aria-checked", "true");
+
+    await user.click(screen.getByRole("radio", { name: "Газель" }));
+    expect(screen.queryByLabelText("Тягач")).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Номер машины"), "123abc02");
+    expect(screen.getByText("Газель 123 ABC 02")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/",
+      expect.objectContaining({ transport_type: "truck", truck_number: "123ABC02", trailer_number: "" }),
+    );
+  });
+
   it("keeps a legacy truck number untouched on an unrelated edit", async () => {
     const user = userEvent.setup();
     render(
@@ -330,7 +353,9 @@ describe("OrderForm reference data resilience", () => {
         onDone={vi.fn()}
       />,
     );
-    expect(screen.getByLabelText("Тягач")).toHaveValue("самовывоз");
+    // Машина с одним номером без прицепа открывается газелью.
+    expect(screen.getByRole("radio", { name: "Газель" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByLabelText("Номер машины")).toHaveValue("самовывоз");
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(patchMock).toHaveBeenCalledWith(
       "/orders/22/",
@@ -341,8 +366,8 @@ describe("OrderForm reference data resilience", () => {
   it("keeps a wagon number on edit and preserves drafts when switching transport", async () => {
     const user = userEvent.setup();
     render(<OrderForm editing={numberOrder()} onCancel={vi.fn()} onDone={vi.fn()} />);
-    await user.click(screen.getByRole("radio", { name: /Трак/ }));
-    await user.click(screen.getByRole("radio", { name: /Вагон/ }));
+    await user.click(screen.getByRole("radio", { name: "Фура" }));
+    await user.click(screen.getByRole("radio", { name: "Вагон" }));
     expect(screen.getByLabelText("Номер вагона")).toHaveValue("00123456");
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     expect(patchMock).toHaveBeenCalledWith(
@@ -601,6 +626,29 @@ describe("OrderForm draft", () => {
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
     await waitFor(() => expect(postMock).toHaveBeenCalledOnce());
     expect(localStorage.getItem("asyl_order_draft_v1:5")).toBeNull();
+  });
+
+  it("keeps a fura in the draft while its trailer is still unknown", async () => {
+    const user = userEvent.setup();
+    const first = render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.type(screen.getByLabelText("Тягач"), "07kg695adt");
+    first.unmount();
+
+    render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: "Фура" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByLabelText("Тягач")).toHaveValue("07 KG 695 ADT");
+  });
+
+  it("keeps a gazelle in the draft before its number is typed", async () => {
+    const user = userEvent.setup();
+    const first = render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Тестовый клиент/ }));
+    await user.click(screen.getByRole("radio", { name: "Газель" }));
+    first.unmount();
+
+    render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: "Газель" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByLabelText("Номер машины")).toHaveValue("");
   });
 
   it("restores the trailer, brings «Оплата сразу» back switched off and clears the draft before taking the prepayment", async () => {

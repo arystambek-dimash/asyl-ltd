@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import { EMPTY_TRANSPORT_PAIR, type TransportPair } from "@/lib/plates";
 import { TransportNumberFields } from "./transport-number-fields";
 
-function Fields(props: Partial<React.ComponentProps<typeof TransportNumberFields>>) {
-  const [value, setValue] = useState<TransportPair>(EMPTY_TRANSPORT_PAIR);
+function Fields({
+  initial = EMPTY_TRANSPORT_PAIR,
+  ...props
+}: Partial<React.ComponentProps<typeof TransportNumberFields>> & { initial?: TransportPair }) {
+  const [value, setValue] = useState<TransportPair>(initial);
   return <TransportNumberFields id="t" transportType="truck" value={value} onChange={setValue} {...props} />;
 }
 
@@ -20,6 +23,35 @@ describe("TransportNumberFields", () => {
     expect(screen.getByLabelText("Тягач")).toHaveValue("07 KG 695 ADT");
     expect(screen.getByLabelText("Прицеп (необязательно)")).toHaveFocus();
     expect(screen.queryByLabelText("Номер вагона")).not.toBeInTheDocument();
+  });
+
+  it("у газели — один номер машины, прицеп появляется по галочке", async () => {
+    const user = userEvent.setup();
+    render(<Fields truckKind="gazelle" />);
+
+    expect(screen.getByLabelText("Номер машины")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Тягач")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Прицеп")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Есть прицеп" }));
+    await user.type(screen.getByLabelText("Прицеп"), "07kg837pb");
+
+    expect(screen.getByLabelText("Прицеп")).toHaveValue("07 KG 837 PB");
+  });
+
+  it("у газели с прицепом галочка стоит, а снятая стирает номер прицепа", async () => {
+    const user = userEvent.setup();
+    render(<Fields truckKind="gazelle" initial={{ truck_number: "123ABC02", trailer_number: "07KG837PB" }} />);
+    const withTrailer = screen.getByRole("checkbox", { name: "Есть прицеп" });
+    expect(withTrailer).toBeChecked();
+    expect(screen.getByLabelText("Прицеп")).toHaveValue("07 KG 837 PB");
+
+    await user.click(withTrailer);
+    expect(screen.queryByLabelText("Прицеп")).not.toBeInTheDocument();
+    await user.click(withTrailer);
+
+    expect(screen.getByLabelText("Прицеп")).toHaveValue("");
+    expect(screen.getByLabelText("Номер машины")).toHaveValue("123 ABC 02");
   });
 
   it("у вагона — одно поле, пробелы отбрасываются, номер не обрезается", async () => {

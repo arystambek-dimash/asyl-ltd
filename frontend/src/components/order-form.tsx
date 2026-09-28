@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Segmented } from "@/components/ui/segmented";
-import { TransportNumberFields } from "@/components/ui/transport-number-fields";
+import { TransportNumberFields, type TruckKind } from "@/components/ui/transport-number-fields";
 import { DataGate, FormError } from "@/components/ui/data-state";
 import { DepartmentDot } from "@/components/ui/department-badge";
 import {
@@ -67,6 +67,13 @@ const EMPTY_FORM_OPTIONS: OrderFormOptions = {
   departments: [],
   warehouses: [],
 };
+
+// Газель и фура — только в интерфейсе: в заказ обе уходят как «truck».
+const TRANSPORT_OPTIONS: { value: TruckKind | "train"; label: string }[] = [
+  { value: "gazelle", label: "Газель" },
+  { value: "fura", label: "Фура" },
+  { value: "train", label: "Вагон" },
+];
 
 function productIsAssignedToWarehouse(product: OrderProductOption, warehouse: string) {
   if (!warehouse) return true;
@@ -162,6 +169,9 @@ export function OrderForm({
   const [trailer, setTrailer] = useState(
     draft?.trailer ?? (source?.transport_type === "train" ? "" : (source?.trailer_number ?? "")),
   );
+  // Заказ не помнит, газель это или фура: машина с номером без прицепа открывается газелью.
+  const [truckKind, setTruckKind] = useState<TruckKind>(draft?.truckKind ?? (truck && !trailer ? "gazelle" : "fura"));
+  const vehicle = transport === "train" ? "train" : truckKind;
   const [wagonNumber, setWagonNumber] = useState(
     draft?.wagonNumber ?? (source?.transport_type === "train" ? source.truck_number : ""),
   );
@@ -302,6 +312,7 @@ export function OrderForm({
       store,
       warehouse,
       transport,
+      truckKind,
       truck,
       trailer,
       wagonNumber,
@@ -325,6 +336,7 @@ export function OrderForm({
     store,
     warehouse,
     transport,
+    truckKind,
     truck,
     trailer,
     wagonNumber,
@@ -452,10 +464,12 @@ export function OrderForm({
     { label: "Склад", value: selectedWarehouse?.name ?? source?.warehouse_name ?? "Основной" },
     {
       label: "Транспорт",
-      value:
-        transport === "train"
-          ? `Вагон${wagonNumber ? ` ${wagonNumber}` : ""}`
-          : `Машина${truck || trailer ? ` ${formatPlatePair(truck, trailer)}` : ""}`,
+      value: [
+        TRANSPORT_OPTIONS.find((option) => option.value === vehicle)?.label,
+        transport === "train" ? wagonNumber : formatPlatePair(truck, trailer),
+      ]
+        .filter(Boolean)
+        .join(" "),
     },
     ...(arrival ? [{ label: "Прибытие", value: arrival }] : []),
   ];
@@ -884,18 +898,19 @@ export function OrderForm({
                   <Label>Транспорт</Label>
                   <Segmented
                     ariaLabel="Транспорт"
-                    value={transport}
+                    value={vehicle}
                     disabled={physicalFieldsLocked}
-                    onChange={setTransport}
-                    options={[
-                      { value: "truck", label: "Трак" },
-                      { value: "train", label: "Вагон" },
-                    ]}
+                    onChange={(value) => {
+                      setTransport(value === "train" ? "train" : "truck");
+                      if (value !== "train") setTruckKind(value);
+                    }}
+                    options={TRANSPORT_OPTIONS}
                   />
                 </div>
                 <TransportNumberFields
                   id="order"
                   transportType={transport}
+                  truckKind={truckKind}
                   defaultCountry={selectedClient?.country}
                   disabled={physicalFieldsLocked}
                   errors={{ truck: wagonNumberInvalid }}
