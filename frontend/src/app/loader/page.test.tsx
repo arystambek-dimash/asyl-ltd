@@ -86,7 +86,7 @@ vi.mock("@/components/loader/wagon-report-modal", () => ({
     <div role="dialog" aria-label="Отправить отчёт">
       <span>{JSON.stringify(scope)}</span>
       <button type="button" onClick={() => onSent(mocks.reportSent!)}>
-        Отправить Динаре
+        Отправить
       </button>
     </div>
   ),
@@ -680,22 +680,15 @@ describe("LoaderPage", () => {
                 transport_type: "train",
                 shipped_at: `${today}T07:00:00+05:00`,
                 report_sent_at: sentAt,
-                report_sent_to: "Динаре",
-                report_status: "link",
+                report_deliveries: [{ to: "@dinara_k", status: "sent", status_label: "Отправлено", error: "" }],
               }),
             ],
             { applyItems: historyApply },
           )
         : paged([]),
     );
-    mocks.reportSent = {
-      status: "queued",
-      status_label: "В очереди",
-      sent_at: sentAt,
-      order_ids: [366],
-      recipient: { name: "Динара", to: "Динаре", username: "dinara_k" },
-      error: "",
-    };
+    const queued = { to: "@dinara_k", status: "queued", status_label: "В очереди", error: "" } as const;
+    mocks.reportSent = { sent_at: sentAt, order_ids: [366], deliveries: [queued] };
     render(<LoaderPage />);
 
     await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
@@ -703,7 +696,7 @@ describe("LoaderPage", () => {
     expect(screen.queryByRole("button", { name: "Отправить отчёт" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /История/ }));
 
-    expect(screen.getByText(`Отправлено Динаре ${formatTime(sentAt)}`)).toBeInTheDocument();
+    expect(screen.getByText(`Отправлено @dinara_k · ${formatTime(sentAt)}`)).toBeInTheDocument();
     const buttons = screen.getAllByRole("button", { name: "Отправить отчёт" });
     // Сверху — вся история, у каждой отгрузки — своя; копия отчёта — в окне.
     expect(buttons).toHaveLength(3);
@@ -713,10 +706,10 @@ describe("LoaderPage", () => {
     expect(screen.getByRole("dialog", { name: "Отправить отчёт" })).toHaveTextContent(
       JSON.stringify({ date_from: today, date_to: today, search: "" }),
     );
-    await user.click(screen.getByRole("button", { name: "Отправить Динаре" }));
+    await user.click(screen.getByRole("button", { name: "Отправить" }));
     const [marked] = historyApply.mock.calls.at(-1)!;
     const rows = marked([order(366, { shipped_at: sentAt }), order(360)]);
-    expect(rows[0]).toMatchObject({ report_status: "queued", report_sent_to: "Динаре", report_sent_at: sentAt });
+    expect(rows[0]).toMatchObject({ report_deliveries: [queued], report_sent_at: sentAt });
     expect(rows[1].report_sent_at).toBeNull();
     expect(mocks.reload).not.toHaveBeenCalled();
   });

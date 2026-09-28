@@ -212,7 +212,7 @@ describe("Telegram-бот: журнал", () => {
     // Писавшего боту лично добавляют одним нажатием; группа в подсказки не попадает.
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).queryByRole("button", { name: /Отгрузка вагонов/ })).not.toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: /@jin_sin/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Допустить @jin_sin" }));
     await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
 
     await waitFor(() => expect(mocks.setStatus).toHaveBeenCalledWith(saved));
@@ -222,41 +222,43 @@ describe("Telegram-бот: журнал", () => {
       show_amounts_in_reply: false,
       duplicate_window_days: 3,
       price_tolerance_pct: "15",
-      report_recipient_name: "Динара",
-      report_recipient_username: "",
+      report_recipients: [],
     });
   });
 
-  it("administrator sets who gets the wagon report", async () => {
+  it("administrator picks who gets the wagon report — typed or from recent chats", async () => {
     mocks.permissions = ["bots.view", "bots.manage", "sys_permissions.manage"];
     mocks.put.mockResolvedValueOnce({ data: status() });
     render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
-    const name = screen.getByLabelText("Имя");
-    expect(name).toHaveValue("Динара");
-    await userEvent.clear(name);
-    await userEvent.type(name, "Динара Б.");
-    await userEvent.type(screen.getByLabelText("Username в Telegram"), "@Dinara_K");
+    await userEvent.type(screen.getByLabelText("Кому «Отправить отчёт»"), "@Dinara_K");
+    await userEvent.click(screen.getByRole("button", { name: "В получатели: @jin_sin" }));
     await userEvent.click(screen.getByRole("button", { name: "Сохранить" }));
 
     await waitFor(() => expect(mocks.put).toHaveBeenCalled());
-    const body = mocks.put.mock.calls[0][1];
-    expect(body.report_recipient_name).toBe("Динара Б.");
-    expect(body.report_recipient_username).toBe("dinara_k");
+    expect(mocks.put.mock.calls[0][1].report_recipients).toEqual(["dinara_k", "jin_sin"]);
   });
 
-  it("settings tell whether the recipient has started the bot", async () => {
+  it("settings tell which recipients have started the bot", async () => {
     mocks.permissions = ["bots.view", "sys_permissions.manage"];
     mocks.status = status({
-      settings: makeBotSettings({ report_recipient_username: "dinara_k", report_recipient_started: false }),
+      settings: makeBotSettings({
+        report_recipients: ["dinara_k", "d1maaash"],
+        report_recipient_chats: [
+          { username: "dinara_k", name: "Динара", ready: true },
+          { username: "d1maaash", name: "", ready: false },
+        ],
+      }),
     });
     render(<TelegramBotPage />);
 
     await userEvent.click(screen.getByRole("button", { name: /Настройки/ }));
 
-    expect(screen.getByLabelText("Username в Telegram")).toHaveValue("@dinara_k");
-    expect(screen.getByText("Ещё не писала @asyl_bot — попросите нажать /start.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Кому «Отправить отчёт»")).toHaveValue("@dinara_k\n@d1maaash");
+    const list = screen.getByRole("list", { name: "Получатели" });
+    expect(list).toHaveTextContent("@dinara_k — писал боту, получит отчёт");
+    expect(list).toHaveTextContent("@d1maaash — ещё не писал @asyl_bot, попросите нажать /start");
   });
 
   it("settings errors stay inside the modal", async () => {

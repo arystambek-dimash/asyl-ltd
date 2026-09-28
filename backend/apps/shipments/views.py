@@ -85,7 +85,9 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
             transport_type__in=allowed_transports(self.request.user),
         ).select_related(
             "client__user", "shipment__report_message", "truck_number_set_by",
-        ).prefetch_related("items__product", "payments", "shipment__wagons").annotate(planned_on=planned_day())
+        ).prefetch_related(
+            "items__product", "payments", "shipment__wagons", "shipment__report_message__deliveries",
+        ).annotate(planned_on=planned_day())
         return scope_by_client_department(queryset, self.request.user, client_path="client")
 
     def _tab(self, queryset):
@@ -153,7 +155,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=["get"], url_path="wagon-report/compose")
     def report_compose(self, request):
-        """«Отправить отчёт»: текст в формате владельца, кому и как он уйдёт. Ничего не пишет.
+        """«Отправить отчёт»: текст в формате владельца, кому он уйдёт и можно ли отправить. Ничего не пишет.
 
         ``?order=`` — одна отгрузка из истории; без него — вся история вагонов
         с фильтрами экрана (период и поиск).
@@ -175,7 +177,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     @action(detail=False, methods=["post"], url_path="wagon-report/send")
     def report_send(self, request):
-        """Отправить отчёт: ботом — в очередь, ссылкой — отметить отправку. Ответ экран применяет к строкам."""
+        """Отправить отчёт получателям — в очередь бота. Ответ экран применяет к строкам."""
         orders = self._wagon_orders()
         serializer = WagonReportSendSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -184,7 +186,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         rows = list(orders.filter(status="shipped", pk__in=ids).order_by("shipment__shipped_at", "id"))
         if len(rows) != len(ids):
             raise NotFound("Заказ не найден или не отгружен")
-        message = send_wagon_report(rows, data["text"], request.user, delivery=data["delivery"], key=data["key"])
+        message = send_wagon_report(rows, data["text"], request.user, key=data["key"])
         return Response(sent_payload(message))
 
     @action(detail=True, methods=["post"], url_path="dispatch")

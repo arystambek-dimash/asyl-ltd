@@ -205,15 +205,14 @@ def test_settings_are_changed_only_by_an_administrator(auth_client, reviewer, bo
         "show_amounts_in_reply": True,
         "duplicate_window_days": 7,
         "price_tolerance_pct": "10",
-        "report_recipient_name": "  Динара  ",
-        "report_recipient_username": "@Dinara_K",
+        "report_recipients": ["@Dinara_K"],
     }, format="json")
 
     assert response.status_code == 200, response.data
     row = TelegramBotSettings.load()
     assert (row.enabled, row.allowed_usernames, row.show_amounts_in_reply, row.duplicate_window_days) == (
         False, ["d1maaash", "jin_sin"], True, 7)
-    assert (row.report_recipient_name, row.report_recipient_username) == ("Динара", DINARA)
+    assert row.report_recipients == [DINARA]
     assert row.updated_by == boss
     # Состояние процесса пишет только бот — сохранение настроек его не трогает.
     assert (row.bot_state, row.runtime_status) == ("authorized", "running")
@@ -229,14 +228,15 @@ def test_bad_usernames_are_refused(auth_client, boss, bot_settings, value):
     assert TelegramBotSettings.load().allowed_usernames == [JIN]
 
 
-def test_recent_chats_and_whether_the_recipient_started_the_bot(auth_client, viewer, bot_settings):
-    bot_settings.report_recipient_username = DINARA
+def test_recent_chats_and_whether_each_recipient_started_the_bot(auth_client, viewer, bot_settings):
+    bot_settings.report_recipients = [DINARA]
     bot_settings.save()
     api = auth_client(viewer)
-    assert api.get(STATUS).data["settings"]["report_recipient_started"] is False
+    assert api.get(STATUS).data["settings"]["report_recipient_chats"] == [
+        {"username": DINARA, "name": "", "ready": False}]
 
     messages.ingest(private("/start"))
 
     data = api.get(STATUS).data["settings"]
-    assert data["report_recipient_started"] is True
+    assert data["report_recipient_chats"] == [{"username": DINARA, "name": "Отгрузка вагонов", "ready": True}]
     assert {"type": "private", "username": DINARA}.items() <= data["recent_chats"][0].items()

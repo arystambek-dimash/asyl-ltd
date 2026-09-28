@@ -29,9 +29,7 @@ const wagonOrder: LoaderOrder = {
   rail_station: "",
   wagons: [],
   report_sent_at: null,
-  report_sent_to: "",
-  report_status: "",
-  report_error: "",
+  report_deliveries: [],
 };
 
 function Screen({ order }: { order: LoaderOrder }) {

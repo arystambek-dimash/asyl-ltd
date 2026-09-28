@@ -1,7 +1,9 @@
 from decimal import Decimal
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
+from django.db.models import Value
+from django.db.models.functions import Concat, Substr
 
 from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY
 from apps.common.text import match_key
@@ -31,6 +33,36 @@ class Product(models.Model):
 
     class Meta:
         unique_together = ("name", "color", "weight_kg")
+
+    def save(self, *args, **kwargs):
+        # Все сохранения товара — каталог, админка — идут сюда, поэтому новое
+        # название в старых заказах появляется здесь, а не в каждом месте правки.
+        update_fields = kwargs.get("update_fields")
+        renames = not self._state.adding and (update_fields is None or "name" in update_fields)
+        if not renames:
+            return super().save(*args, **kwargs)
+        old_name = type(self).objects.filter(pk=self.pk).values_list("name", flat=True).first()
+        with transaction.atomic(using=kwargs.get("using")):
+            super().save(*args, **kwargs)
+            if old_name is not None and old_name != self.name:
+                self.rename_in_history(old_name)
+
+    def rename_in_history(self, old_name: str) -> int:
+        """Новое название товара в оформленных заказах и вагонах отгрузки.
+
+        Переименование видно в старых заказах, в том числе в корзине,
+        накладных, выписках и отчётах. Меняется только название: цвет и
+        фасовка в подписи остаются как при заказе — по ним посчитаны камеры и
+        тоннаж отгрузок, а другой товар каталога может уже носить новый цвет.
+        Снимок подписи нужен, когда товар удалён физически: тогда позиция
+        показывает последнее имя. Возвращает число переписанных строк.
+        """
+        old_prefix, new_prefix = f"{old_name} · ", f"{self.name} · "
+        renamed = Concat(Value(new_prefix), Substr("product_label_snapshot", len(old_prefix) + 1))
+        return sum(
+            related.filter(product_label_snapshot__startswith=old_prefix).update(product_label_snapshot=renamed)
+            for related in (self.order_items, self.shipment_wagons)
+        )
 
     @property
     def cv_class(self):

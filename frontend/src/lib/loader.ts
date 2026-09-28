@@ -1,7 +1,7 @@
 import { api } from "@/lib/api";
 import type { TransportPair } from "@/lib/plates";
 import type { ShipmentWagon } from "@/lib/types";
-import type { WagonReportStatus } from "@/lib/wagon-report";
+import type { WagonReportDelivery } from "@/lib/wagon-report";
 import { downloadBlob } from "@/lib/download";
 import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
 import { formatMoney, formatTons } from "@/lib/utils";
@@ -43,11 +43,9 @@ export interface LoaderOrder {
   /** Отгрузка по отчёту о вагонах: станция и вагоны. */
   rail_station: string;
   wagons: ShipmentWagon[];
-  /** «Отправить отчёт» о вагонах: когда, кому («Динаре») и что с сообщением. */
+  /** «Отправить отчёт» о вагонах: когда и что с отчётом у каждого получателя. */
   report_sent_at: string | null;
-  report_sent_to: string;
-  report_status: "" | WagonReportStatus;
-  report_error: string;
+  report_deliveries: WagonReportDelivery[];
 }
 
 export interface WaybillSigner {

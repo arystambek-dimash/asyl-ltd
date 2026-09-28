@@ -1,20 +1,20 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ClipboardCopy, ExternalLink, LoaderCircle, Send } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ClipboardCopy, LoaderCircle, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { api, apiError, apiErrorCode } from "@/lib/api";
-import { copyText, telegramLink } from "@/lib/clipboard";
+import { copyText } from "@/lib/clipboard";
+import { cn } from "@/lib/utils";
 import {
+  blockerText,
   composeUrl,
-  deliveryHint,
   newSendKey,
-  recipientLine,
+  recipientLabel,
   WAGON_REPORT_API,
-  type WagonReportDelivery,
   type WagonReportDraft,
   type WagonReportScope,
   type WagonReportSent,
@@ -23,14 +23,11 @@ import {
 /**
  * «Отправить отчёт» из истории вагонов: сервер составляет отчёт в формате
  * владельца (одна отгрузка или весь период экрана), текст можно поправить и
- * скопировать. «Отправить Динаре»: Telegram-бот может ей написать —
- * сообщение встаёт в его очередь; иначе открывается её чат в Telegram с
- * готовым текстом (вкладка — прямо в нажатии, иначе браузер счёл бы её
- * всплывающим окном), а сервер только отмечает отправку. Telegram уже открыт,
- * а отметка не записалась — повтор только отмечает («Отметить
- * отправленным»), второй раз Telegram открывает отдельная кнопка: иначе
- * Динара получила бы отчёт дважды. Ответ отправки — отметка для строк
- * истории (onSent). Ошибки — внутри окна.
+ * скопировать. «Отправить» ставит его в очередь Telegram-бота — каждому
+ * получателю из настроек бота, кто хоть раз написал боту /start. Кто не
+ * писал — видно сразу, до отправки. Бот не работает или писать некому —
+ * «Отправить» недоступно, окно говорит почему. Ответ отправки — отметка для
+ * строк истории (onSent). Ошибки — внутри окна.
  */
 export function WagonReportModal({
   scope,
@@ -49,8 +46,6 @@ export function WagonReportModal({
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<WagonReportSent | null>(null);
   const [copied, setCopied] = useState<"" | "ok" | "failed">("");
-  // Telegram с этим текстом уже открыт: повтор после сбоя отметки его не открывает.
-  const [linkOpened, setLinkOpened] = useState(false);
   // Ключ нажатия: повтор после обрыва связи не отправит отчёт второй раз.
   const sendKey = useRef(newSendKey());
 
@@ -79,51 +74,36 @@ export function WagonReportModal({
   }, [compose]);
 
   const empty = draft !== null && draft.order_ids.length === 0;
-  const canSend = draft !== null && !empty && text.trim() !== "" && !busy && sent === null;
+  const canSend = draft !== null && draft.can_send && !empty && text.trim() !== "" && !busy && sent === null;
 
   async function copy() {
     setCopied((await copyText(text)) ? "ok" : "failed");
   }
 
-  async function record(delivery: WagonReportDelivery) {
-    if (!draft) return;
+  async function send() {
+    if (!canSend || !draft) return;
     setBusy(true);
     setError("");
     try {
       const { data } = await api.post<WagonReportSent>(`${WAGON_REPORT_API}/send/`, {
         order_ids: draft.order_ids,
         text,
-        delivery,
         key: sendKey.current,
       });
       setSent(data);
       onSent(data);
     } catch (cause) {
       setError(apiError(cause));
-      // Бота выключили, пока окно было открыто: покажем, как отчёт уйдёт теперь.
-      if (apiErrorCode(cause) === "report_bot_unavailable") void compose({ keepText: true }).catch(() => undefined);
+      // Бот или получатели изменились, пока окно было открыто: покажем, как есть сейчас.
+      if (apiErrorCode(cause).startsWith("report_")) void compose({ keepText: true }).catch(() => undefined);
     } finally {
       setBusy(false);
     }
   }
 
-  function openTelegram(username: string) {
-    window.open(telegramLink(username, text), "_blank", "noopener");
-  }
-
-  function send() {
-    if (!canSend || !draft) return;
-    if (draft.delivery === "link" && !linkOpened) {
-      // Синхронно в нажатии: после ожидания ответа браузер заблокировал бы вкладку.
-      openTelegram(draft.recipient.username);
-      setLinkOpened(true);
-    }
-    void record(draft.delivery);
-  }
-
-  const to = draft?.recipient.to ?? "";
-  let sendLabel = to ? `Отправить ${to}` : "Отправить";
-  if (linkOpened) sendLabel = "Отметить отправленным";
+  const blocker = draft ? blockerText(draft) : "";
+  const waiting = draft?.recipients.filter((recipient) => !recipient.ready) ?? [];
+  let sendLabel = "Отправить";
   if (sent) sendLabel = "Отправлено";
   if (busy) sendLabel = "Отправляем…";
   return (
@@ -152,33 +132,49 @@ export function WagonReportModal({
           >
             <ClipboardCopy /> {copied === "ok" ? "Скопировано" : "Скопировать"}
           </Button>
-          {/* Telegram не открылся (закрыли вкладку) — открыть ещё раз, без второй отметки. */}
-          {(sent?.status === "link" || (linkOpened && !sent)) && (
-            <Button
-              variant="outline"
-              className="max-sm:grow"
-              disabled={busy}
-              onClick={() => openTelegram(sent?.recipient.username ?? draft?.recipient.username ?? "")}
-            >
-              <ExternalLink /> Открыть Telegram ещё раз
-            </Button>
-          )}
-          {sent?.status !== "link" && (
-            <Button className="max-sm:grow" disabled={!canSend} onClick={send}>
-              {busy ? <LoaderCircle className="animate-spin" /> : sent ? <CheckCircle2 /> : <Send />}
-              {sendLabel}
-            </Button>
-          )}
+          <Button className="max-sm:grow" disabled={!canSend} onClick={() => void send()}>
+            {busy ? <LoaderCircle className="animate-spin" /> : sent ? <CheckCircle2 /> : <Send />}
+            {sendLabel}
+          </Button>
         </div>
       }
     >
       <div className="flex min-w-0 flex-col gap-3">
         {loading && <p className="text-sm text-[var(--muted-foreground)]">Составляем отчёт…</p>}
-        {draft && (
-          <p className="text-sm">
-            <span className="text-[var(--muted-foreground)]">Кому: </span>
-            <span className="font-medium">{recipientLine(draft)}</span>
-            <span className="block text-[12px] text-[var(--muted-foreground)]">{deliveryHint(draft)}</span>
+        {draft && draft.recipients.length > 0 && (
+          <section aria-label="Кому" className="flex flex-col gap-1.5 text-sm">
+            <span className="text-[var(--muted-foreground)]">Кому (Telegram-бот):</span>
+            <ul className="flex flex-col gap-1">
+              {draft.recipients.map((recipient) => (
+                <li
+                  key={recipient.username}
+                  className={cn("flex min-w-0 items-start gap-2", !recipient.ready && "text-[var(--muted-foreground)]")}
+                >
+                  {recipient.ready ? (
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[var(--success)]" />
+                  ) : (
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
+                  )}
+                  <span className="min-w-0 break-words">
+                    <span className={cn(recipient.ready && "font-medium")}>{recipientLabel(recipient)}</span>
+                    {!recipient.ready && " — ещё не писал боту /start, не получит"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {blocker && (
+          <p
+            role="note"
+            className="rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
+          >
+            {blocker}
+          </p>
+        )}
+        {!blocker && waiting.length > 0 && !sent && (
+          <p className="text-[12px] text-[var(--muted-foreground)]">
+            Попросите их открыть бота и нажать /start — тогда следующие отчёты дойдут и до них.
           </p>
         )}
         {empty && (
@@ -195,7 +191,7 @@ export function WagonReportModal({
               rows={Math.min(14, Math.max(5, text.split("\n").length + 1))}
               spellCheck={false}
               value={text}
-              readOnly={sent !== null || linkOpened}
+              readOnly={sent !== null}
               onChange={(event) => {
                 setText(event.target.value);
                 setCopied("");
@@ -214,11 +210,7 @@ export function WagonReportModal({
             className="flex items-start gap-2 rounded-xl border border-[var(--success)]/30 bg-[var(--success)]/10 px-4 py-3 text-sm"
           >
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-[var(--success)]" />
-            {sent.status === "link"
-              ? `Открыли Telegram — отправьте сообщение ${sent.recipient.to}. Отгрузки отмечены как отправленные.`
-              : sent.status === "queued"
-                ? `В очереди — бот отправит ${sent.recipient.to} в течение минуты.`
-                : `${sent.status_label}: ${sent.recipient.to}.`}
+            {`В очереди — бот отправит в течение минуты: ${sent.deliveries.map((delivery) => delivery.to).join(", ")}.`}
           </p>
         )}
       </div>

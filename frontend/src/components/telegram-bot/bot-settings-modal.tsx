@@ -9,18 +9,12 @@ import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { api, apiError } from "@/lib/api";
 import { PHONE_INPUT_TEXT } from "@/lib/utils";
-import {
-  normalizeUsername,
-  parseUsernames,
-  TELEGRAM_BOT_API,
-  type TelegramBotSettings,
-  type TelegramBotStatus,
-} from "@/lib/telegram-bot";
+import { parseUsernames, TELEGRAM_BOT_API, type TelegramBotSettings, type TelegramBotStatus } from "@/lib/telegram-bot";
 
 /**
  * Настройки бота (администратор): включить, кто пользуется ботом (username
  * в Telegram), суммы в ответе, окно дублей (± дней от даты отчёта), допуск
- * цены и кому уходит «Отправить отчёт» из истории грузчика (имя и username).
+ * цены и кому бот шлёт «Отправить отчёт» из истории грузчика (username).
  * Ответ PUT — вся шапка журнала: экран применяет его, а не перечитывает
  * опрашиваемый статус.
  */
@@ -41,18 +35,17 @@ export function BotSettingsModal({
   const [showAmounts, setShowAmounts] = useState(settings.show_amounts_in_reply);
   const [windowDays, setWindowDays] = useState(String(settings.duplicate_window_days));
   const [tolerance, setTolerance] = useState(String(Number(settings.price_tolerance_pct)));
-  const [reportName, setReportName] = useState(settings.report_recipient_name);
-  const [reportUsername, setReportUsername] = useState(
-    settings.report_recipient_username ? `@${settings.report_recipient_username}` : "",
-  );
+  const [recipients, setRecipients] = useState(settings.report_recipients.map((name) => `@${name}`).join("\n"));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const allowed = parseUsernames(usernames);
+  const reportTo = parseUsernames(recipients);
   // Недавно писали боту лично — их username добавляется одним нажатием.
-  const suggestions = settings.recent_chats.filter(
-    (chat) => chat.type === "private" && chat.username && !allowed.includes(chat.username),
-  );
+  const privateChats = settings.recent_chats.filter((chat) => chat.type === "private" && chat.username);
+  const suggestions = privateChats.filter((chat) => !allowed.includes(chat.username));
+  const recipientSuggestions = privateChats.filter((chat) => !reportTo.includes(chat.username));
+  const started = new Map(settings.report_recipient_chats.map((chat) => [chat.username, chat.ready]));
   const botName = botUsername ? `@${botUsername}` : "бота";
 
   async function save() {
@@ -65,8 +58,7 @@ export function BotSettingsModal({
         show_amounts_in_reply: showAmounts,
         duplicate_window_days: Number(windowDays),
         price_tolerance_pct: tolerance.replace(",", "."),
-        report_recipient_name: reportName,
-        report_recipient_username: normalizeUsername(reportUsername),
+        report_recipients: reportTo,
       });
       onSaved(data);
     } catch (cause) {
@@ -132,6 +124,7 @@ export function BotSettingsModal({
                   key={chat.id}
                   variant="outline"
                   size="sm"
+                  aria-label={`Допустить @${chat.username}`}
                   onClick={() =>
                     setUsernames((current) =>
                       [...parseUsernames(current), chat.username].map((name) => `@${name}`).join("\n"),
@@ -186,47 +179,57 @@ export function BotSettingsModal({
         </div>
 
         <section aria-label="Отчёт о вагонах" className="flex flex-col gap-3 rounded-xl border p-3">
-          <div className="text-sm">
-            <span className="font-medium">Кому «Отправить отчёт»</span>
-            <span className="block text-[12px] text-[var(--muted-foreground)]">
-              Кнопка в истории грузчика (вкладка «Вагоны»). Бот пишет человеку, только если тот хоть раз написал{" "}
-              {botName} (/start); иначе у грузчика откроется её чат в Telegram с готовым текстом.
-            </span>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Имя" htmlFor="bot-report-name">
-              <Input
-                id="bot-report-name"
-                maxLength={60}
-                value={reportName}
-                onChange={(event) => setReportName(event.target.value)}
-                className={PHONE_INPUT_TEXT}
-              />
-            </Field>
-            <Field
-              label="Username в Telegram"
-              htmlFor="bot-report-username"
-              hint={
-                settings.report_recipient_username &&
-                normalizeUsername(reportUsername) === settings.report_recipient_username
-                  ? settings.report_recipient_started
-                    ? "Писала боту — отчёты уйдут ботом."
-                    : `Ещё не писала ${botName} — попросите нажать /start.`
-                  : undefined
-              }
-            >
-              <Input
-                id="bot-report-username"
-                maxLength={64}
-                placeholder="@dinara"
-                spellCheck={false}
-                autoCapitalize="none"
-                value={reportUsername}
-                onChange={(event) => setReportUsername(event.target.value)}
-                className={PHONE_INPUT_TEXT}
-              />
-            </Field>
-          </div>
+          <Field
+            label="Кому «Отправить отчёт»"
+            htmlFor="bot-report-recipients"
+            hint={`Кнопка в истории грузчика (вкладка «Вагоны»): бот шлёт отчёт каждому из списка. Username, по одному в строке. Бот пишет только тем, кто хоть раз написал ${botName} (/start).`}
+          >
+            <Textarea
+              mono
+              id="bot-report-recipients"
+              rows={3}
+              spellCheck={false}
+              value={recipients}
+              onChange={(event) => setRecipients(event.target.value)}
+              className="rounded-md"
+            />
+          </Field>
+          {reportTo.length > 0 && (
+            <ul aria-label="Получатели" className="-mt-1 flex flex-col gap-0.5 text-[12px]">
+              {reportTo.map((username) => (
+                <li key={username} className="text-[var(--muted-foreground)]">
+                  <span className="font-mono text-[var(--foreground)]">@{username}</span>{" "}
+                  {started.get(username) === true
+                    ? "— писал боту, получит отчёт"
+                    : started.get(username) === false
+                      ? `— ещё не писал ${botName}, попросите нажать /start`
+                      : "— проверится после сохранения"}
+                </li>
+              ))}
+            </ul>
+          )}
+          {recipientSuggestions.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[12px] text-[var(--muted-foreground)]">Недавно писали боту:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {recipientSuggestions.map((chat) => (
+                  <Button
+                    key={chat.id}
+                    variant="outline"
+                    size="sm"
+                    aria-label={`В получатели: @${chat.username}`}
+                    onClick={() =>
+                      setRecipients((current) =>
+                        [...parseUsernames(current), chat.username].map((name) => `@${name}`).join("\n"),
+                      )
+                    }
+                  >
+                    <Plus /> {chat.title ? `${chat.title} (@${chat.username})` : `@${chat.username}`}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </Modal>

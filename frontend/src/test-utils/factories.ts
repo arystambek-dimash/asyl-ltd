@@ -64,9 +64,7 @@ export function makeLoaderOrder(id: number, overrides: Partial<LoaderOrder> = {}
     rail_station: "",
     wagons: [],
     report_sent_at: null,
-    report_sent_to: "",
-    report_status: "",
-    report_error: "",
+    report_deliveries: [],
     ...overrides,
   };
 }
@@ -150,7 +148,7 @@ export function makeReportDay(overrides: Partial<ReportDay> = {}): ReportDay {
   };
 }
 
-/** Настройки Telegram-бота: включён, пользуется владелец, отчёты — Динаре (username не указан). */
+/** Настройки Telegram-бота: включён, пользуется владелец, получатели отчётов не выбраны. */
 export function makeBotSettings(overrides: Partial<TelegramBotSettings> = {}): TelegramBotSettings {
   return {
     enabled: true,
@@ -158,9 +156,8 @@ export function makeBotSettings(overrides: Partial<TelegramBotSettings> = {}): T
     show_amounts_in_reply: false,
     duplicate_window_days: 3,
     price_tolerance_pct: "15.00",
-    report_recipient_name: "Динара",
-    report_recipient_username: "",
-    report_recipient_started: false,
+    report_recipients: [],
+    report_recipient_chats: [],
     updated_at: "2026-09-23T09:00:00Z",
     recent_chats: [],
     ...overrides,

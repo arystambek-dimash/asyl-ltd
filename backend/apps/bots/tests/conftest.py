@@ -77,7 +77,7 @@ def dinara_started():
 def bot_on(settings, bot_settings, dinara_started):
     """Бот включён на сервере и жив, отчёты о вагонах — Динаре."""
     settings.TELEGRAM_BOT_ENABLED = True
-    bot_settings.report_recipient_username = DINARA
+    bot_settings.report_recipients = [DINARA]
     bot_alive(bot_settings).save()
     return bot_settings
 

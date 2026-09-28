@@ -4,42 +4,45 @@ import { formatTime } from "@/lib/utils";
 
 export const WAGON_REPORT_API = "/loader/wagon-report";
 
-/** Как уйдёт отчёт: Telegram-ботом (очередь на сервере) или ссылкой Telegram с этого телефона. */
-export type WagonReportDelivery = "bot" | "link";
-/** Почему ссылкой: бот выключен или не работает, нет username получателя, получатель не писал боту. */
-type WagonReportLinkReason = "" | "bot_off" | "no_username" | "not_started";
+/** Почему «Отправить» недоступно: бот не работает, получатели не выбраны, никто из них не писал боту. */
+type WagonReportBlocker = "" | "bot_off" | "no_recipients" | "not_started";
 /**
- * Что с отправленным отчётом: в очереди бота, бот отправляет, отправлен ботом,
- * не ушёл, неизвестно, ушёл ли (Telegram не ответил), или отдан ссылкой.
+ * Что с отчётом у получателя: в очереди бота, бот отправляет, отправлено,
+ * не ушло, неизвестно, ушло ли (Telegram не ответил), или (история) ссылкой.
  */
-export type WagonReportStatus = "queued" | "sending" | "sent" | "failed" | "unknown" | "link";
+type WagonReportStatus = "queued" | "sending" | "sent" | "failed" | "unknown" | "link";
 
-interface WagonReportRecipient {
-  /** Как в настройках бота: «Динара». */
-  name: string;
-  /** В дательном падеже — для «Отправить Динаре». */
-  to: string;
-  /** Username в Telegram без «@»; пусто — не указан. */
+/** Получатель из настроек бота: может ли бот ему написать (писал ли он боту /start). */
+export interface WagonReportRecipient {
   username: string;
+  /** Как человек подписан в Telegram; пусто — ещё не писал боту. */
+  name: string;
+  ready: boolean;
 }
 
-/** Ответ «Составить отчёт»: текст в формате владельца, заказы, кому и как. */
+/** Доставка отчёта одному получателю. */
+export interface WagonReportDelivery {
+  /** «@dinara_k». */
+  to: string;
+  status: WagonReportStatus;
+  status_label: string;
+  error: string;
+}
+
+/** Ответ «Составить отчёт»: текст в формате владельца, заказы, кому и можно ли отправить. */
 export interface WagonReportDraft {
   text: string;
   order_ids: number[];
-  recipient: WagonReportRecipient;
-  delivery: WagonReportDelivery;
-  reason: WagonReportLinkReason;
+  recipients: WagonReportRecipient[];
+  can_send: boolean;
+  reason: WagonReportBlocker;
 }
 
 /** Ответ «Отправить»: экран применяет его к строкам истории. */
 export interface WagonReportSent {
-  status: WagonReportStatus;
-  status_label: string;
   sent_at: string;
   order_ids: number[];
-  recipient: WagonReportRecipient;
-  error: string;
+  deliveries: WagonReportDelivery[];
 }
 
 /** Одна отгрузка из истории или вся история с фильтрами экрана. */
@@ -54,23 +57,20 @@ export function composeUrl(scope: WagonReportScope): string {
   return `${WAGON_REPORT_API}/compose/?${query}`;
 }
 
-/** Строка «Кому» в окне отправки. */
-export function recipientLine(draft: Pick<WagonReportDraft, "recipient">): string {
-  const { recipient } = draft;
-  if (recipient.username) return `${recipient.to} · @${recipient.username}`;
-  return `${recipient.to} · username не указан — выберите чат в Telegram`;
+/** «Динара (@dinara_k)» или «@dinara_k», пока человек не писал боту. */
+export function recipientLabel(recipient: WagonReportRecipient): string {
+  return recipient.name ? `${recipient.name} (@${recipient.username})` : `@${recipient.username}`;
 }
 
-const LINK_REASONS: Record<Exclude<WagonReportLinkReason, "">, string> = {
-  bot_off: "Бот сейчас не отправляет — откроется Telegram с готовым текстом.",
-  no_username: "В настройках бота не указан username получателя — откроется выбор чата в Telegram.",
-  not_started: "Получатель ещё не писал боту (/start) — откроется её чат в Telegram с готовым текстом.",
+const BLOCKERS: Record<Exclude<WagonReportBlocker, "">, string> = {
+  bot_off: "Telegram-бот сейчас не работает — отправить нельзя. Скопируйте текст и отправьте сами.",
+  no_recipients: "Не выбрано, кому отправлять отчёт: администратор выбирает получателей в «Telegram-бот → Настройки».",
+  not_started: "Никто из получателей ещё не написал боту /start — бот не может написать первым.",
 };
 
-/** Как уйдёт отчёт — строкой под «Кому». */
-export function deliveryHint(draft: Pick<WagonReportDraft, "delivery" | "reason">): string {
-  if (draft.delivery === "bot" || !draft.reason) return "Отправит Telegram-бот.";
-  return LINK_REASONS[draft.reason];
+/** Почему «Отправить» недоступно — строкой в окне; пусто — можно отправлять. */
+export function blockerText(draft: Pick<WagonReportDraft, "reason">): string {
+  return draft.reason ? BLOCKERS[draft.reason] : "";
 }
 
 /** Ключ нажатия «Отправить»: повтор того же запроса сервер не отправит второй раз. */
@@ -83,15 +83,7 @@ export function newSendKey(): string {
 export function withReportSent(rows: LoaderOrder[], sent: WagonReportSent): LoaderOrder[] {
   const ids = new Set(sent.order_ids);
   return rows.map((row) =>
-    ids.has(row.id)
-      ? {
-          ...row,
-          report_sent_at: sent.sent_at,
-          report_status: sent.status,
-          report_sent_to: sent.recipient.to,
-          report_error: sent.error,
-        }
-      : row,
+    ids.has(row.id) ? { ...row, report_sent_at: sent.sent_at, report_deliveries: sent.deliveries } : row,
   );
 }
 
@@ -100,23 +92,45 @@ interface ReportMark {
   text: string;
 }
 
-/** Пометка на карточке истории: «Отправлено Динаре 07:45». */
-export function reportMark(order: LoaderOrder): ReportMark | null {
-  if (!order.report_sent_at) return null;
-  const to = order.report_sent_to ? ` ${order.report_sent_to}` : "";
+const MARK_ORDER: WagonReportStatus[] = ["sent", "link", "queued", "sending", "failed", "unknown"];
+
+/**
+ * Пометки на карточке истории — по строке на исход: «Отправлено @a, @b · 07:45»,
+ * «Бот отправит @c», «Не отправлено @d: причина».
+ */
+export function reportMarks(order: LoaderOrder): ReportMark[] {
+  if (!order.report_sent_at) return [];
   const time = formatTime(order.report_sent_at);
-  if (order.report_status === "queued") return { tone: "muted", text: `Бот отправит${to} · ${time}` };
-  if (order.report_status === "sending") return { tone: "muted", text: `Бот отправляет${to} · ${time}` };
-  if (order.report_status === "failed") {
-    return { tone: "destructive", text: `Не отправлено${to}: ${order.report_error || "ошибка Telegram"}` };
+  const deliveries = order.report_deliveries ?? [];
+  // Отметка есть, а доставок нет — отчёт отправляли, пока шёл откат версии: сам факт виден.
+  if (deliveries.length === 0) return [{ tone: "muted", text: `Отчёт отправлен · ${time}` }];
+  const byStatus = new Map<WagonReportStatus, WagonReportDelivery[]>();
+  for (const delivery of deliveries) {
+    byStatus.set(delivery.status, [...(byStatus.get(delivery.status) ?? []), delivery]);
   }
-  if (order.report_status === "unknown") {
-    // Сообщение могло уйти: повторная отправка без проверки задвоила бы отчёт.
-    const reason = order.report_error ? ` (${order.report_error})` : "";
-    return {
-      tone: "destructive",
-      text: `Не подтверждено${to}: проверьте Telegram, прежде чем отправлять снова${reason}`,
-    };
+  const marks: ReportMark[] = [];
+  for (const status of MARK_ORDER) {
+    const group = byStatus.get(status);
+    if (!group) continue;
+    const to = group.map((delivery) => delivery.to).join(", ");
+    if (status === "sent") marks.push({ tone: "success", text: `Отправлено ${to} · ${time}` });
+    if (status === "link") marks.push({ tone: "success", text: `Отправлено ссылкой ${to} · ${time}` });
+    if (status === "queued") marks.push({ tone: "muted", text: `Бот отправит ${to} · ${time}` });
+    if (status === "sending") marks.push({ tone: "muted", text: `Бот отправляет ${to} · ${time}` });
+    for (const delivery of status === "failed" ? group : []) {
+      marks.push({
+        tone: "destructive",
+        text: `Не отправлено ${delivery.to}: ${delivery.error || "ошибка Telegram"}`,
+      });
+    }
+    for (const delivery of status === "unknown" ? group : []) {
+      // Сообщение могло уйти: повторная отправка без проверки задвоила бы отчёт.
+      const reason = delivery.error ? ` (${delivery.error})` : "";
+      marks.push({
+        tone: "destructive",
+        text: `Не подтверждено ${delivery.to}: проверьте Telegram, прежде чем отправлять снова${reason}`,
+      });
+    }
   }
-  return { tone: "success", text: `Отправлено${to} ${time}` };
+  return marks;
 }

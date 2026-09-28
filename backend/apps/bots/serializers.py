@@ -12,8 +12,8 @@ from apps.sales.access import scope_by_client_department
 
 from .models import BotChat, BotMessage, TelegramBotSettings
 from .parsing import RAIL_REPORT_MAX_LENGTH, RailReport, parse_rail_report
-from .providers.telegram import PRIVATE, normalize_username
-from .wagon_report import DELIVERIES, REPORT_MAX_ORDERS, REPORT_TEXT_MAX_LENGTH
+from .providers.telegram import normalize_username
+from .wagon_report import REPORT_MAX_ORDERS, REPORT_TEXT_MAX_LENGTH, report_recipients
 
 
 class RailReportSerializer(serializers.Serializer):
@@ -92,8 +92,6 @@ class WagonReportSendSerializer(serializers.Serializer):
             "max_length": "Отчёт слишком длинный — выберите период короче",
         },
     )
-    # Как экран отправляет: ботом или уже открытой ссылкой Telegram.
-    delivery = serializers.ChoiceField(choices=DELIVERIES)
     # Ключ нажатия: повтор того же запроса не отправит отчёт второй раз.
     key = serializers.RegexField(r"^[A-Za-z0-9_-]{8,64}$")
 
@@ -153,30 +151,19 @@ class TelegramBotSettingsSerializer(serializers.ModelSerializer):
     price_tolerance_pct = serializers.DecimalField(
         max_digits=5, decimal_places=2, min_value=Decimal("0"), max_value=Decimal("100"), required=False,
     )
-    # «Отправить отчёт» в истории грузчика: кому и его username в Telegram.
-    report_recipient_name = serializers.CharField(
-        max_length=60, required=False,
-        error_messages={"blank": "Укажите, кому отправлять отчёт о вагонах"},
-    )
-    report_recipient_username = serializers.CharField(max_length=64, required=False, allow_blank=True)
-    # Получатель отчётов уже написал боту — бот может ему отправить.
-    report_recipient_started = serializers.SerializerMethodField()
+    # «Отправить отчёт» в истории грузчика: кому бот шлёт отчёт.
+    report_recipients = UsernameListField(required=False)
+    # Получатели и может ли бот каждому написать (писал ли он боту /start).
+    report_recipient_chats = serializers.SerializerMethodField()
     recent_chats = serializers.SerializerMethodField()
 
     class Meta:
         model = TelegramBotSettings
-        fields = [*TelegramBotSettings.SETTINGS_FIELDS, "updated_at", "report_recipient_started", "recent_chats"]
+        fields = [*TelegramBotSettings.SETTINGS_FIELDS, "updated_at", "report_recipient_chats", "recent_chats"]
         read_only_fields = ["updated_at"]
 
-    def validate_report_recipient_name(self, value: str) -> str:
-        return " ".join(value.split())
-
-    def validate_report_recipient_username(self, value: str) -> str:
-        return clean_username(value) if value.strip() else ""
-
-    def get_report_recipient_started(self, row) -> bool:
-        username = row.report_recipient_username
-        return bool(username) and BotChat.objects.filter(chat_type=PRIVATE, username=username).exists()
+    def get_report_recipient_chats(self, row) -> list[dict]:
+        return [recipient.payload() for recipient in report_recipients(row)]
 
     def get_recent_chats(self, row) -> list[dict]:
         """Недавно писали боту — добавить username в допущенные, не набирая его."""

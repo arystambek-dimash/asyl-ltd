@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.bots.wagon_report import message_state, recipient_to
+from apps.bots.wagon_report import delivery_payload
 from apps.common.money import money_string
 from apps.orders.debt import order_payment_status, order_remaining
 from apps.orders.serializers import OrderWagonsMixin, TransportNumbersSerializer, TransportSuggestionsMixin
@@ -32,13 +32,11 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
     # Отгрузка по отчёту о вагонах: станция и вагоны.
     rail_station = serializers.CharField()
     wagons = serializers.SerializerMethodField()
-    # «Отправить отчёт» в истории вагонов: когда, кому (в дательном падеже —
-    # «Динаре») и что с сообщением: queued, sending, sent, failed, unknown или
-    # link (как бот отстал от очереди — см. message_state).
+    # «Отправить отчёт» в истории вагонов: когда и что с отчётом у каждого
+    # получателя — queued, sending, sent, failed, unknown или link (как бот
+    # отстал от очереди — см. delivery_state).
     report_sent_at = serializers.SerializerMethodField()
-    report_sent_to = serializers.SerializerMethodField()
-    report_status = serializers.SerializerMethodField()
-    report_error = serializers.SerializerMethodField()
+    report_deliveries = serializers.SerializerMethodField()
     # Прошлые пары клиента — чипы «как в прошлый раз» (считаются на страницу).
     transport_suggestions = serializers.SerializerMethodField()
     # Пару номеров указал клиент: грузчик её не меняет и прицеп к ней не
@@ -64,26 +62,15 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
     def get_client_name(self, order):
         return order.client.display_name
 
-    @staticmethod
-    def _report_message(order):
-        shipment = getattr(order, "shipment", None)
-        return shipment.report_message if shipment is not None and shipment.report_message_id else None
-
     def get_report_sent_at(self, order):
         shipment = getattr(order, "shipment", None)
         return shipment.report_sent_at if shipment is not None else None
 
-    def get_report_sent_to(self, order):
-        message = self._report_message(order)
-        return recipient_to(message.recipient_name) if message is not None else ""
-
-    def get_report_status(self, order):
-        message = self._report_message(order)
-        return message_state(message)[0] if message is not None else ""
-
-    def get_report_error(self, order):
-        message = self._report_message(order)
-        return message_state(message)[1] if message is not None else ""
+    def get_report_deliveries(self, order):
+        shipment = getattr(order, "shipment", None)
+        if shipment is None or not shipment.report_message_id:
+            return []
+        return [delivery_payload(delivery) for delivery in shipment.report_message.deliveries.all()]
 
     def get_transport_locked(self, order):
         request = self.context.get("request")

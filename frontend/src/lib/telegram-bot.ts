@@ -1,6 +1,7 @@
 /** Журнал Telegram-бота отчётов о вагонах (GET/POST /bots/telegram/…). */
 import type { BadgeTone } from "@/lib/constants";
 import type { RailIssue } from "@/lib/rail-report";
+import type { WagonReportRecipient } from "@/lib/wagon-report";
 import { formatMoney } from "@/lib/utils";
 import { wagonsWord } from "@/lib/wagons";
 
@@ -65,11 +66,10 @@ export interface TelegramBotSettings {
   /** Дубль вагона: тот же номер отгружен в пределах ± стольких дней от даты отчёта (по умолчанию 3). */
   duplicate_window_days: number;
   price_tolerance_pct: string;
-  /** «Отправить отчёт» в истории грузчика: кому (по умолчанию «Динара») и её username без «@». */
-  report_recipient_name: string;
-  report_recipient_username: string;
-  /** Получатель уже написал боту /start — бот может ему отправить. */
-  report_recipient_started: boolean;
+  /** «Отправить отчёт» в истории грузчика: кому бот шлёт отчёт — username без «@». */
+  report_recipients: string[];
+  /** Получатели и может ли бот каждому написать (писал ли он боту /start). */
+  report_recipient_chats: WagonReportRecipient[];
   updated_at: string;
   /** Недавно писали боту — добавить username в допущенные, не набирая его. */
   recent_chats: BotChat[];

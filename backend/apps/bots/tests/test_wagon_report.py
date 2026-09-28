@@ -1,29 +1,26 @@
-"""«Отправить отчёт» из истории грузчика: текст владельца, кому и как отправить, очередь бота."""
+"""«Отправить отчёт» из истории грузчика: текст владельца, получатели, очередь бота и доставки."""
 from datetime import date, datetime, time, timedelta
 
 import pytest
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.bots.models import BotChat, BotClientProfile, OutgoingMessage
+from apps.bots.models import BotChat, BotClientProfile, OutgoingMessage, ReportDelivery
 from apps.bots.parsing import parse_rail_report
 from apps.bots.runner import RUNNING, BotRunner
 from apps.bots.tests.samples import train_order
 from apps.bots.tests.telegram_fakes import DINARA, DINARA_CHAT, FakeTelegram, bot_alive
 from apps.bots.wagon_report import (
-    BOT,
     BOT_OFF,
-    LINK,
     MAX_SEND_ATTEMPTS,
-    NO_USERNAME,
+    NO_RECIPIENTS,
     NOT_STARTED,
     REPORT_QUEUE_TIMEOUT,
     SENDING_TIMEOUT,
     compose_rail_report,
-    message_state,
+    delivery_state,
     period_report,
-    recipient_to,
-    report_recipient,
+    report_draft,
     send_pending_reports,
     send_wagon_report,
 )
@@ -171,227 +168,228 @@ def test_dictionaries_are_read_once_for_the_whole_period(client, other_client, p
 # --- кому и как ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("name", "to"), [
-    ("Динара", "Динаре"), ("Мария", "Марии"), ("Таня", "Тане"), ("Азамат", "Азамату"),
-    ("Андрей", "Андрею"), ("ДИНАРА", "ДИНАРЕ"), ("Айгуль", "Айгуль"), ("Динара Ахметова", "Динара Ахметова"),
+# --- кому -----------------------------------------------------------------------------------------
+
+
+def _started(username, chat_id, title=""):
+    """Человек написал боту /start — у бота есть его личный чат."""
+    return BotChat.objects.create(
+        chat_id=chat_id, chat_type="private", title=title or username, username=username,
+        last_message_at=timezone.now())
+
+
+def test_draft_lists_recipients_and_who_can_get_the_report(client, product, bot_on):
+    bot_on.report_recipients = [DINARA, "d1maaash"]
+    bot_on.save()
+    order = _shipped(client, product, truck_number="12345678")
+
+    draft = report_draft(_rows(order))
+
+    assert draft["recipients"] == [
+        {"username": DINARA, "name": "Динара", "ready": True},
+        {"username": "d1maaash", "name": "", "ready": False},
+    ]
+    assert (draft["can_send"], draft["reason"], draft["order_ids"]) == (True, "", [order.pk])
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ("bot_off", BOT_OFF), ("no_recipients", NO_RECIPIENTS), ("not_started", NOT_STARTED),
 ])
-def test_recipient_is_named_in_the_dative(name, to):
-    assert recipient_to(name) == to
+def test_draft_says_why_the_report_cannot_be_sent(client, product, bot_on, settings, change, reason):
+    if change == "bot_off":
+        settings.TELEGRAM_BOT_ENABLED = False
+    elif change == "no_recipients":
+        bot_on.report_recipients = []
+        bot_on.save()
+    else:
+        BotChat.objects.all().delete()
+
+    draft = report_draft(_rows(_shipped(client, product, truck_number="12345678")))
+
+    assert (draft["can_send"], draft["reason"]) == (False, reason)
 
 
-def test_without_the_bot_the_report_goes_by_a_telegram_link_to_dinara():
-    recipient = report_recipient()
-
-    assert (recipient.name, recipient.to, recipient.username, recipient.delivery, recipient.reason) == (
-        "Динара", "Динаре", "", LINK, BOT_OFF)
-
-
-def test_enabled_bot_sends_to_the_private_chat_of_the_recipient(bot_on):
-    recipient = report_recipient()
-    assert (recipient.delivery, recipient.chat_id, recipient.username, recipient.reason) == (
-        BOT, DINARA_CHAT, DINARA, "")
-
-    bot_on.report_recipient_username = ""
-    bot_on.save()
-    assert (report_recipient().delivery, report_recipient().reason) == (LINK, NO_USERNAME)
-
-
-def test_bot_cannot_write_first_to_a_recipient_who_never_started_it(bot_on):
-    BotChat.objects.all().delete()
-
-    recipient = report_recipient()
-
-    assert (recipient.delivery, recipient.reason, recipient.chat_id) == (LINK, NOT_STARTED, "")
-
-
-def test_bot_switched_off_on_the_server_or_in_the_journal_means_a_link(bot_on, settings):
-    settings.TELEGRAM_BOT_ENABLED = False
-    assert report_recipient().delivery == LINK
-
-    settings.TELEGRAM_BOT_ENABLED = True
-    bot_on.enabled = False
-    bot_on.save()
-    recipient = report_recipient()
-    assert (recipient.delivery, recipient.username, recipient.reason) == (LINK, DINARA, BOT_OFF)
-
-
-def test_bot_is_offered_only_while_its_process_is_alive(bot_on, settings):
-    """Флаги включены, но бот не работает — ссылкой: иначе отчёт вечно ждал бы в очереди."""
-    assert report_recipient().delivery == BOT
+def test_bot_is_offered_only_while_its_process_is_alive(client, product, bot_on, settings):
+    """Флаги включены, но бот не работает — отправить нельзя: иначе отчёт вечно ждал бы в очереди."""
+    rows = _rows(_shipped(client, product, truck_number="12345678"))
+    assert report_draft(rows)["can_send"]
     max_age = timedelta(seconds=settings.TELEGRAM_BOT_HEARTBEAT_MAX_AGE_SECONDS)
 
     # Контейнер бота остановлен или простаивает (TELEGRAM_BOT_ENABLED=0 только у него): круги не отмечаются.
     bot_alive(bot_on, polled_at=timezone.now() - max_age - timedelta(seconds=1)).save()
-    assert report_recipient().delivery == LINK
-    bot_on.polled_at = None
-    bot_on.save()
-    assert report_recipient().delivery == LINK
-
+    assert report_draft(rows)["reason"] == BOT_OFF
     # Нет токена или Telegram недоступен — бот пишет «degraded».
     bot_alive(bot_on).save()
     bot_on.runtime_status = "degraded"
     bot_on.save()
-    assert report_recipient().delivery == LINK
-
+    assert report_draft(rows)["reason"] == BOT_OFF
     # Telegram отверг токен.
     bot_alive(bot_on).save()
     bot_on.bot_state = "unauthorized"
     bot_on.save()
-    recipient = report_recipient()
-    assert (recipient.delivery, recipient.username) == (LINK, DINARA)
+    assert report_draft(rows)["reason"] == BOT_OFF
 
 
 # --- отправка -----------------------------------------------------------------------------------
 
 
-def test_link_sending_marks_shipments_and_logs_an_event_per_order(client, product, wagon_viewer):
+def test_sending_queues_a_delivery_per_ready_recipient_once_per_press(client, product, wagon_viewer, bot_on):
+    bot_on.report_recipients = [DINARA, "d1maaash", "not_started"]
+    bot_on.save()
+    _started("d1maaash", "900", "Димаш")
     orders = [_shipped(client, product, truck_number="12345678"), _shipped(client, product, truck_number="28087658")]
 
-    message = send_wagon_report(orders, "отчёт", wagon_viewer, delivery=LINK, key="key-00000001")
-
-    assert (message.status, message.recipient_name, message.chat_id, message.text) == (
-        OutgoingMessage.LINK, "Динара", "", "отчёт")
-    assert message.order_ids == [order.pk for order in orders]
-    for shipment in Shipment.objects.filter(order__in=orders):
-        assert (shipment.report_sent_at, shipment.report_sent_by, shipment.report_message) == (
-            message.created_at, wagon_viewer, message)
-    events = EventLog.objects.filter(event_type="rail_report").order_by("order_id")
-    assert [(event.order_id, event.message) for event in events] == [
-        (order.pk, "Отчёт о вагонах отправлен Динаре ссылкой Telegram") for order in orders
-    ]
-    assert events[0].payload["message_id"] == message.pk
-
-
-def test_bot_sending_is_queued_once_per_press(client, product, wagon_viewer, bot_on):
-    order = _shipped(client, product, truck_number="12345678")
-
-    first = send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000002")
-    again = send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000002")
+    first = send_wagon_report(orders, "отчёт", wagon_viewer, key="key-00000002")
+    again = send_wagon_report(orders, "отчёт", wagon_viewer, key="key-00000002")
 
     assert again.pk == first.pk
-    assert (first.status, first.chat_id, first.username) == (OutgoingMessage.QUEUED, DINARA_CHAT, DINARA)
-    assert OutgoingMessage.objects.count() == 1
-    assert EventLog.objects.get(event_type="rail_report").message == "Отчёт о вагонах отправлен Динаре Telegram-ботом"
+    assert (OutgoingMessage.objects.count(), first.order_ids) == (1, [order.pk for order in orders])
+    # Кто не писал боту /start — не получит: бот не может написать первым.
+    assert list(first.deliveries.values_list("username", "name", "chat_id", "status")) == [
+        (DINARA, "Динара", DINARA_CHAT, "queued"), ("d1maaash", "Димаш", "900", "queued")]
+    for shipment in Shipment.objects.filter(order__in=orders):
+        assert (shipment.report_sent_at, shipment.report_sent_by, shipment.report_message) == (
+            first.created_at, wagon_viewer, first)
+    events = EventLog.objects.filter(event_type="rail_report").order_by("order_id")
+    assert [(event.order_id, event.message) for event in events] == [
+        (order.pk, f"Отчёт о вагонах отправлен Telegram-ботом: @{DINARA}, @d1maaash") for order in orders
+    ]
+    assert events[0].payload["recipients"] == [DINARA, "d1maaash"]
 
 
-def test_bot_delivery_is_refused_when_the_bot_went_off(client, product, wagon_viewer):
+@pytest.mark.parametrize(("change", "code"), [
+    ("bot_off", "report_bot_off"), ("no_recipients", "report_no_recipients"), ("not_started", "report_not_started"),
+])
+def test_sending_is_refused_with_the_reason(client, product, wagon_viewer, bot_on, settings, change, code):
+    if change == "bot_off":
+        settings.TELEGRAM_BOT_ENABLED = False
+    elif change == "no_recipients":
+        bot_on.report_recipients = []
+        bot_on.save()
+    else:
+        BotChat.objects.all().delete()
     order = _shipped(client, product, truck_number="12345678")
 
     with pytest.raises(ValidationError) as caught:
-        send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000003")
+        send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000003")
 
-    assert caught.value.detail["code"] == "report_bot_unavailable"
+    assert caught.value.detail["code"] == code
     assert not OutgoingMessage.objects.exists()
     assert Shipment.objects.get(order=order).report_sent_at is None
 
 
-def test_bot_sends_a_queued_report_once(client, product, wagon_viewer, bot_on):
+def test_bot_sends_each_delivery_once(client, product, wagon_viewer, bot_on):
+    bot_on.report_recipients = [DINARA, "d1maaash"]
+    bot_on.save()
+    _started("d1maaash", "900")
     order = _shipped(client, product, truck_number="12345678")
-    message = send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000004")
+    message = send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000004")
     api = FakeTelegram()
 
-    assert send_pending_reports(api) == 1
+    assert send_pending_reports(api) == 2
     assert send_pending_reports(api) == 0
 
-    assert api.sent == [(DINARA_CHAT, "отчёт", "")]
-    message.refresh_from_db()
-    assert (message.status, message.provider_message_id, message.error) == (
-        OutgoingMessage.SENT, f"{DINARA_CHAT}:1001", "")
-    assert message.sent_at is not None
+    assert api.sent == [(DINARA_CHAT, "отчёт", ""), ("900", "отчёт", "")]
+    first = message.deliveries.first()
+    assert (first.status, first.provider_message_id, first.error) == (ReportDelivery.SENT, f"{DINARA_CHAT}:1001", "")
+    assert first.sent_at is not None
 
 
 def test_provider_refusals_are_retried_and_then_visible(client, product, wagon_viewer, bot_on):
-    """Telegram отказал (4xx) — сообщение точно не ушло: бот повторяет его на следующих кругах."""
+    """Telegram отказал — сообщение точно не ушло: бот повторяет его на следующих кругах."""
     order = _shipped(client, product, truck_number="12345678")
-    message = send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000005")
-    api = FakeTelegram(fail_send=TelegramError("Telegram sendMessage: HTTP 429"))
+    message = send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000005")
+    delivery = message.deliveries.get()
+    api = FakeTelegram(fail_send=TelegramError("Telegram sendMessage: нет связи (URLError)"))
 
     with pytest.raises(TelegramError):
         send_pending_reports(api)
-    message.refresh_from_db()
-    assert (message.status, message.attempts, message.error) == (
-        OutgoingMessage.QUEUED, 1, "Telegram sendMessage: HTTP 429")
+    delivery.refresh_from_db()
+    assert (delivery.status, delivery.attempts, delivery.error) == (
+        ReportDelivery.QUEUED, 1, "Telegram sendMessage: нет связи (URLError)")
 
     for _ in range(MAX_SEND_ATTEMPTS - 1):
         with pytest.raises(TelegramError):
             send_pending_reports(api)
-    message.refresh_from_db()
-    assert (message.status, message.attempts) == (OutgoingMessage.FAILED, MAX_SEND_ATTEMPTS)
+    delivery.refresh_from_db()
+    assert (delivery.status, delivery.attempts) == (ReportDelivery.FAILED, MAX_SEND_ATTEMPTS)
     assert send_pending_reports(FakeTelegram()) == 0
 
 
-def test_refused_report_does_not_hold_back_the_next_one(client, product, wagon_viewer, bot_on):
+def test_refused_delivery_does_not_hold_back_the_next_one(client, product, wagon_viewer, bot_on):
+    bot_on.report_recipients = [DINARA, "d1maaash"]
+    bot_on.save()
+    _started("d1maaash", "900")
     order = _shipped(client, product, truck_number="12345678")
-    refused = send_wagon_report([order], "первый", wagon_viewer, delivery=BOT, key="key-00000021")
-    send_wagon_report([order], "второй", wagon_viewer, delivery=BOT, key="key-00000022")
+    message = send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000021")
 
-    class RefusesFirst(FakeTelegram):
+    class BlockedByDinara(FakeTelegram):
         def send_message(self, chat_id, text, *, reply_to=""):
-            if text == "первый":
+            if chat_id == DINARA_CHAT:
                 raise TelegramRefused("Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user")
             return super().send_message(chat_id, text, reply_to=reply_to)
 
-    api = RefusesFirst()
+    api = BlockedByDinara()
     assert send_pending_reports(api) == 1
 
-    assert [text for _, text, _ in api.sent] == ["второй"]
-    refused.refresh_from_db()
-    assert (refused.status, refused.attempts) == (OutgoingMessage.QUEUED, 1)
+    assert api.sent == [("900", "отчёт", "")]
+    refused = message.deliveries.get(username=DINARA)
+    assert (refused.status, refused.attempts) == (ReportDelivery.QUEUED, 1)
     assert "blocked" in refused.error
 
 
 class _WatchedTelegram(FakeTelegram):
-    """Запоминает статус строки в момент отправки."""
+    """Запоминает статус доставки в момент отправки."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.statuses = []
 
     def send_message(self, chat_id, text, *, reply_to=""):
-        self.statuses.append(OutgoingMessage.objects.get(text=text).status)
+        self.statuses.append(ReportDelivery.objects.get(chat_id=chat_id).status)
         return super().send_message(chat_id, text, reply_to=reply_to)
 
 
-def test_report_is_claimed_before_it_is_sent(client, product, wagon_viewer, bot_on):
+def test_delivery_is_claimed_before_it_is_sent(client, product, wagon_viewer, bot_on):
     order = _shipped(client, product, truck_number="12345678")
-    send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000007")
+    send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000007")
     api = _WatchedTelegram()
 
     assert send_pending_reports(api) == 1
 
-    assert api.statuses == [OutgoingMessage.SENDING]
-    assert OutgoingMessage.objects.get().status == OutgoingMessage.SENT
+    assert api.statuses == [ReportDelivery.SENDING]
+    assert ReportDelivery.objects.get().status == ReportDelivery.SENT
 
 
 def test_unanswered_sending_is_not_repeated_and_asks_to_check_telegram(client, product, wagon_viewer, bot_on):
-    """Тайм-аут после того, как Telegram принял сообщение: повтор задвоил бы отчёт у Динары."""
+    """Тайм-аут после того, как Telegram принял сообщение: повтор задвоил бы отчёт у получателя."""
     order = _shipped(client, product, truck_number="12345678")
-    message = send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000008")
+    send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000008")
     api = FakeTelegram(fail_send=TelegramOutcomeUnknown("Telegram sendMessage: нет связи (TimeoutError)"))
 
     with pytest.raises(TelegramError):
         send_pending_reports(api)
 
-    message.refresh_from_db()
-    assert (message.status, message.error) == (OutgoingMessage.UNKNOWN, "Telegram sendMessage: нет связи (TimeoutError)")
-    assert message_state(message) == (OutgoingMessage.UNKNOWN, "Telegram sendMessage: нет связи (TimeoutError)")
+    delivery = ReportDelivery.objects.get()
+    assert (delivery.status, delivery.error) == (ReportDelivery.UNKNOWN, "Telegram sendMessage: нет связи (TimeoutError)")
+    assert delivery_state(delivery) == (ReportDelivery.UNKNOWN, "Telegram sendMessage: нет связи (TimeoutError)")
     retry = FakeTelegram()
     assert send_pending_reports(retry) == 0
     assert retry.sent == []
 
 
 def test_sending_interrupted_by_a_crash_is_not_repeated(client, product, wagon_viewer, bot_on):
-    """Бот упал между отправкой и отметкой: строка «отправляется» — без повтора, человек проверит Telegram."""
+    """Бот упал между отправкой и отметкой: доставка «отправляется» — без повтора, человек проверит Telegram."""
     order = _shipped(client, product, truck_number="12345678")
-    stuck = send_wagon_report([order], "застрял", wagon_viewer, delivery=BOT, key="key-00000009")
-    in_flight = send_wagon_report([order], "уходит", wagon_viewer, delivery=BOT, key="key-00000010")
+    stuck = send_wagon_report([order], "застрял", wagon_viewer, key="key-00000009").deliveries.get()
+    in_flight = send_wagon_report([order], "уходит", wagon_viewer, key="key-00000010").deliveries.get()
     now = timezone.now()
-    OutgoingMessage.objects.filter(pk=stuck.pk).update(
-        status=OutgoingMessage.SENDING, updated_at=now - SENDING_TIMEOUT - timedelta(seconds=1))
+    ReportDelivery.objects.filter(pk=stuck.pk).update(
+        status=ReportDelivery.SENDING, updated_at=now - SENDING_TIMEOUT - timedelta(seconds=1))
     # Другой процесс бота отправляет прямо сейчас — его строку не трогаем.
-    OutgoingMessage.objects.filter(pk=in_flight.pk).update(status=OutgoingMessage.SENDING, updated_at=now)
+    ReportDelivery.objects.filter(pk=in_flight.pk).update(status=ReportDelivery.SENDING, updated_at=now)
     stuck.refresh_from_db()
-    assert message_state(stuck) == (OutgoingMessage.UNKNOWN, "бот прервался во время отправки")
+    assert delivery_state(stuck) == (ReportDelivery.UNKNOWN, "бот прервался во время отправки")
     api = FakeTelegram()
 
     assert send_pending_reports(api) == 0
@@ -399,70 +397,69 @@ def test_sending_interrupted_by_a_crash_is_not_repeated(client, product, wagon_v
     assert api.sent == []
     stuck.refresh_from_db()
     in_flight.refresh_from_db()
-    assert (stuck.status, stuck.error) == (OutgoingMessage.UNKNOWN, "бот прервался во время отправки")
-    assert in_flight.status == OutgoingMessage.SENDING
+    assert (stuck.status, stuck.error) == (ReportDelivery.UNKNOWN, "бот прервался во время отправки")
+    assert in_flight.status == ReportDelivery.SENDING
 
 
-def test_report_the_bot_did_not_take_in_time_is_not_sent_later(client, product, wagon_viewer, bot_on):
-    """Бот лежал дольше срока: отчёт уже «Не отправлено» (его отправили ссылкой) — поднявшись, бот его не шлёт."""
+def test_delivery_the_bot_did_not_take_in_time_is_not_sent_later(client, product, wagon_viewer, bot_on):
+    """Бот лежал дольше срока: доставка уже «Не отправлено» — поднявшись, бот её не шлёт."""
     order = _shipped(client, product, truck_number="12345678")
-    old = send_wagon_report([order], "старый", wagon_viewer, delivery=BOT, key="key-00000011")
-    fresh = send_wagon_report([order], "свежий", wagon_viewer, delivery=BOT, key="key-00000012")
-    OutgoingMessage.objects.filter(pk=old.pk).update(
-        created_at=timezone.now() - REPORT_QUEUE_TIMEOUT - timedelta(seconds=1))
+    old = send_wagon_report([order], "старый", wagon_viewer, key="key-00000011").deliveries.get()
+    fresh = send_wagon_report([order], "свежий", wagon_viewer, key="key-00000012").deliveries.get()
+    ReportDelivery.objects.filter(pk=old.pk).update(created_at=timezone.now() - REPORT_QUEUE_TIMEOUT - timedelta(seconds=1))
     old.refresh_from_db()
-    assert message_state(old) == (OutgoingMessage.FAILED, "бот не отправил за 10 минут")
-    assert message_state(fresh) == (OutgoingMessage.QUEUED, "")
+    assert delivery_state(old) == (ReportDelivery.FAILED, "бот не отправил за 10 минут")
+    assert delivery_state(fresh) == (ReportDelivery.QUEUED, "")
     api = FakeTelegram()
 
     assert send_pending_reports(api) == 1
 
     assert [text for _, text, _ in api.sent] == ["свежий"]
     old.refresh_from_db()
-    assert (old.status, old.error) == (OutgoingMessage.FAILED, "бот не отправил за 10 минут")
+    assert (old.status, old.error) == (ReportDelivery.FAILED, "бот не отправил за 10 минут")
 
 
 def test_bot_loop_sends_queued_reports(client, product, wagon_viewer, bot_on):
     order = _shipped(client, product, truck_number="12345678")
-    send_wagon_report([order], "отчёт", wagon_viewer, delivery=BOT, key="key-00000006")
+    send_wagon_report([order], "отчёт", wagon_viewer, key="key-00000006")
     api = FakeTelegram()
 
     assert BotRunner(client_factory=lambda: api).poll_once() == RUNNING
 
     assert api.sent == [(DINARA_CHAT, "отчёт", "")]
-    assert OutgoingMessage.objects.get().status == OutgoingMessage.SENT
+    assert ReportDelivery.objects.get().status == ReportDelivery.SENT
 
 
 def test_long_report_goes_in_parts(client, product, wagon_viewer, bot_on):
     text = "\n".join(f"Д1с-{index:08d}-68 тн" for index in range(400))
     order = _shipped(client, product, truck_number="12345678")
-    send_wagon_report([order], text, wagon_viewer, delivery=BOT, key="key-00000013")
+    send_wagon_report([order], text, wagon_viewer, key="key-00000013")
     api = FakeTelegram()
 
     assert send_pending_reports(api) == 1
 
     assert len(api.sent) > 1
     assert "\n".join(part for _, part, _ in api.sent) == text
-    assert OutgoingMessage.objects.get().provider_message_id == f"{DINARA_CHAT}:1001"
+    assert ReportDelivery.objects.get().provider_message_id == f"{DINARA_CHAT}:1001"
 
 
 def test_failure_after_a_sent_part_is_not_repeated(client, product, wagon_viewer, bot_on):
     text = "\n".join(f"Д1с-{index:08d}-68 тн" for index in range(400))
     order = _shipped(client, product, truck_number="12345678")
-    message = send_wagon_report([order], text, wagon_viewer, delivery=BOT, key="key-00000014")
+    send_wagon_report([order], text, wagon_viewer, key="key-00000014")
 
     class FailsSecond(FakeTelegram):
         def send_message(self, chat_id, text, *, reply_to=""):
             if self.sent:
-                raise TelegramError("Telegram sendMessage: HTTP 429")
+                raise TelegramRefused("Telegram sendMessage: HTTP 429")
             return super().send_message(chat_id, text, reply_to=reply_to)
 
     with pytest.raises(TelegramOutcomeUnknown):
         send_pending_reports(FailsSecond())
 
-    message.refresh_from_db()
-    assert message.status == OutgoingMessage.UNKNOWN
-    assert message.error.startswith("ушла часть отчёта (1 из")
+    delivery = ReportDelivery.objects.get()
+    assert delivery.status == ReportDelivery.UNKNOWN
+    assert delivery.error.startswith("ушла часть отчёта (1 из")
 
 
 def test_period_report_covers_every_department_and_skips_other_days(client, other_client, product):

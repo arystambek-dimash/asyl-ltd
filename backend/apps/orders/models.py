@@ -253,9 +253,10 @@ class OrderItem(models.Model):
         return self.product.cv_class if self.product_id else ""
 
     def fill_snapshot(self):
-        """Заполнить снимок товара один раз: последующее переименование или
-        удаление товара не переписывает исторический заказ. Вызывается из
-        ``save()`` и перед ``bulk_create``, который ``save()`` не вызывает."""
+        """Заполнить снимок товара один раз: вес и класс камеры остаются как
+        при заказе, подпись после удаления товара — последней известной.
+        Переименование товара подпись обновляет (``Product.sync_label_snapshots``).
+        Вызывается из ``save()`` и перед ``bulk_create``, который ``save()`` не вызывает."""
         if self.product_id and not self.product_label_snapshot:
             self.product_label_snapshot = str(self.product)
             self.product_cv_class_snapshot = self.product.cv_class

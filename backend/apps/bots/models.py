@@ -16,8 +16,6 @@ from apps.common.text import match_key
 DEFAULT_DUPLICATE_WINDOW_DAYS = 3
 # Цена клиента дальше этого (в %) от цены прошлого вагонного заказа — на разбор.
 DEFAULT_PRICE_TOLERANCE_PCT = Decimal("15")
-# Кому «Отправить отчёт» из истории грузчика (решение владельца, 24.09).
-DEFAULT_REPORT_RECIPIENT = "Динара"
 # Удачный круг процесса бота (runtime_status) и рабочий токен бота
 # (bot_state), — их пишет runner.
 RUNTIME_RUNNING = "running"
@@ -179,11 +177,9 @@ class TelegramBotSettings(SingletonModel):
     duplicate_window_days = models.PositiveSmallIntegerField(default=DEFAULT_DUPLICATE_WINDOW_DAYS)
     # См. DEFAULT_PRICE_TOLERANCE_PCT.
     price_tolerance_pct = models.DecimalField(max_digits=5, decimal_places=2, default=DEFAULT_PRICE_TOLERANCE_PCT)
-    # «Отправить отчёт» в истории грузчика: кому (имя для кнопки «Отправить
-    # Динаре») и её username. Бот пишет ей, когда она хоть раз написала боту
-    # (/start), — иначе ссылка открывает её чат в Telegram с готовым текстом.
-    report_recipient_name = models.CharField(max_length=60, default=DEFAULT_REPORT_RECIPIENT)
-    report_recipient_username = models.CharField(max_length=64, blank=True, default="")
+    # «Отправить отчёт» в истории грузчика: кому бот шлёт отчёт — username
+    # без «@». Бот пишет только тем, кто хоть раз написал ему (/start).
+    report_recipients = models.JSONField(default=list, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
@@ -201,7 +197,7 @@ class TelegramBotSettings(SingletonModel):
     # Настройки, которые правит администратор (экран, журнал событий).
     SETTINGS_FIELDS = (
         "enabled", "allowed_usernames", "show_amounts_in_reply", "duplicate_window_days",
-        "price_tolerance_pct", "report_recipient_name", "report_recipient_username",
+        "price_tolerance_pct", "report_recipients",
     )
     # Что сохраняет правка настроек: состояние бота пишет его процесс.
     CONFIG_FIELDS = (*SETTINGS_FIELDS, "updated_by", "updated_at")
@@ -257,13 +253,35 @@ class OutgoingMessage(models.Model):
 
     ``key`` — ключ нажатия с экрана: повтор того же запроса (двойное нажатие,
     сеть оборвалась до ответа) возвращает ту же строку, а не второе сообщение.
-    Через бота — «В очереди»: процесс бота забирает её («Отправляется») и
-    отправляет сам (:func:`apps.bots.wagon_report.send_pending_reports`).
-    Отказ провайдера повторяется до предела и оставляет «Не отправлено» с
+    Кому и дошло ли — в :class:`ReportDelivery`, по строке на получателя.
+    """
+
+    key = models.CharField(max_length=64, unique=True)
+    text = models.TextField()
+    # Заказы отчёта — для журнала; отметка «отправлено» — в их отгрузках.
+    order_ids = models.JSONField(default=list, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    def __str__(self):
+        return f"Отчёт о вагонах №{self.pk}"
+
+
+class ReportDelivery(models.Model):
+    """Отчёт одному получателю: процесс бота забирает строку («Отправляется»)
+    и отправляет сам (:func:`apps.bots.wagon_report.send_pending_reports`).
+
+    Отказ Telegram повторяется до предела и оставляет «Не отправлено» с
     ошибкой; бот не взял строку вовремя — тоже «Не отправлено». Ответа нет
     (сообщение могло уйти) или бот прервался посреди отправки — «Не
-    подтверждено»: без повтора, человек проверяет Telegram. Ссылкой —
-    сообщение отправил человек со своего телефона: бот такую строку не трогает.
+    подтверждено»: без повтора, человек проверяет Telegram. «Ссылкой» —
+    история: так отчёт отправлял человек со своего телефона до 29.09.
     """
 
     QUEUED = "queued"
@@ -281,30 +299,23 @@ class OutgoingMessage(models.Model):
         (LINK, "Ссылкой"),
     ]
 
-    key = models.CharField(max_length=64, unique=True)
-    # Кому — как в настройках бота на момент отправки.
-    recipient_name = models.CharField(max_length=60)
-    # Кому в Telegram: username без «@» (у строк прежнего WhatsApp-бота — пусто).
-    username = models.CharField(max_length=64, blank=True, default="", db_default="")
-    # Чат бота; у ссылки — пусто.
+    message = models.ForeignKey(OutgoingMessage, on_delete=models.CASCADE, related_name="deliveries")
+    # Кому: username без «@» и как человек подписан в Telegram на момент отправки.
+    username = models.CharField(max_length=64, blank=True, default="")
+    name = models.CharField(max_length=200, blank=True, default="")
+    # Личный чат получателя с ботом.
     chat_id = models.CharField(max_length=128, blank=True, default="")
-    text = models.TextField()
-    # Заказы отчёта — для журнала; отметка «отправлено» — в их отгрузках.
-    order_ids = models.JSONField(default=list, blank=True)
     status = models.CharField(max_length=10, choices=STATUSES)
     provider_message_id = models.CharField(max_length=160, blank=True, default="")
     attempts = models.PositiveSmallIntegerField(default=0)
     error = models.CharField(max_length=500, blank=True, default="")
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
-    )
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["-created_at", "-pk"]
-        indexes = [models.Index(fields=["status", "id"], name="bots_outgoing_status_idx")]
+        ordering = ["pk"]
+        indexes = [models.Index(fields=["status", "id"], name="bots_delivery_status_idx")]
 
     def __str__(self):
-        return f"Отчёт → {self.recipient_name} ({self.get_status_display()})"
+        return f"Отчёт → @{self.username or self.name} ({self.get_status_display()})"

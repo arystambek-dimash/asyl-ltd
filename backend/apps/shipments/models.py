@@ -40,7 +40,8 @@ class ShipmentWagon(models.Model):
 
     shipment = models.ForeignKey(Shipment, on_delete=models.CASCADE, related_name="wagons")
     number = models.CharField(max_length=8)
-    # Снимок товара, как у OrderItem: удаление товара не стирает историю вагона.
+    # Снимок товара, как у OrderItem: удаление товара не стирает историю вагона,
+    # переименование обновляет подпись (Product.sync_label_snapshots).
     product = models.ForeignKey(
         "catalog.Product", null=True, blank=True, on_delete=models.SET_NULL,
         related_name="shipment_wagons",

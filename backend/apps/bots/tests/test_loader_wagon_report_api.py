@@ -6,7 +6,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from apps.bots.models import OutgoingMessage, TelegramBotSettings
+from apps.bots.models import OutgoingMessage, ReportDelivery, TelegramBotSettings
 from apps.bots.tests.samples import train_order
 from apps.bots.tests.telegram_fakes import DINARA, DINARA_CHAT
 from apps.bots.wagon_report import REPORT_QUEUE_TIMEOUT
@@ -31,9 +31,8 @@ def _shipped(client, product, *, truck_number="12345678", bags=8160, day=None, h
         client, product, bags=bags, shipped_at=at, wagons=wagons, truck_number=truck_number, rail_station=station)
 
 
-def _send(api, orders, *, text="отчёт", delivery="link", key="key-00000001"):
-    return api.post(SEND, {"order_ids": [order.pk for order in orders], "text": text, "delivery": delivery,
-                           "key": key}, format="json")
+def _send(api, orders, *, text="отчёт", key="key-00000001"):
+    return api.post(SEND, {"order_ids": [order.pk for order in orders], "text": text, "key": key}, format="json")
 
 
 @pytest.fixture
@@ -54,8 +53,16 @@ def test_compose_one_order_shipped_by_the_button(api, client, product):
     text = f"{header}\nСт. 1 вагон\nД1с-12345678-408 тн"
     assert response.data["text"] == text
     assert response.data["order_ids"] == [order.pk]
-    assert response.data["recipient"] == {"name": "Динара", "to": "Динаре", "username": ""}
-    assert (response.data["delivery"], response.data["reason"]) == ("link", "bot_off")
+    assert (response.data["recipients"], response.data["can_send"], response.data["reason"]) == ([], False, "bot_off")
+
+
+def test_compose_tells_who_gets_the_report(api, client, product, bot_on):
+    order = _shipped(client, product)
+
+    data = api.get(COMPOSE, {"order": order.pk}).data
+
+    assert data["recipients"] == [{"username": DINARA, "name": "Динара", "ready": True}]
+    assert (data["can_send"], data["reason"]) == (True, "")
 
 
 def test_compose_the_history_filter_groups_the_period(api, client, product):
@@ -123,94 +130,85 @@ def test_compose_one_order_must_be_a_shipped_wagon_order(api, client, product):
     assert api.get(COMPOSE, {"order": "abc"}).status_code == 400
 
 
-def test_send_by_link_marks_the_history_rows(api, client, product, wagon_viewer):
+def test_send_queues_the_report_and_marks_the_history_rows(api, client, product, wagon_viewer, bot_on):
     orders = [_shipped(client, product, hour=9), _shipped(client, product, truck_number="28087658", hour=10)]
 
-    response = _send(api, orders, text="сб 19.09.26 Узбекистан ООО OSIYO\nСт. 1 вагон\nД1с-12345678-408 тн")
+    first = _send(api, orders, text="сб 19.09.26 Узбекистан ООО OSIYO\nСт. 1 вагон\nД1с-12345678-408 тн",
+                  key="press-0001")
+    again = _send(api, orders, key="press-0001")
 
-    assert response.status_code == 200, response.data
-    data = response.data
-    assert (data["status"], data["order_ids"], data["recipient"]["to"]) == ("link", [o.pk for o in orders], "Динаре")
-    assert data["sent_at"] is not None
+    assert (first.status_code, again.status_code) == (200, 200), first.data
+    data = first.data
+    assert (data["order_ids"], data["sent_at"] is not None) == ([o.pk for o in orders], True)
+    assert data["deliveries"] == [{"to": f"@{DINARA}", "status": "queued", "status_label": "В очереди", "error": ""}]
+    assert (OutgoingMessage.objects.count(), ReportDelivery.objects.get().chat_id) == (1, DINARA_CHAT)
     rows = {row["id"]: row for row in api.get(HISTORY, {"transport": "train"}).data}
     for order in orders:
         row = rows[order.pk]
-        assert (row["report_status"], row["report_sent_to"], row["report_error"]) == ("link", "Динаре", "")
+        assert row["report_deliveries"] == data["deliveries"]
         assert row["report_sent_at"] is not None
     assert EventLog.objects.filter(event_type="rail_report", user=wagon_viewer).count() == 2
 
 
-def test_send_by_bot_queues_once_per_press(api, client, product, bot_on):
+def test_send_when_the_bot_is_off_is_refused_inside_the_screen(api, client, product):
     order = _shipped(client, product)
 
-    first = _send(api, [order], delivery="bot", key="press-0001")
-    again = _send(api, [order], delivery="bot", key="press-0001")
-
-    assert (first.status_code, again.status_code) == (200, 200)
-    assert (first.data["status"], first.data["status_label"]) == ("queued", "В очереди")
-    assert first.data["recipient"]["username"] == DINARA
-    message = OutgoingMessage.objects.get()
-    assert (message.chat_id, message.status) == (DINARA_CHAT, "queued")
-    assert EventLog.objects.filter(event_type="rail_report").count() == 1
-    row = api.get(HISTORY, {"transport": "train"}).data[0]
-    assert (row["report_status"], row["report_sent_to"]) == ("queued", "Динаре")
-
-
-def test_send_by_bot_when_it_is_off_is_refused_inside_the_screen(api, client, product):
-    order = _shipped(client, product)
-
-    response = _send(api, [order], delivery="bot")
+    response = _send(api, [order])
 
     assert response.status_code == 400
-    assert response.data["code"] == "report_bot_unavailable"
+    assert response.data["code"] == "report_bot_off"
+    assert "не работает" in response.data["detail"]
 
 
-def test_send_validates_its_input(api, client, product):
+def test_send_validates_its_input(api, client, product, bot_on):
     order = _shipped(client, product)
     unshipped = Order.objects.create(client=client, currency="USD", transport_type="train", status="confirmed")
 
     assert _send(api, [order], text=" ").status_code == 400
     assert _send(api, [order], key="short").status_code == 400
-    assert _send(api, [order], delivery="sms").status_code == 400
-    assert api.post(SEND, {"order_ids": [], "text": "x", "delivery": "link", "key": "key-00000001"},
-                    format="json").status_code == 400
+    assert api.post(SEND, {"order_ids": [], "text": "x", "key": "key-00000001"}, format="json").status_code == 400
     assert _send(api, [order, unshipped]).status_code == 404
     assert not OutgoingMessage.objects.exists()
 
 
-def test_history_rows_of_a_failed_bot_report_show_the_error(api, client, product, bot_on):
+def test_history_rows_show_each_recipients_error(api, client, product, bot_on):
     order = _shipped(client, product)
-    _send(api, [order], delivery="bot")
-    OutgoingMessage.objects.update(status=OutgoingMessage.FAILED, error="Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user")
+    _send(api, [order])
+    ReportDelivery.objects.update(
+        status=ReportDelivery.FAILED, error="Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user")
 
     row = api.get(HISTORY, {"transport": "train"}).data[0]
 
-    assert (row["report_status"], row["report_error"]) == ("failed", "Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user")
+    assert row["report_deliveries"] == [{
+        "to": f"@{DINARA}", "status": "failed", "status_label": "Не отправлено",
+        "error": "Telegram sendMessage: HTTP 403 — Forbidden: bot was blocked by the user",
+    }]
 
 
 def test_bot_that_stopped_polling_is_not_offered(api, client, product, bot_on):
-    """Флаги бота включены, но его процесс давно не отмечал круги — отчёт уходит ссылкой, а не в вечную очередь."""
+    """Флаги бота включены, но его процесс давно не отмечал круги — отправить нельзя, а не в вечную очередь."""
     order = _shipped(client, product)
     TelegramBotSettings.objects.update(polled_at=timezone.now() - timedelta(hours=1))
 
     draft = api.get(COMPOSE, {"order": order.pk}).data
 
-    assert (draft["delivery"], draft["reason"], draft["recipient"]["username"]) == ("link", "bot_off", DINARA)
-    assert _send(api, [order], delivery="bot").data["code"] == "report_bot_unavailable"
+    assert (draft["can_send"], draft["reason"]) == (False, "bot_off")
+    assert _send(api, [order]).data["code"] == "report_bot_off"
 
 
-def test_history_shows_a_report_the_bot_never_took_as_not_sent(api, client, product, bot_on):
-    """Бот так и не взял отчёт из очереди — «Не отправлено»: грузчик отправит его ещё раз."""
+def test_history_shows_a_delivery_the_bot_never_took_as_not_sent(api, client, product, bot_on):
+    """Бот так и не взял доставку из очереди — «Не отправлено»: грузчик отправит его ещё раз."""
     order = _shipped(client, product)
-    _send(api, [order], delivery="bot")
-    OutgoingMessage.objects.update(created_at=timezone.now() - REPORT_QUEUE_TIMEOUT - timedelta(seconds=1))
+    _send(api, [order])
+    ReportDelivery.objects.update(created_at=timezone.now() - REPORT_QUEUE_TIMEOUT - timedelta(seconds=1))
 
     row = api.get(HISTORY, {"transport": "train"}).data[0]
 
-    assert (row["report_status"], row["report_error"]) == ("failed", "бот не отправил за 10 минут")
+    assert [(item["status"], item["error"]) for item in row["report_deliveries"]] == [
+        ("failed", "бот не отправил за 10 минут")]
 
 
-def test_history_reads_report_marks_without_n_plus_one(api, client, product, django_assert_max_num_queries):
+def test_history_reads_report_marks_without_n_plus_one(api, client, product, bot_on, django_assert_max_num_queries):
     # Вчерашние отгрузки: свежая (≤ часа) отгрузка спрашивает журнал для «Отменить».
     yesterday = timezone.localdate() - timedelta(days=1)
     params = {"transport": "train", "date_from": yesterday.isoformat()}
@@ -226,7 +224,7 @@ def test_history_reads_report_marks_without_n_plus_one(api, client, product, dja
     with django_assert_max_num_queries(budget):
         rows = api.get(HISTORY, params).data
 
-    assert len(rows) == 5 and all(row["report_status"] == "link" for row in rows)
+    assert len(rows) == 5 and all(row["report_deliveries"][0]["status"] == "queued" for row in rows)
 
 
 # --- настройки получателя ------------------------------------------------------------------------
@@ -237,45 +235,42 @@ def admin_api(auth_client, user_with_perms):
     return auth_client(user_with_perms("bot-admin", codes=["bots.view", "sys_permissions.manage"]))
 
 
-def test_recipient_is_edited_in_the_bot_settings(admin_api, api, client, product):
-    response = admin_api.put(SETTINGS, {
-        "report_recipient_name": "  Динара  ", "report_recipient_username": "@Dinara_K",
-    }, format="json")
+def test_recipients_are_edited_in_the_bot_settings(admin_api, api, client, product, dinara_started):
+    response = admin_api.put(SETTINGS, {"report_recipients": ["@Dinara_K", "d1maaash", "dinara_k"]}, format="json")
 
     assert response.status_code == 200, response.data
-    assert response.data["settings"]["report_recipient_name"] == "Динара"
-    assert response.data["settings"]["report_recipient_username"] == DINARA
+    assert response.data["settings"]["report_recipients"] == [DINARA, "d1maaash"]
+    assert response.data["settings"]["report_recipient_chats"] == [
+        {"username": DINARA, "name": "Динара", "ready": True},
+        {"username": "d1maaash", "name": "", "ready": False},
+    ]
     order = _shipped(client, product)
-    assert api.get(COMPOSE, {"order": order.pk}).data["recipient"]["username"] == DINARA
+    assert [item["username"] for item in api.get(COMPOSE, {"order": order.pk}).data["recipients"]] == [
+        DINARA, "d1maaash"]
 
 
-@pytest.mark.parametrize(("body", "field"), [
-    ({"report_recipient_username": "+7 701 123 45 67"}, "report_recipient_username"),
-    ({"report_recipient_username": "@ab"}, "report_recipient_username"),
-    ({"report_recipient_name": " "}, "report_recipient_name"),
-])
-def test_recipient_settings_are_validated(admin_api, body, field):
-    response = admin_api.put(SETTINGS, body, format="json")
+@pytest.mark.parametrize("value", ["+7 701 123 45 67", "@ab"])
+def test_recipients_are_validated(admin_api, value):
+    response = admin_api.put(SETTINGS, {"report_recipients": [value]}, format="json")
 
     assert response.status_code == 400
-    assert field in response.data["detail"]
-    row = TelegramBotSettings.load()
-    assert (row.report_recipient_name, row.report_recipient_username) == ("Динара", "")
+    assert "report_recipients" in response.data["detail"]
+    assert TelegramBotSettings.load().report_recipients == []
 
 
-def test_recipient_username_can_be_cleared(admin_api):
+def test_recipients_can_be_cleared(admin_api):
     row = TelegramBotSettings.load()
-    row.report_recipient_username = DINARA
+    row.report_recipients = [DINARA]
     row.save()
 
-    response = admin_api.put(SETTINGS, {"report_recipient_username": ""}, format="json")
+    response = admin_api.put(SETTINGS, {"report_recipients": []}, format="json")
 
     assert response.status_code == 200
-    assert TelegramBotSettings.load().report_recipient_username == ""
+    assert TelegramBotSettings.load().report_recipients == []
 
 
-def test_loader_cannot_change_the_recipient(api):
-    response = api.put(SETTINGS, {"report_recipient_username": DINARA}, format="json")
+def test_loader_cannot_change_the_recipients(api):
+    response = api.put(SETTINGS, {"report_recipients": [DINARA]}, format="json")
 
     assert response.status_code == 403
 

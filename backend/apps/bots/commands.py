@@ -67,8 +67,7 @@ def _no_access(incoming: IncomingMessage) -> str:
 def _start(incoming: IncomingMessage, bot_settings: TelegramBotSettings, allowed: bool) -> str:
     name = incoming.sender_name or "здравствуйте"
     lines = [f"{name}, вы допущены к боту." if allowed else _no_access(incoming)]
-    recipient = bot_settings.report_recipient_username
-    if incoming.is_private and recipient and incoming.sender_username == recipient:
+    if incoming.is_private and incoming.sender_username in (bot_settings.report_recipients or []):
         lines.append("Сюда будут приходить отчёты о вагонах из CRM («Отправить отчёт» у грузчика).")
     if allowed:
         lines.append(HELP)

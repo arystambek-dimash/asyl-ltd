@@ -55,7 +55,7 @@ import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { bagsLabel, cn, formatIsoDayMonth, pluralRu, shiftIsoDate, todayLocalIsoDate } from "@/lib/utils";
-import { reportMark, withReportSent, type WagonReportScope, type WagonReportSent } from "@/lib/wagon-report";
+import { reportMarks, withReportSent, type WagonReportScope, type WagonReportSent } from "@/lib/wagon-report";
 import { useAuth } from "@/store/auth";
 
 type View = "queue" | "history";
@@ -99,7 +99,7 @@ function LoaderPageInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // «Отгрузить по отчёту» открытого заказа: новый заказ по отчёту проводит Telegram-бот.
   const [railSheet, setRailSheet] = useState<{ orderId: number } | null>(null);
-  // «Отправить отчёт» Динаре в Telegram: одна отгрузка истории или вся история с фильтрами экрана.
+  // «Отправить отчёт» получателям в Telegram: одна отгрузка истории или вся история с фильтрами экрана.
   const [reportScope, setReportScope] = useState<WagonReportScope | null>(null);
 
   const queueParams: LoaderQueueFilter = {
@@ -359,7 +359,7 @@ function LoaderPageInner() {
             ]}
           />
           {transport === "train" && view === "history" && (
-            // Отгрузки показанного периода — отчётом в формате владельца Динаре в Telegram.
+            // Отгрузки показанного периода — отчётом в формате владельца получателям в Telegram.
             <Button
               variant="outline"
               className="h-10 w-full min-w-0 px-3 sm:w-auto"
@@ -611,7 +611,7 @@ function HistoryList({
               <Button variant="outline" className="h-11 flex-1" onClick={() => onPrint(order.id)}>
                 <Printer className="size-4" /> Накладная
               </Button>
-              {/* Отгрузка вагонов — отчётом в формате владельца Динаре в Telegram (копия — в окне). */}
+              {/* Отгрузка вагонов — отчётом в формате владельца получателям в Telegram (копия — в окне). */}
               {order.transport_type === "train" && (
                 <Button variant="outline" className="h-11 flex-1" onClick={() => onSendReport(order)}>
                   <Send className="size-4" /> Отправить отчёт
@@ -644,16 +644,25 @@ const MARK_TONES = {
   destructive: { className: "text-[var(--destructive)]", Icon: AlertTriangle },
 } as const;
 
-/** «Отправлено Динаре 07:45» под карточкой истории. */
+/** «Отправлено @dinara_k · 07:45» под карточкой истории — по строке на исход отправки. */
 function ReportSentMark({ order }: { order: LoaderOrder }) {
-  const mark = reportMark(order);
-  if (!mark) return null;
-  const { className, Icon } = MARK_TONES[mark.tone];
+  const marks = reportMarks(order);
+  if (marks.length === 0) return null;
   return (
-    <p className={cn("flex min-w-0 items-center gap-1.5 text-xs font-medium tabular-nums", className)}>
-      <Icon className="size-3.5 shrink-0" />
-      <span className="min-w-0 break-words">{mark.text}</span>
-    </p>
+    <div className="flex min-w-0 flex-col gap-0.5">
+      {marks.map((mark) => {
+        const { className, Icon } = MARK_TONES[mark.tone];
+        return (
+          <p
+            key={mark.text}
+            className={cn("flex min-w-0 items-center gap-1.5 text-xs font-medium tabular-nums", className)}
+          >
+            <Icon className="size-3.5 shrink-0" />
+            <span className="min-w-0 break-words">{mark.text}</span>
+          </p>
+        );
+      })}
+    </div>
   );
 }
 
