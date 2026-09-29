@@ -7,7 +7,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from apps.cameras import ai, shipping_history
+from apps.cameras import ai, analytics, shipping_history
 from apps.cameras.event_protocol import event_color_delta
 from apps.cameras.models import (
     ANALYTICS_SCOPE_AI247,
@@ -132,6 +132,7 @@ def test_endpoint_permissions_and_no_stock_contract(
         "run_smoothing",
         "history_status",
         "history_detail",
+        "unplaced_bags",
     }
     assert response.data["history_status"] == "complete"
     assert response.data["day_runs"] == []
@@ -330,6 +331,7 @@ def test_partial_or_mismatched_daily_totals_are_explicitly_incomplete(
     assert result["history_status"] == "incomplete"
     assert result["history_detail"]
     assert result["day_runs"] == result["algorithm_day_runs"] == []
+    assert result["unplaced_bags"] == 0
 
 
 def test_manual_adjustment_is_not_an_invented_model_event(camera):
@@ -337,6 +339,65 @@ def test_manual_adjustment_is_not_an_invented_model_event(camera):
     result = payload()
     assert result["history_status"] == "complete"
     assert result["run_smoothing"]["raw_model_total"] == 3
+
+
+def runs_of(result, key="day_runs"):
+    return [(run["color"], run["model_bags"]) for run in result[key]]
+
+
+def test_manual_colour_edit_scales_exact_periods_to_the_edited_day(camera):
+    set_total(add_events(["white"] * 15 + ["red"] * 4 + ["white"] * 20))
+    analytics.set_day_colors(
+        ANALYTICS_SCOPE_SHIPPING, camera, DAY, {"white": 30, "red": 6}
+    )
+    evidence = list(AlwaysOnImportedEvent.objects.values())
+
+    result = payload()
+
+    assert result["history_status"] == "complete"
+    # Белые −5 по своим периодам пропорционально счёту камеры, красные +2.
+    assert runs_of(result) == [("white", 13), ("red", 6), ("white", 17)]
+    assert not any(run["is_approximate"] for run in result["day_runs"])
+    smoothing = result["run_smoothing"]
+    row = ShippingDailyAnalytics.objects.get(camera=camera, day=DAY)
+    assert (row.model_total, row.total) == (39, 36)
+    assert smoothing["raw_model_total"] == smoothing["algorithm_model_total"] == 36
+    assert {item["color"]: item["total"] for item in smoothing["raw_colors"]} == {
+        "white": 30,
+        "red": 6,
+    }
+    assert result["unplaced_bags"] == 0
+    assert list(AlwaysOnImportedEvent.objects.values()) == evidence
+
+
+def test_colour_edited_to_zero_drops_its_periods_and_unseen_colour_stays_out(camera):
+    set_total(add_events(["white"] * 5 + ["red"] * 2 + ["white"] * 5))
+    analytics.set_day_colors(
+        ANALYTICS_SCOPE_SHIPPING, camera, DAY, {"red": 0, "blue": 3}
+    )
+
+    result = payload()
+
+    assert result["history_status"] == "complete"
+    assert runs_of(result) == [("white", 5), ("white", 5)]
+    assert runs_of(result, "algorithm_day_runs") == [("white", 10)]
+    # Синих камера за день не видела: их нельзя поставить во времени.
+    row = ShippingDailyAnalytics.objects.get(camera=camera, day=DAY)
+    assert row.total - result["run_smoothing"]["raw_model_total"] == 3
+    assert result["unplaced_bags"] == 3
+
+
+def test_old_total_correction_stays_unplaced_after_a_colour_edit(camera):
+    # Старая поправка только итога (−2) и затем правка цвета.
+    set_total(add_events(["red"] * 10), adjustment=-2)
+    analytics.set_day_colors(ANALYTICS_SCOPE_SHIPPING, camera, DAY, {"red": 8})
+
+    result = payload()
+
+    row = ShippingDailyAnalytics.objects.get(camera=camera, day=DAY)
+    assert (row.total, runs_of(result)) == (6, [("red", 8)])
+    assert result["unplaced_bags"] == -2
+    assert row.total - result["unplaced_bags"] == result["run_smoothing"]["raw_model_total"]
 
 
 def test_uninitialized_or_legacy_cursor_is_honest(camera):

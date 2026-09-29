@@ -262,7 +262,6 @@ function SessionCard({
     `${formatTime(session.started_at)}–${formatTime(session.ended_at ?? session.last_counted_at)}`,
     parts > 1 ? `${parts} ${pluralRu(parts, ["отрезок", "отрезка", "отрезков"])}` : null,
     session.order_id ? `Заказ #${session.order_id}` : null,
-    session.edited ? `камера: ${formatCount(session.camera_total_bags)} меш.` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -290,7 +289,7 @@ function SessionCard({
           <span className="block truncate font-semibold">{title}</span>
           <span className="block text-xs text-[var(--muted-foreground)]">{meta}</span>
         </span>
-        {(session.status === "active" || !session.number || session.edited) && (
+        {(session.status === "active" || !session.number) && (
           // На телефоне бейджи — строкой ниже, чтобы не сжимать номер вагона.
           <span className="order-last flex w-full flex-wrap gap-2 pl-7 sm:order-none sm:w-auto sm:pl-0">
             {session.status === "active" && (
@@ -299,7 +298,6 @@ function SessionCard({
               </Badge>
             )}
             {!session.number && <Badge tone="warning">Без номера</Badge>}
-            {session.edited && <Badge tone="warning">Исправлено</Badge>}
           </span>
         )}
         <span className="text-lg font-semibold tabular-nums">{formatCount(session.total_bags)} меш.</span>
@@ -310,7 +308,6 @@ function SessionCard({
             items={session.colors}
             cameraCounts={session.camera_colors}
             total={session.total_bags}
-            hint="Итог дня в «Цвета мешков» меняется отдельно."
             onSave={saveColors}
             onCancel={() => setEditing(false)}
           />
@@ -362,6 +359,7 @@ export function CameraShippingSessions({
   day,
   today,
   canEdit,
+  onSessionEdited,
 }: {
   camera: string;
   /** Выбранный день; null — период из нескольких дней, где день ещё не выбран. */
@@ -369,6 +367,8 @@ export function CameraShippingSessions({
   today: string;
   /** Ручная правка цветов сессии — только суперпользователь. */
   canEdit: boolean;
+  /** Правка сессии сдвигает итог и периоды её дня — аналитику дня надо перечитать. */
+  onSessionEdited: () => void;
 }) {
   const headingId = useId();
   const list = useApi<ShippingSessionsPage>(
@@ -385,6 +385,7 @@ export function CameraShippingSessions({
       (current) =>
         current && { ...current, results: current.results.map((item) => (item.id === saved.id ? saved : item)) },
     );
+    onSessionEdited();
   }
   return (
     <section aria-labelledby={headingId}>

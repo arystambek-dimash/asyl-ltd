@@ -9,6 +9,7 @@ export interface ShippingSegment {
   started_at: string;
   last_counted_at: string;
   ended_at: string | null;
+  /** Доля отрезка в итоге сессии — с ручной правкой цветов сессии; отрезки в сумме дают итог сессии. */
   total_bags: number;
   photo_url: string | null;
   photo_taken_at: string | null;
@@ -24,8 +25,6 @@ export interface ShippingSession {
   status: "active" | "closed";
   /** Итог сессии с ручной правкой цветов. */
   total_bags: number;
-  /** Сколько насчитала камера. */
-  camera_total_bags: number;
   started_at: string;
   last_counted_at: string;
   ended_at: string | null;
@@ -34,8 +33,6 @@ export interface ShippingSession {
   colors: AlwaysOnColorAnalytics[];
   /** Цвета по камере, без ручной правки. */
   camera_colors: Record<string, number>;
-  /** Цвета сессии исправлены вручную. */
-  edited: boolean;
   segments: ShippingSegment[];
 }
 

@@ -53,7 +53,8 @@ def _can_identify(user, row):
     return row.identity_status == "unidentified" and _can_manage(user)
 
 
-def segment_payload(row, user, *, order_id=None):
+def segment_payload(row, user, *, total_bags, order_id=None):
+    """One segment; ``total_bags`` is its share of the session's shown bags."""
     photo_url = None
     if row.photo:
         token = signing.dumps({"id": row.pk, "user_id": user.pk}, salt=IMAGE_SALT)
@@ -64,7 +65,7 @@ def segment_payload(row, user, *, order_id=None):
         "number_source": row.number_source, "identity_status": row.identity_status,
         "identity_error": row.identity_error, "started_at": row.started_at,
         "last_counted_at": row.last_counted_at, "ended_at": row.ended_at,
-        "total_bags": row.total_bags, "photo_url": photo_url,
+        "total_bags": total_bags, "photo_url": photo_url,
         "photo_taken_at": row.photo_taken_at, "idle_timeout_seconds": row.idle_timeout_seconds,
         "can_identify": _can_identify(user, row),
     }
@@ -75,25 +76,34 @@ def _with_segments(rows):
 
 
 def _session_payloads(rows, user):
-    """Sessions as the screen shows them: manual colour correction included.
+    """Sessions as every screen shows them: manual colour correction included.
 
-    ``total_bags``/``colors`` are what the screen shows; ``camera_*`` keep the
-    camera's own count. Segments always carry the camera's counts.
+    ``total_bags``/``colors`` and each segment's ``total_bags`` carry the
+    correction; ``camera_colors`` keeps the camera's own count for the editor.
     """
-    colors = shipping_segments.session_colors(rows)
+    by_session = shipping_segments.session_colors(rows)
     result = []
     for row in rows:
-        camera_colors, shown = colors[row.pk]
+        colors = by_session[row.pk]
         result.append({
             "id": row.pk, "camera": row.camera, "recognition_model": row.recognition_model,
-            "number": row.number, "status": row.status, "total_bags": sum(shown.values()),
-            "camera_total_bags": row.total_bags, "camera_colors": camera_colors,
-            "edited": bool(row.colors_adjustment),
+            "number": row.number, "status": row.status, "total_bags": sum(colors.shown.values()),
+            "camera_colors": colors.camera,
             "started_at": row.started_at, "last_counted_at": row.last_counted_at,
-            "ended_at": row.ended_at, "order_id": row.order_id, "colors": color_payload(shown),
-            "segments": [segment_payload(part, user, order_id=row.order_id) for part in row.segments.all()],
+            "ended_at": row.ended_at, "order_id": row.order_id, "colors": color_payload(colors.shown),
+            "segments": [
+                segment_payload(part, user, total_bags=colors.segments[part.pk], order_id=row.order_id)
+                for part in row.segments.all()
+            ],
         })
     return result
+
+
+def _segment_detail(row, user):
+    """One segment with its share of its session's shown bags."""
+    session = row.session
+    colors = shipping_segments.session_colors([session])[session.pk]
+    return segment_payload(row, user, total_bags=colors.segments[row.pk], order_id=session.order_id)
 
 
 class ShippingSessionListView(PermAPIViewMixin, APIView):
@@ -124,7 +134,7 @@ class ShippingSessionDetailView(PermAPIViewMixin, APIView):
         with transaction.atomic():
             get_object_or_404(_visible_sessions(request.user), pk=pk)
             # Core locks the lane before the session, matching projection/AI.
-            shipping_segments.set_session_colors(pk, serializer.validated_data["colors"], user=request.user)
+            shipping_segments.set_session_colors(pk, serializer.validated_data["colors"])
             row = _with_segments(_visible_sessions(request.user)).get(pk=pk)
         return Response(_session_payloads([row], request.user)[0])
 
@@ -134,7 +144,7 @@ class ShippingSegmentDetailView(PermAPIViewMixin, APIView):
 
     def get(self, request, pk):
         row = get_object_or_404(_visible_segments(request.user).select_related("session"), pk=pk)
-        return Response(segment_payload(row, request.user, order_id=row.session.order_id))
+        return Response(_segment_detail(row, request.user))
 
 
 class ShippingSegmentIdentifyView(PermAPIViewMixin, APIView):
@@ -157,7 +167,7 @@ class ShippingSegmentIdentifyView(PermAPIViewMixin, APIView):
                     message = "Номер уже определён. Обновите список сессий"
                 raise ValidationError({"number": message}) from exc
             row.refresh_from_db()
-        return Response(segment_payload(row, request.user))
+        return Response(_segment_detail(row, request.user))
 
 
 class IdleSettingsSerializer(serializers.Serializer):

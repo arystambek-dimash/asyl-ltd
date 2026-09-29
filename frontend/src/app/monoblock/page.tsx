@@ -408,6 +408,7 @@ function AlwaysOnCard({
   canManage,
   scope,
   bound,
+  onAnalyticsEdited,
 }: {
   processor: AlwaysOnProcessorStatus;
   camera?: PlayableCamera;
@@ -419,6 +420,8 @@ function AlwaysOnCard({
   scope: "shipping" | "ai_247";
   /** Заказ, за которым закреплена камера отгрузки (сессия или loading_camera). */
   bound?: ShippingTileBinding;
+  /** Перечитать аналитику страницы (плитки и итоги) после ручной правки в окне камеры. */
+  onAnalyticsEdited: () => void;
 }) {
   const isShipping = scope === "shipping";
   const { me } = useAuth();
@@ -561,15 +564,24 @@ function AlwaysOnCard({
   const historyComplete =
     selectedHistory && ("history_status" in selectedHistory ? selectedHistory.history_status === "complete" : true);
   const rawRunsTotal = selectedRawRuns?.reduce((sum, run) => sum + run.model_bags, 0);
+  const selectedColorsEdited = Object.keys(selectedPoint?.adjustment_per_color ?? {}).length > 0;
+  // Правку цветов дня отгрузки бэкенд разносит по его периодам; мешки, которым
+  // во времени места нет (цвет, которого камера в тот день не видела, старая
+  // правка одного итога), он называет сам. Сверка ловит ответы из разных срезов.
+  // Периоды AI 24/7 правку не знают — там журнал сверяется со счётом камеры.
+  const runsExpectedTotal =
+    selectedHistory && "unplaced_bags" in selectedHistory && selectedPoint
+      ? selectedPoint.total - selectedHistory.unplaced_bags
+      : selectedPoint?.model_total;
   const runsMatchSelectedAnalytics = Boolean(
     selectedPoint &&
     historyComplete &&
     !selectedProductionError &&
     selectedRawRuns &&
     !selectedRawRuns.some((run) => run.is_partial_for_day) &&
-    rawRunsTotal === selectedPoint.model_total &&
-    smoothing?.raw_model_total === selectedPoint.model_total &&
-    smoothing.algorithm_model_total === selectedPoint.model_total,
+    rawRunsTotal === runsExpectedTotal &&
+    smoothing?.raw_model_total === runsExpectedTotal &&
+    smoothing?.algorithm_model_total === runsExpectedTotal,
   );
   const selectedVisibleRuns = selectedHistory
     ? runsMatchSelectedAnalytics
@@ -584,11 +596,10 @@ function AlwaysOnCard({
       : selectedHistory && !runsMatchSelectedAnalytics
         ? "Периоды недоступны: журнал не совпадает с итогом выбранного дня."
         : null;
-  // Ручную правку цветов знает только итог дня: периоды из журнала камеры о
-  // ней не знают, поэтому исправленный день показывает свои цвета.
-  const selectedColorsEdited = Object.keys(selectedPoint?.adjustment_per_color ?? {}).length > 0;
   // Старые интервалы могут пересекать границу дня, а append-only журнал —
   // границу переноса в архив. В обоих случаях не смешиваем разные срезы.
+  // Исправленный вручную день показывает свои цвета: мешкам нового цвета в
+  // периодах места нет, а периоды AI 24/7 правку не знают вовсе.
   const selectedVisibleColors =
     runsMatchSelectedAnalytics && smoothing && !selectedColorsEdited
       ? selectedDayColorView === "algorithm"
@@ -848,10 +859,19 @@ function AlwaysOnCard({
     }
   }
 
+  // После ручной правки перезапуск опросов отменяет запросы, отправленные до
+  // записи, чтобы они не вернули старые цифры. Периоды дня отгрузки бэкенд
+  // пересчитывает с правкой — их тоже перечитываем. Плитка и итоги страницы
+  // живут на медленном опросе: перечитываем их сразу, чтобы после закрытия
+  // окна не остались старые числа.
+  function reloadEditedAnalytics() {
+    setAnalyticsReload((value) => value + 1);
+    if (isShipping) setSelectedProductionReload((value) => value + 1);
+    onAnalyticsEdited();
+  }
+
   // Ручная правка цветов дня. Ответ PUT — тот же снимок, что GET за этот
-  // период: применяем его сразу, а перезапуск опроса отменяет запрос,
-  // отправленный до записи, чтобы он не вернул старые цифры. Ошибку
-  // показывает редактор.
+  // период: применяем его сразу. Ошибку показывает редактор.
   async function saveDayColors(day: string, colors: Record<string, number>) {
     const { data } = await api.put<AlwaysOnDailyAnalytics>(`${analyticsUrl}?${rangeQuery}`, {
       camera: processor.cam,
@@ -859,8 +879,8 @@ function AlwaysOnCard({
       colors,
     });
     setLiveDaily(data.cameras.find((item) => item.camera === processor.cam));
-    setAnalyticsReload((value) => value + 1);
-    showSuccess("Аналитика за день исправлена");
+    reloadEditedAnalytics();
+    showSuccess("Сохранено");
   }
 
   // «Указать цвет» мешкам без цвета. Ответ — свежий снимок вкладки: применяем
@@ -1063,15 +1083,6 @@ function AlwaysOnCard({
                     <span className="text-[var(--muted-foreground)]">Режим</span>
                     <span className="font-medium text-[var(--foreground)]">{inSession ? "отгрузка" : "24/7"}</span>
                   </div>
-                  {!!currentDaily?.adjustment && (
-                    <div className="col-span-2 flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
-                      <span className="text-[var(--muted-foreground)]">Корректировка</span>
-                      <span className="font-medium tabular-nums text-[var(--warning)]">
-                        {currentDaily.adjustment > 0 ? "+" : ""}
-                        {currentDaily.adjustment}
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
               {(!analyticsAvailable || current.error || liveDetail) && (
@@ -1189,11 +1200,6 @@ function AlwaysOnCard({
                           ? "Отдельная аналитика камеры отгрузки; эти данные не создают выпуск или приход на склад."
                           : "Количество по цветам распознано камерой; товар показан по текущему сопоставлению в разделе «Куда приходовать»."
                       }
-                      aside={
-                        selectedColorsEdited && (
-                          <span className="text-[12px] text-[var(--muted-foreground)]">Исправлено вручную</span>
-                        )
-                      }
                     />
                     <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
                       {selectedVisibleColors.map((item) => {
@@ -1287,6 +1293,7 @@ function AlwaysOnCard({
                 day={rangeDays === 1 ? dateFrom : selectedDay}
                 today={today}
                 canEdit={isSuperuser}
+                onSessionEdited={reloadEditedAnalytics}
               />
             )}
           </div>
@@ -1311,6 +1318,7 @@ function ContinuousCameraTile({
   camera,
   bound,
   canManage = false,
+  onAnalyticsEdited,
 }: {
   scope: "shipping" | "ai_247";
   source: string;
@@ -1320,6 +1328,7 @@ function ContinuousCameraTile({
   camera?: PlayableCamera;
   bound?: ShippingTileBinding;
   canManage?: boolean;
+  onAnalyticsEdited: () => void;
 }) {
   const processor = settings.processors.find((item) => item.cam === source) ?? emptyProcessor(source, scope);
   return (
@@ -1333,6 +1342,7 @@ function ContinuousCameraTile({
       analyticsError={analyticsError}
       canManage={canManage}
       bound={bound}
+      onAnalyticsEdited={onAnalyticsEdited}
     />
   );
 }
@@ -1627,6 +1637,7 @@ function MonoblockPageInner() {
                       analyticsError={alwaysOnAnalyticsError}
                       camera={camerasBySrc.get(source)}
                       canManage={canManageAlwaysOn}
+                      onAnalyticsEdited={reloadAlwaysOnAnalytics}
                     />
                   ))}
                 </div>
@@ -1699,6 +1710,7 @@ function MonoblockPageInner() {
                               analyticsError={shippingContinuousAnalyticsError}
                               camera={camerasBySrc.get(source)}
                               bound={tileBinding(source)}
+                              onAnalyticsEdited={reloadShippingContinuousAnalytics}
                             />
                           ))}
                         </div>

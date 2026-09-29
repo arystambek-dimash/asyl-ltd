@@ -14,7 +14,7 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-from .analytics import EVENT_ANALYTICS_STALE_AGE
+from .analytics import EVENT_ANALYTICS_STALE_AGE, apportion, normalized_adjustments
 from .color_resolution import camera_color_key
 from .event_protocol import event_color_delta, event_color_key
 from .models import (
@@ -114,6 +114,24 @@ def _runs(events: list[AlwaysOnImportedEvent], *, day: date, now: datetime, live
     return runs
 
 
+def _with_manual_edit(runs: list[dict], adjustments: dict[str, int]) -> list[dict]:
+    """Periods as the day analytics shows them after a manual colour edit.
+
+    An edited colour's bags are spread over its own periods in proportion to
+    the camera's count; a period left without bags disappears. Bags of a
+    colour the camera never counted that day cannot be placed in time.
+    """
+    for color, delta in adjustments.items():
+        own = [run for run in runs if run["color"] == color]
+        counted = sum(run["model_bags"] for run in own)
+        if not counted:
+            continue
+        shares = apportion(dict(enumerate(run["model_bags"] for run in own)), max(0, counted + delta))
+        for index, run in enumerate(own):
+            run["model_bags"] = shares[index]
+    return [run for run in runs if run["model_bags"]]
+
+
 def day_payload(camera: str, *, day: date) -> dict:
     """Return exact periods, or explain why aggregate history has no exact log.
 
@@ -133,6 +151,7 @@ def day_payload(camera: str, *, day: date) -> dict:
         "run_smoothing": _run_smoothing_payload([])[1],
         "history_status": "complete",
         "history_detail": "",
+        "unplaced_bags": 0,
     }
 
     def unavailable(status: str, detail: str) -> dict:
@@ -224,10 +243,19 @@ def day_payload(camera: str, *, day: date) -> dict:
         raw_runs = _runs(events, day=day, now=now, live=live)
     except HistoryUnavailable as exc:
         return unavailable("incomplete", str(exc))
+    # The camera evidence matched above; the periods follow the analytics.
+    raw_runs = _with_manual_edit(
+        raw_runs, normalized_adjustments(row.adjustment_per_color if row else None)
+    )
     algorithm_runs, metadata = _run_smoothing_payload(raw_runs)
     return {
         **payload,
         "day_runs": raw_runs,
         "algorithm_day_runs": algorithm_runs,
         "run_smoothing": metadata,
+        # Bags of the day total that no period holds: a colour the camera
+        # never counted that day, or an old correction of the total only
+        # (negative when the day total is below the camera's periods).
+        "unplaced_bags": (row.total if row else 0)
+        - sum(run["model_bags"] for run in raw_runs),
     }

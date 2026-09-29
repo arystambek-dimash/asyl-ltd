@@ -74,7 +74,6 @@ export function CameraAnalyticsOverview({
   const history = daily?.history ?? [];
   const colors = daily?.colors ?? [];
   const total = daily?.period_total;
-  const adjustment = history.reduce((sum, point) => sum + point.adjustment, 0);
   const hasActivity = colors.length > 0 || history.some((point) => point.model_total > 0 || point.adjustment !== 0);
   const ready = valid && available && typeof total === "number";
   const chartMax = Math.max(1, ...history.map((point) => point.total));
@@ -83,7 +82,6 @@ export function CameraAnalyticsOverview({
   const dayPoint = singleDay ? history.find((point) => point.day === dateFrom) : undefined;
   const editableDay = canEdit ? dayPoint?.day : undefined;
   const editing = !!editableDay && editingDay === editableDay;
-  const colorsEdited = history.some((point) => Object.keys(point.adjustment_per_color ?? {}).length > 0);
   const editButtonRef = useEditorFocusReturn(editing);
   const editButton = editableDay && (
     <Button
@@ -285,14 +283,6 @@ export function CameraAnalyticsOverview({
               </div>
               {!editing && editButton}
             </div>
-            {adjustment !== 0 ? (
-              <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                Итог исправлен вручную: {adjustment > 0 ? "+" : ""}
-                {number.format(adjustment)} меш. к счёту камеры.
-              </p>
-            ) : (
-              colorsEdited && <p className="mt-2 text-xs text-[var(--muted-foreground)]">Цвета исправлены вручную.</p>
-            )}
             {editing && dayPoint ? (
               <div className="mt-4">
                 <ColorCountsEditor

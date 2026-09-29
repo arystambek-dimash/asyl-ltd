@@ -6,16 +6,20 @@ A segment ends after the idle timeout or, on a wagon conveyor, when the train
 changes the wagon (shipping_train_motion), however short the pause.
 """
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, prefetch_related_objects
 from django.utils import timezone
 from rest_framework.exceptions import NotFound
 
 from apps.eventlog.services import log_event
 from . import ai, shipping_train_motion
-from .analytics import add_counts, adjusted_colors, apply_color_targets, apportion, normalized_adjustments
+from .analytics import (
+    add_counts, adjusted_colors, apply_color_targets, apportion, normalized_adjustments,
+    shift_shipping_day_colors,
+)
 from .color_resolution import camera_color_key
 from .models import (
     ANALYTICS_SCOPE_SHIPPING, AlwaysOnCounterCursor, AlwaysOnImportedEvent,
@@ -178,10 +182,15 @@ def _regroup_locked(camera):
     All original segments and photographs remain. Empty aggregate session rows
     redirect to their surviving group so already-issued links remain resolvable,
     and hand their manual colour correction over to it. A split group keeps the
-    correction on the original session.
+    correction on the original session. The day analytics follows the
+    corrections to the day of the session that now shows them.
     """
     segments = list(ShippingLoadingSegment.objects.select_related("session").filter(camera=camera).order_by("first_upstream_event_id", "pk"))
     adjustments = {s.session_id: normalized_adjustments(s.session.colors_adjustment) for s in segments}
+    edited = {pk for pk, adjustment in adjustments.items() if adjustment}
+    # A correction that moves to a session of another day, or changes what it
+    # shows, moves the day analytics with it (read before anything is written).
+    corrections_before = _corrections_by_day(ShippingLoadingSession.objects.filter(pk__in=edited)) if edited else {}
     groups, current_order_id = [], None
     for segment in segments:
         if groups and _same_identity(groups[-1][-1], segment):
@@ -234,6 +243,9 @@ def _regroup_locked(camera):
     for owner_id, delta in moved.items():
         combined = normalized_adjustments(add_counts(adjustments.get(owner_id), delta))
         ShippingLoadingSession.objects.filter(pk=owner_id).update(colors_adjustment=combined)
+    if edited:
+        corrections_after = _corrections_by_day(ShippingLoadingSession.objects.filter(pk__in=edited | moved.keys()))
+        _shift_days(camera, corrections_before, corrections_after)
     return groups
 
 
@@ -273,7 +285,7 @@ def apply_identity(segment_id, number, source, user=None, *, expected_lease=None
 
 
 def _scaled_to_total(colors: dict[str, int], total: int) -> dict[str, int]:
-    """Доли — от событий, числа — в масштабе итога вагона (метод наибольших остатков).
+    """Доли — от событий, числа — в масштабе итога отрезка (метод наибольших остатков).
 
     Обычно событий ровно столько, сколько мешков, и ничего не меняется. После ручной
     поправки итога части должны сходиться с ним, а не с числом событий.
@@ -284,54 +296,147 @@ def _scaled_to_total(colors: dict[str, int], total: int) -> dict[str, int]:
     return {key: value for key, value in apportion(colors, total).items() if value}
 
 
-def session_colors(sessions):
-    """``{session_id: (camera colours, shown colours)}`` in one grouped query.
+@dataclass(frozen=True)
+class SessionColors:
+    """Bags of one wagon/truck as every screen shows them.
 
-    Camera colours are counted from the session's own crossings in the scale of
-    its total; bags the camera could not classify stay visible, so the parts add
-    up to the total. Shown colours carry the manual correction on top.
+    ``camera`` is the camera's own count by colour (the sum of its segments),
+    ``shown`` carries the manual correction on top, and ``segments`` is each
+    segment's share of the shown bags, so the segments add up to the session.
     """
+
+    camera: dict[str, int]
+    shown: dict[str, int]
+    segments: dict[int, int]
+
+
+def _segment_camera_colors(counts, total_bags):
+    """A segment's crossings by colour in the scale of its total."""
+    if counts:
+        return _scaled_to_total(dict(counts), total_bags)
+    # No crossing links: the whole total is bags of an unknown colour.
+    return {camera_color_key(None, None): total_bags} if total_bags else {}
+
+
+def _split_over_segments(shown, parts):
+    """Shown bags per segment; ``parts`` are the segments' camera colours in order.
+
+    Each colour follows where the camera counted it; a colour it never saw
+    follows the segments' sizes, and with no bags at all goes to the last one.
+    """
+    totals = dict.fromkeys(parts, 0)
+    if not parts:
+        return totals
+    for color, bags in shown.items():
+        weights = {pk: colors.get(color, 0) for pk, colors in parts.items()}
+        if not any(weights.values()):
+            weights = {pk: sum(colors.values()) for pk, colors in parts.items()}
+        if not any(weights.values()):
+            weights = {next(reversed(parts)): 1}
+        for pk, share in apportion(weights, bags).items():
+            totals[pk] += share
+    return totals
+
+
+def session_colors(sessions):
+    """``{session_id: SessionColors}`` with one grouped query for all sessions.
+
+    Uses the prefetched ``segments`` when present. Camera colours come from each
+    segment's own crossings, so bags the camera could not classify stay visible
+    and the parts add up to the total.
+    """
+    segments = {row.pk: sorted(row.segments.all(), key=lambda part: (part.started_at, part.pk)) for row in sessions}
     counts = defaultdict(Counter)
     rows = (
-        ShippingLoadingEvent.objects.filter(segment__session_id__in=[row.pk for row in sessions])
-        .values_list("segment__session_id", "event__color", "event__class_name")
+        ShippingLoadingEvent.objects.filter(segment_id__in=[part.pk for parts in segments.values() for part in parts])
+        .values_list("segment_id", "event__color", "event__class_name")
         .annotate(total=Count("pk"))
         .order_by()
     )
-    for session_id, color, class_name, total in rows:
-        counts[session_id][camera_color_key(color, class_name)] += total
+    for segment_id, color, class_name, total in rows:
+        counts[segment_id][camera_color_key(color, class_name)] += total
     result = {}
     for row in sessions:
-        if counts[row.pk]:
-            base = _scaled_to_total(dict(counts[row.pk]), row.total_bags)
-        else:
-            # No crossing links: the whole total is bags of an unknown colour.
-            base = {camera_color_key(None, None): row.total_bags} if row.total_bags else {}
-        result[row.pk] = (base, adjusted_colors(base, row.colors_adjustment))
+        parts = {part.pk: _segment_camera_colors(counts[part.pk], part.total_bags) for part in segments[row.pk]}
+        camera = {}
+        for colors in parts.values():
+            camera = add_counts(camera, colors)
+        shown = adjusted_colors(camera, row.colors_adjustment)
+        result[row.pk] = SessionColors(camera, shown, _split_over_segments(shown, parts))
     return result
 
 
 @transaction.atomic
-def set_session_colors(session_id, targets, user=None):
+def set_session_colors(session_id, targets):
     """Manual colour correction of one wagon/truck, on top of the camera count.
 
     Stored as per-colour deltas: the ledger (``total_bags``, segments, event
     links) never changes and bags counted later still add on top. The day
-    analytics is a separate ledger and is not touched.
+    analytics of the session's day moves by exactly the visible difference.
     """
     hint = ShippingLoadingSession.objects.only("camera").get(pk=session_id)
+    # Lock order: camera cursor -> session -> day row (the importer takes the
+    # cursor before the day row).
     _lock_camera(hint.camera)
     session = ShippingLoadingSession.objects.select_for_update().get(pk=session_id)
     if session.status == ShippingLoadingSession.MERGED:
         raise NotFound("Сессия объединена с другой. Обновите список сессий")
-    base, before = session_colors([session])[session.pk]
-    session.colors_adjustment, _ = apply_color_targets(base, session.colors_adjustment, targets)
+    colors = session_colors([session])[session.pk]
+    session.colors_adjustment, _ = apply_color_targets(colors.camera, session.colors_adjustment, targets)
     session.save(update_fields=["colors_adjustment"])
-    after = adjusted_colors(base, session.colors_adjustment)
-    log_event("shipping_session_edited", f"Сессия отгрузки {session.number or f'№{session.pk}'} исправлена вручную", user=user, payload={
-        "session_id": session.pk, "camera": session.camera, "number": session.number,
-        "camera_total": session.total_bags, "camera_colors": base,
-        "colors_before": before, "colors_after": after,
-        "total_before": sum(before.values()), "total_after": sum(after.values()),
-    })
+    # The camera count is the same before and after: the shown colours move
+    # exactly as the correction does.
+    day = timezone.localdate(session.started_at)
+    _shift_days(session.camera, {day: colors.shown}, {day: adjusted_colors(colors.camera, session.colors_adjustment)})
     return session
+
+
+def _difference(after, before):
+    return add_counts(after, {color: -bags for color, bags in before.items()})
+
+
+def _corrections_by_day(sessions):
+    """``{day: {colour: bags}}``: how far corrected sessions show from the camera.
+
+    Summed per day the session list shows them under (the day of the start).
+    One grouped query for the segments and one for their crossings.
+    """
+    sessions = [row for row in sessions if normalized_adjustments(row.colors_adjustment)]
+    prefetch_related_objects(sessions, "segments")
+    by_session = session_colors(sessions)
+    result = {}
+    for row in sessions:
+        day = timezone.localdate(row.started_at)
+        colors = by_session[row.pk]
+        result[day] = add_counts(result.get(day), _difference(colors.shown, colors.camera))
+    return result
+
+
+def _shift_days(camera, before, after):
+    """Move each day's analytics by how its sessions' visible corrections changed."""
+    for day in sorted(before.keys() | after.keys()):
+        delta = normalized_adjustments(_difference(after.get(day, {}), before.get(day, {})))
+        if delta:
+            shift_shipping_day_colors(camera, day, delta)
+
+
+@transaction.atomic
+def book_session_corrections_into_days():
+    """One-off for migration 0048: book corrections made before they moved days.
+
+    Until then a wagon/truck correction changed only the session, and its day
+    kept the camera count. Books each whole correction into the session's day,
+    as an edit does now, so it must run exactly once. Locks as an edit does:
+    camera cursor, sessions, then day rows.
+    """
+    cameras = list(
+        ShippingLoadingSession.objects.exclude(status=ShippingLoadingSession.MERGED)
+        .exclude(colors_adjustment={}).order_by("camera").values_list("camera", flat=True).distinct()
+    )
+    for camera in cameras:
+        _lock_camera(camera)
+        sessions = (
+            ShippingLoadingSession.objects.select_for_update().filter(camera=camera)
+            .exclude(status=ShippingLoadingSession.MERGED).exclude(colors_adjustment={}).order_by("pk")
+        )
+        _shift_days(camera, {}, _corrections_by_day(sessions))

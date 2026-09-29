@@ -137,14 +137,23 @@ describe("camera analytics overview", () => {
       },
     });
     expect(screen.queryByText("За этот период мешки не учтены")).not.toBeInTheDocument();
-    expect(screen.getByText("Итог исправлен вручную: -817 меш. к счёту камеры.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выпуск по времени: 01.03.2026, 0 мешков" })).toBeInTheDocument();
   });
 
-  it("says when only the colours were corrected by hand", () => {
-    setup({ daily: { ...daily, history: [{ ...point, adjustment_per_color: { red: -17, white: 17 } }] } });
-    expect(screen.getByText("Цвета исправлены вручную.")).toBeInTheDocument();
-    expect(screen.queryByText(/Итог исправлен вручную/)).toBeNull();
+  it("shows hand-corrected days quietly, even to a superuser", () => {
+    const corrected = {
+      ...point,
+      colors: [
+        { color: "red", total: 800, percent: 97.6 },
+        { color: "white", total: 20, percent: 2.4 },
+      ],
+      adjustment: 3,
+      adjustment_per_color: { red: -17, white: 20 },
+      total: 820,
+    };
+    setup({ canEdit: true, daily: { ...daily, ...corrected, period_total: 820, history: [corrected] } });
+    expect(screen.getByRole("button", { name: "Выпуск по времени: 01.03.2026, 820 мешков" })).toBeInTheDocument();
+    expect(screen.queryByText(/исправлен|корректировк/i)).toBeNull();
   });
 
   it("offers day editing only to a superuser looking at one day", () => {

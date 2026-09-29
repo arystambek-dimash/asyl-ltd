@@ -453,5 +453,5 @@ def _edit_day_colors(request, scope):
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
     camera = assert_contour_camera(data["camera"], scope, active=True, field="camera")
-    analytics.set_day_colors(scope, camera, data["day"], data["colors"], request.user)
+    analytics.set_day_colors(scope, camera, data["day"], data["colors"])
     return analytics.today_payload(scope, **query)

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   patch: vi.fn(),
   setData: vi.fn(),
   poll: vi.fn(),
+  onSessionEdited: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({
   api: { post: mocks.post, patch: mocks.patch },
@@ -66,7 +67,6 @@ function session(overrides: Partial<ShippingSession> = {}): ShippingSession {
     number: "28055531",
     status: "closed",
     total_bags: 609,
-    camera_total_bags: 609,
     started_at: at(21, 4),
     last_counted_at: at(21, 32),
     ended_at: at(21, 32),
@@ -79,7 +79,6 @@ function session(overrides: Partial<ShippingSession> = {}): ShippingSession {
       { color: "red", total: 2, percent: 0.3 },
     ],
     camera_colors: { white: 420, blue: 178, unclassified: 9, red: 2 },
-    edited: false,
     segments: [
       segment(),
       segment({ id: 102, total_bags: 209, started_at: at(21, 25), last_counted_at: at(21, 32), ended_at: at(21, 32) }),
@@ -93,7 +92,15 @@ function page(results: ShippingSession[], truncated = false): ShippingSessionsPa
 }
 
 function renderDay(day: string | null = "2026-09-10", canEdit = false) {
-  return render(<CameraShippingSessions camera="cam2" day={day} today="2026-09-11" canEdit={canEdit} />);
+  return render(
+    <CameraShippingSessions
+      camera="cam2"
+      day={day}
+      today="2026-09-11"
+      canEdit={canEdit}
+      onSessionEdited={mocks.onSessionEdited}
+    />,
+  );
 }
 
 function colorChips(card: HTMLElement) {
@@ -103,6 +110,7 @@ function colorChips(card: HTMLElement) {
 }
 
 beforeEach(() => {
+  mocks.onSessionEdited.mockClear();
   mocks.urls = [];
   mocks.error = "";
   mocks.errorStatus = null;
@@ -270,7 +278,15 @@ describe("CameraShippingSessions", () => {
     await user.click(screen.getByRole("button", { expanded: false }));
     const initialUrl = screen.getByRole("img").getAttribute("src");
     mocks.page = page([session({ segments: [segment({ photo_url: "/fixture/image.jpg?token=second" })] })]);
-    rerender(<CameraShippingSessions camera="cam2" day="2026-09-10" today="2026-09-11" canEdit={false} />);
+    rerender(
+      <CameraShippingSessions
+        camera="cam2"
+        day="2026-09-10"
+        today="2026-09-11"
+        canEdit={false}
+        onSessionEdited={mocks.onSessionEdited}
+      />,
+    );
     expect(screen.getByRole("img")).toHaveAttribute("src", initialUrl);
     expect(screen.getByRole("link", { name: "Открыть кадр отрезка 101" })).toHaveAttribute(
       "href",
@@ -280,7 +296,13 @@ describe("CameraShippingSessions", () => {
 
   it("refreshes the list only while it shows today", () => {
     const { unmount } = render(
-      <CameraShippingSessions camera="cam2" day="2026-09-11" today="2026-09-11" canEdit={false} />,
+      <CameraShippingSessions
+        camera="cam2"
+        day="2026-09-11"
+        today="2026-09-11"
+        canEdit={false}
+        onSessionEdited={mocks.onSessionEdited}
+      />,
     );
     expect(mocks.poll).toHaveBeenLastCalledWith(mocks.reload, 3000, true);
     unmount();
@@ -325,23 +347,25 @@ describe("CameraShippingSessions", () => {
     expect(screen.queryByRole("button", { name: /Изменить цвета/ })).toBeNull();
   });
 
-  it("saves a wagon's corrected colours and applies the PATCH response without a reload", async () => {
+  it("saves a wagon's corrected colours, applies the PATCH response without a reload and refreshes the day", async () => {
     const user = userEvent.setup();
     const saved = session({
-      total_bags: 609,
-      edited: true,
-      camera_colors: { white: 420, blue: 178, unclassified: 9, red: 2 },
+      colors: [
+        { color: "white", total: 429, percent: 70.4 },
+        { color: "blue", total: 178, percent: 29.2 },
+        { color: "red", total: 2, percent: 0.3 },
+      ],
     });
     mocks.patch.mockResolvedValue({ data: saved });
     renderDay("2026-09-10", true);
     const card = screen.getByRole("article", { name: "Вагон 28055531" });
     await user.click(within(card).getByRole("button", { name: "Изменить цвета: Вагон 28055531" }));
     const editor = within(card).getByRole("form", { name: "Исправление цветов мешков" });
-    expect(editor).toHaveTextContent("Итог дня в «Цвета мешков» меняется отдельно.");
     await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Не определён" }));
     await user.type(within(editor).getByRole("textbox", { name: "Мешков: Не определён" }), "0");
     await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Белый" }));
     await user.type(within(editor).getByRole("textbox", { name: "Мешков: Белый" }), "429");
+    expect(editor).toHaveTextContent("камера: 420");
     await user.click(within(editor).getByRole("button", { name: "Сохранить" }));
     expect(mocks.patch).toHaveBeenCalledWith("/cameras/shipping-sessions/8/", {
       colors: { unclassified: 0, white: 429 },
@@ -352,6 +376,8 @@ describe("CameraShippingSessions", () => {
     const [update] = mocks.setData.mock.calls[0];
     const other = session({ id: 7, number: "28819852" });
     expect(update(page([session({ total_bags: 612 }), other], true))).toEqual(page([saved, other], true));
+    // Итог и периоды дня сдвинулись вместе с вагоном — окно камеры их перечитывает.
+    expect(mocks.onSessionEdited).toHaveBeenCalledOnce();
     expect(within(card).queryByRole("form")).toBeNull();
     expect(within(card).getByRole("button", { name: "Изменить цвета: Вагон 28055531" })).toHaveFocus();
   });
@@ -376,25 +402,43 @@ describe("CameraShippingSessions", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Сессия объединена с другой");
     expect(screen.getByRole("form", { name: "Исправление цветов мешков" })).toBeInTheDocument();
     expect(mocks.reload).not.toHaveBeenCalled();
+    expect(mocks.onSessionEdited).not.toHaveBeenCalled();
   });
 
-  it("marks a corrected wagon and keeps the camera's own count beside it", () => {
+  it("shows a corrected wagon quietly: its total and segment shares, no marks or camera count", async () => {
+    const user = userEvent.setup();
     mocks.page = page([
       session({
         total_bags: 600,
-        camera_total_bags: 609,
-        edited: true,
         colors: [
           { color: "white", total: 420, percent: 70 },
           { color: "blue", total: 180, percent: 30 },
         ],
+        // Правка сессии разнесена по отрезкам: 400 + 200 = 600.
+        segments: [
+          segment(),
+          segment({
+            id: 102,
+            total_bags: 200,
+            started_at: at(21, 25),
+            last_counted_at: at(21, 32),
+            ended_at: at(21, 32),
+          }),
+        ],
       }),
     ]);
-    renderDay();
+    renderDay("2026-09-10", true);
     const card = screen.getByRole("article", { name: "Вагон 28055531" });
-    expect(within(card).getByText("Исправлено")).toBeInTheDocument();
-    expect(card).toHaveTextContent("камера: 609 меш.");
     expect(card).toHaveTextContent("600 меш.");
+    expect(card).not.toHaveTextContent("камера:");
+    expect(card).not.toHaveTextContent(/исправлен/i);
     expect(screen.getByRole("region", { name: "Сессии отгрузки" })).toHaveTextContent("1 вагон · 600 меш.");
+    await user.click(within(card).getByRole("button", { expanded: false }));
+    expect(within(card).getByRole("article", { name: "Отрезок 102" })).toHaveTextContent("200 меш.");
+    // Счёт камеры виден только суперпользователю в самом редакторе.
+    await user.click(within(card).getByRole("button", { name: "Изменить цвета: Вагон 28055531" }));
+    const editor = within(card).getByRole("form", { name: "Исправление цветов мешков" });
+    expect(editor).toHaveTextContent("камера: 178");
+    expect(within(editor).getByRole("button", { name: "Как у камеры" })).toBeInTheDocument();
   });
 });

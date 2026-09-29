@@ -209,10 +209,13 @@ def test_session_colors_count_every_projected_bag_once(auth_client, operator):
         {"color": "red", "total": 1, "percent": 20.0},
         {"color": "unclassified", "total": 1, "percent": 20.0},
     ]
-    # Ручная поправка итога: доли остаются от событий, числа — в масштабе итога.
+    # Ручная поправка итога в базе (как 10.09: сессия и её отрезки): доли
+    # остаются от событий, числа — в масштабе итога отрезка.
+    ShippingLoadingSegment.objects.filter(session_id=row["id"]).update(total_bags=1360)
     ShippingLoadingSession.objects.filter(pk=row["id"]).update(total_bags=1360)
     [row] = auth_client(operator).get(BASE, day).data["results"]
     assert row["total_bags"] == 1360
+    assert [part["total_bags"] for part in row["segments"]] == [1360]
     assert [(c["color"], c["total"]) for c in row["colors"]] == [
         ("white", 544), ("blue", 272), ("red", 272), ("unclassified", 272),
     ]

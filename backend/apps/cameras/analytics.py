@@ -9,8 +9,6 @@ from django.db.models.functions import Greatest
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.eventlog.services import log_event
-
 from . import color_resolution
 from .models import (
     ANALYTICS_SCOPE_AI247,
@@ -63,6 +61,16 @@ def _scope_sources(analytics_scope: str) -> list[str]:
     raise ValueError("unknown continuous analytics scope")
 
 
+def _locked_day_row(analytics_scope: str, camera: str, day: date):
+    """Дневная строка камеры под блокировкой; день без мешков создаётся."""
+    row, _ = (
+        daily_model_for(analytics_scope)
+        .objects.select_for_update()
+        .get_or_create(camera=camera, day=day)
+    )
+    return row
+
+
 def record_counted_bag(
     *,
     camera: str,
@@ -88,14 +96,7 @@ def record_counted_bag(
     if analytics_scope == ANALYTICS_SCOPE_AI247 and record_production:
         record_color_event(camera, color, observed_at)
 
-    row, _ = (
-        daily_model_for(analytics_scope)
-        .objects.select_for_update()
-        .get_or_create(
-            camera=camera,
-            day=timezone.localdate(observed_at),
-        )
-    )
+    row = _locked_day_row(analytics_scope, camera, timezone.localdate(observed_at))
     row.model_total += 1
     if color:
         row.model_per_color = add_counts(row.model_per_color, {color: 1})
@@ -152,6 +153,19 @@ def _day_colors(rows, analytics_scope: str) -> dict[tuple[str, date], _DayColors
     for row in rows:
         key = (row.camera, row.day)
         raw = _normalized_colors(row.model_per_color)
+        if analytics_scope == ANALYTICS_SCOPE_SHIPPING:
+            # Мешки без цвета камера в разбивку не пишет. Как в сессиях и
+            # периодах, это «Не определён»: его можно исправить и вернуть
+            # «как у камеры», а цвета дня сходятся с итогом. Старая правка
+            # одного итога (без цветов) уже убрала часть этих мешков.
+            total_only = row.adjustment - sum(
+                normalized_adjustments(row.adjustment_per_color).values()
+            )
+            uncoloured = row.model_total + total_only - sum(raw.values())
+            if uncoloured > 0:
+                raw = add_counts(
+                    raw, {color_resolution.camera_color_key(None, None): uncoloured}
+                )
         adjustments = normalized_adjustments(row.adjustment_per_color)
         if key not in moves:
             result[key] = _DayColors(raw, raw, adjustments, {})
@@ -171,56 +185,53 @@ def _day_colors(rows, analytics_scope: str) -> dict[tuple[str, date], _DayColors
     return result
 
 
+def _save_day_adjustment(row, adjustments: dict[str, int], total_delta: int) -> None:
+    """Сохранить ручную поправку дня: цвета и итог, сдвинутый на ``total_delta``.
+
+    Сдвиг — от показанного итога (он не ниже нуля), и поправка не уходит
+    ниже −model_total: иначе следующие правки и новые мешки она поглощала бы.
+    """
+    floor = -row.model_total
+    row.adjustment = max(max(row.adjustment, floor) + total_delta, floor)
+    row.adjustment_per_color = adjustments
+    row.save(update_fields=["adjustment", "adjustment_per_color", "updated_at"])
+
+
 @transaction.atomic
 def set_day_colors(
     analytics_scope: str,
     camera: str,
     day: date,
     targets: dict[str, int],
-    user,
 ) -> None:
     """Ручная правка цветов (и с ними итога) камеры за день — только аналитика.
 
     Счёт камеры ``model_*`` не меняется: по нему сверяется журнал событий.
     Поправка — разница по цветам, поэтому мешки после правки идут сверху.
-    День без мешков можно заполнить вручную.
+    День без мешков можно заполнить вручную. Сессии дня не меняются.
     """
-    row, _ = (
-        daily_model_for(analytics_scope)
-        .objects.select_for_update()
-        .get_or_create(camera=camera, day=day)
-    )
+    row = _locked_day_row(analytics_scope, camera, day)
     if analytics_scope == ANALYTICS_SCOPE_AI247 and row.archived_at is not None:
         raise ValidationError({"day": "День перенесён в архив", "code": "day_archived"})
-    key = (row.camera, row.day)
-    before = _day_colors([row], analytics_scope)[key]
-    total_before, adjustment_before = row.total, row.adjustment
-    row.adjustment_per_color, total_delta = apply_color_targets(
-        before.base, before.adjustments, targets
+    colors = _day_colors([row], analytics_scope)[(row.camera, row.day)]
+    _save_day_adjustment(
+        row, *apply_color_targets(colors.base, colors.adjustments, targets)
     )
-    # Сдвиг — от показанного итога (он не ниже нуля), и поправка не уходит
-    # ниже −model_total: иначе следующие правки и новые мешки она поглощала бы.
-    floor = -row.model_total
-    row.adjustment = max(max(row.adjustment, floor) + total_delta, floor)
-    row.save(update_fields=["adjustment", "adjustment_per_color", "updated_at"])
-    after = _day_colors([row], analytics_scope)[key]
-    log_event(
-        "camera_analytics_edited",
-        f"Аналитика камеры {camera} за {day:%d.%m.%Y} исправлена вручную",
-        user=user,
-        payload={
-            "scope": analytics_scope,
-            "camera": camera,
-            "day": day.isoformat(),
-            "camera_colors": before.camera,
-            "colors_before": before.shown,
-            "colors_after": after.shown,
-            "total_before": total_before,
-            "total_after": row.total,
-            "adjustment_before": adjustment_before,
-            "adjustment_after": row.adjustment,
-        },
+
+
+def shift_shipping_day_colors(camera: str, day: date, delta: dict[str, int]) -> None:
+    """Перенести в аналитику дня отгрузки видимую правку вагона/машины.
+
+    ``delta`` — на сколько мешков изменился каждый показанный цвет сессии;
+    цвета и итог дня сдвигаются ровно на неё (с тем же полом поправки, что и
+    правка дня). Вызывается в транзакции правки после блокировки сессии:
+    порядок блокировок как у импорта — курсор камеры, затем день.
+    """
+    row = _locked_day_row(ANALYTICS_SCOPE_SHIPPING, camera, day)
+    adjustments = normalized_adjustments(
+        add_counts(normalized_adjustments(row.adjustment_per_color), delta)
     )
+    _save_day_adjustment(row, adjustments, sum(delta.values()))
 
 
 def _row_payload(

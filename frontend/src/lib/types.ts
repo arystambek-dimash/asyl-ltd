@@ -1017,6 +1017,8 @@ export interface ShippingCameraDayHistory extends CameraDayHistory {
   selected_day: string;
   history_status: "complete" | "incomplete" | "pending";
   history_detail: string;
+  /** Мешки итога дня, которых нет в периодах (после ручной правки или старой правки итога). */
+  unplaced_bags: number;
 }
 export interface AlwaysOnProductionPayload extends CameraDayHistory {
   warehouse: number;

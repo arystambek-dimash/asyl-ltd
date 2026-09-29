@@ -9,8 +9,11 @@ import { makeMe } from "@/test-utils/factories";
 const mocks = vi.hoisted(() => ({
   responses: new Map<string, unknown>(),
   requestedUrls: [] as string[],
+  /** Адреса useApi, которые страница перечитала через reload(). */
+  reloadedUrls: [] as string[],
   apiGet: vi.fn(),
   apiPut: vi.fn(),
+  apiPatch: vi.fn(),
   apiPost: vi.fn(),
   permissions: ["monoblock.view"],
   isSuperuser: false,
@@ -55,7 +58,9 @@ vi.mock("@/lib/use-api", () => ({
     data: url ? (mocks.responses.get(url) ?? null) : null,
     error: "",
     loading: false,
-    reload: vi.fn().mockResolvedValue(undefined),
+    reload: async () => {
+      if (url) mocks.reloadedUrls.push(url);
+    },
     setData: vi.fn(),
   }),
 }));
@@ -82,6 +87,7 @@ vi.mock("@/lib/api", () => ({
       return mocks.apiGet(url, ...args);
     },
     put: (...args: unknown[]) => mocks.apiPut(...args),
+    patch: (...args: unknown[]) => mocks.apiPatch(...args),
     post: (...args: unknown[]) => mocks.apiPost(...args),
   },
   apiError: () => "Ошибка тестового API",
@@ -170,6 +176,7 @@ function shippingDayHistory(day = "2026-08-24"): ShippingCameraDayHistory {
     selected_day: day,
     history_status: "complete",
     history_detail: "",
+    unplaced_bags: 0,
     day_runs: rawRuns,
     algorithm_day_runs: [
       {
@@ -250,13 +257,30 @@ function setupShippingHistory(
   });
 }
 
-/** Ответ аналитики отгрузки после ручной правки 24.08: +2 белых мешка к счёту камеры. */
-function editedShippingAnalytics(dateFrom: string | null, dateTo: string | null) {
+/** Правка цветов 24.08: +2 синих мешка к счёту камеры. */
+const EDITED_DAY = {
+  colors: [
+    { color: "red", total: 9, percent: 64.3 },
+    { color: "blue", total: 5, percent: 35.7 },
+  ],
+  adjustment: 2,
+  adjustment_per_color: { blue: 2 },
+  total: 14,
+};
+/** Старая правка одного итога 24.08 (до правки по цветам): −2 мешка, цвета — как у камеры. */
+const LEGACY_CORRECTED_DAY = { adjustment: -2, adjustment_per_color: {}, total: 10 };
+
+/** Аналитика отгрузки, где 24.08 исправлен вручную. */
+function correctedShippingAnalytics(
+  correction: typeof EDITED_DAY | typeof LEGACY_CORRECTED_DAY,
+  dateFrom: string | null = null,
+  dateTo: string | null = null,
+) {
   const sync = { status: "synced", available: true, detail: "" };
-  const camera = { model_total: 12, model_per_color: { red: 9, blue: 3 }, updated_at: null };
   const plain = {
-    ...camera,
     day: "2026-08-23",
+    model_total: 12,
+    model_per_color: { red: 9, blue: 3 },
     colors: [
       { color: "red", total: 9, percent: 75 },
       { color: "blue", total: 3, percent: 25 },
@@ -264,58 +288,76 @@ function editedShippingAnalytics(dateFrom: string | null, dateTo: string | null)
     adjustment: 0,
     adjustment_per_color: {},
     total: 12,
+    updated_at: null,
   };
-  const edited = {
-    ...camera,
-    day: "2026-08-24",
-    colors: [
-      { color: "red", total: 9, percent: 64.3 },
-      { color: "blue", total: 3, percent: 21.4 },
-      { color: "white", total: 2, percent: 14.3 },
-    ],
-    adjustment: 2,
-    adjustment_per_color: { white: 2 },
-    total: 14,
-  };
+  const corrected = { ...plain, day: "2026-08-24", ...correction };
   return {
     ...analytics,
     analytics_scope: "shipping",
     analytics_sync: sync,
-    total: 14,
-    all_time_total: 26,
+    total: corrected.total,
+    all_time_total: plain.total + corrected.total,
     cameras: [
       {
         camera: "cam2",
-        ...edited,
-        all_time_total: 26,
-        history: [plain, edited],
+        ...corrected,
+        all_time_total: plain.total + corrected.total,
+        history: [plain, corrected],
         analytics_sync: sync,
         date_from: dateFrom,
         date_to: dateTo,
-        period_total: dateFrom === dateTo ? 14 : 26,
+        period_total: dateFrom === dateTo ? corrected.total : plain.total + corrected.total,
       },
     ],
   };
 }
 
-/** PUT правки отвечает снимком аналитики за тот же период; после записи GET тоже отдаёт правку. */
-function acceptShippingEdits() {
+/** Периоды 24.08 после правки: бэкенд разнёс +2 синих по синему периоду журнала. */
+function editedShippingDayHistory(): ShippingCameraDayHistory {
+  const history = shippingDayHistory();
+  const [red, blue, lateRed] = history.day_runs;
+  return {
+    ...history,
+    day_runs: [red, { ...blue, model_bags: 5 }, lateRed],
+    algorithm_day_runs: history.algorithm_day_runs.map((run) => ({ ...run, model_bags: 14 })),
+    run_smoothing: {
+      ...history.run_smoothing,
+      raw_model_total: 14,
+      algorithm_model_total: 14,
+      raw_colors: EDITED_DAY.colors,
+      algorithm_colors: [{ color: "red", total: 14, percent: 100 }],
+    },
+  };
+}
+
+/** Поверх setupShippingHistory: аналитика и периоды 24.08 отвечают днём с правкой. */
+function serveCorrectedShippingDay(
+  correction: typeof EDITED_DAY | typeof LEGACY_CORRECTED_DAY,
+  dayHistory: ShippingCameraDayHistory,
+) {
   const baseGet = mocks.apiGet.getMockImplementation()!;
-  let saved = false;
-  mocks.apiGet.mockImplementation((url: unknown, ...args: unknown[]) =>
-    saved && url === "/cameras/shipping-continuous-analytics/"
-      ? Promise.resolve({ data: editedShippingAnalytics(null, null) })
-      : baseGet(url, ...args),
-  );
+  mocks.apiGet.mockImplementation((url: unknown, ...args: unknown[]) => {
+    if (url === "/cameras/shipping-continuous-analytics/")
+      return Promise.resolve({ data: correctedShippingAnalytics(correction) });
+    if (url === shippingHistoryUrl("2026-08-24")) return Promise.resolve({ data: dayHistory });
+    return baseGet(url, ...args);
+  });
+}
+
+/** PUT правки отвечает снимком аналитики за тот же период; после записи GET тоже отдают правку. */
+function acceptShippingEdits() {
   mocks.apiPut.mockImplementation(async (url: string) => {
-    saved = true;
+    serveCorrectedShippingDay(EDITED_DAY, editedShippingDayHistory());
     const query = new URL(url, "http://localhost").searchParams;
-    return { data: editedShippingAnalytics(query.get("date_from"), query.get("date_to")) };
+    return { data: correctedShippingAnalytics(EDITED_DAY, query.get("date_from"), query.get("date_to")) };
   });
 }
 
 const analyticsGets = () =>
   mocks.apiGet.mock.calls.filter(([url]) => url === "/cameras/shipping-continuous-analytics/").length;
+
+/** Сколько раз страница перечитала аналитику для плиток и итогов (useApi.reload). */
+const pageAnalyticsReloads = (url: string) => mocks.reloadedUrls.filter((item) => item === url).length;
 
 async function openShippingDay(user: ReturnType<typeof userEvent.setup>, { range = false } = {}) {
   render(<MonoblockPage />);
@@ -390,9 +432,11 @@ async function openAlwaysOnCamera(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   mocks.requestedUrls = [];
+  mocks.reloadedUrls = [];
   mocks.permissions = ["monoblock.view"];
   mocks.isSuperuser = false;
   mocks.apiPut.mockReset();
+  mocks.apiPatch.mockReset();
   mocks.apiPost.mockReset();
   mocks.responses = new Map<string, unknown>([
     ["/orders/?post_board=1", []],
@@ -572,7 +616,7 @@ describe("AI 24/7 live detections", () => {
     expect(screen.queryByRole("button", { name: /Изменить цвета/ })).not.toBeInTheDocument();
   });
 
-  it("суперпользователь правит цвета дня: ответ PUT применяется сразу, опрос перезапускается", async () => {
+  it("суперпользователь правит цвета дня: ответ PUT применяется сразу, опрос перезапускается, правка не видна", async () => {
     const user = userEvent.setup();
     mocks.isSuperuser = true;
     setupShippingHistory();
@@ -582,25 +626,33 @@ describe("AI 24/7 live detections", () => {
     await user.click(screen.getByRole("tab", { name: "Аналитика" }));
     await user.click(await screen.findByRole("button", { name: "Изменить цвета за 24.08.2026" }));
     const editor = screen.getByRole("form", { name: "Исправление цветов мешков" });
-    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Белый" }));
-    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Белый" }), "2");
+    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Синий" }));
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Синий" }), "5");
     const getsBeforeSave = analyticsGets();
+    const pageReloadsBeforeSave = pageAnalyticsReloads("/cameras/shipping-continuous-analytics/");
     await user.click(within(editor).getByRole("button", { name: "Сохранить" }));
 
     expect(mocks.apiPut).toHaveBeenCalledWith(
       "/cameras/shipping-continuous-analytics/?camera=cam2&date_from=2026-08-24&date_to=2026-08-24",
-      { camera: "cam2", day: "2026-08-24", colors: { white: 2 } },
+      { camera: "cam2", day: "2026-08-24", colors: { blue: 5 } },
     );
-    expect(await screen.findByText("Итог исправлен вручную: +2 меш. к счёту камеры.")).toBeInTheDocument();
+    // Плитка конвейера после закрытия окна берёт итог страницы — он перечитан
+    // сразу, а не на следующем медленном опросе.
+    expect(pageAnalyticsReloads("/cameras/shipping-continuous-analytics/")).toBe(pageReloadsBeforeSave + 1);
+    expect(pageAnalyticsReloads("/cameras/always-on-analytics/")).toBe(0);
+    expect(
+      await screen.findByRole("button", { name: "Подсчёт по времени: 24.08.2026, 14 мешков" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "Исправление цветов мешков" })).not.toBeInTheDocument();
     expect(screen.getByText("Учтено сегодня").parentElement).toHaveTextContent("14");
+    expect(screen.queryByText(/исправлен/i)).not.toBeInTheDocument();
     await waitFor(() => expect(analyticsGets()).toBeGreaterThan(getsBeforeSave));
 
     await user.click(screen.getByRole("tab", { name: "Прямой эфир" }));
-    expect(screen.getByText("Корректировка").parentElement).toHaveTextContent("+2");
+    expect(screen.queryByText("Корректировка")).not.toBeInTheDocument();
   });
 
-  it("в периоде правит выбранный день и показывает его исправленные цвета вместо периодов журнала", async () => {
+  it("в периоде правит выбранный день: цвета и периоды дня сходятся с исправленным итогом", async () => {
     const user = userEvent.setup();
     mocks.isSuperuser = true;
     setupShippingHistory();
@@ -612,23 +664,177 @@ describe("AI 24/7 live detections", () => {
     await user.click(within(panel).getByRole("button", { name: "Изменить цвета за 24.08.2026" }));
     const editor = within(panel).getByRole("form", { name: "Исправление цветов мешков" });
     expect(within(editor).getAllByRole("textbox")[0]).toHaveFocus();
-    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Белый" }));
-    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Белый" }), "2");
+    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Синий" }));
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Синий" }), "5");
+    const historyGetsBeforeSave = mocks.requestedUrls.filter((url) => url === shippingHistoryUrl("2026-08-24")).length;
     await user.click(within(editor).getByRole("button", { name: "Сохранить" }));
 
     expect(mocks.apiPut).toHaveBeenCalledWith(
       "/cameras/shipping-continuous-analytics/?camera=cam2&date_from=2026-08-18&date_to=2026-08-24",
-      { camera: "cam2", day: "2026-08-24", colors: { white: 2 } },
+      { camera: "cam2", day: "2026-08-24", colors: { blue: 5 } },
     );
-    await within(panel).findByText("Исправлено вручную");
+    // Периоды дня перечитаны: бэкенд разнёс правку по журналу, и он сходится с итогом 14.
+    expect(await within(panel).findByRole("group", { name: "Период Красный: 14 мешков" })).toBeInTheDocument();
+    expect(mocks.requestedUrls.filter((url) => url === shippingHistoryUrl("2026-08-24")).length).toBeGreaterThan(
+      historyGetsBeforeSave,
+    );
     // Редактор закрылся — фокус вернулся на «Изменить», а не упал на <body> за окном камеры.
     expect(within(panel).getByRole("button", { name: "Изменить цвета за 24.08.2026" })).toHaveFocus();
-    expect(within(panel).getByRole("group", { name: "Белый: 2 мешков" })).toBeInTheDocument();
+    expect(within(panel).getByRole("group", { name: "Синий: 5 мешков" })).toBeInTheDocument();
     expect(within(panel).getByRole("group", { name: "Красный: 9 мешков" })).toBeInTheDocument();
     expect(within(panel).queryByRole("group", { name: "Красный: 12 мешков" })).not.toBeInTheDocument();
     expect(within(panel).getByText("Учтено за день").parentElement).toHaveTextContent("14");
-    // Периоды остаются журналом камеры.
-    expect(within(panel).getByRole("group", { name: "Период Красный: 12 мешков" })).toBeInTheDocument();
+    expect(within(panel).queryByText(/исправлен/i)).not.toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Сырые данные" }));
+    expect(within(panel).getByRole("group", { name: "Период Синий: 5 мешков" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["с правкой цветов — с исправленным итогом", EDITED_DAY, editedShippingDayHistory, "Период Красный: 14 мешков"],
+    [
+      // Бэкенд называет мешки итога, которых нет в периодах: старая правка итога −2.
+      "со старой правкой одного итога — со счётом камеры",
+      LEGACY_CORRECTED_DAY,
+      () => ({ ...shippingDayHistory(), unplaced_bags: -2 }),
+      "Период Красный: 12 мешков",
+    ],
+    [
+      // Цвет, которого камера в тот день не видела: двум мешкам нет места во времени.
+      "с цветом, которого нет в периодах — с тем, что бэкенд разместил",
+      EDITED_DAY,
+      () => ({ ...shippingDayHistory(), unplaced_bags: 2 }),
+      "Период Красный: 12 мешков",
+    ],
+  ])("сверяет периоды дня отгрузки %s", async (_, correction, dayHistory, period) => {
+    const user = userEvent.setup();
+    setupShippingHistory();
+    serveCorrectedShippingDay(correction, dayHistory());
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    await user.click(
+      await screen.findByRole("button", { name: `Подсчёт по времени: 24.08.2026, ${correction.total} мешков` }),
+    );
+    const panel = selectedDayPanel("24.08.2026");
+    expect(await within(panel).findByRole("group", { name: period })).toBeInTheDocument();
+    expect(within(panel).queryByText(/журнал не совпадает/)).not.toBeInTheDocument();
+  });
+
+  it("не показывает периоды, которые не знают правку цветов дня отгрузки", async () => {
+    const user = userEvent.setup();
+    setupShippingHistory();
+    serveCorrectedShippingDay(EDITED_DAY, shippingDayHistory());
+    render(<MonoblockPage />);
+    await user.click(screen.getByRole("button", { name: "Открыть прямой эфир камеры Робот Кука" }));
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    await user.click(await screen.findByRole("button", { name: "Подсчёт по времени: 24.08.2026, 14 мешков" }));
+    const panel = selectedDayPanel("24.08.2026");
+    expect(await within(panel).findByRole("status")).toHaveTextContent("журнал не совпадает с итогом выбранного дня");
+    expect(within(panel).queryByRole("group", { name: /^Период / })).not.toBeInTheDocument();
+    expect(within(panel).getByRole("group", { name: "Синий: 5 мешков" })).toBeInTheDocument();
+  });
+
+  it("правка вагона сразу перечитывает аналитику и периоды дня", async () => {
+    const user = userEvent.setup();
+    mocks.isSuperuser = true;
+    setupShippingHistory();
+    const wagon = {
+      id: 8,
+      camera: "cam2",
+      recognition_model: "wagon_number",
+      number: "28055531",
+      status: "closed",
+      total_bags: 12,
+      started_at: "2026-08-24T04:00:00Z",
+      last_counted_at: "2026-08-24T04:05:00Z",
+      ended_at: "2026-08-24T04:05:00Z",
+      order_id: null,
+      colors: [
+        { color: "red", total: 9, percent: 75 },
+        { color: "blue", total: 3, percent: 25 },
+      ],
+      camera_colors: { red: 9, blue: 3 },
+      segments: [],
+    };
+    mocks.responses.set("/cameras/shipping-sessions/?camera=cam2&day=2026-08-24", { results: [wagon] });
+    mocks.apiPatch.mockImplementation(async () => {
+      serveCorrectedShippingDay(EDITED_DAY, editedShippingDayHistory());
+      return { data: { ...wagon, total_bags: 14, colors: EDITED_DAY.colors } };
+    });
+    await openShippingDay(user);
+    const panel = selectedDayPanel("24.08.2026");
+    expect(await within(panel).findByRole("group", { name: "Период Красный: 12 мешков" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Изменить цвета: Вагон 28055531" }));
+    await user.clear(screen.getByRole("textbox", { name: "Мешков: Синий" }));
+    await user.type(screen.getByRole("textbox", { name: "Мешков: Синий" }), "5");
+    const pageReloadsBeforeSave = pageAnalyticsReloads("/cameras/shipping-continuous-analytics/");
+    await user.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    expect(mocks.apiPatch).toHaveBeenCalledWith("/cameras/shipping-sessions/8/", { colors: { blue: 5 } });
+    // Правка вагона сдвигает итог дня — плитка конвейера перечитывает его сразу.
+    await waitFor(() =>
+      expect(pageAnalyticsReloads("/cameras/shipping-continuous-analytics/")).toBe(pageReloadsBeforeSave + 1),
+    );
+    expect(await within(panel).findByRole("group", { name: "Период Красный: 14 мешков" })).toBeInTheDocument();
+    expect(within(panel).getByText("Учтено за день").parentElement).toHaveTextContent("14");
+    expect(screen.getByText("Учтено сегодня").parentElement).toHaveTextContent("14");
+  });
+
+  it("правка цветов дня AI 24/7 сразу перечитывает итоги страницы AI 24/7", async () => {
+    const user = userEvent.setup();
+    mocks.isSuperuser = true;
+    const sync = { available: true, status: "synced", detail: "" };
+    const point = {
+      day: "2026-08-24",
+      model_total: 12,
+      model_per_color: { red: 9, blue: 3 },
+      colors: [
+        { color: "red", total: 9, percent: 75 },
+        { color: "blue", total: 3, percent: 25 },
+      ],
+      adjustment: 0,
+      adjustment_per_color: {},
+      total: 12,
+      updated_at: null,
+    };
+    const dayAnalytics = {
+      ...analytics,
+      analytics_sync: sync,
+      total: 12,
+      all_time_total: 12,
+      cameras: [{ camera: "cam2", ...point, all_time_total: 12, history: [point], analytics_sync: sync }],
+    };
+    mocks.responses.set("/cameras/always-on-analytics/", dayAnalytics);
+    mockAlwaysOnApi({ analytics: dayAnalytics });
+    mocks.apiPut.mockResolvedValue({
+      data: {
+        ...dayAnalytics,
+        cameras: dayAnalytics.cameras.map((camera) => ({
+          ...camera,
+          date_from: "2026-08-24",
+          date_to: "2026-08-24",
+          period_total: camera.total,
+        })),
+      },
+    });
+
+    render(<MonoblockPage />);
+    await openAlwaysOnCamera(user);
+    await user.click(screen.getByRole("tab", { name: "Аналитика" }));
+    await user.click(await screen.findByRole("button", { name: "Изменить цвета за 24.08.2026" }));
+    const editor = screen.getByRole("form", { name: "Исправление цветов мешков" });
+    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Синий" }));
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Синий" }), "5");
+    const pageReloadsBeforeSave = pageAnalyticsReloads("/cameras/always-on-analytics/");
+    await user.click(within(editor).getByRole("button", { name: "Сохранить" }));
+
+    expect(mocks.apiPut).toHaveBeenCalledWith(
+      "/cameras/always-on-analytics/?camera=cam2&date_from=2026-08-24&date_to=2026-08-24",
+      { camera: "cam2", day: "2026-08-24", colors: { blue: 5 } },
+    );
+    expect(pageAnalyticsReloads("/cameras/always-on-analytics/")).toBe(pageReloadsBeforeSave + 1);
+    expect(pageAnalyticsReloads("/cameras/shipping-continuous-analytics/")).toBe(0);
   });
 
   it.each(["incomplete", "pending"] as const)(
