@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import type { AxiosError } from "axios";
 import { api, apiError, isCanceledRequest } from "@/lib/api";
 
@@ -16,9 +16,11 @@ export function useApi<T>(url: string | null) {
    *
    * Запрос, начатый ДО записи, может завершиться после неё и вернуть прежнее
    * состояние — на экране изменение «слетало» бы. Поэтому такая запись
-   * отменяет ответы в полёте: свежий результат мутации важнее их.
+   * отменяет ответы в полёте: свежий результат мутации важнее их. Функция
+   * получает текущие данные — чтобы заменить одну запись в списке, который
+   * успел обновиться, пока шёл запрос.
    */
-  const commit = useCallback((next: T | null) => {
+  const commit = useCallback((next: SetStateAction<T | null>) => {
     activeController.current?.abort();
     activeController.current = null;
     latestRequest.current += 1;

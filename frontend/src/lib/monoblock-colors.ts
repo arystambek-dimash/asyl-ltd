@@ -15,11 +15,14 @@ interface ColorMeta {
 }
 
 const COLOR_META: Record<string, ColorMeta> = {
-  red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
   blue: { label: "Синий", bar: "bg-[#4169d8]", dot: "bg-[#4169d8]" },
-  green: { label: "Зелёный", bar: "bg-[#42a779]", dot: "bg-[#42a779]" },
+  red: { label: "Красный", bar: "bg-[#dc604d]", dot: "bg-[#dc604d]" },
   white: { label: "Белый", bar: "border border-slate-300 bg-slate-100", dot: "border border-slate-300 bg-white" },
+  green: { label: "Зелёный", bar: "bg-[#42a779]", dot: "bg-[#42a779]" },
 };
+
+/** Цвета палитры; в этом порядке ручная правка аналитики предлагает цвета, которых камера не видела. */
+export const PALETTE_COLORS = Object.keys(COLOR_META);
 
 const FALLBACK: ColorMeta = { label: "", bar: "bg-slate-500", dot: "bg-slate-500" };
 

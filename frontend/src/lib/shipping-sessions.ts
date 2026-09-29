@@ -22,13 +22,20 @@ export interface ShippingSession {
   recognition_model: "vehicle_number" | "wagon_number" | "";
   number: string;
   status: "active" | "closed";
+  /** Итог сессии с ручной правкой цветов. */
   total_bags: number;
+  /** Сколько насчитала камера. */
+  camera_total_bags: number;
   started_at: string;
   last_counted_at: string;
   ended_at: string | null;
   order_id: number | null;
   /** Цвета мешков этой сессии; `unclassified` — мешки, цвет которых камера не определила. */
   colors: AlwaysOnColorAnalytics[];
+  /** Цвета по камере, без ручной правки. */
+  camera_colors: Record<string, number>;
+  /** Цвета сессии исправлены вручную. */
+  edited: boolean;
   segments: ShippingSegment[];
 }
 

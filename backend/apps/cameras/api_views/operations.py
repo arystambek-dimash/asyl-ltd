@@ -35,6 +35,7 @@ from ..policies import (
 from ..serializers import (
     AlwaysOnProductMappingsSerializer,
     AlwaysOnUnknownColorSerializer,
+    AnalyticsDayColorsSerializer,
     AnalyticsRangeSerializer,
     CameraSourcesSerializer,
     ShippingBoardSettingsSerializer,
@@ -239,10 +240,16 @@ class ShippingContinuousDetectionsView(_ContourDetectionsView):
 class ShippingContinuousAnalyticsView(PermAPIViewMixin, APIView):
     """Operational bag analytics for shipment cameras only."""
 
-    required_perms: ClassVar[dict] = {"get": MONOBLOCK_SETTINGS_VIEW}
+    required_perms: ClassVar[dict] = {
+        "get": MONOBLOCK_SETTINGS_VIEW,
+        "put": SUPERUSER_ONLY,
+    }
 
     def get(self, request):
         return Response(_analytics_payload(request, ANALYTICS_SCOPE_SHIPPING))
+
+    def put(self, request):
+        return Response(_edit_day_colors(request, ANALYTICS_SCOPE_SHIPPING))
 
 
 class ShippingContinuousHistoryView(PermAPIViewMixin, APIView):
@@ -308,12 +315,18 @@ class WagonNumberCameraSettingsView(PermAPIViewMixin, APIView):
 
 
 class AlwaysOnAnalyticsView(PermAPIViewMixin, APIView):
-    required_perms: ClassVar[dict] = {"get": MONOBLOCK_VIEW}
+    required_perms: ClassVar[dict] = {
+        "get": MONOBLOCK_VIEW,
+        "put": SUPERUSER_ONLY,
+    }
 
     def get(self, request):
         # Counting is owned by the single camera monitor.  A read request must
         # not race its event cursor.
         return Response(_analytics_payload(request, ANALYTICS_SCOPE_AI247))
+
+    def put(self, request):
+        return Response(_edit_day_colors(request, ANALYTICS_SCOPE_AI247))
 
 
 class AlwaysOnProductionView(PermAPIViewMixin, APIView):
@@ -420,11 +433,25 @@ class ShippingBoardSettingsView(PermAPIViewMixin, APIView):
         return Response(self._payload(row))
 
 
-def _analytics_payload(request, scope):
+def _analytics_query(request) -> dict:
     serializer = AnalyticsRangeSerializer(data=request.query_params)
     serializer.is_valid(raise_exception=True)
     params = dict(serializer.validated_data)
     camera = params.pop("camera", None)
-    return analytics.today_payload(
-        scope, camera_sources=[camera] if camera else None, **params
-    )
+    return {"camera_sources": [camera] if camera else None, **params}
+
+
+def _analytics_payload(request, scope):
+    return analytics.today_payload(scope, **_analytics_query(request))
+
+
+def _edit_day_colors(request, scope):
+    """Save a manual day correction; answer with the GET payload of the query."""
+
+    query = _analytics_query(request)
+    serializer = AnalyticsDayColorsSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    camera = assert_contour_camera(data["camera"], scope, active=True, field="camera")
+    analytics.set_day_colors(scope, camera, data["day"], data["colors"], request.user)
+    return analytics.today_payload(scope, **query)

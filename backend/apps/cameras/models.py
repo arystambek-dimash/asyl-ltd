@@ -637,6 +637,9 @@ class DailyCountBase(models.Model):
     # include the column in INSERTs, so PostgreSQL must still supply `{}`.
     model_per_brand = models.JSONField(default=dict, db_default={}, blank=True)
     adjustment = models.IntegerField(default=0)
+    # Ручная поправка по цветам поверх цветов камеры: {цвет: ±мешков}.
+    # db_default — по той же причине, что у model_per_brand.
+    adjustment_per_color = models.JSONField(default=dict, db_default={}, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1099,6 +1102,9 @@ class ShippingLoadingSession(models.Model):
     ended_at = models.DateTimeField(null=True, blank=True)
     order = models.ForeignKey("orders.Order", null=True, blank=True, on_delete=models.PROTECT, related_name="shipping_loading_sessions")
     merged_into = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="merged_sessions")
+    # Ручная поправка цветов вагона/машины поверх счёта камеры: {цвет: ±мешков}.
+    # db_default keeps old-image INSERTs valid during an automatic rollback.
+    colors_adjustment = models.JSONField(default=dict, db_default={}, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

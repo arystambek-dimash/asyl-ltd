@@ -1,8 +1,9 @@
 "use client";
 
 import Image from "next/image";
-import { useId, useState, type FormEvent } from "react";
-import { Camera, ChevronRight, Printer } from "lucide-react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { Camera, ChevronRight, Pencil, Printer } from "lucide-react";
+import { ColorCountsEditor, useEditorFocusReturn } from "@/components/monoblock/color-counts-editor";
 import { ColorDot, Panel } from "@/components/monoblock/ui";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -230,14 +231,30 @@ function transportTitle(session: ShippingSession) {
 function SessionCard({
   session,
   reload,
+  onSaved,
   stale,
+  canEdit,
 }: {
   session: ShippingSession;
   reload: () => Promise<void>;
+  /** Кладёт ответ PATCH (сессию в виде как в списке) в список дня. */
+  onSaved: (session: ShippingSession) => void;
   stale: boolean;
+  canEdit: boolean;
 }) {
   // Сразу раскрыт только транспорт без номера: ему нужен ручной ввод с кадра.
   const [open, setOpen] = useState(!session.number);
+  const [editing, setEditing] = useState(false);
+  const editButton = useEditorFocusReturn(editing);
+  // Пока шёл PATCH, карточка могла исчезнуть (выбран другой день) — тогда
+  // ответ не применяем: он записался бы в список уже другого дня.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const detailsId = useId();
   const title = transportTitle(session);
   const parts = session.segments.length;
@@ -245,9 +262,18 @@ function SessionCard({
     `${formatTime(session.started_at)}–${formatTime(session.ended_at ?? session.last_counted_at)}`,
     parts > 1 ? `${parts} ${pluralRu(parts, ["отрезок", "отрезка", "отрезков"])}` : null,
     session.order_id ? `Заказ #${session.order_id}` : null,
+    session.edited ? `камера: ${formatCount(session.camera_total_bags)} меш.` : null,
   ]
     .filter(Boolean)
     .join(" · ");
+
+  async function saveColors(colors: Record<string, number>) {
+    const { data } = await api.patch<ShippingSession>(`/cameras/shipping-sessions/${session.id}/`, { colors });
+    if (!mounted.current) return;
+    onSaved(data);
+    setEditing(false);
+  }
+
   return (
     <article aria-label={title} className="overflow-hidden rounded-lg border bg-[var(--card)]">
       <button
@@ -264,16 +290,49 @@ function SessionCard({
           <span className="block truncate font-semibold">{title}</span>
           <span className="block text-xs text-[var(--muted-foreground)]">{meta}</span>
         </span>
-        {session.status === "active" && (
-          <Badge tone="success" dot>
-            Идёт погрузка
-          </Badge>
+        {(session.status === "active" || !session.number || session.edited) && (
+          // На телефоне бейджи — строкой ниже, чтобы не сжимать номер вагона.
+          <span className="order-last flex w-full flex-wrap gap-2 pl-7 sm:order-none sm:w-auto sm:pl-0">
+            {session.status === "active" && (
+              <Badge tone="success" dot>
+                Идёт погрузка
+              </Badge>
+            )}
+            {!session.number && <Badge tone="warning">Без номера</Badge>}
+            {session.edited && <Badge tone="warning">Исправлено</Badge>}
+          </span>
         )}
-        {!session.number && <Badge tone="warning">Без номера</Badge>}
         <span className="text-lg font-semibold tabular-nums">{formatCount(session.total_bags)} меш.</span>
       </button>
       <div className="px-4 pb-3 pl-11">
-        <SessionColors colors={session.colors} />
+        {editing ? (
+          <ColorCountsEditor
+            items={session.colors}
+            cameraCounts={session.camera_colors}
+            total={session.total_bags}
+            hint="Итог дня в «Цвета мешков» меняется отдельно."
+            onSave={saveColors}
+            onCancel={() => setEditing(false)}
+          />
+        ) : (
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <SessionColors colors={session.colors} />
+            </div>
+            {canEdit && !stale && (
+              <Button
+                ref={editButton}
+                variant="ghost"
+                size="sm"
+                className="-my-1.5 shrink-0"
+                aria-label={`Изменить цвета: ${title}`}
+                onClick={() => setEditing(true)}
+              >
+                <Pencil /> Изменить
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       {open && (
         <div id={detailsId}>
@@ -302,11 +361,14 @@ export function CameraShippingSessions({
   camera,
   day,
   today,
+  canEdit,
 }: {
   camera: string;
   /** Выбранный день; null — период из нескольких дней, где день ещё не выбран. */
   day: string | null;
   today: string;
+  /** Ручная правка цветов сессии — только суперпользователь. */
+  canEdit: boolean;
 }) {
   const headingId = useId();
   const list = useApi<ShippingSessionsPage>(
@@ -316,6 +378,14 @@ export function CameraShippingSessions({
   const failure = loadErrorText(list, "Сессии недоступны. Проверьте права доступа.");
   const sessions = list.data?.results ?? [];
   const bags = sessions.reduce((sum, session) => sum + session.total_bags, 0);
+  // Ответ PATCH применяем сразу, а не перечитываем список: опрос раз в 3 с
+  // отменял такой reload, и карточка на миг показывала старые цвета.
+  function applySaved(saved: ShippingSession) {
+    list.setData(
+      (current) =>
+        current && { ...current, results: current.results.map((item) => (item.id === saved.id ? saved : item)) },
+    );
+  }
   return (
     <section aria-labelledby={headingId}>
       <Panel className="p-5 sm:p-6">
@@ -347,7 +417,14 @@ export function CameraShippingSessions({
               </div>
             )}
             {sessions.map((session) => (
-              <SessionCard key={session.id} session={session} reload={list.reload} stale={!!failure} />
+              <SessionCard
+                key={session.id}
+                session={session}
+                reload={list.reload}
+                onSaved={applySaved}
+                stale={!!failure}
+                canEdit={canEdit}
+              />
             ))}
             {list.data?.truncated && (
               <p className="text-xs text-[var(--muted-foreground)]">

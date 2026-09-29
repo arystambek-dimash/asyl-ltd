@@ -108,6 +108,8 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
       always_on_count_archived: { label: "AI 24/7: счётчик обнулён", icon: Camera, color: muted },
       always_on_count_adjustment: { label: "AI 24/7: корректировка", icon: Camera, color: warning },
       always_on_archive_deleted: { label: "AI 24/7: запись архива удалена", icon: Camera, color: destructive },
+      camera_analytics_edited: { label: "Аналитика камеры исправлена", icon: Pencil, color: warning },
+      shipping_session_edited: { label: "Сессия отгрузки исправлена", icon: Pencil, color: warning },
       camera_settings: { label: "Настройки камеры", icon: Camera, color: muted },
     },
   },

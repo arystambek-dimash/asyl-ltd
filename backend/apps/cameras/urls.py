@@ -19,7 +19,7 @@ from .api_views.operations import (
     WagonNumberCameraSettingsView,
 )
 from .api_views.shipping_sessions import (
-    ShippingSessionListView, ShippingSegmentDetailView, ShippingSegmentIdentifyView,
+    ShippingSessionDetailView, ShippingSessionListView, ShippingSegmentDetailView, ShippingSegmentIdentifyView,
     ShippingSessionSettingsView, ShippingSegmentPhotoView,
 )
 from .api_views.transport_camera import (
@@ -38,6 +38,7 @@ urlpatterns = [
     ),
     path("cameras/", CameraListView.as_view()),
     path("cameras/shipping-sessions/", ShippingSessionListView.as_view()),
+    path("cameras/shipping-sessions/<int:pk>/", ShippingSessionDetailView.as_view()),
     path("cameras/shipping-session-settings/", ShippingSessionSettingsView.as_view()),
     path("cameras/shipping-segments/<int:pk>/", ShippingSegmentDetailView.as_view()),
     path("cameras/shipping-segments/<int:pk>/identify/", ShippingSegmentIdentifyView.as_view()),

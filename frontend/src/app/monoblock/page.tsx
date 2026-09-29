@@ -9,6 +9,7 @@ import {
   Check,
   LockKeyhole,
   PackageCheck,
+  Pencil,
   RefreshCw,
   Settings2,
   ScanLine,
@@ -34,6 +35,7 @@ import {
 } from "@/components/monoblock/always-on-production-panel";
 import { InferredBadge } from "@/components/monoblock/unknown-color";
 import { CameraAnalyticsOverview, type AnalyticsDateRange } from "@/components/monoblock/camera-analytics-overview";
+import { ColorCountsEditor, useEditorFocusReturn } from "@/components/monoblock/color-counts-editor";
 import { ShippingTransportCamera } from "@/components/monoblock/shipping-transport-camera";
 import { CameraShippingSessions } from "@/components/shipping/camera-shipping-sessions";
 import { ShippingIdleSettings } from "@/components/shipping/shipping-idle-settings";
@@ -420,7 +422,9 @@ function AlwaysOnCard({
 }) {
   const isShipping = scope === "shipping";
   const { me } = useAuth();
-  const canManageTransport = isShipping && me?.is_superuser === true;
+  // Камеру номера и ручную правку аналитики видит только суперпользователь.
+  const isSuperuser = me?.is_superuser === true;
+  const canManageTransport = isShipping && isSuperuser;
   const runtimeSettingsUrl = isShipping ? "/cameras/shipping-continuous-settings/" : "/cameras/always-on-settings/";
   const detectionsUrl = isShipping ? "/cameras/shipping-continuous-detections/" : "/cameras/always-on-detections/";
   const analyticsUrl = isShipping ? "/cameras/shipping-continuous-analytics/" : "/cameras/always-on-analytics/";
@@ -481,6 +485,8 @@ function AlwaysOnCard({
   const dayDetailHeading = useRef<HTMLHeadingElement>(null);
   const dayTrigger = useRef<HTMLElement | null>(null);
   const [selectedDayColorView, setSelectedDayColorView] = useState<AlwaysOnDayColorView>("algorithm");
+  const [selectedDayEditing, setSelectedDayEditing] = useState(false);
+  const selectedDayEditButton = useEditorFocusReturn(selectedDayEditing);
   const current = open ? liveProcessor : processor;
   const currentReadiness = open ? liveReadiness : readiness;
   const bagsPresent = open && liveBoxes ? liveBoxes.bagsPresent : current.bags_present;
@@ -578,10 +584,13 @@ function AlwaysOnCard({
       : selectedHistory && !runsMatchSelectedAnalytics
         ? "Периоды недоступны: журнал не совпадает с итогом выбранного дня."
         : null;
+  // Ручную правку цветов знает только итог дня: периоды из журнала камеры о
+  // ней не знают, поэтому исправленный день показывает свои цвета.
+  const selectedColorsEdited = Object.keys(selectedPoint?.adjustment_per_color ?? {}).length > 0;
   // Старые интервалы могут пересекать границу дня, а append-only журнал —
   // границу переноса в архив. В обоих случаях не смешиваем разные срезы.
   const selectedVisibleColors =
-    runsMatchSelectedAnalytics && smoothing
+    runsMatchSelectedAnalytics && smoothing && !selectedColorsEdited
       ? selectedDayColorView === "algorithm"
         ? smoothing.algorithm_colors
         : smoothing.raw_colors
@@ -615,6 +624,7 @@ function AlwaysOnCard({
 
   useEffect(() => {
     setSelectedDayColorView("algorithm");
+    setSelectedDayEditing(false);
   }, [selectedDay]);
 
   useVisiblePolling(
@@ -838,6 +848,21 @@ function AlwaysOnCard({
     }
   }
 
+  // Ручная правка цветов дня. Ответ PUT — тот же снимок, что GET за этот
+  // период: применяем его сразу, а перезапуск опроса отменяет запрос,
+  // отправленный до записи, чтобы он не вернул старые цифры. Ошибку
+  // показывает редактор.
+  async function saveDayColors(day: string, colors: Record<string, number>) {
+    const { data } = await api.put<AlwaysOnDailyAnalytics>(`${analyticsUrl}?${rangeQuery}`, {
+      camera: processor.cam,
+      day,
+      colors,
+    });
+    setLiveDaily(data.cameras.find((item) => item.camera === processor.cam));
+    setAnalyticsReload((value) => value + 1);
+    showSuccess("Аналитика за день исправлена");
+  }
+
   // «Указать цвет» мешкам без цвета. Ответ — свежий снимок вкладки: применяем
   // его сразу, чтобы опрос не показал старое число. Ошибку показывает окно.
   async function assignUnknownColor(input: AlwaysOnUnknownColorInput) {
@@ -1038,10 +1063,13 @@ function AlwaysOnCard({
                     <span className="text-[var(--muted-foreground)]">Режим</span>
                     <span className="font-medium text-[var(--foreground)]">{inSession ? "отгрузка" : "24/7"}</span>
                   </div>
-                  {(currentDaily?.adjustment ?? 0) < 0 && (
+                  {!!currentDaily?.adjustment && (
                     <div className="col-span-2 flex items-center justify-between gap-3 border-b border-[var(--border)] py-2">
                       <span className="text-[var(--muted-foreground)]">Корректировка</span>
-                      <span className="font-medium tabular-nums text-[var(--warning)]">{currentDaily?.adjustment}</span>
+                      <span className="font-medium tabular-nums text-[var(--warning)]">
+                        {currentDaily.adjustment > 0 ? "+" : ""}
+                        {currentDaily.adjustment}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1086,6 +1114,8 @@ function AlwaysOnCard({
               receiptMapping={receiptMapping}
               selectedDay={selectedDay}
               onSelectDay={selectAnalyticsDay}
+              canEdit={isSuperuser}
+              onEditDay={saveDayColors}
             />
 
             {selectedPoint && (
@@ -1105,6 +1135,18 @@ function AlwaysOnCard({
                       disabled={!runsMatchSelectedAnalytics || !!selectedProductionError}
                       onChange={setSelectedDayColorView}
                     />
+                    {/* Один день правится в обзоре выше, период — здесь, по выбранному дню. */}
+                    {isSuperuser && rangeDays > 1 && !selectedDayEditing && (
+                      <Button
+                        ref={selectedDayEditButton}
+                        variant="outline"
+                        size="sm"
+                        aria-label={`Изменить цвета за ${formatIsoDate(selectedPoint.day)}`}
+                        onClick={() => setSelectedDayEditing(true)}
+                      >
+                        <Pencil /> Изменить
+                      </Button>
+                    )}
                     <Button variant="ghost" size="sm" onClick={() => selectAnalyticsDay(null)}>
                       Закрыть
                     </Button>
@@ -1122,7 +1164,22 @@ function AlwaysOnCard({
                   )}
                 </div>
 
-                {selectedVisibleColors.length > 0 && (
+                {selectedDayEditing && (
+                  <>
+                    <Hairline className="my-5" />
+                    <ColorCountsEditor
+                      items={selectedPoint.colors}
+                      cameraCounts={selectedPoint.model_per_color}
+                      total={selectedPoint.total}
+                      onSave={async (colors) => {
+                        await saveDayColors(selectedPoint.day, colors);
+                        setSelectedDayEditing(false);
+                      }}
+                      onCancel={() => setSelectedDayEditing(false)}
+                    />
+                  </>
+                )}
+                {!selectedDayEditing && selectedVisibleColors.length > 0 && (
                   <>
                     <Hairline className="my-5" />
                     <SectionHead
@@ -1131,6 +1188,11 @@ function AlwaysOnCard({
                         isShipping
                           ? "Отдельная аналитика камеры отгрузки; эти данные не создают выпуск или приход на склад."
                           : "Количество по цветам распознано камерой; товар показан по текущему сопоставлению в разделе «Куда приходовать»."
+                      }
+                      aside={
+                        selectedColorsEdited && (
+                          <span className="text-[12px] text-[var(--muted-foreground)]">Исправлено вручную</span>
+                        )
                       }
                     />
                     <div className="mt-3 grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -1224,6 +1286,7 @@ function AlwaysOnCard({
                 camera={processor.cam}
                 day={rangeDays === 1 ? dateFrom : selectedDay}
                 today={today}
+                canEdit={isSuperuser}
               />
             )}
           </div>

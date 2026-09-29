@@ -5,13 +5,18 @@ mapping; identity only groups adjacent segments and never changes bag totals.
 A segment ends after the idle timeout or, on a wagon conveyor, when the train
 changes the wagon (shipping_train_motion), however short the pause.
 """
+from collections import Counter, defaultdict
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
+from rest_framework.exceptions import NotFound
 
 from apps.eventlog.services import log_event
 from . import ai, shipping_train_motion
+from .analytics import add_counts, adjusted_colors, apply_color_targets, apportion, normalized_adjustments
+from .color_resolution import camera_color_key
 from .models import (
     ANALYTICS_SCOPE_SHIPPING, AlwaysOnCounterCursor, AlwaysOnImportedEvent,
     ShippingLoadingCursor, ShippingLoadingEvent, ShippingLoadingSegment,
@@ -171,9 +176,12 @@ def _regroup_locked(camera):
     """Recompute contiguous groups after identity, including out-of-order OCR.
 
     All original segments and photographs remain. Empty aggregate session rows
-    redirect to their surviving group so already-issued links remain resolvable.
+    redirect to their surviving group so already-issued links remain resolvable,
+    and hand their manual colour correction over to it. A split group keeps the
+    correction on the original session.
     """
     segments = list(ShippingLoadingSegment.objects.select_related("session").filter(camera=camera).order_by("first_upstream_event_id", "pk"))
+    adjustments = {s.session_id: normalized_adjustments(s.session.colors_adjustment) for s in segments}
     groups, current_order_id = [], None
     for segment in segments:
         if groups and _same_identity(groups[-1][-1], segment):
@@ -218,8 +226,14 @@ def _regroup_locked(camera):
                 changed_segments.append(segment)
     if changed_segments:
         ShippingLoadingSegment.objects.bulk_update(changed_segments, ["session"])
+    moved = {}
     for old_id in old_sessions-used_sessions:
-        ShippingLoadingSession.objects.filter(pk=old_id).update(status=ShippingLoadingSession.MERGED, merged_into_id=owners[old_id], total_bags=0)
+        if adjustments[old_id]:
+            moved[owners[old_id]] = add_counts(moved.get(owners[old_id]), adjustments[old_id])
+        ShippingLoadingSession.objects.filter(pk=old_id).update(status=ShippingLoadingSession.MERGED, merged_into_id=owners[old_id], total_bags=0, colors_adjustment={})
+    for owner_id, delta in moved.items():
+        combined = normalized_adjustments(add_counts(adjustments.get(owner_id), delta))
+        ShippingLoadingSession.objects.filter(pk=owner_id).update(colors_adjustment=combined)
     return groups
 
 
@@ -256,3 +270,68 @@ def apply_identity(segment_id, number, source, user=None, *, expected_lease=None
         "number": normalized, "recognition_model": model, "source": source, "previous": previous,
     })
     return segment.session
+
+
+def _scaled_to_total(colors: dict[str, int], total: int) -> dict[str, int]:
+    """Доли — от событий, числа — в масштабе итога вагона (метод наибольших остатков).
+
+    Обычно событий ровно столько, сколько мешков, и ничего не меняется. После ручной
+    поправки итога части должны сходиться с ним, а не с числом событий.
+    """
+    counted = sum(colors.values())
+    if not counted or not total or counted == total:
+        return colors
+    return {key: value for key, value in apportion(colors, total).items() if value}
+
+
+def session_colors(sessions):
+    """``{session_id: (camera colours, shown colours)}`` in one grouped query.
+
+    Camera colours are counted from the session's own crossings in the scale of
+    its total; bags the camera could not classify stay visible, so the parts add
+    up to the total. Shown colours carry the manual correction on top.
+    """
+    counts = defaultdict(Counter)
+    rows = (
+        ShippingLoadingEvent.objects.filter(segment__session_id__in=[row.pk for row in sessions])
+        .values_list("segment__session_id", "event__color", "event__class_name")
+        .annotate(total=Count("pk"))
+        .order_by()
+    )
+    for session_id, color, class_name, total in rows:
+        counts[session_id][camera_color_key(color, class_name)] += total
+    result = {}
+    for row in sessions:
+        if counts[row.pk]:
+            base = _scaled_to_total(dict(counts[row.pk]), row.total_bags)
+        else:
+            # No crossing links: the whole total is bags of an unknown colour.
+            base = {camera_color_key(None, None): row.total_bags} if row.total_bags else {}
+        result[row.pk] = (base, adjusted_colors(base, row.colors_adjustment))
+    return result
+
+
+@transaction.atomic
+def set_session_colors(session_id, targets, user=None):
+    """Manual colour correction of one wagon/truck, on top of the camera count.
+
+    Stored as per-colour deltas: the ledger (``total_bags``, segments, event
+    links) never changes and bags counted later still add on top. The day
+    analytics is a separate ledger and is not touched.
+    """
+    hint = ShippingLoadingSession.objects.only("camera").get(pk=session_id)
+    _lock_camera(hint.camera)
+    session = ShippingLoadingSession.objects.select_for_update().get(pk=session_id)
+    if session.status == ShippingLoadingSession.MERGED:
+        raise NotFound("Сессия объединена с другой. Обновите список сессий")
+    base, before = session_colors([session])[session.pk]
+    session.colors_adjustment, _ = apply_color_targets(base, session.colors_adjustment, targets)
+    session.save(update_fields=["colors_adjustment"])
+    after = adjusted_colors(base, session.colors_adjustment)
+    log_event("shipping_session_edited", f"Сессия отгрузки {session.number or f'№{session.pk}'} исправлена вручную", user=user, payload={
+        "session_id": session.pk, "camera": session.camera, "number": session.number,
+        "camera_total": session.total_bags, "camera_colors": base,
+        "colors_before": before, "colors_after": after,
+        "total_before": sum(before.values()), "total_after": sum(after.values()),
+    })
+    return session

@@ -11,9 +11,14 @@ const mocks = vi.hoisted(() => ({
   urls: [] as (string | null)[],
   reload: vi.fn().mockResolvedValue(undefined),
   post: vi.fn(),
+  patch: vi.fn(),
+  setData: vi.fn(),
   poll: vi.fn(),
 }));
-vi.mock("@/lib/api", () => ({ api: { post: mocks.post }, apiError: (e: Error) => e.message }));
+vi.mock("@/lib/api", () => ({
+  api: { post: mocks.post, patch: mocks.patch },
+  apiError: (e: Error) => e.message,
+}));
 vi.mock("@/lib/use-api", () => ({
   useApi: (url: string | null) => {
     mocks.urls.push(url);
@@ -23,7 +28,7 @@ vi.mock("@/lib/use-api", () => ({
       error: url ? mocks.error : "",
       errorStatus: url ? mocks.errorStatus : null,
       reload: mocks.reload,
-      setData: vi.fn(),
+      setData: mocks.setData,
     };
   },
 }));
@@ -61,6 +66,7 @@ function session(overrides: Partial<ShippingSession> = {}): ShippingSession {
     number: "28055531",
     status: "closed",
     total_bags: 609,
+    camera_total_bags: 609,
     started_at: at(21, 4),
     last_counted_at: at(21, 32),
     ended_at: at(21, 32),
@@ -72,6 +78,8 @@ function session(overrides: Partial<ShippingSession> = {}): ShippingSession {
       { color: "unclassified", total: 9, percent: 1.5 },
       { color: "red", total: 2, percent: 0.3 },
     ],
+    camera_colors: { white: 420, blue: 178, unclassified: 9, red: 2 },
+    edited: false,
     segments: [
       segment(),
       segment({ id: 102, total_bags: 209, started_at: at(21, 25), last_counted_at: at(21, 32), ended_at: at(21, 32) }),
@@ -84,8 +92,8 @@ function page(results: ShippingSession[], truncated = false): ShippingSessionsPa
   return { results, truncated };
 }
 
-function renderDay(day: string | null = "2026-09-10") {
-  return render(<CameraShippingSessions camera="cam2" day={day} today="2026-09-11" />);
+function renderDay(day: string | null = "2026-09-10", canEdit = false) {
+  return render(<CameraShippingSessions camera="cam2" day={day} today="2026-09-11" canEdit={canEdit} />);
 }
 
 function colorChips(card: HTMLElement) {
@@ -262,7 +270,7 @@ describe("CameraShippingSessions", () => {
     await user.click(screen.getByRole("button", { expanded: false }));
     const initialUrl = screen.getByRole("img").getAttribute("src");
     mocks.page = page([session({ segments: [segment({ photo_url: "/fixture/image.jpg?token=second" })] })]);
-    rerender(<CameraShippingSessions camera="cam2" day="2026-09-10" today="2026-09-11" />);
+    rerender(<CameraShippingSessions camera="cam2" day="2026-09-10" today="2026-09-11" canEdit={false} />);
     expect(screen.getByRole("img")).toHaveAttribute("src", initialUrl);
     expect(screen.getByRole("link", { name: "Открыть кадр отрезка 101" })).toHaveAttribute(
       "href",
@@ -271,7 +279,9 @@ describe("CameraShippingSessions", () => {
   });
 
   it("refreshes the list only while it shows today", () => {
-    const { unmount } = render(<CameraShippingSessions camera="cam2" day="2026-09-11" today="2026-09-11" />);
+    const { unmount } = render(
+      <CameraShippingSessions camera="cam2" day="2026-09-11" today="2026-09-11" canEdit={false} />,
+    );
     expect(mocks.poll).toHaveBeenLastCalledWith(mocks.reload, 3000, true);
     unmount();
     renderDay("2026-09-10");
@@ -297,5 +307,94 @@ describe("CameraShippingSessions", () => {
     mocks.page = page([session(), session({ id: 7, number: "28819852" })], true);
     renderDay();
     expect(screen.getByText("Показаны последние 2 сессии дня.")).toBeInTheDocument();
+  });
+
+  it("offers colour editing only to a superuser and never inside the row toggle", () => {
+    const { unmount } = renderDay();
+    expect(screen.queryByRole("button", { name: /Изменить цвета/ })).toBeNull();
+    unmount();
+    renderDay("2026-09-10", true);
+    const card = screen.getByRole("article", { name: "Вагон 28055531" });
+    const edit = within(card).getByRole("button", { name: "Изменить цвета: Вагон 28055531" });
+    expect(within(card).getByRole("button", { expanded: false })).not.toContainElement(edit);
+  });
+
+  it("hides colour editing while the list is stale", () => {
+    mocks.error = "Сервер недоступен";
+    renderDay("2026-09-10", true);
+    expect(screen.queryByRole("button", { name: /Изменить цвета/ })).toBeNull();
+  });
+
+  it("saves a wagon's corrected colours and applies the PATCH response without a reload", async () => {
+    const user = userEvent.setup();
+    const saved = session({
+      total_bags: 609,
+      edited: true,
+      camera_colors: { white: 420, blue: 178, unclassified: 9, red: 2 },
+    });
+    mocks.patch.mockResolvedValue({ data: saved });
+    renderDay("2026-09-10", true);
+    const card = screen.getByRole("article", { name: "Вагон 28055531" });
+    await user.click(within(card).getByRole("button", { name: "Изменить цвета: Вагон 28055531" }));
+    const editor = within(card).getByRole("form", { name: "Исправление цветов мешков" });
+    expect(editor).toHaveTextContent("Итог дня в «Цвета мешков» меняется отдельно.");
+    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Не определён" }));
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Не определён" }), "0");
+    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Белый" }));
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Белый" }), "429");
+    await user.click(within(editor).getByRole("button", { name: "Сохранить" }));
+    expect(mocks.patch).toHaveBeenCalledWith("/cameras/shipping-sessions/8/", {
+      colors: { unclassified: 0, white: 429 },
+    });
+    // Опрос раз в 3 с отменял бы reload — ответ кладётся в текущий список дня.
+    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(mocks.setData).toHaveBeenCalledOnce();
+    const [update] = mocks.setData.mock.calls[0];
+    const other = session({ id: 7, number: "28819852" });
+    expect(update(page([session({ total_bags: 612 }), other], true))).toEqual(page([saved, other], true));
+    expect(within(card).queryByRole("form")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Изменить цвета: Вагон 28055531" })).toHaveFocus();
+  });
+
+  it("moves focus into the wagon editor and back to «Изменить» on cancel", async () => {
+    const user = userEvent.setup();
+    renderDay("2026-09-10", true);
+    await user.click(screen.getByRole("button", { name: "Изменить цвета: Вагон 28055531" }));
+    expect(screen.getByRole("textbox", { name: "Мешков: Белый" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(screen.getByRole("button", { name: "Изменить цвета: Вагон 28055531" })).toHaveFocus();
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the editor open with the server's refusal", async () => {
+    const user = userEvent.setup();
+    mocks.patch.mockRejectedValue(new Error("Сессия объединена с другой"));
+    renderDay("2026-09-10", true);
+    await user.click(screen.getByRole("button", { name: "Изменить цвета: Вагон 28055531" }));
+    await user.clear(screen.getByRole("textbox", { name: "Мешков: Красный" }));
+    await user.type(screen.getByRole("textbox", { name: "Мешков: Красный" }), "0{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Сессия объединена с другой");
+    expect(screen.getByRole("form", { name: "Исправление цветов мешков" })).toBeInTheDocument();
+    expect(mocks.reload).not.toHaveBeenCalled();
+  });
+
+  it("marks a corrected wagon and keeps the camera's own count beside it", () => {
+    mocks.page = page([
+      session({
+        total_bags: 600,
+        camera_total_bags: 609,
+        edited: true,
+        colors: [
+          { color: "white", total: 420, percent: 70 },
+          { color: "blue", total: 180, percent: 30 },
+        ],
+      }),
+    ]);
+    renderDay();
+    const card = screen.getByRole("article", { name: "Вагон 28055531" });
+    expect(within(card).getByText("Исправлено")).toBeInTheDocument();
+    expect(card).toHaveTextContent("камера: 609 меш.");
+    expect(card).toHaveTextContent("600 меш.");
+    expect(screen.getByRole("region", { name: "Сессии отгрузки" })).toHaveTextContent("1 вагон · 600 меш.");
   });
 });

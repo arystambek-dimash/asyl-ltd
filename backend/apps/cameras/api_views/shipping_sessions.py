@@ -1,12 +1,11 @@
 """Durable count-ledger sessions and their private per-segment evidence."""
 
-from collections import Counter, defaultdict
 from typing import ClassVar
 
 from django.contrib.auth import get_user_model
 from django.core import signing
 from django.db import transaction
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Prefetch, Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers
@@ -22,10 +21,10 @@ from apps.orders.models import Order
 from apps.sales.access import scope_by_client_department
 
 from .. import shipping_segments
-from ..analytics import apportion, color_payload
-from ..color_resolution import camera_color_key
-from ..models import ShippingLoadingEvent, ShippingLoadingSegment, ShippingLoadingSession, ShippingSessionSettings
+from ..analytics import color_payload
+from ..models import ShippingLoadingSegment, ShippingLoadingSession, ShippingSessionSettings
 from ..policies import MONOBLOCK_VIEW
+from ..serializers import ShippingSessionColorsSerializer
 
 IMAGE_SALT = "shipping-segment-evidence-v1"
 # A conveyor needs tens of minutes per wagon, so a real day stays far below
@@ -71,38 +70,30 @@ def segment_payload(row, user, *, order_id=None):
     }
 
 
-def _scaled_to_total(colors: dict[str, int], total: int) -> dict[str, int]:
-    """Доли — от событий, числа — в масштабе итога вагона (метод наибольших остатков).
+def _with_segments(rows):
+    return rows.prefetch_related(Prefetch("segments", queryset=ShippingLoadingSegment.objects.order_by("started_at", "id")))
 
-    Обычно событий ровно столько, сколько мешков, и ничего не меняется. После ручной
-    поправки итога части должны сходиться с ним, а не с числом событий.
+
+def _session_payloads(rows, user):
+    """Sessions as the screen shows them: manual colour correction included.
+
+    ``total_bags``/``colors`` are what the screen shows; ``camera_*`` keep the
+    camera's own count. Segments always carry the camera's counts.
     """
-    counted = sum(colors.values())
-    if not counted or not total or counted == total:
-        return colors
-    return {key: value for key, value in apportion(colors, total).items() if value}
-
-
-def _session_colors(sessions):
-    """Colour mix of each session, counted from its own crossings.
-
-    The daily analytics normaliser keeps a wagon consistent with its day. Bags
-    the camera could not classify stay visible, so the parts add up to the total.
-    """
-    totals = {row.pk: row.total_bags for row in sessions}
-    counts = defaultdict(Counter)
-    rows = (
-        ShippingLoadingEvent.objects.filter(segment__session_id__in=list(totals))
-        .values_list("segment__session_id", "event__color", "event__class_name")
-        .annotate(total=Count("pk"))
-        .order_by()
-    )
-    for session_id, color, class_name, total in rows:
-        counts[session_id][camera_color_key(color, class_name)] += total
-    return {
-        session_id: color_payload(_scaled_to_total(dict(colors), totals[session_id]))
-        for session_id, colors in counts.items()
-    }
+    colors = shipping_segments.session_colors(rows)
+    result = []
+    for row in rows:
+        camera_colors, shown = colors[row.pk]
+        result.append({
+            "id": row.pk, "camera": row.camera, "recognition_model": row.recognition_model,
+            "number": row.number, "status": row.status, "total_bags": sum(shown.values()),
+            "camera_total_bags": row.total_bags, "camera_colors": camera_colors,
+            "edited": bool(row.colors_adjustment),
+            "started_at": row.started_at, "last_counted_at": row.last_counted_at,
+            "ended_at": row.ended_at, "order_id": row.order_id, "colors": color_payload(shown),
+            "segments": [segment_payload(part, user, order_id=row.order_id) for part in row.segments.all()],
+        })
+    return result
 
 
 class ShippingSessionListView(PermAPIViewMixin, APIView):
@@ -116,21 +107,26 @@ class ShippingSessionListView(PermAPIViewMixin, APIView):
         day = parse_iso_date(request.query_params.get("day"))
         if day is None:
             raise ValidationError({"detail": "Укажите день в формате ГГГГ-ММ-ДД", "code": "day_required"})
-        parts = Prefetch("segments", queryset=ShippingLoadingSegment.objects.order_by("started_at", "id"))
         # A plant day (by loading start) is one bounded list, newest first.
-        found = list(filter_date_range(rows, "started_at", day, day).order_by("-started_at", "-id").prefetch_related(parts)[:DAY_LIMIT + 1])
+        found = list(_with_segments(filter_date_range(rows, "started_at", day, day).order_by("-started_at", "-id"))[:DAY_LIMIT + 1])
         page, truncated = found[:DAY_LIMIT], len(found) > DAY_LIMIT
-        colors = _session_colors(page)
-        result = []
-        for row in page:
-            result.append({
-                "id": row.pk, "camera": row.camera, "recognition_model": row.recognition_model,
-                "number": row.number, "status": row.status, "total_bags": row.total_bags,
-                "started_at": row.started_at, "last_counted_at": row.last_counted_at,
-                "ended_at": row.ended_at, "order_id": row.order_id, "colors": colors.get(row.pk, []),
-                "segments": [segment_payload(part, request.user, order_id=row.order_id) for part in row.segments.all()],
-            })
-        return Response({"results": result, "truncated": truncated})
+        return Response({"results": _session_payloads(page, request.user), "truncated": truncated})
+
+
+class ShippingSessionDetailView(PermAPIViewMixin, APIView):
+    """Manual colour correction of one wagon/truck (analytics only)."""
+
+    required_perms: ClassVar[dict] = {"patch": SUPERUSER_ONLY}
+
+    def patch(self, request, pk):
+        serializer = ShippingSessionColorsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            get_object_or_404(_visible_sessions(request.user), pk=pk)
+            # Core locks the lane before the session, matching projection/AI.
+            shipping_segments.set_session_colors(pk, serializer.validated_data["colors"], user=request.user)
+            row = _with_segments(_visible_sessions(request.user)).get(pk=pk)
+        return Response(_session_payloads([row], request.user)[0])
 
 
 class ShippingSegmentDetailView(PermAPIViewMixin, APIView):

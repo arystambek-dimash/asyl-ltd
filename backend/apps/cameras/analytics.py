@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from django.db import transaction
 from django.db.models import F, Q, Sum
 from django.db.models.functions import Greatest
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
+
+from apps.eventlog.services import log_event
 
 from . import color_resolution
 from .models import (
@@ -20,6 +24,8 @@ from .production_runs import record_color_event
 
 EVENT_ANALYTICS_STALE_AGE = timedelta(seconds=90)
 LEGACY_BRAND = "unclassified"
+# Цвета мешков, которые можно указать вручную, даже если камера их не видела.
+_EDITABLE_COLORS = frozenset({"red", "green", "blue", "white"})
 
 
 def daily_model_for(analytics_scope: str):
@@ -104,23 +110,137 @@ def record_counted_bag(
     )
 
 
+@dataclass(frozen=True)
+class _DayColors:
+    """Цвета одной дневной строки для экрана аналитики.
+
+    ``camera`` — цвета камеры (в AI 24/7 мешки ``unknown`` уже под найденным
+    цветом), их показывает «камера: N». ``base`` — от чего отсчитана ручная
+    поправка ``adjustments``: на экране ``shown``. ``inferred`` — как найдены
+    цвета показанных перенесённых мешков: ``{цвет: {метод: n}}``.
+    """
+
+    camera: dict[str, int]
+    base: dict[str, int]
+    adjustments: dict[str, int]
+    inferred: dict[str, dict[str, int]]
+
+    @property
+    def shown(self) -> dict[str, int]:
+        return adjusted_colors(self.base, self.adjustments)
+
+
+_NO_COLORS = _DayColors({}, {}, {}, {})
+
+
+def _day_colors(rows, analytics_scope: str) -> dict[tuple[str, date], _DayColors]:
+    """Цвета дневных строк так, как их показывает экран; строки не меняются.
+
+    В AI 24/7 мешки ``unknown`` показываются под найденным цветом (соседи,
+    голоса, вручную). Ручная поправка хранится от сырого счёта камеры, а
+    перенос считается по счёту уже с поправкой: мешок, который пользователь
+    сам убрал из ``unknown``, второй раз не переносится (``color_transfers``
+    не берёт больше, чем лежит в корзине). Поэтому ``base`` — сырой счёт
+    плюс этот перенос, без обрезки нулём: обрезается только показанное.
+    """
+    moves = (
+        color_resolution.daily_color_moves(rows)
+        if analytics_scope == ANALYTICS_SCOPE_AI247
+        else {}
+    )
+    result = {}
+    for row in rows:
+        key = (row.camera, row.day)
+        raw = _normalized_colors(row.model_per_color)
+        adjustments = normalized_adjustments(row.adjustment_per_color)
+        if key not in moves:
+            result[key] = _DayColors(raw, raw, adjustments, {})
+            continue
+        as_counted = color_resolution.color_transfers(moves[key], raw)
+        as_edited = (
+            color_resolution.color_transfers(moves[key], add_counts(raw, adjustments))
+            if adjustments
+            else as_counted
+        )
+        result[key] = _DayColors(
+            camera=adjusted_colors(raw, as_counted.delta),
+            base=add_counts(raw, as_edited.delta),
+            adjustments=adjustments,
+            inferred=as_edited.inferred,
+        )
+    return result
+
+
+@transaction.atomic
+def set_day_colors(
+    analytics_scope: str,
+    camera: str,
+    day: date,
+    targets: dict[str, int],
+    user,
+) -> None:
+    """Ручная правка цветов (и с ними итога) камеры за день — только аналитика.
+
+    Счёт камеры ``model_*`` не меняется: по нему сверяется журнал событий.
+    Поправка — разница по цветам, поэтому мешки после правки идут сверху.
+    День без мешков можно заполнить вручную.
+    """
+    row, _ = (
+        daily_model_for(analytics_scope)
+        .objects.select_for_update()
+        .get_or_create(camera=camera, day=day)
+    )
+    if analytics_scope == ANALYTICS_SCOPE_AI247 and row.archived_at is not None:
+        raise ValidationError({"day": "День перенесён в архив", "code": "day_archived"})
+    key = (row.camera, row.day)
+    before = _day_colors([row], analytics_scope)[key]
+    total_before, adjustment_before = row.total, row.adjustment
+    row.adjustment_per_color, total_delta = apply_color_targets(
+        before.base, before.adjustments, targets
+    )
+    # Сдвиг — от показанного итога (он не ниже нуля), и поправка не уходит
+    # ниже −model_total: иначе следующие правки и новые мешки она поглощала бы.
+    floor = -row.model_total
+    row.adjustment = max(max(row.adjustment, floor) + total_delta, floor)
+    row.save(update_fields=["adjustment", "adjustment_per_color", "updated_at"])
+    after = _day_colors([row], analytics_scope)[key]
+    log_event(
+        "camera_analytics_edited",
+        f"Аналитика камеры {camera} за {day:%d.%m.%Y} исправлена вручную",
+        user=user,
+        payload={
+            "scope": analytics_scope,
+            "camera": camera,
+            "day": day.isoformat(),
+            "camera_colors": before.camera,
+            "colors_before": before.shown,
+            "colors_after": after.shown,
+            "total_before": total_before,
+            "total_after": row.total,
+            "adjustment_before": adjustment_before,
+            "adjustment_after": row.adjustment,
+        },
+    )
+
+
 def _row_payload(
     row: AlwaysOnDailyAnalytics | ShippingDailyAnalytics | None,
     camera: str,
     day: date,
-    analytics_scope: str = ANALYTICS_SCOPE_AI247,
+    analytics_scope: str,
+    colors: _DayColors,
 ) -> dict:
-    colors = _normalized_colors(row.model_per_color if row else None)
     return {
         "camera": camera,
         "analytics_scope": analytics_scope,
         "day": day.isoformat(),
         "model_total": row.model_total if row else 0,
-        "model_per_color": colors,
+        "model_per_color": colors.camera,
         # Готовая разбивка за день с процентами — её показывает клик по
         # столбику, и считается она там же, где общая, чтобы цифры сходились.
-        "colors": color_payload(colors),
+        "colors": color_payload(colors.shown),
         "adjustment": row.adjustment if row else 0,
+        "adjustment_per_color": colors.adjustments,
         "total": row.total if row else 0,
         "updated_at": row.updated_at if row else None,
     }
@@ -136,10 +256,56 @@ def _normalized_colors(raw) -> dict[str, int]:
     return result
 
 
-def _merge_colors(rows) -> dict[str, int]:
+def normalized_adjustments(raw) -> dict[str, int]:
+    """Сохранённая ручная поправка по цветам: только целые, без нулей."""
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(color): value
+        for color, value in raw.items()
+        if type(value) is int and value
+    }
+
+
+def adjusted_colors(base: dict[str, int], adjustments) -> dict[str, int]:
+    """Цвета камеры ``base`` с ручной поправкой; неположительные отброшены."""
+    delta = normalized_adjustments(adjustments)
+    shown = {color: base.get(color, 0) + delta.get(color, 0) for color in base | delta}
+    return {color: value for color, value in shown.items() if value > 0}
+
+
+def apply_color_targets(
+    base: dict[str, int],
+    adjustments,
+    targets: dict[str, int],
+) -> tuple[dict[str, int], int]:
+    """Поправка, при которой цвета из ``targets`` показываются ровно так.
+
+    Хранится разница с камерой по каждому цвету, поэтому мешки, посчитанные
+    позже, прибавляются сверху. Итог меняется ровно на видимую разницу:
+    её меряем от того, что видел пользователь, так что старая поправка
+    только итога сохраняется. Цвета вне ``targets`` не меняются.
+    Возвращает новую поправку по цветам и сдвиг итога.
+    """
+    current = normalized_adjustments(adjustments)
+    unknown = sorted(set(targets) - _EDITABLE_COLORS - set(base) - set(current))
+    if unknown:
+        raise ValidationError({
+            "colors": f"Неизвестный цвет: {', '.join(unknown)}",
+            "code": "unknown_color",
+        })
+    shown = adjusted_colors(base, current)
+    total_delta = 0
+    for color, target in targets.items():
+        total_delta += target - shown.get(color, 0)
+        current[color] = target - base.get(color, 0)
+    return normalized_adjustments(current), total_delta
+
+
+def _merge_colors(colors: list[_DayColors]) -> dict[str, int]:
     result: dict[str, int] = {}
-    for row in rows:
-        result = add_counts(result, _normalized_colors(row.model_per_color))
+    for item in colors:
+        result = add_counts(result, item.shown)
     return result
 
 
@@ -182,6 +348,7 @@ def _history_payload(
         date,
         AlwaysOnDailyAnalytics | ShippingDailyAnalytics,
     ],
+    colors_by_day: dict[date, _DayColors],
     start: date,
     end: date,
     analytics_scope: str,
@@ -195,6 +362,7 @@ def _history_payload(
                 "",
                 current,
                 analytics_scope,
+                colors_by_day.get(current, _NO_COLORS),
             )
             | {"camera": None}
         )
@@ -266,10 +434,11 @@ def _camera_payload(
     ranged: bool,
     analytics_scope: str,
     all_time_total: int,
-    inferred: dict[tuple[str, date], dict],
+    day_colors: dict[tuple[str, date], _DayColors],
     analytics_sync: dict,
 ) -> dict:
     by_day = {row.day: row for row in rows}
+    colors_by_day = {row.day: day_colors[(camera, row.day)] for row in rows}
     # Без периода цвета считаются за всю активную историю, с периодом —
     # только за выбранные дни (сегодняшняя строка нужна лишь для «сегодня»).
     period_rows = (
@@ -277,12 +446,19 @@ def _camera_payload(
         if ranged
         else rows
     )
+    period_colors = [colors_by_day[row.day] for row in period_rows]
     colors = color_resolution.with_inferred(
-        color_payload(_merge_colors(period_rows)),
+        color_payload(_merge_colors(period_colors)),
         "color",
-        [inferred.get((camera, row.day)) for row in period_rows],
+        [item.inferred for item in period_colors],
     )
-    return _row_payload(by_day.get(day), camera, day, analytics_scope) | {
+    return _row_payload(
+        by_day.get(day),
+        camera,
+        day,
+        analytics_scope,
+        colors_by_day.get(day, _NO_COLORS),
+    ) | {
         "all_time_total": all_time_total,
         **(
             {
@@ -295,6 +471,7 @@ def _camera_payload(
         ),
         "history": _history_payload(
             by_day,
+            colors_by_day,
             history_start,
             history_end,
             analytics_scope,
@@ -357,11 +534,7 @@ def today_payload(
     # Bags the camera left as ``unknown`` count under their resolved colour
     # (neighbours/votes/manual) exactly as in stock posting. The rows are only
     # read here; the stored ledger keeps the camera's own answers.
-    inferred = (
-        color_resolution.overlay_daily_rows(all_rows)
-        if analytics_scope == ANALYTICS_SCOPE_AI247
-        else {}
-    )
+    day_colors = _day_colors(all_rows, analytics_scope)
 
     cameras = [
         _camera_payload(
@@ -375,7 +548,7 @@ def today_payload(
             all_time_total=lifetime.get(
                 camera, sum(row.total for row in camera_rows)
             ),
-            inferred=inferred,
+            day_colors=day_colors,
             analytics_sync=_event_sync_payload(cursors.get(camera), now=now),
         )
         for camera, camera_rows in rows_by_camera.items()

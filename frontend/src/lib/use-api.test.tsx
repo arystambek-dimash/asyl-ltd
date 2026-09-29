@@ -122,6 +122,20 @@ describe("useApi", () => {
     expect(result.current.data).toEqual({ id: "saved" });
   });
 
+  it("hands the latest data to a functional save", async () => {
+    // Ответ PATCH одной записи кладётся в список, который опрос успел
+    // обновить, — остальные записи не откатываются к виду до запроса.
+    getMock.mockResolvedValueOnce({ data: { id: "polled" } });
+    const { result } = renderHook(() => useApi<Payload>("/cameras/shipping-sessions/"));
+    await waitFor(() => expect(result.current.data).toEqual({ id: "polled" }));
+
+    act(() => {
+      result.current.setData((current) => current && { id: `${current.id}+saved` });
+    });
+    expect(result.current.data).toEqual({ id: "polled+saved" });
+    expect(result.current.loading).toBe(false);
+  });
+
   it("exposes the response status for access errors", async () => {
     getMock.mockRejectedValueOnce({ response: { status: 403 } });
 

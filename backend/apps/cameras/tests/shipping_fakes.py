@@ -47,11 +47,12 @@ def recognition_payload(model, detections):
     }
 
 
-def add_events(start, seconds, *, camera="cam2", scope=ANALYTICS_SCOPE_SHIPPING, applied=True):
+def add_events(start, seconds, *, camera="cam2", scope=ANALYTICS_SCOPE_SHIPPING, applied=True, colors=()):
+    """Counted bags ``seconds`` after ``start``; ``colors`` — the camera's colour of each bag."""
     existing = AlwaysOnImportedEvent.objects.filter(camera=camera).order_by("-upstream_event_id").first()
     previous = existing.upstream_event_id if existing else 0
     rows = AlwaysOnImportedEvent.objects.bulk_create([
-        AlwaysOnImportedEvent(camera=camera, upstream_event_id=previous+i+1, occurred_at=start+timedelta(seconds=second), source="sub", mode="always_on", analytics_scope=scope, applied_to_analytics=applied)
+        AlwaysOnImportedEvent(camera=camera, upstream_event_id=previous+i+1, occurred_at=start+timedelta(seconds=second), source="sub", mode="always_on", analytics_scope=scope, applied_to_analytics=applied, color=colors[i] if colors else None)
         for i, second in enumerate(seconds)
     ])
     AlwaysOnCounterCursor.objects.update_or_create(camera=camera, defaults={

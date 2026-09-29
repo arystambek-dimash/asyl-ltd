@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { CameraAnalyticsOverview } from "./camera-analytics-overview";
@@ -10,6 +10,7 @@ const point: AlwaysOnHistoryPoint = {
   model_per_color: { red: 817 },
   colors: [{ color: "red", total: 817, percent: 100 }],
   adjustment: 0,
+  adjustment_per_color: {},
   total: 817,
   updated_at: null,
 };
@@ -34,6 +35,8 @@ function setup(overrides: Partial<React.ComponentProps<typeof CameraAnalyticsOve
     receiptMapping: { status: "ready", mappings: [] },
     selectedDay: null,
     onSelectDay: vi.fn(),
+    canEdit: false,
+    onEditDay: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
   return { ...render(<CameraAnalyticsOverview {...props} />), props };
@@ -134,7 +137,79 @@ describe("camera analytics overview", () => {
       },
     });
     expect(screen.queryByText("За этот период мешки не учтены")).not.toBeInTheDocument();
-    expect(screen.getByText(/Итог учитывает корректировку -817 меш/)).toBeInTheDocument();
+    expect(screen.getByText("Итог исправлен вручную: -817 меш. к счёту камеры.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выпуск по времени: 01.03.2026, 0 мешков" })).toBeInTheDocument();
+  });
+
+  it("says when only the colours were corrected by hand", () => {
+    setup({ daily: { ...daily, history: [{ ...point, adjustment_per_color: { red: -17, white: 17 } }] } });
+    expect(screen.getByText("Цвета исправлены вручную.")).toBeInTheDocument();
+    expect(screen.queryByText(/Итог исправлен вручную/)).toBeNull();
+  });
+
+  it("offers day editing only to a superuser looking at one day", () => {
+    const { rerender, props } = setup();
+    expect(screen.queryByRole("button", { name: /Изменить/ })).toBeNull();
+    rerender(<CameraAnalyticsOverview {...props} canEdit />);
+    expect(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" })).toBeInTheDocument();
+    rerender(
+      <CameraAnalyticsOverview
+        {...props}
+        canEdit
+        dateFrom="2026-02-28"
+        daily={{ ...daily, history: [{ ...point, day: "2026-02-28" }, point] }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /Изменить/ })).toBeNull();
+  });
+
+  it("edits the day's colours in place and closes the editor after saving", async () => {
+    const user = userEvent.setup();
+    const { props } = setup({ canEdit: true, isShipping: true });
+    await user.click(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" }));
+    const editor = screen.getByRole("form", { name: "Исправление цветов мешков" });
+    expect(screen.queryByRole("button", { name: "Изменить цвета за 01.03.2026" })).toBeNull();
+    await user.clear(within(editor).getByRole("textbox", { name: "Мешков: Красный" }));
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Красный" }), "800");
+    await user.type(within(editor).getByRole("textbox", { name: "Мешков: Белый" }), "{Backspace}17");
+    expect(editor).toHaveTextContent("Итого: 817 меш.");
+    await user.click(within(editor).getByRole("button", { name: "Сохранить" }));
+    expect(props.onEditDay).toHaveBeenCalledWith("2026-03-01", { red: 800, white: 17 });
+    expect(screen.queryByRole("form", { name: "Исправление цветов мешков" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" })).toHaveFocus();
+  });
+
+  it("keeps typed numbers while the camera catches up or a poll fails", async () => {
+    const user = userEvent.setup();
+    const { props, rerender } = setup({ canEdit: true, isShipping: true });
+    await user.click(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" }));
+    await user.clear(screen.getByRole("textbox", { name: "Мешков: Красный" }));
+    await user.type(screen.getByRole("textbox", { name: "Мешков: Красный" }), "800");
+    rerender(<CameraAnalyticsOverview {...props} canEdit isShipping available={false} />);
+    const editor = screen.getByRole("form", { name: "Исправление цветов мешков" });
+    expect(within(editor).getByRole("textbox", { name: "Мешков: Красный" })).toHaveValue("800");
+    expect(editor).toHaveTextContent("Камера ещё синхронизируется — после сохранения цифры обновятся.");
+    rerender(<CameraAnalyticsOverview {...props} canEdit isShipping />);
+    expect(screen.getByRole("textbox", { name: "Мешков: Красный" })).toHaveValue("800");
+    expect(screen.queryByText(/Камера ещё синхронизируется/)).toBeNull();
+  });
+
+  it("moves focus into the editor and back to «Изменить» when it closes", async () => {
+    const user = userEvent.setup();
+    setup({ canEdit: true });
+    await user.click(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" }));
+    expect(screen.getByRole("textbox", { name: "Мешков: Красный" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" })).toHaveFocus();
+  });
+
+  it("lets a superuser fill a day the camera left empty", async () => {
+    const user = userEvent.setup();
+    const empty = { ...point, total: 0, model_total: 0, model_per_color: {}, colors: [] };
+    setup({ canEdit: true, daily: { ...daily, ...empty, period_total: 0, history: [empty] } });
+    expect(screen.getByText("За этот период мешки не учтены")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Изменить цвета за 01.03.2026" }));
+    expect(screen.getByRole("form", { name: "Исправление цветов мешков" })).toBeInTheDocument();
+    expect(screen.queryByText("За этот период мешки не учтены")).toBeNull();
   });
 });

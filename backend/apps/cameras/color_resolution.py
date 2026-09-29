@@ -12,9 +12,10 @@ ever overwriting the camera's answer, which colour/brand an unknown bag gets.
   of ``AlwaysOnImportedEvent``; events of a posted production shift are never
   changed automatically (a manual assignment goes through production.py).
 * ``business_day_transfers`` (stock posting and previews through
-  ``production_runs._day_totals``) and ``overlay_daily_rows`` (calendar-day
-  analytics) are the only places that move resolved bags from the camera's
-  ``unknown`` bucket to their resolved colour. The raw ledgers never change.
+  ``production_runs._day_totals``) and ``daily_color_moves`` +
+  ``color_transfers`` (calendar-day analytics, ``overlay_daily_rows``) are the
+  only places that move resolved bags from the camera's ``unknown`` bucket to
+  their resolved colour. The raw ledgers never change.
 * Only the camera's own answers are evidence. A manual assignment is a count
   (not a check of particular bags), so it never resolves another bag; and a
   long streak of misses or a far neighbour is never guessed across.
@@ -685,12 +686,13 @@ class Transfers:
     inferred: dict[str, dict[str, int]]
 
 
-def _transfers(rows, available: Mapping[str, int]) -> Transfers:
+def color_transfers(rows, available: Mapping[str, int]) -> Transfers:
     """Never move more bags than a bucket holds.
 
     A bucket can hold fewer bags than resolved events when a historical
     correction subtracted part of it or, for analytics, when the day was
-    split by an archive. The bags beyond it are not moved twice.
+    split by an archive or a manual analytics correction already moved
+    them by hand. The bags beyond it are not moved twice.
     Manual assignments take the capacity first, so a later automatic
     decision can never push an audited assignment out; within one method
     the given order (newest first) decides.
@@ -735,7 +737,7 @@ def business_day_transfers(
         .order_by("-occurred_at", "-upstream_event_id")
         .values_list("color", "class_name", "resolved_color", "color_resolution")
     )
-    return _transfers(
+    return color_transfers(
         (
             (camera_color_key(color, class_name), resolved, method)
             for color, class_name, resolved, method in rows
@@ -744,13 +746,12 @@ def business_day_transfers(
     )
 
 
-def overlay_daily_rows(rows) -> dict[tuple[str, date], dict[str, dict[str, int]]]:
-    """Show resolved colours in active AI 24/7 daily analytics rows.
+def daily_color_moves(rows) -> dict[tuple[str, date], list[tuple[str, str, str]]]:
+    """Resolved bags of AI 24/7 daily analytics rows, from one grouped read.
 
-    The stored daily ledger keeps the camera's answers; this replaces the
-    in-memory ``model_per_color`` of the given (unsaved, read-only) rows with
-    one grouped read. Returns what was inferred per (camera, day):
-    ``{colour: {method: n}}``.
+    Per (camera, day) of the given rows: ``(camera colour, resolved colour,
+    method)`` of each resolved bag, newest first, ready for
+    ``color_transfers``. Rows without bags are skipped.
     """
 
     rows = [row for row in rows if row.model_total > 0]
@@ -758,7 +759,7 @@ def overlay_daily_rows(rows) -> dict[tuple[str, date], dict[str, dict[str, int]]
         return {}
     days = [row.day for row in rows]
     start, end = local_day_window(min(days), max(days))
-    by_key = {(row.camera, row.day): row for row in rows}
+    keys = {(row.camera, row.day) for row in rows}
     cameras = {row.camera for row in rows}
     # Archiving zeroed the live day: the bags imported before that moment
     # left this row for the archive snapshot.
@@ -800,23 +801,35 @@ def overlay_daily_rows(rows) -> dict[tuple[str, date], dict[str, dict[str, int]]
         color_method,
     ) in events:
         key = (camera, local_date(occurred_at))
-        if key not in by_key:
+        if key not in keys:
             continue
         if key in archived_before and imported_at < archived_before[key]:
             continue
         source = event_color_key(color, class_name)
         if source:
             color_moves[key].append((source, resolved_color, color_method))
+    return dict(color_moves)
 
+
+def overlay_daily_rows(rows) -> dict[tuple[str, date], dict[str, dict[str, int]]]:
+    """Show resolved colours in active AI 24/7 daily analytics rows.
+
+    The stored daily ledger keeps the camera's answers; this replaces the
+    in-memory ``model_per_color`` of the given (unsaved, read-only) rows with
+    one grouped read. Returns what was inferred per (camera, day):
+    ``{colour: {method: n}}``.
+    """
+
+    by_key = {(row.camera, row.day): row for row in rows}
     inferred: dict[tuple[str, date], dict[str, dict[str, int]]] = {}
-    for key, moves in color_moves.items():
+    for key, moves in daily_color_moves(rows).items():
         row = by_key[key]
         colors = {
             str(name): int(value)
             for name, value in (row.model_per_color or {}).items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
-        transfer = _transfers(moves, colors)
+        transfer = color_transfers(moves, colors)
         row.model_per_color = _moved(colors, transfer.delta)
         inferred[key] = transfer.inferred
     return inferred
@@ -853,9 +866,21 @@ def with_inferred(items: list[dict], key: str, inferred_parts) -> list[dict]:
 
     merged = merge_inferred(*[part for part in inferred_parts if part])
     for item in items:
-        methods = merged.get(item[key])
+        # Never mark more bags than the item shows: a manual analytics
+        # correction may lower a colour below its resolved bags. Manual
+        # assignments keep their marker first, as in ``color_transfers``.
+        room = int(item["total"])
+        methods: dict[str, int] = {}
+        for method, count in sorted(
+            merged.get(item[key], {}).items(),
+            key=lambda pair: _METHOD_PRIORITY.get(pair[0], len(_METHOD_PRIORITY)),
+        ):
+            taken = min(count, room)
+            if taken > 0:
+                methods[method] = taken
+                room -= taken
         if methods:
-            item["inferred"] = methods
+            item["inferred"] = dict(sorted(methods.items()))
     return items
 
 

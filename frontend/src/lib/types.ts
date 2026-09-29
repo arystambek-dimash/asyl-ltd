@@ -885,9 +885,11 @@ export interface AlwaysOnHistoryPoint {
   day: string;
   model_total: number;
   model_per_color: Record<string, number>;
-  /** Готовая разбивка по цветам за этот день — считает бэкенд. */
+  /** Готовая разбивка по цветам за этот день — считает бэкенд (с ручными правками). */
   colors: AlwaysOnColorAnalytics[];
   adjustment: number;
+  /** Ручная правка цветов поверх камеры: {цвет: ±мешков}; пусто — правок нет. */
+  adjustment_per_color: Record<string, number>;
   total: number;
   updated_at: string | null;
 }
@@ -901,6 +903,7 @@ export interface AlwaysOnDailyCameraAnalytics {
   model_total: number;
   model_per_color: Record<string, number>;
   adjustment: number;
+  adjustment_per_color: Record<string, number>;
   total: number;
   all_time_total: number;
   history: AlwaysOnHistoryPoint[];

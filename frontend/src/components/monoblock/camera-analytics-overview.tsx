@@ -1,11 +1,12 @@
 "use client";
 
-import { useId } from "react";
-import { ArrowDown, CalendarDays, ChevronRight, RefreshCw } from "lucide-react";
+import { useId, useState } from "react";
+import { ArrowDown, CalendarDays, ChevronRight, Pencil, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PillToggle } from "@/components/ui/segmented";
 import { ColorDot, Panel } from "@/components/monoblock/ui";
+import { ColorCountsEditor, useEditorFocusReturn } from "@/components/monoblock/color-counts-editor";
 import {
   AlwaysOnReceiptDestinationLabel,
   receiptItemLabel,
@@ -44,6 +45,8 @@ export function CameraAnalyticsOverview({
   receiptMapping,
   selectedDay,
   onSelectDay,
+  canEdit,
+  onEditDay,
 }: {
   today: string;
   dateFrom: string;
@@ -58,8 +61,13 @@ export function CameraAnalyticsOverview({
   receiptMapping: AlwaysOnReceiptMappingContext;
   selectedDay: string | null;
   onSelectDay: (day: string | null) => void;
+  /** Ручная правка цветов дня — только суперпользователь. */
+  canEdit: boolean;
+  /** Бросает ошибку запроса — редактор покажет её у себя. */
+  onEditDay: (day: string, colors: Record<string, number>) => Promise<void>;
 }) {
   const rangeErrorId = useId();
+  const [editingDay, setEditingDay] = useState<string | null>(null);
   const { days, valid } = analyticsRange(dateFrom, dateTo);
   const isToday = dateFrom === today && dateTo === today;
   const singleDay = days === 1;
@@ -73,6 +81,21 @@ export function CameraAnalyticsOverview({
   const daysWithBags = history.filter((point) => point.total > 0).length;
   const activePreset = periodPresetOf({ dateFrom, dateTo }, ANALYTICS_PERIODS, today);
   const dayPoint = singleDay ? history.find((point) => point.day === dateFrom) : undefined;
+  const editableDay = canEdit ? dayPoint?.day : undefined;
+  const editing = !!editableDay && editingDay === editableDay;
+  const colorsEdited = history.some((point) => Object.keys(point.adjustment_per_color ?? {}).length > 0);
+  const editButtonRef = useEditorFocusReturn(editing);
+  const editButton = editableDay && (
+    <Button
+      ref={editButtonRef}
+      variant="outline"
+      size="sm"
+      aria-label={`Изменить цвета за ${formatIsoDate(editableDay)}`}
+      onClick={() => setEditingDay(editableDay)}
+    >
+      <Pencil /> Изменить
+    </Button>
+  );
 
   return (
     <div className="space-y-5">
@@ -186,13 +209,16 @@ export function CameraAnalyticsOverview({
         </span>
       </Panel>
 
-      {ready && total === 0 && !hasActivity ? (
+      {ready && total === 0 && !hasActivity && !editing ? (
         <Panel className="px-5 py-9 text-center">
           <CalendarDays className="mx-auto mb-3 size-6 text-[var(--muted-foreground)]" />
           <h3 className="font-medium">За этот период мешки не учтены</h3>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">Выберите другой день или расширьте период.</p>
+          {editButton && <div className="mt-4">{editButton}</div>}
         </Panel>
-      ) : ready ? (
+      ) : ready || editing ? (
+        // Открытый редактор не убираем, пока камера досинхронизирует или опрос
+        // не ответил: иначе набранные числа пропали бы.
         <div className={cn("grid items-start gap-5", !singleDay && "lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]")}>
           {!singleDay && (
             <Panel className="min-w-0 p-5">
@@ -252,54 +278,79 @@ export function CameraAnalyticsOverview({
             </Panel>
           )}
           <Panel className="min-w-0 overflow-hidden p-5">
-            <h3 className="text-base font-semibold">{isShipping ? "Цвета мешков" : "Продукция"}</h3>
-            <p className="mt-1 text-xs text-[var(--muted-foreground)]">Количество и доля за выбранный период</p>
-            {adjustment !== 0 && (
-              <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                Итог учитывает корректировку {adjustment > 0 ? "+" : ""}
-                {number.format(adjustment)} меш. Здесь показано количество по распознанным цветам.
-              </p>
-            )}
-            <div className="mt-4 divide-y divide-[var(--border)]">
-              {colors.map((item) => {
-                const destination = !isShipping ? resolveAlwaysOnReceiptDestination(receiptMapping, item.color) : null;
-                const { title, colorLabel } = receiptItemLabel(destination, item.color);
-                return (
-                  <div key={item.color} className="py-3 first:pt-0 last:pb-0">
-                    <div className="flex items-start gap-2.5">
-                      <ColorDot className={cn("mt-1.5", colorMeta(item.color).dot)} />
-                      <span className="min-w-0 flex-1 break-words text-sm font-medium leading-5">{title}</span>
-                      <div className="shrink-0 text-right">
-                        <span className="text-sm font-semibold tabular-nums">{number.format(item.total)}</span>
-                        <span className="ml-2 text-xs tabular-nums text-[var(--muted-foreground)]">
-                          {number.format(item.percent)}%
-                        </span>
-                      </div>
-                    </div>
-                    <div className="ml-5 mt-2 h-1 overflow-hidden rounded-full bg-[var(--muted)]">
-                      <div
-                        className={cn("h-full rounded-full", colorMeta(item.color).bar)}
-                        style={{ width: `${item.percent}%` }}
-                      />
-                    </div>
-                    {destination && (
-                      <AlwaysOnReceiptDestinationLabel
-                        destination={destination}
-                        colorLabel={colorLabel}
-                        showProduct={destination.state !== "bound"}
-                        className="ml-5 mt-2"
-                      />
-                    )}
-                    <InferredBadge inferred={item.inferred} className="ml-5 mt-2" />
-                  </div>
-                );
-              })}
-              {!colors.length && (
-                <p className="py-4 text-sm text-[var(--muted-foreground)]">
-                  Цвета мешков за этот период не определены.
-                </p>
-              )}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold">{isShipping ? "Цвета мешков" : "Продукция"}</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">Количество и доля за выбранный период</p>
+              </div>
+              {!editing && editButton}
             </div>
+            {adjustment !== 0 ? (
+              <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+                Итог исправлен вручную: {adjustment > 0 ? "+" : ""}
+                {number.format(adjustment)} меш. к счёту камеры.
+              </p>
+            ) : (
+              colorsEdited && <p className="mt-2 text-xs text-[var(--muted-foreground)]">Цвета исправлены вручную.</p>
+            )}
+            {editing && dayPoint ? (
+              <div className="mt-4">
+                <ColorCountsEditor
+                  items={dayPoint.colors}
+                  cameraCounts={dayPoint.model_per_color}
+                  total={dayPoint.total}
+                  hint={available ? undefined : "Камера ещё синхронизируется — после сохранения цифры обновятся."}
+                  onSave={async (colors) => {
+                    await onEditDay(dayPoint.day, colors);
+                    setEditingDay(null);
+                  }}
+                  onCancel={() => setEditingDay(null)}
+                />
+              </div>
+            ) : (
+              <div className="mt-4 divide-y divide-[var(--border)]">
+                {colors.map((item) => {
+                  const destination = !isShipping
+                    ? resolveAlwaysOnReceiptDestination(receiptMapping, item.color)
+                    : null;
+                  const { title, colorLabel } = receiptItemLabel(destination, item.color);
+                  return (
+                    <div key={item.color} className="py-3 first:pt-0 last:pb-0">
+                      <div className="flex items-start gap-2.5">
+                        <ColorDot className={cn("mt-1.5", colorMeta(item.color).dot)} />
+                        <span className="min-w-0 flex-1 break-words text-sm font-medium leading-5">{title}</span>
+                        <div className="shrink-0 text-right">
+                          <span className="text-sm font-semibold tabular-nums">{number.format(item.total)}</span>
+                          <span className="ml-2 text-xs tabular-nums text-[var(--muted-foreground)]">
+                            {number.format(item.percent)}%
+                          </span>
+                        </div>
+                      </div>
+                      <div className="ml-5 mt-2 h-1 overflow-hidden rounded-full bg-[var(--muted)]">
+                        <div
+                          className={cn("h-full rounded-full", colorMeta(item.color).bar)}
+                          style={{ width: `${item.percent}%` }}
+                        />
+                      </div>
+                      {destination && (
+                        <AlwaysOnReceiptDestinationLabel
+                          destination={destination}
+                          colorLabel={colorLabel}
+                          showProduct={destination.state !== "bound"}
+                          className="ml-5 mt-2"
+                        />
+                      )}
+                      <InferredBadge inferred={item.inferred} className="ml-5 mt-2" />
+                    </div>
+                  );
+                })}
+                {!colors.length && (
+                  <p className="py-4 text-sm text-[var(--muted-foreground)]">
+                    Цвета мешков за этот период не определены.
+                  </p>
+                )}
+              </div>
+            )}
             {singleDay && dayPoint && (
               <Button
                 variant="outline"

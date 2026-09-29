@@ -5,9 +5,17 @@ events and calls to the camera PC belong to the view/workflow layer, where
 they can be coordinated explicitly.
 """
 
+import re
+from datetime import date
+
+from django.utils import timezone
 from rest_framework import serializers
 
 from . import ai, services
+
+_MAX_EDITED_BAGS = 1_000_000
+_MAX_EDITED_COLORS = 16
+_COLOR_KEY = re.compile(r"[a-z_]{1,32}")
 
 
 class CameraRenameSerializer(serializers.Serializer):
@@ -179,8 +187,6 @@ class AnalyticsRangeSerializer(AiCameraSerializerMixin, serializers.Serializer):
     camera = serializers.CharField(required=False, max_length=32)
 
     def validate(self, attrs):
-        from django.utils import timezone
-
         if "date_from" in attrs or "date_to" in attrs:
             start = attrs.setdefault("date_from", timezone.localdate())
             end = attrs.setdefault("date_to", timezone.localdate())
@@ -189,17 +195,62 @@ class AnalyticsRangeSerializer(AiCameraSerializerMixin, serializers.Serializer):
         return attrs
 
 
+def _representable_day(value: date) -> date:
+    # UTC conversion and the exclusive next midnight need representable
+    # neighbouring days at both ends of Python's calendar.
+    if value in (date.min, date.max):
+        raise serializers.ValidationError("Выберите дату от 02.01.0001 до 30.12.9999")
+    return value
+
+
 class ShippingHistorySerializer(AiCameraSerializerMixin, serializers.Serializer):
     camera = serializers.CharField(max_length=32)
     day = serializers.DateField()
 
     def validate_day(self, value):
-        from datetime import date
+        return _representable_day(value)
 
-        # UTC conversion and the exclusive next midnight need representable
-        # neighbouring days at both ends of Python's calendar.
-        if value in (date.min, date.max):
-            raise serializers.ValidationError(
-                "Выберите дату от 02.01.0001 до 30.12.9999"
-            )
+
+class ColorCountsField(serializers.Field):
+    """Ручная правка аналитики: ``{цвет: мешков}``, целые от 0 до 1 000 000."""
+
+    default_error_messages = {
+        "invalid": "Укажите количество мешков по цветам",
+        "too_many": f"Не больше {_MAX_EDITED_COLORS} цветов за раз",
+        "bad_color": "Неизвестный цвет: {color}",
+        "bad_count": "Количество мешков — целое число от 0 до 1 000 000",
+    }
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict) or not data:
+            self.fail("invalid")
+        if len(data) > _MAX_EDITED_COLORS:
+            self.fail("too_many")
+        for color, count in data.items():
+            if not isinstance(color, str) or not _COLOR_KEY.fullmatch(color):
+                self.fail("bad_color", color=str(color)[:32])
+            if type(count) is not int or not 0 <= count <= _MAX_EDITED_BAGS:
+                self.fail("bad_count")
+        return dict(data)
+
+    def to_representation(self, value):
         return value
+
+
+class AnalyticsDayColorsSerializer(AiCameraSerializerMixin, serializers.Serializer):
+    """Ручная правка цветов камеры за один день."""
+
+    camera = serializers.CharField(max_length=32)
+    day = serializers.DateField()
+    colors = ColorCountsField()
+
+    def validate_day(self, value):
+        if _representable_day(value) > timezone.localdate():
+            raise serializers.ValidationError("Этот день ещё не наступил")
+        return value
+
+
+class ShippingSessionColorsSerializer(serializers.Serializer):
+    """Ручная правка цветов одной сессии отгрузки (вагона или машины)."""
+
+    colors = ColorCountsField()
