@@ -173,6 +173,17 @@ export function sourcesText(context: DispatchSources, chosen: Record<number, num
   return parts.map((warehouse) => `${warehouse.name} — ${chosen[warehouse.id]}`).join(", ");
 }
 
+/**
+ * Свой цвет склада в опроснике: грузчик узнаёт склад по цвету, не читая. Цвет
+ * привязан к id — не меняется, когда появится новый склад. Красного, зелёного и
+ * синего нет: это цвета мешков. На всех белый текст читается (контраст ≥ 4.5).
+ */
+const WAREHOUSE_TONES = ["#B45309", "#6D28D9", "#BE185D", "#334155"] as const;
+
+export function warehouseTone(warehouseId: number): string {
+  return WAREHOUSE_TONES[(Math.max(warehouseId, 1) - 1) % WAREHOUSE_TONES.length];
+}
+
 /** Кнопка разбивки под складами. */
 export function splitLabel(warehouseCount: number): string {
   return warehouseCount > 2 ? "С нескольких складов…" : "С двух складов…";

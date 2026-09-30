@@ -3,6 +3,7 @@ import { useId, useState, type ReactNode } from "react";
 import { LoaderCircle, PackageCheck } from "lucide-react";
 import { ColorDot } from "@/components/monoblock/ui";
 import { Button } from "@/components/ui/button";
+import { DepartmentDot } from "@/components/ui/department-badge";
 import { FormError } from "@/components/ui/data-state";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
@@ -14,6 +15,7 @@ import {
   sourcesText,
   splitLabel,
   splitRemainder,
+  warehouseTone,
   type DispatchSource,
   type DispatchSourceProduct,
   type DispatchSources,
@@ -38,6 +40,8 @@ type Step =
 
 /** Рамка своего прошлого ответа грузчика и поля, куда идут цифры. Это не предвыбор. */
 const PICKED = "border-2 border-[var(--primary)] bg-[var(--accent)]";
+/** То же для кнопки склада: она залита своим цветом, поэтому прошлый ответ — кольцом. */
+const PICKED_TONE = "ring-4 ring-[var(--primary)] ring-offset-2 ring-offset-[var(--card)]";
 
 /** Ответ на товар полный: все его мешки разложены по складам листа. */
 function productAnswered(context: DispatchSources, answers: SourceAnswers, product: DispatchSourceProduct): boolean {
@@ -304,10 +308,10 @@ function ProductStep({
           return (
             <div key={warehouse.id} className="flex flex-col gap-1">
               <Button
-                variant="outline"
                 aria-pressed={pressed}
                 aria-describedby={note ? describedBy : undefined}
-                className={cn("h-16 w-full text-lg", pressed && PICKED)}
+                style={{ backgroundColor: warehouseTone(warehouse.id) }}
+                className={cn("h-16 w-full text-lg font-semibold text-white hover:opacity-90", pressed && PICKED_TONE)}
                 onClick={() => onPick(warehouse.id)}
               >
                 {warehouse.name}
@@ -367,7 +371,8 @@ function SplitStep({
           const note = bags > 0 ? shortageNote(product, warehouse.id, bags) : "";
           return (
             <div key={warehouse.id} className="flex flex-col gap-1">
-              <Label htmlFor={id} className="mb-0 text-sm">
+              <Label htmlFor={id} className="mb-0 flex items-center gap-2 text-sm">
+                <DepartmentDot color={warehouseTone(warehouse.id)} className="size-3" />
                 {warehouse.name}
               </Label>
               {/* Только чтение: цифры — с Numpad ниже, касание выбирает, куда они идут. */}
@@ -392,7 +397,8 @@ function SplitStep({
           );
         })}
         <div className="rounded-xl bg-[var(--muted)]/50 px-4 py-3">
-          <p className="text-base font-semibold tabular-nums">
+          <p className="flex items-center gap-2 text-base font-semibold tabular-nums">
+            <DepartmentDot color={warehouseTone(split.last.id)} className="size-3" />
             {`${split.last.name} — ${Math.max(split.remainder, 0)} · остаток`}
           </p>
           {lastNote && <p className="mt-1 text-sm text-[var(--warning)]">{lastNote}</p>}
@@ -436,7 +442,14 @@ function SummaryStep({
                 Изменить
               </Button>
             </div>
-            <p className="text-base">{sourcesText(context, chosen)}</p>
+            <p className="flex flex-wrap items-center gap-2 text-base">
+              {context.warehouses
+                .filter((warehouse) => (chosen[warehouse.id] ?? 0) > 0)
+                .map((warehouse) => (
+                  <DepartmentDot key={warehouse.id} color={warehouseTone(warehouse.id)} className="size-3" />
+                ))}
+              <span>{sourcesText(context, chosen)}</span>
+            </p>
             {context.warehouses.map((warehouse) => {
               const bags = chosen[warehouse.id] ?? 0;
               const note = bags > 0 ? shortageNote(product, warehouse.id, bags) : "";

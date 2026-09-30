@@ -10,6 +10,7 @@ import {
   splitLabel,
   splitRemainder,
   storeLoaderTransport,
+  warehouseTone,
   type DispatchSources,
 } from "./loader";
 
@@ -169,5 +170,17 @@ describe("answersComplete", () => {
     expect(answersComplete(context, { 12: { 1: 20 } })).toBe(false);
     expect(answersComplete(context, { 12: { 1: 12, 2: 5 }, 15: { 2: 40 } })).toBe(false);
     expect(answersComplete(context, { 12: { 1: 21 }, 15: { 2: 40 } })).toBe(false);
+  });
+});
+
+describe("warehouseTone", () => {
+  it("gives each warehouse its own colour, fixed by id", () => {
+    expect(warehouseTone(1)).not.toBe(warehouseTone(2));
+    expect(warehouseTone(2)).toBe(warehouseTone(2));
+  });
+
+  it("never uses the bag colours (red, green, blue)", () => {
+    const bagColours = ["#dc2626", "#16a34a", "#2563eb"];
+    for (const id of [1, 2, 3, 4, 5]) expect(bagColours).not.toContain(warehouseTone(id).toLowerCase());
   });
 });
