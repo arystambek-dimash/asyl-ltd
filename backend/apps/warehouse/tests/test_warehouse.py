@@ -4,7 +4,10 @@ import pytest
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
+from apps.clients.models import Client
 from apps.eventlog.models import EventLog
+from apps.orders.models import Order
+from apps.warehouse import services as warehouse_services
 from apps.warehouse.models import StockItem, StockMovement, StockReceipt, Warehouse
 from apps.warehouse.services import (
     adjust_stock,
@@ -12,6 +15,7 @@ from apps.warehouse.services import (
     ensure_products_available,
     get_default_warehouse,
     lock_stock_item,
+    lock_stock_items,
     receive_stock,
     reconcile_shipment_stock,
     stock_balances,
@@ -166,15 +170,120 @@ def test_pinned_inactive_warehouse_allows_historical_stock_operations(boss, make
         require_active=False,
     )
     changes = reconcile_shipment_stock(
-        {prod.pk: 3},
+        {(prod.pk, warehouse.pk): 3},
         order=SimpleNamespace(pk=123),
         user=boss,
         reason="откат",
-        warehouse=warehouse,
     )
 
     assert StockItem.objects.get(product=prod).bags == 15
     assert changes[0]["warehouse"] == warehouse.pk
+
+
+def _shipped_order():
+    client = Client.objects.create_with_user(
+        first_name="Мурат", phone="+7 (778) 535-22-10", company_name="ИП Мурат"
+    )
+    return Order.objects.create(client=client, status="shipped")
+
+
+def test_lock_stock_items_locks_cells_by_product_then_warehouse(monkeypatch, make_product):
+    main = Warehouse.objects.get(code="main")
+    second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
+    first_product = make_product()
+    second_product = make_product(name="Эконом", color="Blue")
+    locked = []
+    original = warehouse_services._locked_stock_item
+
+    def recording(product, warehouse, *, create):
+        locked.append((product.pk, warehouse.pk))
+        return original(product, warehouse, create=create)
+
+    monkeypatch.setattr(warehouse_services, "_locked_stock_item", recording)
+
+    with transaction.atomic():
+        rows = lock_stock_items(
+            [
+                (second_product, main),
+                (first_product, second),
+                (second_product, main),
+                (first_product, main),
+            ]
+        )
+
+    expected = sorted(
+        [
+            (first_product.pk, main.pk),
+            (first_product.pk, second.pk),
+            (second_product.pk, main.pk),
+        ]
+    )
+    # Мьютекс товара, затем его склады по возрастанию id; дубли ячеек — один раз.
+    assert locked == expected
+    assert list(rows) == expected
+    assert {cell: item.bags for cell, item in rows.items()} == dict.fromkeys(expected, 0)
+    assert rows[(first_product.pk, second.pk)].warehouse_id == second.pk
+
+
+def test_deduct_stock_writes_note_and_links_negative_event_to_order(boss, make_product):
+    second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
+    prod = make_product()
+    order = _shipped_order()
+    note = f"Отгрузка заказа #{order.pk}"
+
+    deduct_stock(prod, 8, boss, warehouse=second, note=note, order=order)
+
+    movement = StockMovement.objects.get(product=prod)
+    warning = EventLog.objects.get(event_type="stock_negative")
+    assert StockItem.objects.get(product=prod, warehouse=second).bags == -8
+    assert (movement.warehouse_id, movement.reason, movement.delta, movement.note) == (
+        second.pk,
+        "shipment",
+        -8,
+        note,
+    )
+    assert warning.order_id == order.pk
+    assert (warning.payload["warehouse"], warning.payload["had"], warning.payload["deduct"]) == (
+        second.pk,
+        0,
+        8,
+    )
+
+
+def test_reconcile_shipment_stock_applies_each_cell_to_its_warehouse(boss, make_product):
+    main = Warehouse.objects.get(code="main")
+    second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
+    prod = make_product()
+    receive_stock(prod, 10, boss, warehouse=main)
+    receive_stock(prod, 3, boss, warehouse=second)
+    order = _shipped_order()
+    note = f"Корректировка отгрузки заказа #{order.pk}: уточнили склады"
+
+    changes = reconcile_shipment_stock(
+        {(prod.pk, second.pk): -5, (prod.pk, main.pk): 2},
+        order=order,
+        user=boss,
+        reason="уточнили склады",
+    )
+
+    assert StockItem.objects.get(product=prod, warehouse=main).bags == 12
+    assert StockItem.objects.get(product=prod, warehouse=second).bags == -2
+    assert changes == [
+        {"warehouse": main.pk, "product": prod.pk, "delta": 2, "balance_before": 10, "balance_after": 12},
+        {"warehouse": second.pk, "product": prod.pk, "delta": -5, "balance_before": 3, "balance_after": -2},
+    ]
+    assert set(
+        StockMovement.objects.filter(reason="shipment_correction").values_list(
+            "warehouse_id", "delta", "note"
+        )
+    ) == {(main.pk, 2, note), (second.pk, -5, note)}
+    warning = EventLog.objects.get(event_type="stock_negative")
+    assert warning.order_id == order.pk
+    assert (warning.payload["warehouse"], warning.payload["delta"], warning.payload["balance"]) == (
+        second.pk,
+        -5,
+        -2,
+    )
 
 
 def test_warehouses_api_permissions_and_crud(auth_client, operator, boss):

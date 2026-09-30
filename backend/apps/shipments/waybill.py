@@ -2,7 +2,9 @@
 
 Повторяет бумажный бланк мельницы: шапка с точкой, номер (= номер заказа),
 дата и время, машина, покупатель, таблица товара с ценами и итог, подписи
-из ``WaybillSettings``. Отгрузка по отчёту о вагонах — вместо номера машины
+из ``WaybillSettings``. Под названием товара мелко — с какого склада взяты
+мешки (``apps.shipments.sources``); у фиксации задним числом склад не
+списывали, строки нет. Отгрузка по отчёту о вагонах — вместо номера машины
 станция назначения и таблица вагонов.
 """
 
@@ -24,6 +26,7 @@ from apps.orders.models import Order
 from apps.orders.transport import order_wagons, transport_number_text
 
 from .models import WaybillSettings
+from .sources import line_sources, shipment_sources, sources_text
 
 CURRENCY_WORDS = {"KZT": "в тенге", "USD": "в долларах"}
 
@@ -144,7 +147,11 @@ def build_waybill_pdf(order: Order) -> bytes:
     total_bags = 0
     total_kg = Decimal("0")
     total_amount = Decimal("0")
-    for index, item in enumerate(order.items.all(), 1):
+    # Одни и те же позиции — и для раскладки складов по строкам, и для самих строк.
+    items = list(order.items.all())
+    _, sources = shipment_sources(order, items)
+    parts = line_sources(sources, items)
+    for index, item in enumerate(items, 1):
         weight = Decimal(item.product_weight_kg or 0)
         kg = weight * item.quantity
         price = item.unit_price
@@ -153,8 +160,12 @@ def build_waybill_pdf(order: Order) -> bytes:
         total_bags += item.quantity
         total_kg += kg
         total_amount += line_total or Decimal("0")
+        # Неразрывный пробел вокруг тире: перенос строки допустим только после
+        # запятой между складами, а не между складом и его мешками.
+        source_text = para_text(sources_text(parts[item.pk])).replace(" — ", " — ")
+        source_line = f'<br/><font size="6.5">{source_text}</font>' if parts.get(item.pk) else ""
         rows.append([
-            Paragraph(str(index), center), Paragraph(para_text(item.product_label), cell),
+            Paragraph(str(index), center), Paragraph(para_text(item.product_label) + source_line, cell),
             Paragraph(str(item.quantity), number), Paragraph(_kg(kg), number),
             Paragraph(_money(price), number), Paragraph(_money(per_kg), number),
             Paragraph(_money(line_total), number),

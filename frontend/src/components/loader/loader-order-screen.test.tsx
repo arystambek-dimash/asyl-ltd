@@ -70,3 +70,45 @@ describe("номер вагона у грузчика", () => {
     expect(screen.getByText(/Номер указал клиент/)).toBeInTheDocument();
   });
 });
+
+describe("кнопка отгрузки", () => {
+  const truckOrder: LoaderOrder = {
+    ...wagonOrder,
+    transport_type: "truck",
+    truck_number: "403BJN13",
+    items: [{ label: "Д1с · Красный 50 кг", quantity: 20, weight_kg: "1000", unit_price: null }],
+    bags: 20,
+    total_kg: "1000",
+  };
+  const screenProps = {
+    order: truckOrder,
+    today: "2026-09-24",
+    canConfirm: true,
+    error: "",
+    numbers: { truck_number: "403BJN13", trailer_number: "" },
+    onNumbers: vi.fn(),
+    onBack: vi.fn(),
+    onConfirm: vi.fn(),
+    onPrint: vi.fn(),
+    onShipByReport: vi.fn(),
+  };
+
+  it("пока идёт работа, говорит, что именно: проверка складов или отгрузка", () => {
+    const { rerender } = render(<LoaderOrderScreen {...screenProps} busy busyLabel="Проверяем склады…" />);
+    expect(screen.getByRole("button", { name: /Проверяем склады…/ })).toBeDisabled();
+
+    rerender(<LoaderOrderScreen {...screenProps} busy />);
+    expect(screen.getByRole("button", { name: /Отгружаем…/ })).toBeDisabled();
+
+    rerender(<LoaderOrderScreen {...screenProps} busy={false} />);
+    expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeEnabled();
+  });
+
+  it("пока идёт работа, с экрана не уйти: «Назад» выключен", () => {
+    const { rerender } = render(<LoaderOrderScreen {...screenProps} busy busyLabel="Проверяем склады…" />);
+    expect(screen.getByRole("button", { name: "Назад" })).toBeDisabled();
+
+    rerender(<LoaderOrderScreen {...screenProps} busy={false} />);
+    expect(screen.getByRole("button", { name: "Назад" })).toBeEnabled();
+  });
+});

@@ -28,6 +28,10 @@ class Shipment(models.Model):
         "bots.OutgoingMessage", null=True, blank=True, on_delete=models.SET_NULL, related_name="shipments",
         db_default=None,
     )
+    # Списан ли склад этой отгрузкой. False — «Зафиксировать статус и оплату»
+    # задним числом (orders/fixation.py): откат и правка заказа склад не трогают.
+    # db_default: INSERT старого образа после автоотката колонку не знает — True.
+    stock_deducted = models.BooleanField(default=True, db_default=True)
 
 
 class ShipmentWagon(models.Model):
@@ -76,6 +80,30 @@ class ShipmentWagon(models.Model):
             self.product_label_snapshot = str(self.product)
             self.product_weight_kg_snapshot = self.product.weight_kg
         super().save(*args, **kwargs)
+
+
+class ShipmentSource(models.Model):
+    """С какого склада взяты мешки товара этой отгрузки (строка на товар×склад).
+
+    Σ bags по товару = Σ OrderItem.quantity товара. Пишет только apps.shipments.sources —
+    в одной транзакции с проводками склада, под блокировкой строки Order.
+    Нет строк у отгруженного заказа = отгружен до складов-источников (всё со склада заказа).
+    Откат удаляет Shipment — строки уходят каскадом. Сводки по нескольким заказам обязаны
+    фильтровать shipment__order__deleted_at__isnull=True.
+    """
+
+    shipment = models.ForeignKey(Shipment, on_delete=models.CASCADE, related_name="sources")
+    product = models.ForeignKey(
+        "catalog.Product", null=True, blank=True, on_delete=models.SET_NULL, related_name="shipment_sources"
+    )
+    warehouse = models.ForeignKey("warehouse.Warehouse", on_delete=models.PROTECT, related_name="shipment_sources")
+    bags = models.PositiveIntegerField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["shipment", "product", "warehouse"], name="shipment_source_unique_cell"),
+            models.CheckConstraint(condition=models.Q(bags__gt=0), name="shipment_source_bags_positive"),
+        ]
 
 
 def default_waybill_signers():

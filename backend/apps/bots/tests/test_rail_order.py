@@ -31,7 +31,8 @@ from apps.bots.wagon_report import compose_rail_report
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order
-from apps.shipments.models import ShipmentWagon
+from apps.shipments.models import ShipmentSource, ShipmentWagon
+from apps.warehouse.models import Warehouse
 
 pytestmark = pytest.mark.django_db
 
@@ -149,6 +150,24 @@ def test_shipping_by_report_needs_the_wagon_area(client, product, user_with_perm
 
     order.refresh_from_db()
     assert order.status == "confirmed"
+
+
+@pytest.mark.parametrize("path", ["order_report", "conduct"])
+def test_bot_report_write_off_uses_the_order_warehouse(client, product, price, conductor, wagon_loader, path):
+    """D4: бот отгружает вагоны без опросника и при двух активных складах — источник на «Складе отгрузки»."""
+    second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
+    parsed = parse_rail_report(OWNER_REPORT)
+    if path == "conduct":
+        order = conduct_rail_report(parsed, conductor)
+    else:
+        order = ship_order_by_report(parsed, manual_train_order(client, product, arrival_date=OWNER_DAY), wagon_loader)
+
+    assert order.status == "shipped"
+    assert order.warehouse_id != second.pk
+    assert list(
+        ShipmentSource.objects.filter(shipment__order=order).values_list("product_id", "warehouse_id", "bags")
+    ) == [(product.pk, order.warehouse_id, OWNER_BAGS)]
+    assert stock_bags(product) == 20000 - OWNER_BAGS
 
 
 # --- отчёт в формате владельца («Отправить отчёт») ------------------------------------------------

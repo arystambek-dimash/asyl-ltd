@@ -88,6 +88,7 @@ export function LoaderOrderScreen({
   onConfirm,
   onPrint,
   onShipByReport,
+  busyLabel = "Отгружаем…",
 }: {
   order: LoaderOrder;
   today: string;
@@ -102,12 +103,15 @@ export function LoaderOrderScreen({
   onPrint: () => void;
   /** Вагонный заказ целой партией: вагоны, станция и день — из отчёта о вагонах. */
   onShipByReport: () => void;
+  /** Надпись кнопки, пока идёт работа: до опросника складов — «Проверяем склады…». */
+  busyLabel?: string;
 }) {
   const day = order.planned_on;
   return (
     <div className="mx-auto flex min-h-[70vh] w-full max-w-lg flex-col gap-5">
       <div className="flex items-center justify-between gap-3">
-        <Button variant="outline" className="h-11" onClick={onBack}>
+        {/* Пока идёт проверка складов или отгрузка, с заказа не уйти: ответ сервера — про этот заказ. */}
+        <Button variant="outline" className="h-11" disabled={busy} onClick={onBack}>
           <ArrowLeft className="size-4" /> Назад
         </Button>
         <span
@@ -149,7 +153,7 @@ export function LoaderOrderScreen({
         {canConfirm && (
           <Button className="h-16 w-full text-lg" disabled={busy || !numbers.truck_number.trim()} onClick={onConfirm}>
             <PackageCheck className="size-6" />
-            {busy ? "Отгружаем…" : "Подтвердить отгрузку"}
+            {busy ? busyLabel : "Подтвердить отгрузку"}
           </Button>
         )}
         {canConfirm && order.transport_type === "train" && (

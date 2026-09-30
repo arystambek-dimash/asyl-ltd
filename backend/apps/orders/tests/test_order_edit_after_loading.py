@@ -9,8 +9,8 @@ from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem, Payment
-from apps.shipments.models import Shipment
-from apps.warehouse.models import StockItem, StockMovement
+from apps.shipments.models import Shipment, ShipmentSource
+from apps.warehouse.models import StockItem, StockMovement, Warehouse
 
 pytestmark = pytest.mark.django_db
 
@@ -66,6 +66,34 @@ def _patch_items(api, order, rows, *, reason=None):
     )
 
 
+def _mills():
+    """«Мельница» (main — склад заказа) и «Мельница 2»."""
+    main = Warehouse.objects.get(code="main")
+    main.name = "Мельница"
+    main.save(update_fields=["name"])
+    return main, Warehouse.objects.create(code="mill-2", name="Мельница 2")
+
+
+def _shipped_with_sources(product, cells):
+    """Отгруженный заказ товара с записанными складами-источниками [(склад, мешки)].
+
+    Остатки складов в тестах — уже после отгрузки: проверяется только сдвиг.
+    """
+    bags = sum(count for _warehouse, count in cells)
+    order = _order(status="shipped", rows=[(product, bags, "100.00")])
+    shipment = Shipment.objects.create(order=order, bags_loaded=bags)
+    for warehouse, count in cells:
+        ShipmentSource.objects.create(shipment=shipment, product=product, warehouse=warehouse, bags=count)
+    return order, shipment
+
+
+def _sources_after(product, cells):
+    return [
+        {"product": product.id, "warehouse": warehouse.pk, "warehouse_name": warehouse.name, "bags": bags}
+        for warehouse, bags in cells
+    ]
+
+
 def test_shipped_correction_reconciles_product_net_deltas_and_audits(manager, api_as):
     first = _product(stock=90)
     removed = _product(stock=46)
@@ -103,6 +131,9 @@ def test_shipped_correction_reconciles_product_net_deltas_and_audits(manager, ap
     assert event.payload["action"] == "shipment_correction"
     assert event.payload["reason"] == "Исправлена накладная"
     assert event.payload["shipment_bags_loaded"] == 14
+    # Отгрузка до складов-источников строк не получает — правка идёт по складу заказа, как раньше.
+    assert event.payload["sources_after"] is None
+    assert not ShipmentSource.objects.filter(shipment__order=order).exists()
     assert {row["product"]: row["delta"] for row in event.payload["stock_changes"]} == {
         first.id: 4,
         removed.id: 4,
@@ -333,3 +364,140 @@ def test_shipped_edit_with_deleted_historical_product_is_blocked(manager, api_as
     assert historical.quantity == 10
     assert StockItem.objects.get(product=replacement).bags == 100
     assert not StockMovement.objects.filter(reason="shipment_correction").exists()
+
+
+@pytest.mark.parametrize(
+    ("shipped", "quantity", "after"),
+    [
+        ({"main": 12, "second": 8}, 23, {"main": 15, "second": 8}),
+        ({"main": 12, "second": 8}, 15, {"main": 7, "second": 8}),
+        ({"main": 12, "second": 8}, 5, {"second": 5}),
+        ({"second": 20}, 23, {"second": 23}),
+    ],
+    ids=[
+        "plus-3-to-order-warehouse",
+        "minus-5-from-order-warehouse",
+        "minus-15-empties-order-warehouse",
+        "all-from-second-plus-3",
+    ],
+)
+def test_shipped_split_correction_follows_order_warehouse_first_rule(manager, api_as, shipped, quantity, after):
+    main, second = _mills()
+    warehouses = {"main": main, "second": second}
+    product = _product(stock=100)
+    StockItem.objects.create(product=product, warehouse=second, bags=50)
+    order, shipment = _shipped_with_sources(product, [(warehouses[key], bags) for key, bags in shipped.items()])
+
+    response = _patch_items(api_as(manager), order, [(product, quantity, "100.00")], reason="Исправлена накладная")
+
+    assert response.status_code == 200, response.data
+    assert dict(shipment.sources.values_list("warehouse_id", "bags")) == {
+        warehouses[key].pk: bags for key, bags in after.items()
+    }
+    # Остаток каждого склада сдвинулся ровно на изменение его строки.
+    assert StockItem.objects.get(product=product, warehouse=main).bags == (
+        100 + shipped.get("main", 0) - after.get("main", 0)
+    )
+    assert StockItem.objects.get(product=product, warehouse=second).bags == (
+        50 + shipped.get("second", 0) - after.get("second", 0)
+    )
+    event = EventLog.objects.get(order=order, event_type="order_edit")
+    assert event.payload["sources_after"] == _sources_after(
+        product, [(warehouses[key], after[key]) for key in ("main", "second") if key in after]
+    )
+
+
+def test_shipped_split_correction_returns_removed_shares_and_ships_new_product_from_order_warehouse(
+    manager, api_as
+):
+    main, second = _mills()
+    removed = _product(stock=100)
+    StockItem.objects.create(product=removed, warehouse=second, bags=50)
+    added = _product(stock=30)
+    order, shipment = _shipped_with_sources(removed, [(main, 12), (second, 8)])
+
+    response = _patch_items(api_as(manager), order, [(added, 5, "100.00")], reason="Заменён товар")
+
+    assert response.status_code == 200, response.data
+    assert list(shipment.sources.values_list("product_id", "warehouse_id", "bags")) == [(added.id, main.pk, 5)]
+    assert StockItem.objects.get(product=removed, warehouse=main).bags == 112
+    assert StockItem.objects.get(product=removed, warehouse=second).bags == 58
+    assert StockItem.objects.get(product=added, warehouse=main).bags == 25
+    assert not StockItem.objects.filter(product=added, warehouse=second).exists()
+    event = EventLog.objects.get(order=order, event_type="order_edit")
+    assert {(row["product"], row["warehouse"], row["delta"]) for row in event.payload["stock_changes"]} == {
+        (removed.id, main.pk, 12),
+        (removed.id, second.pk, 8),
+        (added.id, main.pk, -5),
+    }
+    assert event.payload["sources_after"] == _sources_after(added, [(main, 5)])
+
+
+def test_shipped_split_correction_plus_then_minus_restores_rows_and_stock(manager, api_as):
+    main, second = _mills()
+    product = _product(stock=100)
+    StockItem.objects.create(product=product, warehouse=second, bags=50)
+    order, shipment = _shipped_with_sources(product, [(main, 12), (second, 8)])
+    api = api_as(manager)
+
+    assert _patch_items(api, order, [(product, 23, "100.00")], reason="Добавили три мешка").status_code == 200
+    assert _patch_items(api, order, [(product, 20, "100.00")], reason="Три мешка вернули").status_code == 200
+
+    assert dict(shipment.sources.values_list("warehouse_id", "bags")) == {main.pk: 12, second.pk: 8}
+    assert StockItem.objects.get(product=product, warehouse=main).bags == 100
+    assert StockItem.objects.get(product=product, warehouse=second).bags == 50
+
+
+def test_shipped_correction_of_undeducted_shipment_moves_no_stock(manager, api_as):
+    product = _product(stock=100)
+    order = _order(status="shipped", rows=[(product, 7, "100.00")])
+    Shipment.objects.create(order=order, bags_loaded=7, stock_deducted=False)
+
+    response = _patch_items(api_as(manager), order, [(product, 9, "100.00")], reason="Уточнено количество")
+
+    assert response.status_code == 200, response.data
+    assert StockItem.objects.get(product=product).bags == 100
+    assert not StockMovement.objects.filter(reason="shipment_correction").exists()
+    assert not ShipmentSource.objects.exists()
+    event = EventLog.objects.get(order=order, event_type="order_edit")
+    assert event.payload["stock_changes"] == []
+    assert event.payload["sources_after"] is None
+
+
+def test_shipped_edit_heals_old_image_drift_before_applying_the_rule(manager, api_as):
+    main, second = _mills()
+    product = _product(stock=100)
+    StockItem.objects.create(product=product, warehouse=second, bags=50)
+    order = _order(status="shipped", rows=[(product, 23, "100.00")])
+    shipment = Shipment.objects.create(order=order, bags_loaded=20)
+    ShipmentSource.objects.create(shipment=shipment, product=product, warehouse=main, bags=12)
+    ShipmentSource.objects.create(shipment=shipment, product=product, warehouse=second, bags=8)
+
+    response = _patch_items(api_as(manager), order, [(product, 25, "100.00")], reason="Уточнено количество")
+
+    assert response.status_code == 200, response.data
+    # +3 старого образа уже списаны со склада заказа: выправляется только строка, склад двигают лишь +2.
+    assert dict(shipment.sources.values_list("warehouse_id", "bags")) == {main.pk: 17, second.pk: 8}
+    assert StockItem.objects.get(product=product, warehouse=main).bags == 98
+    assert StockItem.objects.get(product=product, warehouse=second).bags == 50
+    assert EventLog.objects.filter(order=order, event_type="shipment_sources_healed").count() == 1
+
+
+def test_unhealable_source_drift_blocks_shipped_edit_atomically(manager, api_as):
+    main, second = _mills()
+    product = _product(stock=100)
+    StockItem.objects.create(product=product, warehouse=second, bags=50)
+    order = _order(status="shipped", rows=[(product, 5, "100.00")])
+    shipment = Shipment.objects.create(order=order, bags_loaded=10)
+    ShipmentSource.objects.create(shipment=shipment, product=product, warehouse=main, bags=2)
+    ShipmentSource.objects.create(shipment=shipment, product=product, warehouse=second, bags=8)
+
+    response = _patch_items(api_as(manager), order, [(product, 6, "100.00")], reason="Уточнено количество")
+
+    assert response.status_code == 400
+    assert response.data["code"] == "allocation_mismatch"
+    assert order.items.get().quantity == 5
+    assert sorted(shipment.sources.values_list("warehouse_id", "bags")) == [(main.pk, 2), (second.pk, 8)]
+    assert StockItem.objects.get(product=product, warehouse=main).bags == 100
+    assert not StockMovement.objects.filter(reason="shipment_correction").exists()
+    assert not EventLog.objects.filter(order=order, event_type="shipment_sources_healed").exists()

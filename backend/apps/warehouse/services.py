@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Iterable, Mapping
 
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -100,17 +101,24 @@ def lock_stock_item(product, warehouse=None, *, require_active=True):
     return _locked_stock_item(product, warehouse, create=True)
 
 
-def lock_stock_items(products, warehouse):
-    """Lock one warehouse's stock rows in the global product order.
+def lock_stock_items(
+    cells: Iterable[tuple[Product, Warehouse]],
+) -> dict[tuple[int, int], StockItem]:
+    """Lock the stock rows of (product, warehouse) cells in the global order.
 
-    Without a deterministic order, two mixed-product operations taking A/B and
-    B/A would deadlock while each waits for the other's row. Missing rows are
-    created at zero, so allow-negative writers stay deterministic too.
+    The order is (product_id, warehouse_id): the Product mutex first, then that
+    product's warehouses by ascending id. Without a deterministic order, two
+    mixed operations taking A/B and B/A would deadlock while each waits for
+    the other's row. Repeated cells are locked once. Missing rows are created
+    at zero, so allow-negative writers stay deterministic too.
     """
-    by_id = {product.pk: product for product in products}
+    by_cell = {
+        (product.pk, warehouse.pk): (product, warehouse)
+        for product, warehouse in cells
+    }
     return {
-        product_id: _locked_stock_item(by_id[product_id], warehouse, create=True)
-        for product_id in sorted(by_id)
+        cell: _locked_stock_item(*by_cell[cell], create=True)
+        for cell in sorted(by_cell)
     }
 
 
@@ -400,8 +408,14 @@ def deduct_stock(
     warehouse=None,
     *,
     require_active=True,
+    note="",
+    order=None,
 ):
-    """Списание по факту отгрузки: остаток может уйти в минус."""
+    """Списание по факту отгрузки: остаток может уйти в минус.
+
+    ``note`` пишется в проводку склада, ``order`` — в событие «списание в
+    минус», чтобы минус был виден в журнале заказа.
+    """
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
     item = _locked_stock_item(product, warehouse, create=True)
     if item.bags < bags:
@@ -409,6 +423,7 @@ def deduct_stock(
             "stock_negative",
             f"Списание в минус: {product} — было {item.bags}, списано {bags}",
             user=user,
+            order=order,
             payload={
                 "warehouse": warehouse.pk,
                 "warehouse_code": warehouse.code,
@@ -417,49 +432,58 @@ def deduct_stock(
                 "deduct": bags,
             },
         )
-    _post_movement(item, -bags, "shipment", user)
+    _post_movement(item, -bags, "shipment", user, note)
     return item
 
 
 @transaction.atomic
 def reconcile_shipment_stock(
-    deltas,
+    deltas: Mapping[tuple[int, int], int],
     *,
     order,
     user,
     reason,
-    warehouse=None,
-):
+) -> list[dict]:
     """Apply net stock deltas caused by correcting a shipped order.
 
-    ``deltas`` maps product ids to ``old shipped qty - new shipped qty``.
-    Positive values restore bags, negative values deduct additional bags.  All
-    stock rows are locked in one global product order so two corrections with
-    overlapping mixed products cannot deadlock by taking A/B and B/A locks.
+    ``deltas`` maps a (product_id, warehouse_id) cell to ``old shipped qty -
+    new shipped qty`` of that cell. Positive values restore bags, negative
+    values deduct additional bags. All stock rows are locked in one global
+    (product, warehouse) order so two corrections with overlapping mixed
+    products cannot deadlock by taking A/B and B/A locks.
 
     A post-shipment correction records a historical fact, just like the
     original shipment, so an additional deduction is allowed to take stock
-    negative.  The negative balance is still made prominent in the event log.
+    negative. The negative balance is still made prominent in the event log.
     The caller must hold the parent Order lock for the whole transaction.
-    Like the original shipment, it stays pinned to the order's warehouse even
+    Like the original shipment, a cell stays pinned to its warehouse even
     after that warehouse is deactivated.
     """
     normalized = {
-        int(product_id): int(delta)
-        for product_id, delta in dict(deltas or {}).items()
+        (int(product_id), int(warehouse_id)): int(delta)
+        for (product_id, warehouse_id), delta in dict(deltas or {}).items()
         if int(delta) != 0
     }
     if not normalized:
         return []
 
-    warehouse = resolve_warehouse(warehouse, require_active=False)
-    rows = lock_stock_items(Product.objects.filter(pk__in=normalized), warehouse)
+    products = Product.objects.in_bulk({product_id for product_id, _ in normalized})
+    warehouses = {
+        warehouse_id: resolve_warehouse(warehouse_id, require_active=False)
+        for warehouse_id in sorted({warehouse_id for _, warehouse_id in normalized})
+    }
+    rows = lock_stock_items(
+        (products[product_id], warehouses[warehouse_id])
+        for product_id, warehouse_id in normalized
+    )
 
     movement_note = (f"Корректировка отгрузки заказа #{order.pk}: {reason}")[:300]
     changes = []
-    for product_id in sorted(normalized):
-        delta = normalized[product_id]
-        item = rows[product_id]
+    for cell in sorted(normalized):
+        product_id, warehouse_id = cell
+        delta = normalized[cell]
+        item = rows[cell]
+        warehouse = warehouses[warehouse_id]
         before = item.bags
         after = before + delta
         if after < 0 and delta < 0:

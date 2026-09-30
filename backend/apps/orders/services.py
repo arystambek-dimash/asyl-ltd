@@ -1,4 +1,3 @@
-from collections import Counter
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -15,6 +14,7 @@ from apps.notifications.services import notify
 from apps.sales.access import assigned_department_id
 from apps.sales.models import Department
 from apps.shipments.services import ROLLBACK_TARGET_STATUSES, assert_no_open_ai_session, has_open_ai_session
+from apps.shipments.sources import reconcile_sources
 
 from .debt import (
     available_to_pay,
@@ -1269,15 +1269,6 @@ def _validate_payment_exposure(order: Order, new_total: Decimal) -> dict:
     return {"confirmed": confirmed, "reserved": reserved}
 
 
-def _bags_by_product(items) -> Counter:
-    """Мешки позиций по товару; позиции удалённого товара склад не сверяет."""
-    bags = Counter()
-    for item in items:
-        if item.product_id is not None:
-            bags[item.product_id] += item.quantity
-    return bags
-
-
 def _create_items(order: Order, items_data: list, prices: dict | None) -> tuple[list[OrderItem], dict]:
     """Создать позиции и разложить цены по товару ({product_id: цена}) на id позиций."""
     created = [OrderItem.objects.create(order=order, **item) for item in items_data]
@@ -1399,7 +1390,9 @@ def replace_items(
 
     prices приходит по товару: {product_id: цена за мешок}. После подтверждения
     каждая позиция обязана получить цену — иначе сумма «поплывёт» на базовый
-    прайс и испортит долги.
+    прайс и испортит долги. Правка отгруженного заказа двигает склад и строки
+    складов-источников по правилу «сначала склад заказа»
+    (:func:`apps.shipments.sources.reconcile_sources`).
     """
     # Блокируем строку заказа: правка не должна гоняться со стартом загрузки
     # или выездом. Они берут ту же строку Order до снимка цели/списания склада.
@@ -1457,7 +1450,6 @@ def replace_items(
 
     old_total = order.total_amount
     old_payload = [_edit_item_payload(item) for item in old_items]
-    old_quantities = _bags_by_product(old_items)
 
     OrderItem.objects.filter(order=order).delete()
     created, prices_by_item = _create_items(order, items_data, prices)
@@ -1468,26 +1460,14 @@ def replace_items(
     new_total = order.total_amount
     payment_exposure = {"confirmed": Decimal("0"), "reserved": Decimal("0")}
     stock_changes = []
+    sources_after = None
     if is_shipped:
         # Payment locks come before stock locks everywhere in this operation.
         # Payment mutations take the Order lock first, so this cannot deadlock
         # with a concurrent cashier action.
         payment_exposure = _validate_payment_exposure(order, new_total)
-        new_quantities = _bags_by_product(created)
-        product_ids = set(old_quantities) | set(new_quantities)
-        stock_deltas = {
-            product_id: old_quantities[product_id] - new_quantities[product_id]
-            for product_id in product_ids
-            if old_quantities[product_id] != new_quantities[product_id]
-        }
-        from apps.warehouse.services import reconcile_shipment_stock
-
-        stock_changes = reconcile_shipment_stock(
-            stock_deltas,
-            order=order,
-            user=user,
-            reason=reason,
-            warehouse=warehouse,
+        stock_changes, sources_after = reconcile_sources(
+            order, old_items, created, user=user, reason=reason,
         )
 
     # Сумма могла измениться — сохранённый статус оплаты приводим к факту.
@@ -1519,6 +1499,7 @@ def replace_items(
             "old_items": old_payload,
             "items": new_payload,
             "stock_changes": stock_changes,
+            "sources_after": sources_after,
             "confirmed_payments": str(payment_exposure["confirmed"]),
             "reserved_payments": str(payment_exposure["reserved"]),
             # Physical evidence is intentionally observed, never rewritten.

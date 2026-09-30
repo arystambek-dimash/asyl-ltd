@@ -2,7 +2,9 @@
 
 Исторические заказы вносят ради долгов и выручки: остатки склада к этому
 моменту уже сверены вручную, поэтому отгрузка здесь НЕ списывает склад —
-в отличие от обычного пути ``apps.shipments.services._do_ship``.
+в отличие от обычного пути ``apps.shipments.services._do_ship``. Это помнит
+``Shipment.stock_deducted = False``: откат и правка такого заказа склад не
+трогают (``apps.shipments.sources.shipment_sources`` → ``not_deducted``).
 
 Одна операция обслуживает два входа:
 * ``POST /orders/`` с ``backdate`` — новый заказ сразу получает дату,
@@ -71,6 +73,8 @@ def _fix_shipped(order: Order, moment: datetime, user) -> None:
     shipment.loading_started_at = shipment.loading_started_at or moment
     shipment.shipped_at = moment
     shipment.bags_loaded = bags
+    # Склад не списан — откат ничего не вернёт, правка не сдвинет остатки.
+    shipment.stock_deducted = False
     shipment.save()
     debt_event = mark_order_shipped(order, user)
     # Оперативная сводка считает отгрузки по дню события «shipment» — события

@@ -107,8 +107,26 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
         return not loader_rollback_blocker(order, request.user)
 
 
+class ShipmentSourceInputSerializer(serializers.Serializer):
+    """Ответ «С какого склада?»: сколько мешков товара взято с какого склада.
+
+    Товар и склад проверяет сервис (``sources.plan_sources``): по кодам
+    ``sources_*`` / ``warehouse_*`` экран грузчика задаёт вопрос заново.
+    """
+
+    product = serializers.IntegerField()
+    warehouse = serializers.IntegerField()
+    bags = serializers.IntegerField(min_value=1)
+
+
 class LoaderDispatchSerializer(TransportNumbersSerializer):
-    """«Отгружено»: номер тягача и прицепа можно дописать прямо на кнопке."""
+    """«Отгружено»: номер тягача и прицепа можно дописать прямо на кнопке.
+
+    ``sources`` — ответ опросника у фуры при двух и более активных складах;
+    не передан — всё со «Склада отгрузки» (или 400 ``sources_required``).
+    """
+
+    sources = ShipmentSourceInputSerializer(many=True, required=False, allow_empty=False, max_length=100)
 
 
 class WaybillSignerSerializer(serializers.Serializer):

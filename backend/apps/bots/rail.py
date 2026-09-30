@@ -33,7 +33,8 @@ from apps.orders.transport import rail_phrase
 from apps.sales.access import assigned_department_id
 from apps.shipments.access import assert_can_ship_transport
 from apps.shipments.models import ShipmentWagon
-from apps.shipments.services import RailWagon, rail_bags_mismatch, ship_rail_report
+from apps.shipments.services import RailWagon, ship_rail_report
+from apps.shipments.sources import bags_mismatch
 from apps.warehouse.services import resolve_warehouse, stock_balances
 
 from .models import (
@@ -640,7 +641,7 @@ def resolve_order_report(report: RailReport, order: Order) -> ResolvedReport:
     items = [replace(item, unit_price=prices.get(item.product.pk)) for item in items]
     # Мешки сверяются, когда распознаны все вагоны: иначе расхождение ложное.
     if wagons and len(wagons) == len(report.wagons):
-        mismatch = rail_bags_mismatch(order, wagons)
+        mismatch = bags_mismatch(order, wagons, counted="в отчёте")
         if mismatch:
             issues.append(ReportIssue(
                 "rail_bags_mismatch", f"Мешки не совпадают — {mismatch}. Поправьте заказ.", order_id=order.pk))

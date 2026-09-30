@@ -115,9 +115,9 @@ export function Metric({
   );
 }
 
-/** Цветная точка данных (Красный/Синий/Зелёный). */
+/** Цветная точка данных (Красный/Синий/Зелёный). Украшение для экранного диктора: рядом всегда подпись текстом. */
 export function ColorDot({ className }: { className?: string }) {
-  return <span className={cn("size-2.5 shrink-0 rounded-full", className)} />;
+  return <span aria-hidden className={cn("size-2.5 shrink-0 rounded-full", className)} />;
 }
 
 /** Тихий статус: точка + короткая метка (вместо прогресс-баров и абзацев). */

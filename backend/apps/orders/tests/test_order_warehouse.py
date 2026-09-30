@@ -1,8 +1,9 @@
 import pytest
 
 from apps.clients.models import Client
+from apps.eventlog.models import EventLog
 from apps.orders.models import Order, OrderItem
-from apps.shipments.models import Shipment
+from apps.shipments.models import Shipment, ShipmentSource
 from apps.shipments.services import dispatch_order, rollback_shipment
 from apps.warehouse.models import StockItem, StockMovement, Warehouse
 from apps.warehouse.services import get_default_warehouse, receive_stock
@@ -178,6 +179,10 @@ def test_shipment_and_rollback_use_pinned_warehouse(boss, make_product):
 
     assert StockItem.objects.get(product=product, warehouse=alternate).bags == 13
     assert not StockItem.objects.filter(product=product, warehouse=main).exists()
+    # Активный склад один — выбора нет: строка источника на закреплённом (выключенном) складе заказа.
+    assert list(
+        ShipmentSource.objects.filter(shipment__order=order).values_list("product_id", "warehouse_id", "bags")
+    ) == [(product.pk, alternate.pk, 7)]
 
     rollback_shipment(
         order,
@@ -187,6 +192,12 @@ def test_shipment_and_rollback_use_pinned_warehouse(boss, make_product):
     )
 
     assert StockItem.objects.get(product=product, warehouse=alternate).bags == 20
+    assert not ShipmentSource.objects.filter(product=product).exists()
+    event = EventLog.objects.get(order=order, event_type="shipment_rollback")
+    assert event.payload["stock_basis"] == "recorded"
+    assert event.payload["restored"] == [
+        {"product": product.pk, "warehouse": alternate.pk, "warehouse_name": alternate.name, "bags": 7}
+    ]
     assert set(
         StockMovement.objects.filter(
             product=product,

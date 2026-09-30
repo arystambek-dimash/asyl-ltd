@@ -85,6 +85,7 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
       loading_done: { label: "Загрузка завершена", icon: Forklift, color: success },
       shipment: { label: "Отгрузка", icon: ArrowDownToLine, color: ring },
       shipment_rollback: { label: "Откат отгрузки", icon: ArrowDownToLine, color: destructive },
+      shipment_sources_healed: { label: "Склады отгрузки выправлены", icon: Warehouse, color: warning },
       shipping_rewind: { label: "Сброс отгрузки", icon: RotateCcw, color: destructive },
       shipping_loading_identified: { label: "Транспорт распознан", icon: Truck, color: ring },
       shipping_idle_timeout_changed: { label: "Таймаут простоя", icon: Camera, color: muted },

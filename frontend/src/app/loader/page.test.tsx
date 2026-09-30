@@ -1,8 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AxiosError, AxiosHeaders } from "axios";
-import type { LoaderOrder } from "@/lib/loader";
+import type { ShipmentSourcesSheet } from "@/components/loader/shipment-sources-sheet";
+import type { DispatchSource, DispatchSources, LoaderOrder, SourceAnswers } from "@/lib/loader";
 import { pagedState } from "@/test-utils/api";
 import { makeLoaderOrder } from "@/test-utils/factories";
 import { formatTime, todayLocalIsoDate } from "@/lib/utils";
@@ -22,11 +24,25 @@ function blobError(detail: string): AxiosError {
   return error;
 }
 
+/** Отказ API с машинным кодом; текст — то, что покажет apiError (в этом файле — message). */
+function codedError(code: string, detail: string): AxiosError {
+  const error = new AxiosError(detail);
+  error.response = {
+    status: 400,
+    statusText: "",
+    data: { code, detail },
+    headers: new AxiosHeaders(),
+    config: { headers: new AxiosHeaders() },
+  };
+  return error;
+}
+
 const ALL_AREAS = ["loader.view", "loader.confirm", "loader.trucks", "loader.wagons"];
 
 const mocks = vi.hoisted(() => ({
   permissions: [] as string[],
   paged: vi.fn(),
+  get: vi.fn(),
   post: vi.fn(),
   openWaybill: vi.fn(),
   reload: vi.fn(),
@@ -36,6 +52,9 @@ const mocks = vi.hoisted(() => ({
   apiUrls: [] as (string | null)[],
   railRow: null as LoaderOrder | null,
   reportSent: null as WagonReportSent | null,
+  // Что «грузчик» ответит в заглушке опросника и что она отдаст в отгрузку.
+  sourceAnswers: {} as SourceAnswers,
+  sources: [] as DispatchSource[],
 }));
 
 vi.mock("@/store/auth", () => ({
@@ -60,9 +79,9 @@ vi.mock("@/lib/use-visible-polling", () => ({
   },
 }));
 vi.mock("@/lib/api", async (importOriginal) => ({
-  // blobApiError настоящий: накладная приходит Blob-ом, и ошибка сервера тоже.
+  // blobApiError и apiErrorCode настоящие: накладная приходит Blob-ом, код отказа — в теле ошибки.
   ...(await importOriginal<typeof import("@/lib/api")>()),
-  api: { post: mocks.post },
+  api: { get: mocks.get, post: mocks.post },
   apiError: (e: Error) => e.message,
 }));
 vi.mock("@/lib/loader", async (importOriginal) => ({
@@ -108,6 +127,44 @@ vi.mock("@/components/loader/waybill-settings-modal", async () => {
     },
   };
 });
+// Опросник проверен своими тестами; здесь — с чем страница его открывает и что делает с ответом.
+// Как настоящий лист, заглушка выбирает первый шаг при монтировании: полные ответы — сразу сводка.
+vi.mock("@/components/loader/shipment-sources-sheet", async () => {
+  const { useState } = await import("react");
+  const { answersComplete } = await import("@/lib/loader");
+  return {
+    ShipmentSourcesSheet: function ShipmentSourcesStub({
+      context,
+      answers,
+      onAnswers,
+      busy,
+      error,
+      notice,
+      onClose,
+      onConfirm,
+    }: ComponentProps<typeof ShipmentSourcesSheet>) {
+      const [start] = useState(() => (answersComplete(context, answers) ? "сводка" : "первый товар"));
+      return (
+        <div role="dialog" aria-label="С какого склада?">
+          <span>{`начало: ${start}`}</span>
+          <span>{`товары: ${context.products.map((product) => `${product.label} — ${product.bags}`).join(", ")}`}</span>
+          <span>{`ответы: ${JSON.stringify(answers)}`}</span>
+          {notice && <p>{notice}</p>}
+          {error && <p>{error}</p>}
+          <button type="button" onClick={() => onAnswers(mocks.sourceAnswers)}>
+            Ответить
+          </button>
+          <button type="button" disabled={busy} onClick={() => onConfirm(mocks.sources)}>
+            Отгрузить
+          </button>
+          <button type="button" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+      );
+    },
+  };
+});
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
 /** Заказ ИП Мурат: два мешка «Д1с · Красный 50 кг» на 20 000 ₸. */
@@ -130,10 +187,45 @@ const queueUrls = () =>
   mocks.paged.mock.calls.map(([url]) => url).filter((url) => typeof url === "string" && url.includes("queue"));
 const lastPoll = () => mocks.polling.at(-1)!;
 
+/** Склад один — выбирать не из чего: лист не открывается. */
+const ONE_WAREHOUSE: DispatchSources = {
+  choose: false,
+  warehouses: [{ id: 1, name: "Мельница" }],
+  products: [{ product: 12, label: "Д1с · Красный 50 кг", color: "Red", bags: 2, short: {} }],
+};
+/** Два склада; на «Мельнице 2» карточки нет — там нехватка. */
+const SPLIT: DispatchSources = {
+  choose: true,
+  warehouses: [
+    { id: 1, name: "Мельница" },
+    { id: 2, name: "Мельница 2" },
+  ],
+  products: [{ product: 12, label: "Д1с · Красный 50 кг", color: "Red", bags: 2, short: { "2": 0 } }],
+};
+/** Ответ грузчика: мешок с «Мельницы», мешок с «Мельницы 2». */
+const SPLIT_ANSWERS: SourceAnswers = { 12: { 1: 1, 2: 1 } };
+const SPLIT_SOURCES: DispatchSource[] = [
+  { product: 12, warehouse: 1, bags: 1 },
+  { product: 12, warehouse: 2, bags: 1 },
+];
+const SOURCES_CHANGED = "Состав заказа или склады изменились — ответьте заново";
+const SHEET = { name: "С какого склада?" };
+
+/** Открыть заказ 624 из очереди фур, ввести тягач и нажать «Подтвердить отгрузку». */
+async function confirmTruck(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /№624/ }));
+  await user.type(screen.getByLabelText("Тягач"), "403 bjn 13");
+  await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
+}
+
 describe("LoaderPage", () => {
   beforeEach(() => {
     mocks.permissions = ALL_AREAS;
     mocks.post.mockReset();
+    // По умолчанию склад один: прежние проверки отгрузки фуры держатся без опросника.
+    mocks.get.mockReset().mockResolvedValue({ data: ONE_WAREHOUSE });
+    mocks.sourceAnswers = SPLIT_ANSWERS;
+    mocks.sources = SPLIT_SOURCES;
     mocks.openWaybill.mockReset().mockResolvedValue(undefined);
     mocks.reload.mockReset();
     mocks.refresh.mockReset().mockResolvedValue(undefined);
@@ -239,7 +331,7 @@ describe("LoaderPage", () => {
     expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/dispatch/", { trailer_number: "" });
   });
 
-  it("у вагона уходит только его номер", async () => {
+  it("у вагона уходит только его номер, склады не спрашиваются", async () => {
     const user = userEvent.setup();
     mocks.post.mockResolvedValue({ data: order(625, { status: "shipped", transport_type: "train" }) });
     render(<LoaderPage />);
@@ -250,6 +342,8 @@ describe("LoaderPage", () => {
     await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
 
     expect(mocks.post).toHaveBeenCalledWith("/loader/orders/625/dispatch/", { truck_number: "00123456" });
+    // Вагоны — без опросника: всё со «Склада отгрузки».
+    expect(mocks.get).not.toHaveBeenCalled();
   });
 
   it("подставляет прошлую пару клиента одним нажатием", async () => {
@@ -738,5 +832,330 @@ describe("LoaderPage", () => {
 
     expect(screen.getByRole("button", { name: /Накладная/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Отправить отчёт/ })).not.toBeInTheDocument();
+  });
+
+  describe("склад отгрузки у фуры", () => {
+    it("сначала сверяет склады тем же номером; склад один — отгружает без опросника", async () => {
+      const user = userEvent.setup();
+      mocks.post.mockResolvedValue({ data: order(624, { status: "shipped", truck_number: "403BJN13" }) });
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+
+      expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+      // Параметры проверки — ровно то, что уйдёт в отгрузку.
+      expect(mocks.get).toHaveBeenCalledWith("/loader/orders/624/dispatch-sources/", {
+        params: { truck_number: "403BJN13" },
+      });
+      // Выбирать не из чего: sources не уходят, всё со «Склада отгрузки».
+      expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/dispatch/", { truck_number: "403BJN13" });
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+    });
+
+    it("два склада: опросник с первого товара, отгрузка уходит с ответами грузчика", async () => {
+      const user = userEvent.setup();
+      mocks.get.mockResolvedValue({ data: SPLIT });
+      mocks.post.mockResolvedValue({ data: order(624, { status: "shipped", truck_number: "403BJN13" }) });
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+
+      const sheet = await screen.findByRole("dialog", SHEET);
+      // Выбор всегда сознательный: без ответа ничего не отгружается.
+      expect(mocks.post).not.toHaveBeenCalled();
+      expect(sheet).toHaveTextContent("начало: первый товар");
+      expect(sheet).toHaveTextContent("товары: Д1с · Красный 50 кг — 2");
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      await user.click(within(sheet).getByRole("button", { name: "Отгрузить" }));
+
+      await waitFor(() =>
+        expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/dispatch/", {
+          truck_number: "403BJN13",
+          sources: SPLIT_SOURCES,
+        }),
+      );
+      expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+    });
+
+    it("ошибку номера на проверке складов показывает на экране заказа, опросник не открывает", async () => {
+      const user = userEvent.setup();
+      mocks.get.mockRejectedValue(
+        codedError("truck_number_locked", "Номер машины нельзя изменить после прибытия или начала погрузки"),
+      );
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+
+      expect(
+        await screen.findByText("Номер машины нельзя изменить после прибытия или начала погрузки"),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+      expect(mocks.post).not.toHaveBeenCalled();
+      // Экран заказа на месте: номер можно исправить и нажать снова.
+      expect(screen.getByLabelText("Тягач")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeEnabled();
+    });
+
+    it("склад включили между проверкой и отгрузкой — открывает опросник с пояснением", async () => {
+      const user = userEvent.setup();
+      mocks.get.mockResolvedValueOnce({ data: ONE_WAREHOUSE }).mockResolvedValueOnce({ data: SPLIT });
+      mocks.post.mockRejectedValueOnce(
+        codedError("sources_required", "Выберите, с какого склада отгрузка (если окна выбора нет — обновите страницу)"),
+      );
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+
+      const sheet = await screen.findByRole("dialog", SHEET);
+      expect(mocks.post).toHaveBeenCalledWith("/loader/orders/624/dispatch/", { truck_number: "403BJN13" });
+      expect(sheet).toHaveTextContent(SOURCES_CHANGED);
+      expect(sheet).toHaveTextContent("начало: первый товар");
+      // Вместо отказа сервера на экране — вопрос в листе.
+      expect(screen.queryByText(/обновите страницу/)).not.toBeInTheDocument();
+    });
+
+    it("состав заказа изменился после ответа — спрашивает заново с первого товара, даже со сводки", async () => {
+      const user = userEvent.setup();
+      const changed: DispatchSources = { ...SPLIT, products: [{ ...SPLIT.products[0], bags: 3 }] };
+      mocks.get
+        .mockResolvedValueOnce({ data: SPLIT })
+        .mockResolvedValueOnce({ data: SPLIT })
+        .mockResolvedValueOnce({ data: changed });
+      mocks.post.mockRejectedValueOnce(
+        codedError("sources_mismatch", "Состав заказа изменился — ответьте заново: «Д1с»: в заказе 3, выбрано 2"),
+      );
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      // Крестик закрывает лист, ответы остаются: следующее нажатие — сразу сводка.
+      await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
+      await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
+      const summary = await screen.findByRole("dialog", SHEET);
+      expect(summary).toHaveTextContent("начало: сводка");
+      await user.click(within(summary).getByRole("button", { name: "Отгрузить" }));
+
+      expect(await screen.findByText(SOURCES_CHANGED)).toBeInTheDocument();
+      const restarted = screen.getByRole("dialog", SHEET);
+      expect(mocks.get).toHaveBeenCalledTimes(3);
+      expect(mocks.get).toHaveBeenLastCalledWith("/loader/orders/624/dispatch-sources/", {
+        params: { truck_number: "403BJN13" },
+      });
+      expect(restarted).toHaveTextContent("товары: Д1с · Красный 50 кг — 3");
+      // Прежние ответы сброшены, опрос — с первого товара, а не со сводки.
+      expect(restarted).toHaveTextContent("ответы: {}");
+      expect(restarted).toHaveTextContent("начало: первый товар");
+      // Лист остался открыт: ни ошибки на экране заказа, ни сверки очереди.
+      expect(screen.queryByText(/выбрано 2/)).not.toBeInTheDocument();
+      expect(mocks.refresh).not.toHaveBeenCalled();
+    });
+
+    it("прочая ошибка закрывает опросник, ошибка — на экране; ответы целы — снова нажал и сразу сводка", async () => {
+      const user = userEvent.setup();
+      mocks.get.mockResolvedValue({ data: SPLIT });
+      mocks.post
+        .mockRejectedValueOnce(new Error("Нет связи с сервером. Проверьте интернет и повторите."))
+        .mockResolvedValueOnce({ data: order(624, { status: "shipped", truck_number: "403BJN13" }) });
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      await user.click(within(sheet).getByRole("button", { name: "Отгрузить" }));
+
+      expect(await screen.findByText("Нет связи с сервером. Проверьте интернет и повторите.")).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Тягач")).toBeInTheDocument();
+      // Заказ мог уехать с другого устройства — страница сверяется с очередью.
+      expect(mocks.refresh).toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
+      const summary = await screen.findByRole("dialog", SHEET);
+      expect(summary).toHaveTextContent("начало: сводка");
+      expect(summary).toHaveTextContent(`ответы: ${JSON.stringify(SPLIT_ANSWERS)}`);
+      await user.click(within(summary).getByRole("button", { name: "Отгрузить" }));
+
+      await waitFor(() =>
+        expect(mocks.post).toHaveBeenLastCalledWith("/loader/orders/624/dispatch/", {
+          truck_number: "403BJN13",
+          sources: SPLIT_SOURCES,
+        }),
+      );
+      expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+    });
+
+    it("не удалось заново спросить склады — ошибка в листе, ответы целы", async () => {
+      const user = userEvent.setup();
+      mocks.get
+        .mockResolvedValueOnce({ data: SPLIT })
+        .mockRejectedValueOnce(new Error("Нет связи с сервером. Проверьте интернет и повторите."));
+      mocks.post.mockRejectedValueOnce(codedError("warehouse_inactive", "Склад «Мельница 2» отключён"));
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      await user.click(within(sheet).getByRole("button", { name: "Отгрузить" }));
+
+      expect(
+        await within(sheet).findByText("Нет связи с сервером. Проверьте интернет и повторите."),
+      ).toBeInTheDocument();
+      // «Отгрузить» в листе повторит проверку с теми же ответами.
+      expect(sheet).toHaveTextContent(`ответы: ${JSON.stringify(SPLIT_ANSWERS)}`);
+      expect(screen.queryByText(SOURCES_CHANGED)).not.toBeInTheDocument();
+      // На экране заказа ошибки нет — она только в листе.
+      expect(screen.getAllByText("Нет связи с сервером. Проверьте интернет и повторите.")).toHaveLength(1);
+    });
+
+    it("склад выключили и остался один — лист закрывается, пояснение на экране, следующее нажатие отгружает без опросника", async () => {
+      const user = userEvent.setup();
+      mocks.get
+        .mockResolvedValueOnce({ data: SPLIT })
+        .mockResolvedValueOnce({ data: ONE_WAREHOUSE })
+        .mockResolvedValueOnce({ data: ONE_WAREHOUSE });
+      mocks.post
+        .mockRejectedValueOnce(codedError("warehouse_inactive", "Склад «Мельница 2» отключён"))
+        .mockResolvedValueOnce({ data: order(624, { status: "shipped", truck_number: "403BJN13" }) });
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      await user.click(within(sheet).getByRole("button", { name: "Отгрузить" }));
+
+      // Выбирать больше не из чего: листа нет, пояснение — на экране заказа.
+      expect(await screen.findByText(SOURCES_CHANGED)).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Тягач")).toBeInTheDocument();
+      expect(screen.queryByText(/отключён/)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /Подтвердить отгрузку/ }));
+
+      expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+      expect(mocks.get).toHaveBeenCalledTimes(3);
+      // Всё со «Склада отгрузки»: sources не уходят.
+      expect(mocks.post).toHaveBeenLastCalledWith("/loader/orders/624/dispatch/", { truck_number: "403BJN13" });
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+    });
+
+    it("лист закрыли во время отгрузки, склады заново спросить не удалось — ошибка на экране заказа", async () => {
+      const user = userEvent.setup();
+      let reject!: (cause: unknown) => void;
+      mocks.get
+        .mockResolvedValueOnce({ data: SPLIT })
+        .mockRejectedValueOnce(new Error("Нет связи с сервером. Проверьте интернет и повторите."));
+      mocks.post.mockReturnValueOnce(new Promise((_, fail) => (reject = fail)));
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      await user.click(within(sheet).getByRole("button", { name: "Отгрузить" }));
+      // Крестик работает и пока отгрузка в полёте.
+      await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+
+      reject(codedError("warehouse_inactive", "Склад «Мельница 2» отключён"));
+
+      // Лист закрыт — ошибка не теряется в нём, а видна рядом с номером.
+      expect(await screen.findByText("Нет связи с сервером. Проверьте интернет и повторите.")).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Тягач")).toBeInTheDocument();
+      expect(mocks.refresh).toHaveBeenCalled();
+    });
+
+    it("пока проверяются склады и открыт опросник, очередь не опрашивается", async () => {
+      const user = userEvent.setup();
+      let answer!: (value: unknown) => void;
+      mocks.get.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      // До листа кнопка говорит, что идёт проверка складов, а не отгрузка.
+      expect(screen.getByRole("button", { name: /Проверяем склады…/ })).toBeDisabled();
+      expect(lastPoll().active).toBe(false);
+
+      answer({ data: SPLIT });
+      const sheet = await screen.findByRole("dialog", SHEET);
+      expect(lastPoll().active).toBe(false);
+      expect(mocks.post).not.toHaveBeenCalled();
+
+      await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+      expect(lastPoll().active).toBe(true);
+      expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeEnabled();
+    });
+
+    it("пока открыт опросник, пропавший из очереди заказ не уводит с экрана — пояснение после закрытия", async () => {
+      const user = userEvent.setup();
+      let rows = [order(624), order(626)];
+      mocks.paged.mockImplementation((url: string | null) =>
+        url?.startsWith("/loader/queue/") ? paged(rows) : paged([]),
+      );
+      mocks.get.mockResolvedValue({ data: SPLIT });
+      const { rerender } = render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+
+      rows = [order(626)];
+      rerender(<LoaderPage />);
+      expect(screen.getByRole("dialog", SHEET)).toBeInTheDocument();
+      expect(screen.getByLabelText("Тягач")).toBeInTheDocument();
+      expect(screen.queryByText(/уже не ждёт отгрузки/)).not.toBeInTheDocument();
+
+      await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
+      expect(await screen.findByText(/Заказ №624 уже не ждёт отгрузки/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /№626/ })).toBeInTheDocument();
+    });
+
+    it("«Назад» забывает ответы опросника: заказ снова спрашивается с первого товара", async () => {
+      const user = userEvent.setup();
+      mocks.get.mockResolvedValue({ data: SPLIT });
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      const sheet = await screen.findByRole("dialog", SHEET);
+      await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
+      await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
+      await user.click(screen.getByRole("button", { name: "Назад" }));
+
+      await confirmTruck(user);
+      const fresh = await screen.findByRole("dialog", SHEET);
+      expect(fresh).toHaveTextContent("начало: первый товар");
+      expect(fresh).toHaveTextContent("ответы: {}");
+    });
+
+    it("пока проверяются склады, «Назад» не уводит: опросник не всплывёт у другого заказа, очередь опрашивается", async () => {
+      const user = userEvent.setup();
+      mocks.paged.mockImplementation((url: string | null) =>
+        url?.startsWith("/loader/queue/") ? paged([order(624), order(626)]) : paged([]),
+      );
+      let answer!: (value: unknown) => void;
+      mocks.get.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+      render(<LoaderPage />);
+
+      await confirmTruck(user);
+      // Проверка ушла: ответ сервера относится к этому заказу — уйти с него до ответа нельзя.
+      expect(screen.getByRole("button", { name: "Назад" })).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: "Назад" }));
+
+      answer({ data: SPLIT });
+      const sheet = await screen.findByRole("dialog", SHEET);
+      // Опросник — на экране проверенного заказа.
+      expect(screen.getByText("№624 · ИП Мурат")).toBeInTheDocument();
+      await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
+      await user.click(screen.getByRole("button", { name: "Назад" }));
+      expect(lastPoll().active).toBe(true);
+
+      await user.click(screen.getByRole("button", { name: /№626/ }));
+      expect(screen.getByText("№626 · ИП Мурат")).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
+      expect(lastPoll().active).toBe(true);
+      expect(mocks.get).toHaveBeenCalledTimes(1);
+      expect(mocks.post).not.toHaveBeenCalled();
+    });
   });
 });

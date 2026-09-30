@@ -99,3 +99,106 @@ export async function openWaybill(orderId: number) {
     throw error;
   }
 }
+
+/** Склад на опроснике «С какого склада?». */
+export interface DispatchWarehouse {
+  id: number;
+  name: string;
+}
+
+/** Товар заказа на опроснике: все его мешки по всем позициям. */
+export interface DispatchSourceProduct {
+  product: number;
+  label: string;
+  color: string;
+  bags: number;
+  /** Остаток склада (ключ — id склада) — только где его меньше, чем `bags`; нет карточки = 0. */
+  short: Record<string, number>;
+}
+
+/** GET /loader/orders/{id}/dispatch-sources/: спрашивать ли склад и из каких выбирать. */
+export interface DispatchSources {
+  choose: boolean;
+  /** Активные склады в порядке справочника. */
+  warehouses: DispatchWarehouse[];
+  products: DispatchSourceProduct[];
+}
+
+/** Строка `sources` в POST /loader/orders/{id}/dispatch/. */
+export interface DispatchSource {
+  product: number;
+  warehouse: number;
+  bags: number;
+}
+
+/** Ответы грузчика: id товара → id склада → мешков. */
+export type SourceAnswers = Record<number, Record<number, number>>;
+
+/** Отказы отгрузки, после которых опросник проходят заново: сменился состав заказа или склады. */
+export const SOURCE_RESTART_CODES: readonly string[] = [
+  "sources_required",
+  "sources_mismatch",
+  "warehouse_inactive",
+  "warehouse_not_found",
+];
+
+/** Ответы → `sources` для POST: по товару, затем по складу; пустые части не отправляем. */
+export function dispatchSourcesPayload(answers: SourceAnswers): DispatchSource[] {
+  return Object.entries(answers)
+    .flatMap(([product, byWarehouse]) =>
+      Object.entries(byWarehouse).map(([warehouse, bags]) => ({
+        product: Number(product),
+        warehouse: Number(warehouse),
+        bags,
+      })),
+    )
+    .filter((source) => source.bags > 0)
+    .sort((a, b) => a.product - b.product || a.warehouse - b.warehouse);
+}
+
+/**
+ * Нехватка остатка — предупреждение, не запрет: «осталось 3 — уйдёт в минус».
+ * Остаток показываем только тут; минус на складе — как «осталось 0».
+ */
+export function shortageNote(product: DispatchSourceProduct, warehouseId: number, bags: number): string {
+  const balance = product.short[String(warehouseId)];
+  if (balance === undefined || bags <= 0 || bags <= balance) return "";
+  return `осталось ${Math.max(balance, 0)} — уйдёт в минус`;
+}
+
+/** Откуда товар — теми же словами, что в накладной: «со склада: Мельница» | «Мельница — 12, Мельница 2 — 8». */
+export function sourcesText(context: DispatchSources, chosen: Record<number, number>): string {
+  const parts = context.warehouses.filter((warehouse) => (chosen[warehouse.id] ?? 0) > 0);
+  if (parts.length === 1) return `со склада: ${parts[0].name}`;
+  return parts.map((warehouse) => `${warehouse.name} — ${chosen[warehouse.id]}`).join(", ");
+}
+
+/** Кнопка разбивки под складами. */
+export function splitLabel(warehouseCount: number): string {
+  return warehouseCount > 2 ? "С нескольких складов…" : "С двух складов…";
+}
+
+/** Сколько мешков остаётся последнему складу разбивки (меньше нуля — ввели больше, чем в заказе). */
+export function splitRemainder(bags: number, parts: number[]): number {
+  return parts.reduce((rest, part) => rest - part, bags);
+}
+
+/**
+ * Прежние ответы годятся, пока те же товары с теми же мешками и те же склады.
+ * Остатки, названия и подписи могли измениться — на ответ это не влияет.
+ */
+export function sameSourceContext(a: DispatchSources, b: DispatchSources): boolean {
+  const key = (context: DispatchSources) =>
+    JSON.stringify([
+      context.products.map((product) => [product.product, product.bags]),
+      context.warehouses.map((warehouse) => warehouse.id),
+    ]);
+  return key(a) === key(b);
+}
+
+/** Все товары разложены по складам ровно на свои мешки — можно отгружать. */
+export function answersComplete(context: DispatchSources, answers: SourceAnswers): boolean {
+  return context.products.every(
+    (product) => Object.values(answers[product.product] ?? {}).reduce((sum, bags) => sum + bags, 0) === product.bags,
+  );
+}

@@ -31,6 +31,7 @@ from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
 from apps.common.query_params import parse_date_range, parse_iso_date, parse_search_param
 from apps.orders.models import Order
 from apps.orders.querysets import filter_order_search, planned_day
+from apps.orders.serializers import TransportNumbersSerializer
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES
 from apps.orders.transport import suggestion_pairs
 from apps.sales.access import scope_by_client_department
@@ -44,6 +45,7 @@ from .serializers import (
 )
 from .services import (
     loader_dispatch,
+    loader_dispatch_preflight,
     loader_rollback_blocker,
     rollback_shipment,
 )
@@ -60,6 +62,8 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "history": "loader.view",
         "waybill": "loader.view",
         "confirm": "loader.confirm",
+        # «С какого склада?» перед отгрузкой фуры — тем же, кто отгружает.
+        "dispatch_sources": "loader.confirm",
         "rollback": "loader.confirm",
         # «Отгрузить по отчёту» заказ во вкладке «Вагоны»: смотреть и разбирать
         # может грузчик вагонов, отгрузить — с правами отгрузки.
@@ -199,10 +203,12 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         truck = serializer.validated_data.get("truck_number", "")
         # None — прицеп не передан, «» — стереть (правила — в dispatch_order).
         trailer = serializer.validated_data.get("trailer_number")
+        # Ответ «С какого склада?»; None — не передан (правила — в sources.plan_sources).
+        sources = serializer.validated_data.get("sources")
         order = self.get_object()
         try:
-            # Область и номер проверяются до закрытия AI-подсчёта, а не после него.
-            loader_dispatch(order, request.user, truck_number=truck, trailer_number=trailer)
+            # Область, номер и ответ опросника проверяются до закрытия AI-подсчёта, а не после него.
+            loader_dispatch(order, request.user, truck_number=truck, trailer_number=trailer, sources=sources)
         except ai.AiUnavailable:
             return Response(
                 {"detail": "AI-сервис камер недоступен — повторите отгрузку", "code": "ai_unavailable"},
@@ -214,6 +220,24 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
                 status=exc.status if exc.status in (400, 409, 503) else status.HTTP_502_BAD_GATEWAY,
             )
         return self._row(pk)
+
+    @action(detail=True, methods=["get"], url_path="dispatch-sources")
+    def dispatch_sources(self, request, pk=None):
+        """Перед отгрузкой фуры: отказы кнопки и склады для «С какого склада?». Ничего не пишет.
+
+        Номера — те, что экран отправит с отгрузкой (``transportChanges``), с той же
+        семантикой, что у ``dispatch``: непереданный — «не менять», пустой прицеп — «стереть».
+        Чужая область, отдел и корзина — 404 (``get_queryset``).
+        """
+        query = TransportNumbersSerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        order = self.get_object()
+        return Response(loader_dispatch_preflight(
+            order,
+            request.user,
+            truck_number=query.validated_data.get("truck_number", ""),
+            trailer_number=query.validated_data.get("trailer_number"),
+        ))
 
     @action(detail=True, methods=["post"], url_path="rollback")
     def rollback(self, request, pk=None):

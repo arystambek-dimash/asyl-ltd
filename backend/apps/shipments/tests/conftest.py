@@ -22,6 +22,28 @@ def product(boss, make_product):
 
 
 @pytest.fixture
+def mill(db):
+    """Склад ``main`` под прод-именем «Мельница».
+
+    Это склад по умолчанию: на него идёт приход фикстуры ``product``, его получают заказы ``make_order``.
+    """
+    from apps.warehouse.models import Warehouse
+
+    warehouse = Warehouse.objects.get(code="main")
+    warehouse.name = "Мельница"
+    warehouse.save(update_fields=["name"])
+    return warehouse
+
+
+@pytest.fixture
+def mill_two(db):
+    """Второй активный склад, как «Мельница 2» на проде: ни карточек, ни движений."""
+    from apps.warehouse.models import Warehouse
+
+    return Warehouse.objects.create(code="mill-2", name="Мельница 2")
+
+
+@pytest.fixture
 def make_order(db):
     """Заказ клиента «ИП Мурат» на ``quantity`` мешков товара по 10 000."""
     from apps.clients.models import Client

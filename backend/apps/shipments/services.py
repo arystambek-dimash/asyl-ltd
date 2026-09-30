@@ -11,11 +11,20 @@ from apps.catalog.models import Product
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.orders.backdate import backdate_events, backdate_moment
+from apps.orders.models import OrderItem
 from apps.orders.statuses import AWAITING_SHIPMENT_STATUSES, CAMERA_BINDING_STATUSES, ON_POST_STATUSES
-from apps.warehouse.services import deduct_stock, lock_stock_items
 
 from .access import assert_can_ship
-from .models import Shipment, ShipmentWagon
+from .models import Shipment, ShipmentSource, ShipmentWagon
+from .sources import (
+    bags_mismatch,
+    checked_sources,
+    default_sources,
+    plan_sources,
+    restore_stock,
+    source_options,
+    write_off,
+)
 
 LOADING_CAMERA_CONSTRAINT = "orders_one_active_order_per_loading_camera"
 # Куда возвращают незавершённую или отменённую отгрузку.
@@ -103,12 +112,12 @@ def estimated_load_kg(order) -> Decimal:
     )
 
 
-def _lock_order_stock(order, *, refusal: str):
-    """Позиции заказа и его склад с остатками под блокировкой — для отгрузки и отката.
+def _order_items(order, *, refusal: str) -> list[OrderItem]:
+    """Позиции заказа с товарами — для отгрузки и отката.
 
-    Склад выбран, пока заказ ещё правился: его могут потом выключить, но
-    отгрузка и её откат идут по этому закреплённому складу. Удалённый товар
-    не списать и не вернуть — ``refusal`` начинает текст отказа.
+    Удалённый товар не списать и не вернуть — ``refusal`` начинает текст отказа.
+    Ничего не блокирует: остатки блокирует тот, кто их двигает
+    (``sources.write_off`` при отгрузке, откат — свои ячейки).
     """
     items = list(order.items.select_related("product").order_by("product_id", "id"))
     deleted = [item.product_label for item in items if item.product_id is None]
@@ -117,9 +126,7 @@ def _lock_order_stock(order, *, refusal: str):
             "detail": f"{refusal}: удалены товары — " + ", ".join(deleted),
             "code": "product_deleted",
         })
-    warehouse = order.warehouse
-    lock_stock_items((item.product for item in items), warehouse)
-    return items, warehouse
+    return items
 
 
 @transaction.atomic
@@ -406,9 +413,11 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     """Controlled reversal of a completed shipment.
 
     The operation is deliberately separate from generic status editing: it
-    restores stock, clears shipment state and writes an immutable audit entry
-    with the author and required reason. Camera recordings are left to the
-    camera PC's MediaMTX retention (``recordings.VIDEO_RETENTION_DAYS``).
+    returns the bags to the warehouses they were shipped from
+    (:func:`apps.shipments.sources.checked_sources`), clears shipment state
+    and writes an immutable audit entry with the author and required reason.
+    Camera recordings are left to the camera PC's MediaMTX retention
+    (``recordings.VIDEO_RETENTION_DAYS``).
     """
     order = _locked(order, user)
     if target_status not in ROLLBACK_TARGET_STATUSES:
@@ -435,7 +444,13 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     # Возврат в ожидание сохраняет деньги предоплатой; в заявку или отмену — без денег.
     assert_money_allows_status(order, target_status)
 
-    items, warehouse = _lock_order_stock(order, refusal="Нельзя восстановить склад")
+    items = _order_items(order, refusal="Нельзя восстановить склад")
+    # Строки складов-источников читаются до удаления Shipment (они уходят с ней
+    # каскадом): мешки возвращаются туда, откуда ушли. Старая отгрузка без
+    # строк — на склад заказа, фиксация без списания — никуда.
+    # Блокировки: Order → Product → StockItem → Shipment.
+    stock_basis, sources = checked_sources(order, items, user)
+    restored = restore_stock(sources, user, note=f"Откат отгрузки заказа #{order.pk}: {reason}")
 
     # Видео отгрузки не удаляем: у ПК камер нет API удаления записей, а сетевые
     # вызовы внутри складской транзакции держали бы блокировку. Запись исчезнет
@@ -445,21 +460,6 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
         AiCountingSession.objects.filter(order=order).values_list("pk", flat=True)
     )
     shipment = Shipment.objects.select_for_update().filter(order=order).first()
-
-    from apps.warehouse.services import adjust_stock
-
-    restored = 0
-    for item in items:
-        adjust_stock(
-            item.product,
-            item.quantity,
-            user,
-            note=f"Откат отгрузки заказа #{order.pk}: {reason}",
-            warehouse=warehouse,
-            require_active=False,
-        )
-        restored += item.quantity
-
     previous_bags = shipment.bags_loaded if shipment else 0
     if shipment:
         shipment.delete()
@@ -480,7 +480,10 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
         order=order,
         payload={
             "from": "shipped", "to": target_status, "reason": reason,
-            "restored_bags": restored, "previous_bags_loaded": previous_bags,
+            "restored_bags": sum(row["bags"] for row in restored),
+            "restored": restored,
+            "stock_basis": stock_basis,
+            "previous_bags_loaded": previous_bags,
             "recording_session_ids": session_ids,
         },
     )
@@ -517,24 +520,30 @@ def mark_order_shipped(order, user):
     )
 
 
-def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None):
+def _do_ship(
+    order,
+    shipment,
+    user,
+    label,
+    *,
+    shipped_at: datetime | None = None,
+    sources: list[ShipmentSource] | None = None,
+):
     """Списать со склада и зафиксировать отгрузку. Общее для трака и вагона.
 
+    ``sources`` — проверенный ответ грузчика «С какого склада?»
+    (:func:`sources.plan_sources`). Без него (отчёт о вагонах и бот, ручное
+    завершение, одобрение запроса статуса — D4) всё списывается со «Склада
+    отгрузки», а строки источников пишутся так же.
     ``shipped_at`` — отгрузка по отчёту за прошедший день: момент выезда и
     события отгрузки и долга переносятся на этот день (сводки читают их по
     дате события), склад списывается как обычно.
     """
     from apps.orders.transport import client_transport_phrase
 
-    items, warehouse = _lock_order_stock(order, refusal="Нельзя отгрузить")
-    for item in items:
-        deduct_stock(
-            item.product,
-            item.quantity,
-            user,
-            warehouse=warehouse,
-            require_active=False,
-        )
+    if sources is None:
+        sources = default_sources(order, _order_items(order, refusal="Нельзя отгрузить"))
+    written = write_off(order, shipment, sources, user)
     shipment.shipped_at = shipped_at or timezone.now()
     shipment.save()
     debt_event = mark_order_shipped(order, user)
@@ -548,7 +557,8 @@ def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None
                  "weigh_in_kg": (
                      str(shipment.weigh_in_kg)
                      if shipment.weigh_in_kg is not None else None
-                 )})
+                 ),
+                 "sources": written})
     if shipped_at is not None:
         backdate_events([shipment_event, debt_event], shipped_at)
     # Единственное уведомление клиенту об отгрузке. Машина на территории —
@@ -558,8 +568,24 @@ def _do_ship(order, shipment, user, label, *, shipped_at: datetime | None = None
     return shipment
 
 
+def _assert_awaiting_shipment(order) -> None:
+    """Кнопка грузчика отгружает только заказ, который ждёт отгрузки."""
+    if order.status not in AWAITING_SHIPMENT_STATUSES:
+        raise ValidationError({
+            "detail": "Отгрузить можно только подтверждённый заказ, который ещё не выехал",
+            "code": "invalid_status",
+        })
+
+
 @transaction.atomic
-def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str | None = None):
+def dispatch_order(
+    order,
+    user,
+    *,
+    truck_number: str = "",
+    trailer_number: str | None = None,
+    sources: list[dict] | None = None,
+):
     """Грузчик: одна кнопка — заказ отгружен на заказанное количество.
 
     Без въезда, счёта мешков и камер: списание со склада, долг и журнал — общие
@@ -567,17 +593,17 @@ def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str |
     Пустой номер тягача — «не менять». Прицеп: ``None`` — «не менять», пустая
     строка — «стереть», как в форме заказа и «Фурах» (экран грузчика шлёт
     только исправленные номера, устаревший экран чужой прицеп не сотрёт).
+    ``sources`` — ответ «С какого склада?»: он перепроверяется здесь, под
+    блокировкой заказа (:func:`sources.plan_sources`), — позиции могли поправить,
+    пока грузчик отвечал.
     """
     from apps.orders.transport import set_order_transport
 
     order = _locked(order, user)
     assert_can_ship(user, order)
-    if order.status not in AWAITING_SHIPMENT_STATUSES:
-        raise ValidationError({
-            "detail": "Отгрузить можно только подтверждённый заказ, который ещё не выехал",
-            "code": "invalid_status",
-        })
+    _assert_awaiting_shipment(order)
     assert_no_open_ai_session(order)
+    plan = plan_sources(order, _order_items(order, refusal="Нельзя отгрузить"), sources)
     truck_number = (truck_number or "").strip() or None
     trailer_number = None if trailer_number is None else trailer_number.strip()
     if truck_number is not None or trailer_number is not None:
@@ -591,27 +617,63 @@ def dispatch_order(order, user, *, truck_number: str = "", trailer_number: str |
         if order.transport_type == "train"
         else f"Отгружено по накладной №{order.pk}"
     )
-    return _do_ship(order, shipment, user, label)
+    return _do_ship(order, shipment, user, label, sources=plan)
 
 
-def loader_dispatch(order, user, *, truck_number: str = "", trailer_number: str | None = None):
-    """Кнопка «Отгружено» грузчика: право и номер — до закрытия AI-подсчёта.
+def _check_loader_dispatch(order, user, *, truck_number: str, trailer_number: str | None) -> None:
+    """Проверки кнопки грузчика без записи: область отгрузки и номера машины.
 
-    Отказ по области или опечатка в номере не должны останавливать сессию
-    камер: сначала проверки, затем открытый подсчёт закрывает сама отгрузка
-    (кнопок погрузки в Моноблоке нет), затем ``dispatch_order``. Ошибки ПК
-    камер (``ai.AiUnavailable``/``ai.AiError``) пробрасываются: заказ остаётся
-    как был, грузчик повторит.
+    Идут до закрытия AI-подсчёта (опечатка или чужой номер не останавливают
+    сессию камер) и перед вопросом «С какого склада?».
     """
-    # Local imports avoid a shipments -> cameras/orders -> shipments import cycle.
-    from apps.cameras import counting
     from apps.orders.transport import check_transport_change
 
     assert_can_ship(user, order)
     check_transport_change(
         order, user, truck=(truck_number or "").strip() or None, trailer=trailer_number, ignore_ai_session=True)
+
+
+def loader_dispatch(
+    order,
+    user,
+    *,
+    truck_number: str = "",
+    trailer_number: str | None = None,
+    sources: list[dict] | None = None,
+):
+    """Кнопка «Отгружено» грузчика: право, номер и ответ «С какого склада?» — до закрытия AI-подсчёта.
+
+    Отказ по области, опечатка в номере или кривой/устаревший ответ опросника
+    не должны останавливать сессию камер. Поэтому сначала проверки (ответ —
+    без блокировки, результат выбрасывается), затем открытый подсчёт закрывает
+    сама отгрузка (кнопок погрузки в Моноблоке нет), затем ``dispatch_order``
+    проверяет ответ ещё раз под блокировкой. Ошибки ПК камер
+    (``ai.AiUnavailable``/``ai.AiError``) пробрасываются: заказ остаётся как был,
+    грузчик повторит.
+    """
+    # Local import avoids a shipments -> cameras -> shipments import cycle.
+    from apps.cameras import counting
+
+    _check_loader_dispatch(order, user, truck_number=truck_number, trailer_number=trailer_number)
+    plan_sources(order, _order_items(order, refusal="Нельзя отгрузить"), sources)
     counting.close_session_for_dispatch(order, user)
-    return dispatch_order(order, user, truck_number=truck_number, trailer_number=trailer_number)
+    return dispatch_order(order, user, truck_number=truck_number, trailer_number=trailer_number, sources=sources)
+
+
+def loader_dispatch_preflight(
+    order, user, *, truck_number: str = "", trailer_number: str | None = None,
+) -> dict:
+    """«Подтвердить отгрузку» у фуры: отказы кнопки заранее и склады для опросника.
+
+    Те же проверки, что у :func:`loader_dispatch` до закрытия AI-подсчёта
+    (область и номер), затем статус и удалённый товар — грузчик видит отказ
+    рядом с полями номера, а не в листе «С какого склада?». Ничего не пишет
+    и не блокирует: перед списанием всё перепроверит ``dispatch_order`` под
+    блокировкой заказа (``plan_sources``).
+    """
+    _check_loader_dispatch(order, user, truck_number=truck_number, trailer_number=trailer_number)
+    _assert_awaiting_shipment(order)
+    return source_options(order, _order_items(order, refusal="Нельзя отгрузить"))
 
 
 @dataclass(frozen=True)
@@ -622,24 +684,6 @@ class RailWagon:
     product: Product
     bags: int
     weight_kg: Decimal
-
-
-def rail_bags_mismatch(order, wagons) -> str:
-    """«Д1с: в заказе 4080, в отчёте 2720» по каждому расхождению; пусто — сошлось."""
-    ordered: Counter = Counter()
-    labels = {}
-    for item in order.items.all():
-        ordered[item.product_id] += item.quantity
-        labels[item.product_id] = item.product_label
-    reported: Counter = Counter()
-    for wagon in wagons:
-        reported[wagon.product.pk] += wagon.bags
-        labels.setdefault(wagon.product.pk, str(wagon.product))
-    return "; ".join(
-        f"«{labels[product_id]}»: в заказе {ordered[product_id]}, в отчёте {reported[product_id]}"
-        for product_id in sorted(ordered.keys() | reported.keys(), key=lambda pk: labels[pk])
-        if ordered[product_id] != reported[product_id]
-    )
 
 
 @transaction.atomic
@@ -677,7 +721,7 @@ def ship_rail_report(order, wagons, user, *, station: str, shipped_day: date):
     if shipped_day > today:
         raise ValidationError({"detail": "Дата отчёта ещё не наступила", "code": "rail_future_day"})
     assert_no_open_ai_session(order)
-    mismatch = rail_bags_mismatch(order, wagons)
+    mismatch = bags_mismatch(order, wagons, counted="в отчёте")
     if mismatch:
         raise ValidationError({
             "detail": f"Мешки не совпадают — {mismatch}. Поправьте заказ и отгрузите снова.",

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCheck,
@@ -15,6 +15,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { LoaderOrderCard } from "@/components/loader/loader-order-card";
 import { LoaderOrderScreen, LoaderShippedScreen } from "@/components/loader/loader-order-screen";
 import { RailReportSheet } from "@/components/loader/rail-report-sheet";
+import { ShipmentSourcesSheet } from "@/components/loader/shipment-sources-sheet";
 import { WagonReportModal } from "@/components/loader/wagon-report-modal";
 import { WaybillSettingsModal } from "@/components/loader/waybill-settings-modal";
 import { RequirePerm } from "@/components/require-perm";
@@ -26,14 +27,19 @@ import { Input } from "@/components/ui/input";
 import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
 import { Tabs } from "@/components/ui/tabs";
-import { api, apiError, blobApiError } from "@/lib/api";
+import { api, apiError, apiErrorCode, blobApiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import {
   loaderUrl,
   openWaybill,
   readStoredLoaderTransport,
+  sameSourceContext,
+  SOURCE_RESTART_CODES,
   storeLoaderTransport,
+  type DispatchSource,
+  type DispatchSources,
   type LoaderOrder,
+  type SourceAnswers,
 } from "@/lib/loader";
 import {
   groupByPlannedDay,
@@ -63,6 +69,16 @@ type Paged = ReturnType<typeof usePagedApi<LoaderOrder>>;
 
 /** Очередь меняют другие устройства (второй грузчик, камеры) — сверяемся тихо. */
 const QUEUE_POLL_MS = 15_000;
+
+/** Сервер отверг ответы опросника: состав заказа или склады поменялись после вопроса. */
+const SOURCES_CHANGED = "Состав заказа или склады изменились — ответьте заново";
+/** Ответов ещё нет — одна пустышка на все рендеры. */
+const NO_SOURCE_ANSWERS: SourceAnswers = {};
+
+/** Опросник «С какого склада?» открытого заказа; round растёт на каждом «ответьте заново». */
+type SourceSheetState = { orderId: number; context: DispatchSources; round: number };
+/** Ответы грузчика и варианты, на которые он отвечал: переживают закрытие листа. */
+type SourceAnswersState = { orderId: number; context: DispatchSources; answers: SourceAnswers };
 
 const HISTORY_PERIODS: PeriodOption<"today" | "yesterday" | "week">[] = [
   { key: "today", label: "Сегодня" },
@@ -101,6 +117,13 @@ function LoaderPageInner() {
   const [railSheet, setRailSheet] = useState<{ orderId: number } | null>(null);
   // «Отправить отчёт» получателям в Telegram: одна отгрузка истории или вся история с фильтрами экрана.
   const [reportScope, setReportScope] = useState<WagonReportScope | null>(null);
+  // «С какого склада?» у фуры при нескольких складах: лист, ответы грузчика и что показать в листе.
+  const [sourceSheet, setSourceSheet] = useState<SourceSheetState | null>(null);
+  const [sourceAnswers, setSourceAnswers] = useState<SourceAnswersState | null>(null);
+  const [sourceError, setSourceError] = useState("");
+  const [sourceNotice, setSourceNotice] = useState("");
+  // До листа кнопка говорит «Проверяем склады…», а не надпись отгрузки по умолчанию.
+  const [checkingSources, setCheckingSources] = useState(false);
 
   const queueParams: LoaderQueueFilter = {
     day: queueFilter === "overdue" || queueFilter === "all" ? "" : queueDay,
@@ -127,30 +150,47 @@ function LoaderPageInner() {
       ? loaderUrl("history", { transport, date_from: range.from, date_to: range.to, search: debouncedSearch })
       : null,
   );
-  // Пока идёт отгрузка, опрос, ушедший до нажатия, мог уже убрать строку —
-  // экран держится на открытом заказе до ответа.
-  const opened = queue.items.find((order) => order.id === openedId) ?? (busy ? openedOrder : null);
+  // Опросник — только у открытого заказа: лист, оставшийся от другого заказа,
+  // не показывается и опрос очереди не держит.
+  const currentSourceSheet = sourceSheet?.orderId === openedId ? sourceSheet : null;
+  // Открыт ли лист сейчас, а не при нажатии: ✕ закрывает его и пока отгрузка в полёте.
+  const sourceSheetOpen = useRef(false);
+  useEffect(() => {
+    sourceSheetOpen.current = currentSourceSheet !== null;
+  }, [currentSourceSheet]);
+  // Пока идёт отгрузка или открыт опросник складов, опрос, ушедший до нажатия,
+  // мог уже убрать строку — экран держится на открытом заказе до ответа.
+  const opened =
+    queue.items.find((order) => order.id === openedId) ?? (busy || currentSourceSheet ? openedOrder : null);
   const canConfirm = can(me, "loader.confirm") && transport !== null;
 
   // Тихий опрос: без индикатора загрузки, ошибка не заменяет список. Пока идёт
-  // отгрузка или открыто окно, очередь не трогаем.
+  // отгрузка или открыто окно (настройки, отчёт, опросник складов), очередь не трогаем.
   useVisiblePolling(
     () => Promise.all([queue.refresh(), overdue.reload(), otherQueue.reload()]),
     QUEUE_POLL_MS,
-    view === "queue" && transport !== null && !busy && !settingsOpen && !shipped && !railSheet,
+    view === "queue" && transport !== null && !busy && !settingsOpen && !shipped && !railSheet && !currentSourceSheet,
   );
 
   // Заказ, открытый у этого грузчика, отгрузили с другого устройства — назад
-  // к списку с пояснением, а не молча. Во время своей отгрузки молчим: её
-  // исход скажет ответ, а не опрос.
+  // к списку с пояснением, а не молча. Во время своей отгрузки и пока открыт
+  // опросник складов молчим: исход скажет ответ сервера, а не опрос.
   useEffect(() => {
-    if (openedId === null || busy || railSheet || queue.loading || queue.items.some((order) => order.id === openedId))
+    if (
+      openedId === null ||
+      busy ||
+      railSheet ||
+      currentSourceSheet ||
+      queue.loading ||
+      queue.items.some((order) => order.id === openedId)
+    )
       return;
     setOpenedOrder(null);
     setNumbers(EMPTY_TRANSPORT_PAIR);
     setError("");
+    setSourceAnswers(null);
     setLost(`Заказ №${openedId} уже не ждёт отгрузки — его отгрузили с другого устройства или перенесли.`);
-  }, [openedId, busy, railSheet, queue.items, queue.loading]);
+  }, [openedId, busy, railSheet, currentSourceSheet, queue.items, queue.loading]);
 
   function refreshCounters() {
     void overdue.reload();
@@ -170,6 +210,7 @@ function LoaderPageInner() {
     setError("");
     setUndone("");
     setLost("");
+    clearSources();
     // Номер подставляем из заказа, но последнее слово за оператором.
     setNumbers(transportPairOf(order));
     setOpenedOrder(order);
@@ -180,19 +221,88 @@ function LoaderPageInner() {
     setShipped(null);
     setError("");
     setNumbers(EMPTY_TRANSPORT_PAIR);
+    clearSources();
+  }
+
+  /** Опросник и ответы — только для открытого заказа: уходя из него, забываем их. */
+  function clearSources() {
+    setSourceSheet(null);
+    setSourceAnswers(null);
+    setSourceError("");
+    setSourceNotice("");
+  }
+
+  /** Ошибка отгрузки — на экране заказа, рядом с номером. Заказ мог уехать
+   * с другого устройства — сверимся с очередью. */
+  function showDispatchError(cause: unknown) {
+    setError(apiError(cause));
+    void queue.refresh();
+  }
+
+  /** Какие склады спросить. Номер — тот же, что уйдёт в отгрузку: сервер проверит его заранее. */
+  async function loadSources(orderId: number, saved: LoaderOrder) {
+    const { data } = await api.get<DispatchSources>(`/loader/orders/${orderId}/dispatch-sources/`, {
+      params: transportChanges(transportPairOf(saved), numbers),
+    });
+    return data;
+  }
+
+  /** Лист «С какого склада?». Ответы того же заказа при тех же складах целы — лист откроется на сводке. */
+  function openSourceSheet(orderId: number, context: DispatchSources) {
+    const kept =
+      sourceAnswers !== null && sourceAnswers.orderId === orderId && sameSourceContext(sourceAnswers.context, context);
+    if (!kept) setSourceAnswers(null);
+    setSourceError("");
+    setSourceNotice("");
+    setSourceSheet({ orderId, context, round: 0 });
   }
 
   async function confirm() {
     if (!opened || !openedOrder || busy) return;
+    // Вагон — без опросника: всё со «Склада отгрузки», как раньше.
+    if (opened.transport_type !== "truck") {
+      await dispatch();
+      return;
+    }
+    const orderId = opened.id;
+    setBusy(true);
+    setCheckingSources(true);
+    setError("");
+    const context = await loadSources(orderId, openedOrder).catch((cause: unknown) => {
+      // Номер, статус, удалённый товар — на экране заказа; опросник не открываем.
+      showDispatchError(cause);
+      return null;
+    });
+    setCheckingSources(false);
+    if (!context) {
+      setBusy(false);
+      return;
+    }
+    if (!context.choose) {
+      // Склад один — выбирать не из чего: всё со «Склада отгрузки».
+      await dispatch();
+      return;
+    }
+    openSourceSheet(orderId, context);
+    setBusy(false);
+  }
+
+  /** Отгрузка открытого заказа; у фуры при нескольких складах — с ответами опросника. */
+  async function dispatch(sources?: DispatchSource[]) {
+    if (!opened || !openedOrder || busy) return;
+    const orderId = opened.id;
     setBusy(true);
     setError("");
+    setSourceError("");
+    setSourceNotice("");
     try {
       // Неисправленный номер не уходит: чужую правку, сделанную после открытия заказа,
       // он не перетрёт. Пустой прицеп — «стереть» (у вагона прицепа нет вовсе).
-      const { data } = await api.post<LoaderOrder>(
-        `/loader/orders/${opened.id}/dispatch/`,
-        transportChanges(transportPairOf(openedOrder), numbers),
-      );
+      const { data } = await api.post<LoaderOrder>(`/loader/orders/${orderId}/dispatch/`, {
+        ...transportChanges(transportPairOf(openedOrder), numbers),
+        ...(sources ? { sources } : {}),
+      });
+      clearSources();
       setShipped(data);
       setOpenedOrder(null);
       setNumbers(EMPTY_TRANSPORT_PAIR);
@@ -201,11 +311,38 @@ function LoaderPageInner() {
       queue.applyItems((rows) => rows.filter((row) => row.id !== data.id));
       refreshCounters();
     } catch (cause) {
-      setError(apiError(cause));
-      // Заказ мог уехать с другого устройства — сверимся с очередью.
-      void queue.refresh();
+      if (SOURCE_RESTART_CODES.includes(apiErrorCode(cause))) {
+        await restartSources(orderId, openedOrder);
+      } else {
+        // Ответы остаются: следующее нажатие откроет лист сразу на сводке.
+        setSourceSheet(null);
+        showDispatchError(cause);
+      }
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Ответы устарели (состав заказа или склады изменились): свежие варианты и опрос с первого товара. */
+  async function restartSources(orderId: number, saved: LoaderOrder) {
+    try {
+      const context = await loadSources(orderId, saved);
+      setSourceAnswers(null);
+      if (!context.choose) {
+        // Остался один склад — выбирать не из чего: листа нет, пояснение на экране заказа,
+        // следующее нажатие отгрузит всё со «Склада отгрузки».
+        setSourceSheet(null);
+        setError(SOURCES_CHANGED);
+        return;
+      }
+      setSourceNotice(SOURCES_CHANGED);
+      // Новый round монтирует лист заново — он начинает с первого товара.
+      setSourceSheet((current) => ({ orderId, context, round: (current?.round ?? 0) + 1 }));
+    } catch (cause) {
+      // Открытый лист показывает ошибку у себя, ответы целы: «Отгрузить» повторит проверку.
+      // Закрытый — ошибка на экране заказа, иначе её не увидеть.
+      if (sourceSheetOpen.current) setSourceError(apiError(cause));
+      else showDispatchError(cause);
     }
   }
 
@@ -289,6 +426,7 @@ function LoaderPageInner() {
           today={today}
           canConfirm={canConfirm}
           busy={busy}
+          busyLabel={checkingSources ? "Проверяем склады…" : undefined}
           error={error}
           numbers={numbers}
           onNumbers={setNumbers}
@@ -298,6 +436,23 @@ function LoaderPageInner() {
           onShipByReport={() => setRailSheet({ orderId: opened.id })}
         />
         {railReportSheet}
+        {/* Новый round («ответьте заново») монтирует лист заново — с первого товара.
+            Крестик закрывает лист, ответы остаются: следующее нажатие откроет сводку. */}
+        {currentSourceSheet && (
+          <ShipmentSourcesSheet
+            key={currentSourceSheet.round}
+            context={currentSourceSheet.context}
+            answers={sourceAnswers?.answers ?? NO_SOURCE_ANSWERS}
+            onAnswers={(answers) =>
+              setSourceAnswers({ orderId: currentSourceSheet.orderId, context: currentSourceSheet.context, answers })
+            }
+            busy={busy}
+            error={sourceError}
+            notice={sourceNotice}
+            onClose={() => setSourceSheet(null)}
+            onConfirm={(sources) => void dispatch(sources)}
+          />
+        )}
       </AppShell>
     );
   }
