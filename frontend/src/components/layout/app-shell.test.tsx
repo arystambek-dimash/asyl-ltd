@@ -1,7 +1,10 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { authTokenStorageKey } from "@/lib/api";
 import { AppShell } from "./app-shell";
+
+// Несекретная подсказка о входе (lib/api.ts); ротация refresh её не меняет.
+const SESSION_KEY = "asyl_session";
+const session = (sid: string) => JSON.stringify({ sid, uid: "7" });
 
 const mocks = vi.hoisted(() => ({
   auth: {
@@ -12,7 +15,16 @@ const mocks = vi.hoisted(() => ({
   logout: vi.fn(),
   refreshMe: vi.fn(),
   replace: vi.fn(),
+  sessionChangeListeners: new Set<() => void>(),
   syncExternalSession: vi.fn(),
+}));
+
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  onSessionChange: (listener: () => void) => {
+    mocks.sessionChangeListeners.add(listener);
+    return () => mocks.sessionChangeListeners.delete(listener);
+  },
 }));
 
 vi.mock("next/navigation", () => ({
@@ -45,22 +57,36 @@ describe("AppShell cross-tab authentication", () => {
     vi.useRealTimers();
   });
 
-  it("synchronizes replacements and logs out only when refresh is removed", () => {
+  it("follows a login in another tab and logs out only when the session hint is removed", () => {
     render(<AppShell title="Dashboard">content</AppShell>);
 
     act(() => {
       window.dispatchEvent(
         new StorageEvent("storage", {
-          key: authTokenStorageKey("refresh"),
-          newValue: "rotated-refresh",
+          key: SESSION_KEY,
+          oldValue: session("s1"),
+          newValue: session("s2"),
+          storageArea: localStorage,
+        }),
+      );
+      // Та же сессия и посторонние ключи (в т.ч. старые токены) — не повод что-то делать.
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: SESSION_KEY,
+          oldValue: session("s2"),
+          newValue: session("s2"),
           storageArea: localStorage,
         }),
       );
       window.dispatchEvent(
+        new StorageEvent("storage", { key: "asyl_refresh", oldValue: "x", newValue: null, storageArea: localStorage }),
+      );
+      window.dispatchEvent(
         new StorageEvent("storage", {
-          key: authTokenStorageKey("access"),
+          key: SESSION_KEY,
+          oldValue: null,
           newValue: null,
-          storageArea: localStorage,
+          storageArea: sessionStorage,
         }),
       );
     });
@@ -70,8 +96,8 @@ describe("AppShell cross-tab authentication", () => {
     act(() => {
       window.dispatchEvent(
         new StorageEvent("storage", {
-          key: authTokenStorageKey("refresh"),
-          oldValue: "refresh",
+          key: SESSION_KEY,
+          oldValue: session("s2"),
           newValue: null,
           storageArea: localStorage,
         }),
@@ -81,9 +107,20 @@ describe("AppShell cross-tab authentication", () => {
     expect(mocks.logout).toHaveBeenCalledTimes(1);
   });
 
+  it("resynchronizes when a refresh returns another login's session", () => {
+    const { unmount } = render(<AppShell title="Dashboard">content</AppShell>);
+    expect(mocks.sessionChangeListeners.size).toBe(1);
+
+    act(() => mocks.sessionChangeListeners.forEach((listener) => listener()));
+    expect(mocks.syncExternalSession).toHaveBeenCalledTimes(1);
+
+    unmount();
+    expect(mocks.sessionChangeListeners.size).toBe(0);
+  });
+
   it("does not redirect an unresolved saved session after a transient initial failure", () => {
     mocks.auth.me = null;
-    localStorage.setItem(authTokenStorageKey("refresh"), "saved-refresh");
+    localStorage.setItem(SESSION_KEY, session("s1"));
 
     render(<AppShell title="Dashboard">content</AppShell>);
 
@@ -99,7 +136,7 @@ describe("AppShell cross-tab authentication", () => {
   it("automatically retries a saved session while the tab remains visible", () => {
     vi.useFakeTimers();
     mocks.auth.me = null;
-    localStorage.setItem(authTokenStorageKey("refresh"), "saved-refresh");
+    localStorage.setItem(SESSION_KEY, session("s1"));
 
     render(<AppShell title="Dashboard">content</AppShell>);
     expect(mocks.loadMe).toHaveBeenCalledTimes(1);

@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { api, requestSession } from "@/lib/api";
 import { downloadBlob } from "@/lib/download";
 import type { PortalOrder, PortalPaymentMethod } from "@/lib/types";
 
@@ -33,8 +33,8 @@ export async function downloadReceipt(id: number) {
   downloadBlob(response.data, `receipt_order_${id}.pdf`);
 }
 
-export const registerClient = (payload: RegisterPayload) =>
-  api.post<{ access: string; refresh: string }>("/portal/register/", payload).then((r) => r.data);
+/** Регистрация сразу открывает сессию: refresh — в HttpOnly-cookie, в ответе — access. */
+export const registerClient = (payload: RegisterPayload) => requestSession("/portal/register/", payload);
 
 type ClientStep = "pending" | "pay" | "rejected" | "truck" | "shipping" | "done";
 

@@ -1,4 +1,4 @@
-"""Импорт config._settings.base в отдельном процессе: кривой env не портит процесс pytest."""
+"""Импорт модуля config._settings в отдельном процессе: кривой env не портит процесс pytest."""
 import subprocess
 import sys
 from pathlib import Path
@@ -6,11 +6,13 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
-def import_base_settings(env: dict[str, str], *names: str) -> subprocess.CompletedProcess[str]:
-    """Печатает JSON-список значений ``names`` из base; ошибка настроек — в stderr."""
+def import_settings(
+    env: dict[str, str], *names: str, module: str = "base"
+) -> subprocess.CompletedProcess[str]:
+    """Печатает JSON-список значений ``names`` из ``module``; ошибка настроек — в stderr."""
     code = (
-        "import json; from config._settings import base; "
-        f"print(json.dumps([getattr(base, name) for name in {list(names)!r}]))"
+        f"import json; from config._settings import {module} as settings; "
+        f"print(json.dumps([getattr(settings, name) for name in {list(names)!r}]))"
     )
     return subprocess.run(
         [sys.executable, "-c", code],

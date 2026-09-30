@@ -1,68 +1,25 @@
 from typing import NoReturn
 
-from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.utils.crypto import constant_time_compare
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
-from rest_framework_simplejwt.serializers import (
-    TokenObtainPairSerializer,
-    TokenRefreshSerializer,
-)
-from rest_framework_simplejwt.settings import api_settings as jwt_settings
-from rest_framework_simplejwt.utils import get_md5_hash_password
+from rest_framework_simplejwt.serializers import TokenObtainSerializer
 
 from apps.sales.access import assigned_department_id
 
+from .credentials import password_change_required
 from .models import User
 from .passwords import validate_new_password
 
 
-def _password_change_required():
-    return AuthenticationFailed(
-        {
-            "detail": "Смените временный пароль.",
-            "code": "password_change_required",
-        }
-    )
+class LoginSerializer(TokenObtainSerializer):
+    """Логин и пароль; сессию выдаёт ``credentials.start_session``."""
 
-
-class PasswordChangeAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         if self.user.is_client and self.user.must_change_password:
-            raise _password_change_required()
+            raise password_change_required()
         return data
-
-
-class RevocableTokenRefreshSerializer(TokenRefreshSerializer):
-    def validate(self, attrs):
-        refresh = self.token_class(attrs["refresh"])
-        user_id = refresh.payload.get(jwt_settings.USER_ID_CLAIM)
-
-        user = (
-            get_user_model()
-            .objects.filter(**{jwt_settings.USER_ID_FIELD: user_id})
-            .first()
-            if user_id is not None
-            else None
-        )
-        if user is None or not jwt_settings.USER_AUTHENTICATION_RULE(user):
-            raise AuthenticationFailed(
-                self.error_messages["no_active_account"],
-                "no_active_account",
-            )
-        if user.must_change_password:
-            raise _password_change_required()
-        if jwt_settings.CHECK_REVOKE_TOKEN and not constant_time_compare(
-            str(refresh.get(jwt_settings.REVOKE_TOKEN_CLAIM, "")),
-            get_md5_hash_password(user.password),
-        ):
-            raise AuthenticationFailed(
-                "The user's password has been changed.",
-                "password_changed",
-            )
-        return super().validate(attrs)
 
 
 class InitialPasswordSerializer(serializers.Serializer):

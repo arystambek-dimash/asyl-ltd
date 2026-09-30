@@ -3,12 +3,12 @@ import os
 
 import pytest
 
-from config.tests.settings_process import import_base_settings
+from config.tests.settings_process import import_settings
 
 
 def _read_settings(overrides):
     environment = {"PATH": os.environ.get("PATH", ""), "PYTEST_RUNNING": "1", **overrides}
-    return import_base_settings(
+    return import_settings(
         environment, "WEIGHING_AI_MODEL", "SHIPPING_WAGON_AI_MODEL", "SHIPPING_WAGON_AI_DETAIL"
     )
 

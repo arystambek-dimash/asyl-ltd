@@ -34,7 +34,7 @@ describe("RegisterPage", () => {
     mocks.adoptSession.mockReset();
     mocks.registerClient.mockReset();
     mocks.replace.mockReset();
-    mocks.registerClient.mockResolvedValue({ access: "access-token", refresh: "refresh-token" });
+    mocks.registerClient.mockResolvedValue("access-token");
     mocks.adoptSession.mockResolvedValue(undefined);
   });
 
@@ -69,7 +69,7 @@ describe("RegisterPage", () => {
         iin: "",
       }),
     );
-    expect(mocks.adoptSession).toHaveBeenCalledWith("access-token", "refresh-token");
+    expect(mocks.adoptSession).toHaveBeenCalledWith("access-token");
     expect(mocks.replace).toHaveBeenCalledWith("/portal/catalog");
   });
 

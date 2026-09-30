@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from config import observability
-from config.tests.settings_process import BACKEND_ROOT, import_base_settings
+from config.tests.settings_process import BACKEND_ROOT, import_settings
 
 
 def test_sensitive_key_scrubbing_is_recursive_and_normalizes_headers():
@@ -125,7 +125,7 @@ def test_base_settings_default_to_production_environment_before_sentry_init():
     environment.pop("SENTRY_BACKEND_DSN", None)
     environment["DEBUG"] = "0"
 
-    result = import_base_settings(environment, "APP_ENVIRONMENT")
+    result = import_settings(environment, "APP_ENVIRONMENT")
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == ["production"]

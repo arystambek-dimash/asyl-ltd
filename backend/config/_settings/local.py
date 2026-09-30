@@ -14,3 +14,8 @@ CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
 )
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
+
+# Эндпоинты входа (accounts/credentials.py): своя страница и dev-сервер Next.
+AUTH_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+# Локально http: Secure-куку браузер не принял бы.
+AUTH_REFRESH_COOKIE_SECURE = False

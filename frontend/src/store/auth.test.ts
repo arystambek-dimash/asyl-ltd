@@ -4,21 +4,24 @@ import { makeMe } from "@/test-utils/factories";
 
 const mocks = vi.hoisted(() => ({
   apiGet: vi.fn(),
-  apiPost: vi.fn(),
-  clearTokens: vi.fn(),
-  hasAuthTokens: vi.fn(),
+  endSession: vi.fn(),
+  hasSession: vi.fn(),
   invalidateAuthSessionRequests: vi.fn(),
   invalidateCameraStreamToken: vi.fn(),
-  setTokens: vi.fn(),
+  requestSession: vi.fn(),
+  revokeServerSession: vi.fn(),
+  startSession: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => ({
-  api: { get: mocks.apiGet, post: mocks.apiPost },
+  api: { get: mocks.apiGet },
   staleAuthSession: (await vi.importActual<typeof import("@/lib/api")>("@/lib/api")).staleAuthSession,
-  clearTokens: mocks.clearTokens,
-  hasAuthTokens: mocks.hasAuthTokens,
+  endSession: mocks.endSession,
+  hasSession: mocks.hasSession,
   invalidateAuthSessionRequests: mocks.invalidateAuthSessionRequests,
-  setTokens: mocks.setTokens,
+  requestSession: mocks.requestSession,
+  revokeServerSession: mocks.revokeServerSession,
+  startSession: mocks.startSession,
 }));
 
 vi.mock("@/lib/camera-stream-auth", () => ({
@@ -36,11 +39,11 @@ describe("auth store generations", () => {
     useAuth.getState().logout();
     useAuth.setState({ me: null, loading: true });
     vi.clearAllMocks();
-    mocks.hasAuthTokens.mockReturnValue(true);
+    mocks.hasSession.mockReturnValue(true);
   });
 
-  it("does not request /me when no auth token exists", async () => {
-    mocks.hasAuthTokens.mockReturnValue(false);
+  it("does not request /me when the browser has no session", async () => {
+    mocks.hasSession.mockReturnValue(false);
 
     await useAuth.getState().loadMe();
 
@@ -54,18 +57,27 @@ describe("auth store generations", () => {
 
     await useAuth.getState().loadMe();
 
-    expect(mocks.clearTokens).not.toHaveBeenCalled();
+    expect(mocks.endSession).not.toHaveBeenCalled();
     expect(useAuth.getState().me).toBeNull();
     expect(useAuth.getState().loading).toBe(false);
   });
 
-  it.each([401, 403])("clears an initially rejected saved session (%s)", async (status) => {
-    mocks.apiGet.mockRejectedValueOnce(responseError(status));
+  it("clears an initially rejected saved session", async () => {
+    mocks.apiGet.mockRejectedValueOnce(responseError(401));
 
     await useAuth.getState().loadMe();
 
-    expect(mocks.clearTokens).toHaveBeenCalledTimes(1);
+    expect(mocks.endSession).toHaveBeenCalledTimes(1);
     expect(useAuth.getState().me).toBeNull();
+    expect(useAuth.getState().loading).toBe(false);
+  });
+
+  it("keeps the saved session on a 403 such as a misconfigured Origin check", async () => {
+    mocks.apiGet.mockRejectedValueOnce({ response: { status: 403, data: { code: "bad_origin" } } });
+
+    await useAuth.getState().loadMe();
+
+    expect(mocks.endSession).not.toHaveBeenCalled();
     expect(useAuth.getState().loading).toBe(false);
   });
 
@@ -74,9 +86,7 @@ describe("auth store generations", () => {
     const newMe = makeMe({ id: 2, username: "new-user" });
     const oldRequest = Promise.withResolvers<{ data: Me }>();
     mocks.apiGet.mockReturnValueOnce(oldRequest.promise).mockResolvedValueOnce({ data: newMe });
-    mocks.apiPost.mockResolvedValueOnce({
-      data: { access: "new-access", refresh: "new-refresh" },
-    });
+    mocks.requestSession.mockResolvedValueOnce("new-access");
 
     const loadingOldSession = useAuth.getState().loadMe();
     useAuth.getState().logout();
@@ -86,54 +96,57 @@ describe("auth store generations", () => {
     await loadingOldSession;
 
     expect(useAuth.getState().me).toEqual(newMe);
-    expect(mocks.setTokens).toHaveBeenCalledWith("new-access", "new-refresh");
+    expect(mocks.requestSession).toHaveBeenCalledWith(
+      "/auth/login/",
+      { username: "new-user", password: "password" },
+      expect.any(AbortSignal),
+    );
+    expect(mocks.startSession).toHaveBeenCalledWith("new-access");
     expect(mocks.invalidateCameraStreamToken).toHaveBeenCalled();
   });
 
   it("does not commit a login response that resolves after logout", async () => {
-    const loginRequest = Promise.withResolvers<{ data: { access: string; refresh: string } }>();
-    mocks.apiPost.mockReturnValueOnce(loginRequest.promise);
+    const loginRequest = Promise.withResolvers<string>();
+    mocks.requestSession.mockReturnValueOnce(loginRequest.promise);
 
     const login = useAuth.getState().login("late-user", "password");
     useAuth.getState().logout();
-    loginRequest.resolve({ data: { access: "late-access", refresh: "late-refresh" } });
+    loginRequest.resolve("late-access");
 
     await expect(login).rejects.toMatchObject({ code: "ERR_CANCELED" });
-    expect(mocks.setTokens).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
     expect(useAuth.getState().me).toBeNull();
   });
 
   it("changes an initial password and adopts the returned session", async () => {
     const client = makeMe({ id: 2, username: "client-user", is_client: true });
-    mocks.apiPost.mockResolvedValueOnce({
-      data: { access: "client-access", refresh: "client-refresh" },
-    });
+    mocks.requestSession.mockResolvedValueOnce("client-access");
     mocks.apiGet.mockResolvedValueOnce({ data: client });
 
     await useAuth.getState().completeInitialPasswordChange("client-user", "temporary-password", "personal-password");
 
-    expect(mocks.apiPost).toHaveBeenCalledWith(
+    expect(mocks.requestSession).toHaveBeenCalledWith(
       "/auth/initial-password/",
       {
         username: "client-user",
         current_password: "temporary-password",
         new_password: "personal-password",
       },
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.any(AbortSignal),
     );
-    expect(mocks.setTokens).toHaveBeenCalledWith("client-access", "client-refresh");
+    expect(mocks.startSession).toHaveBeenCalledWith("client-access");
     expect(useAuth.getState().me).toEqual(client);
   });
 
-  it("adopts registration tokens as a new session even when a user is loaded", async () => {
+  it("adopts a registration session even when a user is loaded", async () => {
     const previous = makeMe({ id: 1, username: "staff-user" });
     const registered = makeMe({ id: 2, username: "client-user", is_client: true });
     useAuth.setState({ me: previous, loading: false });
     mocks.apiGet.mockResolvedValueOnce({ data: registered });
 
-    await useAuth.getState().adoptSession("client-access", "client-refresh");
+    await useAuth.getState().adoptSession("client-access");
 
-    expect(mocks.setTokens).toHaveBeenCalledWith("client-access", "client-refresh");
+    expect(mocks.startSession).toHaveBeenCalledWith("client-access");
     expect(mocks.apiGet).toHaveBeenCalledWith(
       "/auth/me/",
       expect.objectContaining({
@@ -143,7 +156,7 @@ describe("auth store generations", () => {
     expect(useAuth.getState().me).toEqual(registered);
   });
 
-  it("synchronizes a replacement from another tab without clearing shared tokens", async () => {
+  it("synchronizes a login from another tab without ending the shared session", async () => {
     const external = makeMe({ id: 2, username: "external-user" });
     useAuth.setState({ me: makeMe({ id: 1, username: "current-user" }), loading: false });
     mocks.apiGet.mockResolvedValueOnce({ data: external });
@@ -151,20 +164,20 @@ describe("auth store generations", () => {
     await useAuth.getState().syncExternalSession();
 
     expect(mocks.invalidateAuthSessionRequests).toHaveBeenCalledTimes(1);
-    expect(mocks.setTokens).not.toHaveBeenCalled();
-    expect(mocks.clearTokens).not.toHaveBeenCalled();
+    expect(mocks.startSession).not.toHaveBeenCalled();
+    expect(mocks.endSession).not.toHaveBeenCalled();
     expect(useAuth.getState().me).toEqual(external);
   });
 
-  it("keeps the known user when external-session refresh fails transiently", async () => {
-    const current = makeMe({ id: 1, username: "current-user" });
-    useAuth.setState({ me: current, loading: false });
+  it("does not restore the previous user when an external-session sync fails transiently", async () => {
+    useAuth.setState({ me: makeMe({ id: 1, username: "current-user" }), loading: false });
     mocks.apiGet.mockRejectedValueOnce(responseError(503));
 
     await useAuth.getState().syncExternalSession();
 
-    expect(mocks.clearTokens).not.toHaveBeenCalled();
-    expect(useAuth.getState().me).toEqual(current);
+    // Cookie уже от другого входа: прежний пользователь на экране был бы ложью.
+    expect(mocks.endSession).not.toHaveBeenCalled();
+    expect(useAuth.getState().me).toBeNull();
     expect(useAuth.getState().loading).toBe(false);
   });
 
@@ -174,7 +187,7 @@ describe("auth store generations", () => {
 
     await useAuth.getState().syncExternalSession();
 
-    expect(mocks.clearTokens).toHaveBeenCalledTimes(1);
+    expect(mocks.endSession).toHaveBeenCalledTimes(1);
     expect(useAuth.getState().me).toBeNull();
     expect(useAuth.getState().loading).toBe(false);
   });
@@ -186,18 +199,18 @@ describe("auth store generations", () => {
 
     await useAuth.getState().refreshMe(true);
 
-    expect(mocks.clearTokens).not.toHaveBeenCalled();
+    expect(mocks.endSession).not.toHaveBeenCalled();
     expect(useAuth.getState().me).toEqual(current);
   });
 
-  it.each([401, 403])("expires a server-rejected session (%s)", async (status) => {
+  it("expires a server-rejected session", async () => {
     const current = makeMe({ id: 1, username: "current-user" });
     useAuth.setState({ me: current, loading: false });
-    mocks.apiGet.mockRejectedValueOnce(responseError(status));
+    mocks.apiGet.mockRejectedValueOnce(responseError(401));
 
     await useAuth.getState().refreshMe(true);
 
-    expect(mocks.clearTokens).toHaveBeenCalledTimes(1);
+    expect(mocks.endSession).toHaveBeenCalledTimes(1);
     expect(useAuth.getState().me).toBeNull();
     expect(useAuth.getState().loading).toBe(false);
   });
@@ -214,5 +227,21 @@ describe("auth store generations", () => {
 
     expect(mocks.apiGet).toHaveBeenCalledTimes(2);
     expect(useAuth.getState().me).toEqual(updated);
+  });
+
+  it("signs out on the server first, then locally", async () => {
+    const order: string[] = [];
+    mocks.revokeServerSession.mockImplementationOnce(async () => {
+      order.push("server");
+    });
+    mocks.endSession.mockImplementationOnce(() => order.push("local"));
+    useAuth.setState({ me: makeMe({ id: 1, username: "current-user" }), loading: false });
+
+    await useAuth.getState().signOut();
+
+    expect(order).toEqual(["server", "local"]);
+    expect(mocks.invalidateCameraStreamToken).toHaveBeenCalled();
+    expect(useAuth.getState().me).toBeNull();
+    expect(useAuth.getState().loading).toBe(false);
   });
 });

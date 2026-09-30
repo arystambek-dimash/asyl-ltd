@@ -76,8 +76,32 @@ pytest
 cd frontend
 nvm use                     # Node 22 из .nvmrc
 npm ci
-npm run dev                 # http://localhost:3000
+NEXT_PUBLIC_API_URL=/api npm run dev   # http://localhost:3000
 ```
+
+В dev Next проксирует `/api/*` на бэкенд (`DEV_API_ORIGIN`, по умолчанию
+`http://127.0.0.1:8000`; только при `next dev`, см. `frontend/next.config.ts`):
+API на том же origin, что и страница, как за nginx в проде, поэтому браузер
+сохраняет и шлёт HttpOnly refresh-куку (SameSite=Strict). Бэкенду нужен
+`http://localhost:3000` в `AUTH_TRUSTED_ORIGINS` (есть в `local.py`): прокси
+передаёт `Origin` страницы.
+
+Тот же прокси — путь к прод-API:
+
+```bash
+NEXT_PUBLIC_API_URL=/api DEV_API_ORIGIN=https://asyl-ltd.kz npm run dev
+```
+
+Прод пускает `Origin` `http://localhost:3000` (`LOCAL_DEV_ORIGINS` в
+`production.py`), прокси подставляет `Host: asyl-ltd.kz`, а Secure-куку на
+`http://localhost` Chrome и Firefox принимают.
+
+Без прокси (страница на `localhost:3000`, API на проде или на
+`http://127.0.0.1:<порт>`) запрос межсайтовый, и refresh-куку браузер не
+сохраняет. Вход тогда живёт только в открытой вкладке до первой перезагрузки
+или новой вкладки и не дольше 15 минут: там refresh получает 401 `no_session`,
+и выходят все вкладки. Так ведёт себя и `frontend/.env.local` с прод-адресом
+в `NEXT_PUBLIC_API_URL`.
 
 ---
 
@@ -88,7 +112,7 @@ backend/
   config/            # settings, urls, throttles, exception handler
   apps/
     common/          # общие DRF-права (IsStaff, HasPerm, PermViewSetMixin…)
-    accounts/        # User (is_client, perm_codes), /auth/login|refresh|me
+    accounts/        # User (is_client, perm_codes), /auth/login|refresh|logout|me
     sys_permissions/ # Permission и единый каталог кодов системных прав
     employees/       # Employee: профиль User + персональные права
     clients/         # Client, Store; долги, история, выписки
@@ -119,7 +143,7 @@ docker-compose.yml / docker-compose.prod.yml
 
 ```
 Браузер (сотрудник / клиент портала)
-    │  JWT: Authorization Bearer + refresh
+    │  JWT: Bearer access (в памяти вкладки) + refresh в HttpOnly-куке
     ▼
 nginx :443  ── rate-limit (30 r/s API, 10 r/m login), TLS, security-headers
  ├── /            → frontend (Next.js :3000)
@@ -161,8 +185,32 @@ passage-scale-monitor (отдельный контейнер) — импорт �
 - `has_perm_code(code)` — точечная проверка.
 
 Эндпоинты: `POST /api/auth/login/` (throttle 10/мин), `POST /api/auth/refresh/`,
-`GET /api/auth/me/` → id, username, permissions, position,
-sales_department.
+`POST /api/auth/logout/`, `GET /api/auth/me/` → id, username, permissions,
+position, sales_department.
+
+Сессия входа (`accounts/credentials.py`):
+
+- login, `/api/auth/initial-password/` и `/api/portal/register/` отвечают
+  `{"access"}` (15 минут, фронт держит его только в памяти вкладки) и ставят
+  refresh (30 дней) в куку `asyl_refresh`: HttpOnly, SameSite=Strict,
+  Path=/api/auth/, Secure в проде. Скрипт страницы refresh не видит.
+- `POST /api/auth/refresh/` читает только куку (тело игнорируется) и отдаёт
+  новый `{"access"}`. Refresh старше часа ротируется на новые 30 дней
+  (скользящая сессия: 30 дней простоя — выход), старый — в чёрный список
+  `token_blacklist`. Ещё 120 с старый refresh получает того же преемника
+  (параллельные вкладки, потерянный ответ). 401 (`no_session`,
+  `token_not_valid`, `no_active_account`, `password_changed`,
+  `password_change_required`) снимает куку; 403/429/5xx её не трогают.
+- `POST /api/auth/logout/` — refresh в чёрный список, снимает `asyl_refresh`
+  и `cam_token`, всегда 204.
+- Эти эндпоинты принимают только JSON и только запрос со своей страницы:
+  `Origin` = схема+хост запроса или из `AUTH_TRUSTED_ORIGINS` (= CORS-список),
+  иначе 403 `bad_origin`. Refresh и logout — свой лимит `token_refresh`
+  (`THROTTLE_TOKEN_REFRESH`, 240/мин на IP).
+- В `OutstandingToken` хранится только SHA-256 refresh-токена, не сам JWT;
+  истёкшие строки чистит `flushexpiredtokens` в `backend/entrypoint.sh`.
+- Смена пароля и отключение учётки отзывают и access, и refresh; `sid` в
+  токенах — id сессии, общий для всех её ротаций.
 
 ### common/permissions.py — общие DRF-права
 
@@ -525,7 +573,7 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 
 | Роут | Что делает |
 |---|---|
-| `/login`, `/register` | вход (JWT в localStorage), регистрация клиента |
+| `/login`, `/register` | вход (refresh — HttpOnly-кука, access — в памяти вкладки), регистрация клиента |
 | `/dashboard` | Главная (`dashboard.view`): вкладки «Аналитика» (KPI: склад, отгрузки за 14 дней, выручка/поступления, долги; графики; live-очередь отгрузки; топ должников) и «Камеры» (стена камер) |
 | `/orders` | вкладки «Заказы» / «Корзина» (восстановление удалённых); поиск, фильтры по статусу/отделу; создание и редактирование через `OrderForm` |
 | `/orders/[id]` | деталь заказа: позиции, цепочка оплат (`PaymentChain`), номер машины, действия по статусу |
@@ -549,9 +597,20 @@ RTSP DESCRIBE каждого потока, выборочный JPEG-кадр ч
 
 ### Механика
 
-- **Auth**: axios-интерцептор добавляет `Bearer`, на 401 — одиночный
-  refresh (без гонок), на неудачу — logout и `/login`. Стор `useAuth`
-  (Zustand): `me`, `login`, `loadMe`, `refreshMe` (тихое обновление прав).
+- **Auth** (`lib/api.ts`): access — только в памяти вкладки, refresh — в
+  HttpOnly-куке, которую скрипт не видит. В localStorage — несекретная
+  подсказка `asyl_session` = `{sid, uid}`: пишется при входе, стирается при
+  выходе, ротацией не меняется. После перезагрузки первый запрос ждёт refresh
+  по куке; за минуту до истечения access обновляется заранее; на 401 — один
+  refresh и повтор запроса. Refresh, вход и выход идут под Web Lock
+  `asyl-auth-refresh`, чтобы вкладки не отправляли уже отозванную куку. Access
+  другой сессии (`sid`/`uid` не совпали) не используется: вкладка
+  перечитывает сессию. Выход — только по 401 refresh с кодом сессии
+  (`token_not_valid`, `no_session`, `password_changed`…) и только если
+  подсказка ещё про эту сессию; 403 `bad_origin`, 429, 5xx и сеть сессию
+  сохраняют. Вкладки синхронизируются storage-событием подсказки. Стор
+  `useAuth` (Zustand): `me`, `login`, `loadMe`, `refreshMe` (тихое
+  обновление прав), `signOut` («Выйти»: `POST /auth/logout/`, затем локально).
 - **Права**: `can(me, code)`; `<RequirePerm code=…>` закрывает страницу
   заглушкой «Нет доступа»; сайдбар строится из прав; `homeFor(me)` разводит
   по домашним страницам (клиент → `/portal/catalog`, сотрудник → первый видимый

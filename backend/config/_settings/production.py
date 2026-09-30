@@ -56,10 +56,15 @@ SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
 
-# Локальный Next.js dev-сервер (npm run dev) должен уметь ходить в prod-API,
-# когда во фронте NEXT_PUBLIC_API_URL указывает на прод. Аутентификация —
-# JWT Bearer (не куки), поэтому разрешение http-localhost не открывает доступ
-# к сессиям и безопасно как базовый дефолт. Доп. origin задаются через env.
+# Локальный Next.js dev-сервер (npm run dev) должен уметь ходить в prod-API:
+# CORS и эндпоинты входа (AUTH_TRUSTED_ORIGINS ниже) пускают эти origin'ы.
+# Полная сессия — через dev-прокси Next (NEXT_PUBLIC_API_URL=/api
+# DEV_API_ORIGIN=https://asyl-ltd.kz, см. README): страница и API на одном
+# origin, refresh-куку браузер сохраняет. Если NEXT_PUBLIC_API_URL указывает
+# прямо на прод, localhost → прод — межсайтовый запрос, SameSite=Strict-куку
+# браузер не сохранит: вход держится на access из тела ответа только до
+# перезагрузки или новой вкладки (не дольше 15 минут), затем refresh отвечает
+# 401 no_session и выходят все вкладки. Доп. origin задаются через env.
 LOCAL_DEV_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -84,6 +89,12 @@ CSRF_TRUSTED_ORIGINS = _merge_origins(
     LOCAL_DEV_ORIGINS,
     env_list("CSRF_TRUSTED_ORIGINS"),
 )
+
+# Эндпоинты входа и refresh-куки (accounts/credentials.py) принимают запрос со
+# своей страницы и с тех же origin'ов, что пускает CORS.
+AUTH_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+# Refresh-кука уходит только по HTTPS.
+AUTH_REFRESH_COOKIE_SECURE = True
 
 ALLOWED_HOSTS = env_list("ALLOWED_HOSTS")
 if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:

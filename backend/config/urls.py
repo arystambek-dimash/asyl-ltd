@@ -1,8 +1,9 @@
 from apps.accounts.views import (
     InitialPasswordView,
+    LoginView,
+    LogoutView,
     MeView,
     RevocableTokenRefreshView,
-    ThrottledTokenObtainPairView,
 )
 from apps.orders.webhooks import apipay_webhook
 from django.contrib import admin
@@ -10,13 +11,14 @@ from django.urls import include, path
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("api/auth/login/", ThrottledTokenObtainPairView.as_view(), name="login"),
+    path("api/auth/login/", LoginView.as_view(), name="login"),
     path(
         "api/auth/initial-password/",
         InitialPasswordView.as_view(),
         name="initial-password",
     ),
     path("api/auth/refresh/", RevocableTokenRefreshView.as_view(), name="refresh"),
+    path("api/auth/logout/", LogoutView.as_view(), name="logout"),
     path("api/auth/me/", MeView.as_view(), name="me"),
     path("api/webhooks/apipay/", apipay_webhook, name="apipay-webhook"),
     path("api/", include("apps.catalog.urls")),

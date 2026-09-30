@@ -1,5 +1,14 @@
 import { create } from "zustand";
-import { api, setTokens, clearTokens, hasAuthTokens, invalidateAuthSessionRequests, staleAuthSession } from "@/lib/api";
+import {
+  api,
+  endSession,
+  hasSession,
+  invalidateAuthSessionRequests,
+  requestSession,
+  revokeServerSession,
+  staleAuthSession,
+  startSession,
+} from "@/lib/api";
 import { invalidateCameraStreamToken } from "@/lib/camera-stream-auth";
 import type { Me } from "@/lib/types";
 
@@ -12,9 +21,13 @@ interface AuthState {
   refreshMe: (force?: boolean) => Promise<void>;
   login: (username: string, password: string) => Promise<Me>;
   completeInitialPasswordChange: (username: string, currentPassword: string, newPassword: string) => Promise<Me>;
-  adoptSession: (access: string, refresh: string) => Promise<Me>;
-  /** Re-read the session after another tab replaces the shared credentials. */
+  /** Сессия, которую уже открыл сервер (регистрация клиента): access из ответа. */
+  adoptSession: (access: string) => Promise<Me>;
+  /** Перечитать сессию, когда другая вкладка вошла под другим пользователем. */
   syncExternalSession: () => Promise<void>;
+  /** «Выйти»: отозвать сессию на сервере (refresh- и camera-cookie), затем выйти локально. */
+  signOut: () => Promise<void>;
+  /** Локальный выход вкладки: 401, выход в другой вкладке, неудачный вход. */
   logout: () => void;
 }
 
@@ -57,9 +70,10 @@ function requestMe(generation: number): Promise<Me> {
 
 type AuthCommit = (state: Partial<Pick<AuthState, "me" | "loading">>) => void;
 
+// Выход — только по 401. 403 (bad_origin, нет права) — не вердикт о сессии:
+// ошибка настройки Origin не должна выкидывать всех из системы.
 function isUnauthorized(error: unknown) {
-  const status = (error as { response?: { status?: number } } | null)?.response?.status;
-  return status === 401 || status === 403;
+  return (error as { response?: { status?: number } } | null)?.response?.status === 401;
 }
 
 function beginSession(commit: AuthCommit, currentMe: Me | null = null) {
@@ -79,27 +93,21 @@ async function commitSessionMe(generation: number, commit: AuthCommit): Promise<
   return me;
 }
 
-type AuthTokens = { access: string; refresh: string };
-
-async function postForTokens(url: string, body: object, signal: AbortSignal): Promise<AuthTokens> {
-  const { data } = await api.post<AuthTokens>(url, body, { signal });
-  return data;
-}
-
-/** Начать новую сессию: получить токены, сохранить их и загрузить /auth/me/.
+/** Начать новую сессию: получить access (refresh сервер кладёт в HttpOnly-cookie),
+ * запомнить его и загрузить /auth/me/.
  * Смена поколения (выход, другая вкладка) обрывает запрос и отбрасывает результат. */
 async function openSession(
   commit: AuthCommit,
   get: () => AuthState,
-  obtainTokens: (signal: AbortSignal) => AuthTokens | Promise<AuthTokens>,
+  obtainAccess: (signal: AbortSignal) => string | Promise<string>,
 ): Promise<Me> {
   const generation = beginSession(commit);
   const controller = new AbortController();
   loginController = controller;
   try {
-    const tokens = await obtainTokens(controller.signal);
+    const access = await obtainAccess(controller.signal);
     if (generation !== authGeneration) throw staleAuthSession();
-    setTokens(tokens.access, tokens.refresh);
+    startSession(access);
     return await commitSessionMe(generation, commit);
   } catch (error) {
     if (generation === authGeneration) {
@@ -116,7 +124,7 @@ export const useAuth = create<AuthState>((set, get) => ({
   me: null,
   loading: true,
   loadMe: async () => {
-    if (!hasAuthTokens()) {
+    if (!hasSession()) {
       // Login/register pages mount this eagerly. Do not generate a guaranteed
       // 401 (and a refresh attempt) when the browser has no session at all.
       if (!loginController) nextAuthGeneration();
@@ -162,20 +170,19 @@ export const useAuth = create<AuthState>((set, get) => ({
     }
   },
   login: (username, password) =>
-    openSession(set, get, (signal) => postForTokens("/auth/login/", { username, password }, signal)),
+    openSession(set, get, (signal) => requestSession("/auth/login/", { username, password }, signal)),
   completeInitialPasswordChange: (username, currentPassword, newPassword) =>
     openSession(set, get, (signal) =>
-      postForTokens(
+      requestSession(
         "/auth/initial-password/",
         { username, current_password: currentPassword, new_password: newPassword },
         signal,
       ),
     ),
-  adoptSession: (access, refresh) => openSession(set, get, () => ({ access, refresh })),
+  adoptSession: (access) => openSession(set, get, () => access),
   syncExternalSession: async () => {
-    const currentMe = get().me;
-    const generation = beginSession(set, currentMe);
-    if (!hasAuthTokens()) {
+    const generation = beginSession(set, get().me);
+    if (!hasSession()) {
       if (generation === authGeneration) set({ me: null, loading: false });
       return;
     }
@@ -187,13 +194,21 @@ export const useAuth = create<AuthState>((set, get) => ({
         get().logout();
         return;
       }
-      set({ me: currentMe, loading: false });
+      // Общая cookie уже от другого входа: прежнего пользователя не возвращаем,
+      // иначе экран показывал бы одного, а запросы шли бы от другого.
+      // AppShell повторит загрузку, пока подсказка о входе на месте.
+      set({ me: null, loading: false });
     }
+  },
+  signOut: async () => {
+    // Пока cookie ещё в браузере: сервер отзовёт её и сотрёт cookie камер.
+    await revokeServerSession();
+    get().logout();
   },
   logout: () => {
     nextAuthGeneration();
     invalidateCameraStreamToken();
-    clearTokens();
+    endSession();
     lastMeFetch = 0;
     set({ me: null, loading: false });
   },

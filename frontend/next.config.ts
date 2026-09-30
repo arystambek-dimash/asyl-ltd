@@ -10,6 +10,13 @@ const securityHeaders = [
   },
 ];
 
+// Dev как прод: API на том же origin (в проде /api/ отдаёт nginx), иначе браузер
+// не сохранит и не пошлёт HttpOnly refresh-cookie (SameSite=Strict). Запуск:
+// NEXT_PUBLIC_API_URL=/api npm run dev, бэкенд — DEV_API_ORIGIN (по умолчанию 127.0.0.1:8000,
+// прод — https://asyl-ltd.kz: прокси ставит Host цели и передаёт Origin страницы).
+const isDev = process.env.NODE_ENV === "development";
+const devApiOrigin = process.env.DEV_API_ORIGIN || "http://127.0.0.1:8000";
+
 const nextConfig: NextConfig = {
   output: "standalone",
   outputFileTracingRoot: process.cwd(),
@@ -18,6 +25,15 @@ const nextConfig: NextConfig = {
     // Bound the self-hosted image cache so attacker-controlled variants cannot
     // fill the server disk. Remote images are rendered with `unoptimized`.
     maximumDiskCacheSize: 50 * 1024 * 1024,
+  },
+  // URL Django заканчиваются на «/»: без этого dev-сервер отвечал бы 308 на /api/x/ → /api/x до прокси.
+  skipTrailingSlashRedirect: isDev,
+  async rewrites() {
+    if (!isDev) return [];
+    return [
+      { source: "/api/:path*/", destination: `${devApiOrigin}/api/:path*/` },
+      { source: "/api/:path*", destination: `${devApiOrigin}/api/:path*` },
+    ];
   },
   async redirects() {
     // Старые адреса из закладок: все редиректы здесь, без страниц-заглушек

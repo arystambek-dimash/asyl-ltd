@@ -2,6 +2,7 @@ import math
 import os
 import re
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
@@ -128,6 +129,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    # До apps.accounts: его admin.py снимает регистрацию моделей токенов.
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "apps.common",
     "apps.sys_permissions.apps.SysPermissionsConfig",
@@ -166,6 +169,7 @@ REST_FRAMEWORK = {
         "user": "600/min",
         "login": "10/min",
         "register": "5/min",
+        "token_refresh": os.environ.get("THROTTLE_TOKEN_REFRESH", "240/min"),
         "portal_order_create": "10/min",
         "truck_scale_preview": os.environ.get(
             "THROTTLE_TRUCK_SCALE_PREVIEW", "60/min"
@@ -186,7 +190,14 @@ if TESTING:
         key: None for key in throttle_rates
     }
 
+# Сессия входа — accounts/credentials.py: access живёт только в памяти вкладки,
+# refresh — только в HttpOnly-куке. Каждое обновление старше часа ротирует
+# refresh на новые 30 дней (скользящая сессия: 30 дней простоя — выход), старый
+# уходит в чёрный список token_blacklist. Смена пароля и отключение учётки
+# отзывают и access, и refresh (CHECK_REVOKE_TOKEN).
 SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "CHECK_REVOKE_TOKEN": True,
 }
 

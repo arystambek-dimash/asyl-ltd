@@ -124,19 +124,33 @@ def _camera_stream_source(original_uri: str | None, *, allow_main: bool = False)
     return source if _is_valid_camera_stream_source(source, allow_main=allow_main) else None
 
 
+def _write_camera_cookie(response, request, value: str, *, max_age: int) -> None:
+    response.set_cookie(
+        CAM_COOKIE,
+        value,
+        max_age=max_age,
+        httponly=True,
+        secure=request.is_secure(),
+        samesite="Lax",
+        path="/go2rtc/",
+    )
+
+
+def clear_camera_cookie(response, request) -> None:
+    """Снять ``cam_token`` при выходе — с теми же атрибутами, что при выдаче."""
+    _write_camera_cookie(response, request, "", max_age=0)
+
+
 class CameraTokenView(APIView):
     permission_classes: ClassVar[list[type]] = [IsStaff]
 
     def post(self, request):
         resp = Response(status=status.HTTP_204_NO_CONTENT)
-        resp.set_cookie(
-            CAM_COOKIE,
+        _write_camera_cookie(
+            resp,
+            request,
             signing.dumps(_camera_token_payload(request.user), salt=CAM_TOKEN_SALT),
             max_age=CAM_TOKEN_MAX_AGE,
-            httponly=True,
-            secure=request.is_secure(),
-            samesite="Lax",
-            path="/go2rtc/",
         )
         return resp
 

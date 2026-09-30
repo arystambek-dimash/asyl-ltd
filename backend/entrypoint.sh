@@ -9,6 +9,10 @@ echo "PostgreSQL готов."
 
 python manage.py migrate --noinput
 
+# Истёкшие refresh-токены сессий входа (с их записями в чёрном списке):
+# каждая ротация добавляет строки, иначе таблицы только растут.
+python manage.py flushexpiredtokens
+
 if [ "${DJANGO_COLLECTSTATIC:-0}" = "1" ]; then
   python manage.py collectstatic --noinput
 fi

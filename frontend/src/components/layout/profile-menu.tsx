@@ -16,7 +16,7 @@ const THEMES: { key: Theme; icon: React.ElementType; label: string; short: strin
 
 /** Аватар в шапке: по нажатию — кто вошёл, тема оформления и выход. */
 export function ProfileMenu({ me }: { me: Me }) {
-  const { logout } = useAuth();
+  const { signOut } = useAuth();
   const router = useRouter();
   // Тему применил скрипт корневого layout ещё до React; здесь только выбор.
   const [theme, setTheme] = useState<Theme>(readTheme);
@@ -110,9 +110,9 @@ export function ProfileMenu({ me }: { me: Me }) {
           <button
             type="button"
             role="menuitem"
-            onClick={() => {
+            onClick={async () => {
               setOpen(false);
-              logout();
+              await signOut();
               router.push("/login");
             }}
             className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/8 hover:text-[var(--destructive)]"

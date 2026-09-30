@@ -1,12 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { Topbar } from "./topbar";
 import { makeMe } from "@/test-utils/factories";
 
-const session = vi.hoisted(() => ({ push: vi.fn(), logout: vi.fn() }));
+const session = vi.hoisted(() => ({ push: vi.fn(), signOut: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: session.push }) }));
-vi.mock("@/store/auth", () => ({ useAuth: () => ({ logout: session.logout }) }));
+vi.mock("@/store/auth", () => ({ useAuth: () => ({ signOut: session.signOut }) }));
 vi.mock("@/components/notification-bell", () => ({ NotificationBell: () => null }));
 vi.mock("@/components/onboarding-tour", () => ({ TOUR_START_EVENT: "tour" }));
 
@@ -41,8 +41,13 @@ it("keeps theme and logout inside the profile dropdown", async () => {
   expect(localStorage.getItem("asyl_theme")).toBe("dark");
   expect(screen.getByRole("button", { name: "Тёмная тема" })).toHaveAttribute("aria-pressed", "true");
 
+  // Выход по кнопке отзывает сессию на сервере, и только потом — страница входа.
+  const signedOut = Promise.withResolvers<void>();
+  session.signOut.mockReturnValueOnce(signedOut.promise);
   await user.click(screen.getByRole("menuitem", { name: "Выйти" }));
-  expect(session.logout).toHaveBeenCalled();
-  expect(session.push).toHaveBeenCalledWith("/login");
+  expect(session.signOut).toHaveBeenCalled();
+  expect(session.push).not.toHaveBeenCalled();
+  signedOut.resolve();
+  await waitFor(() => expect(session.push).toHaveBeenCalledWith("/login"));
   document.documentElement.classList.remove("dark");
 });

@@ -21,6 +21,7 @@ x-backend-environment: &backend-environment
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-asyl-ltd.kz,www.asyl-ltd.kz,78.40.109.240}
   CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://asyl-ltd.kz,https://www.asyl-ltd.kz}
   CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-https://asyl-ltd.kz,https://www.asyl-ltd.kz}
+  THROTTLE_TOKEN_REFRESH: ${THROTTLE_TOKEN_REFRESH:-240/min}
   REDIS_URL: redis://redis:6379/0
   # Broker queues use a separate Redis logical DB from Django cache/locks.
   # Task results are intentionally disabled in Django settings.

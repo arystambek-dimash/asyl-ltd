@@ -101,7 +101,7 @@ export default function RegisterPage() {
     }
     setBusy(true);
     try {
-      const { access, refresh } = await registerClient({
+      const access = await registerClient({
         ...f,
         first_name: f.first_name.trim(),
         last_name: f.last_name.trim(),
@@ -109,7 +109,7 @@ export default function RegisterPage() {
         company_name: f.company_name.trim(),
         country: country === OTHER_COUNTRY ? "" : country,
       });
-      await adoptSession(access, refresh);
+      await adoptSession(access);
       router.replace("/portal/catalog");
     } catch (err) {
       const fieldErrors = serverFieldErrors(err);

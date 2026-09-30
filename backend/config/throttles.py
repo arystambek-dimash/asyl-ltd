@@ -23,6 +23,17 @@ class RegisterRateThrottle(_FixedScopeThrottle):
     scope = "register"
 
 
+class TokenRefreshRateThrottle(_FixedScopeThrottle):
+    """Обновление и завершение сессии по refresh-куке — по IP.
+
+    Access живёт только в памяти вкладки, поэтому refresh зовёт каждая
+    загрузка страницы и каждая вкладка, а весь завод выходит в интернет с
+    одного IP: общий anon-лимит здесь слишком тесен.
+    """
+
+    scope = "token_refresh"
+
+
 class VehiclePlateWebhookRateThrottle(_FixedScopeThrottle):
     """Входящий вебхук номеров от ПК камер — лимит по IP."""
 

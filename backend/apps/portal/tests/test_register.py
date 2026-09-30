@@ -1,19 +1,20 @@
 import pytest
 from django.contrib.auth import get_user_model
 
+from apps.accounts.tests.session_cookies import assert_session_started
 from apps.clients.models import Client
 
 
 @pytest.mark.django_db
-def test_register_creates_client_user_and_returns_tokens(api_client):
+def test_register_creates_client_user_and_starts_session(api_client):
     payload = {"username": "newcli", "password": "secret12345",
                "first_name": "Иван", "last_name": "Петров",
                "company_name": 'ТОО "Сайрам нан"',
                "phone": "+77001112233", "iin": "990101300123"}
     r = api_client.post("/api/portal/register/", payload, format="json")
     assert r.status_code == 201
-    assert "access" in r.data and "refresh" in r.data
     user = get_user_model().objects.get(username="newcli")
+    assert_session_started(r, user)
     assert user.is_client is True
     assert user.first_name == "Иван"
     assert user.last_name == "Петров"

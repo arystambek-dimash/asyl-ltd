@@ -72,18 +72,24 @@ def _block_external_network():
 
 @pytest.fixture
 def api_client():
+    """Анонимный клиент, как браузер на странице сайта: шлёт свой ``Origin``.
+
+    Эндпоинты входа и refresh-куки (accounts/credentials.py) без него отвечают 403.
+    """
     from rest_framework.test import APIClient
 
-    return APIClient()
+    return APIClient(HTTP_ORIGIN="http://testserver")
 
 
 @pytest.fixture
 def production_throttling():
-    """Re-enable the API-wide throttles that the test settings switch off.
+    """Re-enable the per-IP/per-user throttles that the test settings switch off.
 
     DRF copies ``DEFAULT_THROTTLE_CLASSES`` onto ``APIView`` at import time, so
     ``override_settings`` cannot bring them back for views that inherit them.
     Patch the class attribute instead, with a tiny rate a short burst exceeds.
+    The session refresh scope — the anonymous per-IP endpoint every page load
+    calls — gets the same rate.
     """
     from contextlib import contextmanager
     from unittest.mock import patch
@@ -92,13 +98,17 @@ def production_throttling():
     from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
     from rest_framework.views import APIView
 
+    from config.throttles import TokenRefreshRateThrottle
+
     @contextmanager
     def enabled(rate="2/min"):
         cache.clear()
         try:
             with patch.object(APIView, "throttle_classes", (AnonRateThrottle, UserRateThrottle)), patch.object(
                 AnonRateThrottle, "rate", rate, create=True
-            ), patch.object(UserRateThrottle, "rate", rate, create=True):
+            ), patch.object(UserRateThrottle, "rate", rate, create=True), patch.object(
+                TokenRefreshRateThrottle, "rate", rate, create=True
+            ):
                 yield
         finally:
             cache.clear()
@@ -304,11 +314,12 @@ def client_user(make_user):
 @pytest.fixture
 def auth_client():
     from rest_framework.test import APIClient
-    from rest_framework_simplejwt.tokens import RefreshToken
+    from rest_framework_simplejwt.tokens import AccessToken
 
     def _auth(user):
         client = APIClient()
-        token = RefreshToken.for_user(user).access_token
+        # Только access: без строки сессии в БД, счётчики запросов не меняются.
+        token = AccessToken.for_user(user)
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
         return client
 

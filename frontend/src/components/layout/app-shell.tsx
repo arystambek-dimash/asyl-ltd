@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/store/auth";
-import { hasAuthTokens, isRefreshTokenRemoval, isRefreshTokenReplacement } from "@/lib/api";
+import { hasSession, onSessionChange, sessionHintChange } from "@/lib/api";
 import { OnboardingTour } from "@/components/onboarding-tour";
 import { homeFor, Sidebar } from "./sidebar";
 import { Topbar, type TopbarBack } from "./topbar";
@@ -49,7 +49,7 @@ export function AppShell({
   // Keep the credentials, retry with bounded backoff, and avoid leaving a
   // visible tab on the loading screen until the user happens to refocus it.
   useEffect(() => {
-    if (me || !hasAuthTokens()) {
+    if (me || !hasSession()) {
       sessionRetryDelay.current = INITIAL_SESSION_RETRY_MS;
       return;
     }
@@ -63,23 +63,31 @@ export function AppShell({
     return () => window.clearTimeout(timer);
   }, [loadMe, loading, me]);
 
+  // Вход и выход в других вкладках: подсказка о сессии меняется только при них,
+  // ротация refresh её не трогает.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       // `storageArea` is null for synthetic events, so keep those testable while
       // ignoring a similarly named sessionStorage key in real browsers.
       if (event.storageArea && event.storageArea !== window.localStorage) return;
-      if (isRefreshTokenRemoval(event)) logout();
-      else if (isRefreshTokenReplacement(event)) void syncExternalSession();
+      const change = sessionHintChange(event);
+      if (change === "removed") logout();
+      else if (change === "replaced") void syncExternalSession();
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    // Refresh вернул access чужого входа — вкладка переходит на сессию браузера.
+    const unsubscribe = onSessionChange(() => void syncExternalSession());
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      unsubscribe();
+    };
   }, [logout, syncExternalSession]);
 
   // Права могли поменять, пока вкладка была в фоне — тихо перечитываем.
   useEffect(() => {
     const refreshSession = () => {
       if (me) refreshMe();
-      else if (hasAuthTokens()) {
+      else if (hasSession()) {
         sessionRetryDelay.current = INITIAL_SESSION_RETRY_MS;
         loadMe();
       }
@@ -98,7 +106,7 @@ export function AppShell({
   }, [loadMe, me, refreshMe]);
 
   useEffect(() => {
-    if (!loading && !me && !hasAuthTokens()) router.replace("/login");
+    if (!loading && !me && !hasSession()) router.replace("/login");
     if (!loading && me && portal !== me.is_client) router.replace(homeFor(me));
   }, [loading, me, portal, router]);
 

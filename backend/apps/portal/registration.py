@@ -2,9 +2,12 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import generics, serializers
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 
-from apps.accounts.credentials import token_pair, username_taken
+from apps.accounts.credentials import (
+    SessionEndpointMixin,
+    start_session,
+    username_taken,
+)
 from apps.accounts.passwords import validate_new_password
 from apps.clients.models import Client
 from apps.clients.phone import clean_phone
@@ -83,7 +86,7 @@ class RegisterSerializer(serializers.Serializer):
         return user
 
 
-class RegisterView(generics.CreateAPIView):
+class RegisterView(SessionEndpointMixin, generics.CreateAPIView):
     permission_classes = [AllowAny]
     throttle_classes = [RegisterRateThrottle]
     serializer_class = RegisterSerializer
@@ -91,4 +94,4 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return Response(token_pair(serializer.save()), status=201)
+        return start_session(serializer.save(), status=201)

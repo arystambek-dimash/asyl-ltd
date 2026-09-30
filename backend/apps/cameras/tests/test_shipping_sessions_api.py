@@ -238,7 +238,7 @@ def test_a_page_of_segment_frames_from_one_address_is_never_throttled(
             codes.append(response.status_code)
             if response.streaming:
                 b"".join(response.streaming_content)  # closes the file like a WSGI server
-        control = [api_client.post("/api/auth/refresh/", {"refresh": "x"}, format="json", **address).status_code
-                   for _ in range(3)]
+        # Anonymous per-IP control: the session refresh every page load calls.
+        control = [api_client.post("/api/auth/refresh/", **address).status_code for _ in range(3)]
     assert codes == [200] * 6
     assert control[-1] == 429

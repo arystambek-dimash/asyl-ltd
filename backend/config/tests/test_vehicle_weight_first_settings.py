@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from config.tests.settings_process import import_base_settings
+from config.tests.settings_process import import_settings
 
 WAGON_ARCH_ENV_NAMES = (
     "WAGON_ARCH_AUTOMATION_ENABLED",
@@ -56,7 +56,7 @@ def _import_settings(*names: str, **overrides: str):
             **overrides,
         }
     )
-    return import_base_settings(environment, *names)
+    return import_settings(environment, *names)
 
 
 @pytest.mark.parametrize("camera", ["cam1", "cam32"])
