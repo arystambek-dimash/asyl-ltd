@@ -272,6 +272,9 @@ services:
       APP_SERVICE: camera-monitor
     entrypoint: []
     command: ["python", "manage.py", "monitor_cameras"]
+    # Фото прибытия вагонов — туда, где их читает защищённый API бэкенда.
+    volumes:
+      - mediadata:/app/media
     depends_on:
       backend:
         condition: service_healthy

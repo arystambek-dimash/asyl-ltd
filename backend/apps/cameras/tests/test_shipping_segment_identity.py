@@ -53,7 +53,7 @@ def segment(*, age=0, model="vehicle_number", number_camera="cam7", camera="cam3
 
 def photographed(**kwargs):
     row = segment(**kwargs)
-    with patch.object(identity, "capture_frame", return_value=JPEG):
+    with patch.object(ai, "camera_main_frame_jpeg", return_value=JPEG):
         assert identity.capture_once(row.pk)
     row.refresh_from_db()
     assert row.photo.read() == JPEG
@@ -78,18 +78,18 @@ def completed_verdict(number="00123455", *, clear=True, model="wagon_number"):
     }]}
 
 
-@pytest.mark.parametrize("size,expected", [(len(JPEG), JPEG), (identity.MAX_JPEG_BYTES + 1, None)])
-def test_capture_frame_reads_main_stream_within_four_seconds_and_four_mb(size, expected):
+@pytest.mark.parametrize("size,expected", [(len(JPEG), JPEG), (ai.MAIN_FRAME_MAX_BYTES + 1, None)])
+def test_main_frame_reads_main_stream_within_four_seconds_and_four_mb(size, expected):
     response = Mock(status=200)
     response.__enter__ = Mock(return_value=response)
     response.__exit__ = Mock(return_value=False)
     response.read.return_value = JPEG.ljust(size, b"0")
     with patch.object(ai.urllib.request, "urlopen", return_value=response) as urlopen:
-        assert identity.capture_frame("cam7") == expected
+        assert ai.camera_main_frame_jpeg("cam7") == expected
     request = urlopen.call_args.args[0]
     assert request.full_url == "http://relay.example.test:1984/api/frame.jpeg?src=cam7main"
     assert urlopen.call_args.kwargs["timeout"] == 4
-    response.read.assert_called_once_with(identity.MAX_JPEG_BYTES + 1)
+    response.read.assert_called_once_with(4 * 1024 * 1024 + 1)
 
 
 def test_one_primary_uses_saved_photo_and_never_repeats_during_segment():
@@ -101,7 +101,7 @@ def test_one_primary_uses_saved_photo_and_never_repeats_during_segment():
         assert kwargs["raw_body"] == JPEG
         return 200, recognition_payload("vehicle_number", [vehicle_plate()])
 
-    with patch.object(ai, "_request", side_effect=primary) as request, patch.object(identity, "gpt_number") as gpt, patch.object(identity, "capture_frame") as frame:
+    with patch.object(ai, "_request", side_effect=primary) as request, patch.object(identity, "gpt_number") as gpt, patch.object(ai, "camera_main_frame_jpeg") as frame:
         assert identity.process_once(row.pk)
         assert not identity.process_once(row.pk)
         assert not identity.capture_once(row.pk)
@@ -118,7 +118,7 @@ def test_wagon_uses_only_openai_once_even_when_native_model_could_read_it():
     row = photographed(model="wagon_number")
     with patch.object(ai, "_request", return_value=(200, recognition_payload("wagon_number", [wagon_plate()]))) as primary, patch.object(
         identity, "gpt_number", return_value=("00123455", "wagon_number", "wagon-response"),
-    ) as gpt, patch.object(identity, "capture_frame") as frame:
+    ) as gpt, patch.object(ai, "camera_main_frame_jpeg") as frame:
         assert identity.process_once(row.pk)
         assert not identity.process_once(row.pk)
     primary.assert_not_called()
@@ -176,7 +176,7 @@ def test_primary_and_gpt_share_saved_zone_crop_while_original_photo_is_preserved
     image.save(stream, format="JPEG", quality=95, subsampling=0)
     original = stream.getvalue()
     row = segment(loading_zone=[0.5, 0.25, 1.0, 0.75])
-    with patch.object(identity, "capture_frame", return_value=original):
+    with patch.object(ai, "camera_main_frame_jpeg", return_value=original):
         assert identity.capture_once(row.pk)
     # A later settings edit must never select a different region for this
     # segment's already saved evidence, including on fallback retries.
@@ -244,7 +244,7 @@ def test_snapshot_and_ocr_have_separate_leases_and_no_network_inside_transaction
         assert ShippingLoadingSegment.objects.get(pk=row.pk).photo_attempted
         return JPEG
 
-    with patch.object(identity, "capture_frame", side_effect=capture) as frame:
+    with patch.object(ai, "camera_main_frame_jpeg", side_effect=capture) as frame:
         assert identity.capture_once(row.pk)
     frame.assert_called_once()
     row.refresh_from_db()
@@ -259,7 +259,7 @@ def test_snapshot_and_ocr_have_separate_leases_and_no_network_inside_transaction
 ])
 def test_late_replay_or_unconfigured_camera_preserves_count_without_new_live_photo(age, camera, error):
     row = segment(age=age, number_camera=camera)
-    with patch.object(identity, "capture_frame") as frame, patch.object(ai, "_request") as primary:
+    with patch.object(ai, "camera_main_frame_jpeg") as frame, patch.object(ai, "_request") as primary:
         assert identity.capture_once(row.pk)
         assert not identity.process_once(row.pk)
     frame.assert_not_called()
@@ -274,7 +274,7 @@ def test_late_replay_or_unconfigured_camera_preserves_count_without_new_live_pho
 def test_fresh_photo_is_claimed_before_eighty_expired_segments_and_old_rows_still_finish():
     old_ids = [segment(age=60+index, camera=f"cam{index+10}").pk for index in range(80)]
     fresh = segment()
-    with patch.object(identity, "capture_frame", return_value=JPEG) as frame:
+    with patch.object(ai, "camera_main_frame_jpeg", return_value=JPEG) as frame:
         assert identity.capture_once()
         fresh.refresh_from_db()
         assert fresh.photo.read() == JPEG
@@ -298,7 +298,7 @@ def test_snapshot_response_crossing_deadline_cannot_attach_later_transport():
         clock["now"] += timedelta(seconds=16)
         return JPEG
 
-    with patch.object(identity.timezone, "now", side_effect=lambda: clock["now"]), patch.object(identity, "capture_frame", side_effect=late):
+    with patch.object(identity.timezone, "now", side_effect=lambda: clock["now"]), patch.object(ai, "camera_main_frame_jpeg", side_effect=late):
         assert identity.capture_once(row.pk)
     row.refresh_from_db()
     assert not row.photo
@@ -311,7 +311,7 @@ def test_interrupted_snapshot_is_not_retried_against_new_vehicle():
     ShippingLoadingSegment.objects.filter(pk=row.pk).update(
         photo_attempted=True, identity_status="processing", identity_lease_until=timezone.now()-timedelta(seconds=1),
     )
-    with patch.object(identity, "capture_frame") as frame:
+    with patch.object(ai, "camera_main_frame_jpeg") as frame:
         assert identity.capture_once(row.pk)
     frame.assert_not_called()
     row.refresh_from_db()
@@ -321,7 +321,7 @@ def test_interrupted_snapshot_is_not_retried_against_new_vehicle():
 
 def test_camera_failure_is_terminal_without_repeated_snapshot_or_count_loss():
     row = segment()
-    with patch.object(identity, "capture_frame", return_value=None) as frame, patch.object(ai, "_request") as primary:
+    with patch.object(ai, "camera_main_frame_jpeg", return_value=None) as frame, patch.object(ai, "_request") as primary:
         assert identity.capture_once(row.pk)
         assert not identity.capture_once(row.pk)
         assert not identity.process_once(row.pk)
@@ -339,7 +339,7 @@ def test_photo_storage_failure_happens_outside_transaction_and_preserves_counts(
         assert not connection.in_atomic_block
         raise OSError("storage offline")
 
-    with patch.object(identity, "capture_frame", return_value=JPEG), patch.object(row.photo.storage, "save", side_effect=unavailable):
+    with patch.object(ai, "camera_main_frame_jpeg", return_value=JPEG), patch.object(row.photo.storage, "save", side_effect=unavailable):
         assert identity.capture_once(row.pk)
     row.refresh_from_db()
     assert not row.photo
@@ -363,7 +363,7 @@ def test_primary_request_crash_resumes_with_gpt_without_second_primary():
 
 def test_gpt_retries_are_bounded_and_never_repeat_primary_or_snapshot():
     row = photographed()
-    with patch.object(ai, "_request", side_effect=ai.AiUnavailable("offline")) as primary, patch.object(identity, "gpt_number", side_effect=TimeoutError) as gpt, patch.object(identity, "capture_frame") as frame:
+    with patch.object(ai, "_request", side_effect=ai.AiUnavailable("offline")) as primary, patch.object(identity, "gpt_number", side_effect=TimeoutError) as gpt, patch.object(ai, "camera_main_frame_jpeg") as frame:
         for _ in range(3):
             ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_next_attempt_at=timezone.now())
             assert identity.process_once(row.pk)
@@ -456,7 +456,7 @@ def test_wagon_model_upgrade_does_not_upgrade_truck_fallback(settings, configure
 def test_completed_refusal_reason_is_preserved_without_retries_or_bag_changes(payload, code, caplog):
     row = photographed(model="wagon_number")
     client = openai_client(payload)
-    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client), patch.object(ai, "_request") as primary, patch.object(identity, "capture_frame") as frame:
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client), patch.object(ai, "_request") as primary, patch.object(ai, "camera_main_frame_jpeg") as frame:
         assert identity.process_once(row.pk)
         assert not identity.process_once(row.pk)
     row.refresh_from_db()
@@ -518,7 +518,7 @@ def test_incomplete_or_malformed_openai_result_preserves_typed_reason(payload, c
 def test_typed_rate_limit_retry_stops_at_existing_limit_on_same_saved_frame():
     row = photographed(model="wagon_number")
     client = openai_client({}, status=429)
-    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client), patch.object(identity, "capture_frame") as frame, patch.object(ai, "_request") as primary:
+    with patch.object(openai_responses.http.client, "HTTPSConnection", return_value=client), patch.object(ai, "camera_main_frame_jpeg") as frame, patch.object(ai, "_request") as primary:
         for _ in range(3):
             ShippingLoadingSegment.objects.filter(pk=row.pk).update(identity_next_attempt_at=timezone.now())
             assert identity.process_once(row.pk)
@@ -603,7 +603,7 @@ def test_journal_photo_gpt_idle_resume_merges_same_transport_and_splits_differen
         assert not connection.in_atomic_block
         return next(numbers), "vehicle_number", "response-test"
 
-    with patch.object(identity.timezone, "now", side_effect=lambda: clock["now"]), patch.object(identity, "capture_frame", side_effect=photos) as frame, patch.object(ai, "_request", return_value=(200, recognition_payload("vehicle_number", [vehicle_plate(accepted=False)]))) as primary, patch.object(identity, "gpt_number", side_effect=gpt) as fallback:
+    with patch.object(identity.timezone, "now", side_effect=lambda: clock["now"]), patch.object(ai, "camera_main_frame_jpeg", side_effect=photos) as frame, patch.object(ai, "_request", return_value=(200, recognition_payload("vehicle_number", [vehicle_plate(accepted=False)]))) as primary, patch.object(identity, "gpt_number", side_effect=gpt) as fallback:
         for index, first_second in enumerate((0, 33, 66)):
             clock["now"] = start+timedelta(seconds=first_second+1)
             add_events(start, [first_second, first_second+1], camera="cam3")

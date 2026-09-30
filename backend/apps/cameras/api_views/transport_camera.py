@@ -209,7 +209,7 @@ class ShippingTransportRecognizeView(APIView):
             )
         identity_error = ""
         try:
-            frame = identity.capture_frame(binding.number_camera)
+            frame = ai.camera_main_frame_jpeg(binding.number_camera)
             if not frame:
                 raise ai.AiUnavailable("Shipping camera frame unavailable")
             frame = identity.recognition_frame(frame, binding.loading_zone)

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { apiFileUrl } from "@/lib/api-file-url";
 import type { GrainWagon, GrainWeighing } from "@/lib/types";
 import { formatDateTime } from "@/lib/utils";
 import { WagonPhotos } from "./wagon-photos";
@@ -112,5 +113,37 @@ describe("weighing photo provenance", () => {
     );
     expect(screen.getByText("Фото загружается повторно")).toBeInTheDocument();
     expect(screen.getByText("появится после взвешивания гружёной")).toBeInTheDocument();
+  });
+});
+
+describe("intake arrival photo", () => {
+  it("shows the camera frame taken when the wagon arrived, with its time, opening full size", () => {
+    const takenAt = "2026-09-30T06:15:00Z";
+    const path = "/api/grain/photos/arrival/7/?token=signed";
+    render(
+      <WagonPhotos
+        wagon={wagon({
+          direction: "intake",
+          entry_weight_kg: null,
+          exit_weight_kg: null,
+          arrival_photo_url: path,
+          arrival_photo_taken_at: takenAt,
+        })}
+      />,
+    );
+    expect(screen.getByText("Фото прибытия")).toBeInTheDocument();
+    const label = `Прибытие · ${formatDateTime(takenAt)}`;
+    expect(screen.getByText(label)).toBeInTheDocument();
+    const img = screen.getByRole("img", { name: `${label}: фото вагона` });
+    expect(img).toHaveAttribute("src", apiFileUrl(path));
+    expect(img.closest("a")).toHaveAttribute("href", apiFileUrl(path));
+    expect(screen.queryByText("Фото машины")).not.toBeInTheDocument();
+  });
+
+  it("renders nothing for an intake trip without an arrival photo", () => {
+    const { container } = render(
+      <WagonPhotos wagon={wagon({ direction: "intake", arrival_photo_url: null, arrival_photo_taken_at: null })} />,
+    );
+    expect(container).toBeEmptyDOMElement();
   });
 });

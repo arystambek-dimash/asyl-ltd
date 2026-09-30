@@ -4,16 +4,19 @@
 резервом и оприходованием — два вагона не займут одно и то же место.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import ROUND_HALF_UP
 from uuid import UUID
 
 from django.conf import settings
+from django.core.files.base import ContentFile
 from django.db import IntegrityError, InterfaceError, OperationalError, transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
+from apps.cameras import ai as camera_ai
 from apps.cameras.ai import VEHICLE_PLATE_RE as KZ_VEHICLE_PLATE_RE
 from apps.cameras.models import VehiclePlateEvent
 from apps.common.plates import normalize_plate
@@ -38,6 +41,8 @@ from .models import (
     VEHICLE_ORIENTATION_REAR,
 )
 from .queries import silo_overview
+
+log = logging.getLogger(__name__)
 
 VEHICLE_PLATE_CAMERA = "cam1"
 VEHICLE_PLATE_SOURCE = "main"
@@ -2512,3 +2517,54 @@ def arrive_expected_wagon(wagon: Wagon, user, camera_source: str) -> Wagon:
         auto=True,
     )
     return wagon
+
+
+def capture_arrival_photo(
+    wagon_id: int, *, camera: str, scan_frame: bytes | None = None
+) -> bool:
+    """Снять фото прибытия рейса, который только что открыла камера.
+
+    Кадр — основной поток той же камеры, как у фото отрезков отгрузки; если
+    его нет, годится кадр, на котором только что нашли табличку. Фото не
+    обязательно: без кадра рейс остаётся как есть. Вызывается после
+    ``register_detected_arrival``, вне её транзакции, — запрос к камере не
+    держит блокировок рейса. Уже снятое фото не перетирается, удалённый за это
+    время рейс не оживает. Возвращает, приложено ли фото.
+    """
+    wagon = (
+        Wagon.objects.filter(pk=wagon_id, arrival_photo="")
+        .only("pk", "arrival_photo")
+        .first()
+    )
+    if wagon is None:
+        return False
+    try:
+        frame = camera_ai.camera_main_frame_jpeg(camera)
+    except camera_ai.MAIN_FRAME_ERRORS:
+        frame = None
+    frame = frame or scan_frame
+    if not frame:
+        log.warning(
+            "Камера %s не отдала кадр: рейс #%s остался без фото прибытия",
+            camera,
+            wagon_id,
+        )
+        return False
+    taken_at = timezone.now()
+    photo = wagon.arrival_photo
+    try:
+        photo.save("arrival.jpg", ContentFile(frame), save=False)
+    except OSError:
+        log.warning(
+            "Фото прибытия рейса #%s не сохранилось", wagon_id, exc_info=True
+        )
+        return False
+    # Файл публикуется одной условной записью: если рейс за время запроса к
+    # камере удалили или фото уже приложено, наш файл лишний — убираем его.
+    attached = Wagon.objects.filter(pk=wagon_id, arrival_photo="").update(
+        arrival_photo=photo.name,
+        arrival_photo_taken_at=taken_at,
+    )
+    if not attached:
+        photo.storage.delete(photo.name)
+    return bool(attached)

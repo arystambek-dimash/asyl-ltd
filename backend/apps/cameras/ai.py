@@ -1149,6 +1149,24 @@ def camera_frame_jpeg(
     return frame
 
 
+# Снимок-доказательство с основного потока (``cam<N>main`` в go2rtc): один
+# запрос не дольше четырёх секунд и не больше четырёх мегабайт.
+MAIN_FRAME_TIMEOUT = 4
+MAIN_FRAME_MAX_BYTES = 4 * 1024 * 1024
+# Что может бросить camera_main_frame_jpeg: такой кадр просто считается
+# недоступным — вызывающий решает, что делать без фото.
+MAIN_FRAME_ERRORS = (http.client.HTTPException, OSError, ValueError, AiError)
+
+
+def camera_main_frame_jpeg(cam: str) -> bytes | None:
+    """Кадр основного потока камеры в полном разрешении; ``None`` — кадра нет."""
+    return camera_frame_jpeg(
+        camera_id(cam) + "main",
+        timeout=MAIN_FRAME_TIMEOUT,
+        max_bytes=MAIN_FRAME_MAX_BYTES,
+    )
+
+
 # Модели номеров на ПК камер: путь эндпоинта и задача, которую сервис пишет
 # в ответ при включённом OCR.
 NUMBER_MODELS = {
@@ -1269,7 +1287,8 @@ def wagon_plate_scan(stream: str) -> dict | None:
 
     ``None`` — ответить нельзя (нет кадра или сервис недоступен). Это не то же
     самое, что «таблички нет»: отсутствие ответа не должно читаться как
-    уехавший состав.
+    уехавший состав. ``frame`` — JPEG, по которому искали табличку: запасное
+    фото прибытия, если основной поток кадра не отдаст.
     """
     frame = camera_frame_jpeg(stream)
     if frame is None:
@@ -1288,4 +1307,4 @@ def wagon_plate_scan(stream: str) -> dict | None:
         # заводится без номера. Непроверенный номер в учёт не пишем — чужой
         # вагон хуже незаполненного поля.
         number = ""
-    return {"seen": bool(detections), "number": number}
+    return {"seen": bool(detections), "number": number, "frame": frame}

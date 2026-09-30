@@ -20,7 +20,7 @@ from .models import (
     WeighingRecord,
 )
 from .orientation_dataset import load_records
-from .photos import KIND_EVIDENCE, KIND_UNASSIGNED, KIND_WEIGHING, photo_url
+from .photos import KIND_ARRIVAL, KIND_EVIDENCE, KIND_UNASSIGNED, KIND_WEIGHING, photo_url
 from .weighing_photos import photo_delivery_status
 from .statuses import FINISHED_STATUSES, WAGON_STATUS_LABELS
 
@@ -411,6 +411,7 @@ class WagonSerializer(serializers.ModelSerializer):
     vehicle_recognition_captures = serializers.SerializerMethodField()
     entry_photo_url = serializers.SerializerMethodField()
     exit_photo_url = serializers.SerializerMethodField()
+    arrival_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Wagon
@@ -457,6 +458,8 @@ class WagonSerializer(serializers.ModelSerializer):
             "vehicle_recognition_captures",
             "entry_photo_url",
             "exit_photo_url",
+            "arrival_photo_url",
+            "arrival_photo_taken_at",
         ]
 
     def _latest_photo_url(self, wagon: Wagon, kind: str) -> str | None:
@@ -472,6 +475,9 @@ class WagonSerializer(serializers.ModelSerializer):
 
     def get_exit_photo_url(self, wagon: Wagon) -> str | None:
         return self._latest_photo_url(wagon, "tare")
+
+    def get_arrival_photo_url(self, wagon: Wagon) -> str | None:
+        return photo_url(KIND_ARRIVAL, wagon)
 
     def get_status_label(self, wagon: Wagon) -> str:
         if wagon.is_passage and wagon.status == "at_silo":
@@ -495,6 +501,8 @@ WAGON_DETAIL_ONLY_FIELDS = frozenset({
     "vehicle_recognition_captures",
     "entry_photo_url",
     "exit_photo_url",
+    "arrival_photo_url",
+    "arrival_photo_taken_at",
 })
 
 

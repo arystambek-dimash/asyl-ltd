@@ -38,7 +38,7 @@ def setup(monkeypatch, admin_user, settings):
     )
     monkeypatch.setattr(ai, "AI_KEY", "")
     settings.OPENAI_API_KEY = "unit-test-only"
-    monkeypatch.setattr(identity, "capture_frame", Mock(return_value=FRAME))
+    monkeypatch.setattr(ai, "camera_main_frame_jpeg", Mock(return_value=FRAME))
     monkeypatch.setattr(identity, "primary_number", Mock(return_value="123ABC02"))
     monkeypatch.setattr(identity, "gpt_number", Mock(return_value=("", "unknown", "test-response")))
     monkeypatch.setattr(
@@ -74,7 +74,7 @@ def test_configuration_is_superuser_only(
     assert response.status_code == 403
     assert not ShippingTransportCamera.objects.exists()
     discovery.assert_not_called()
-    identity.capture_frame.assert_not_called()
+    ai.camera_main_frame_jpeg.assert_not_called()
     identity.primary_number.assert_not_called()
     identity.gpt_number.assert_not_called()
 
@@ -261,7 +261,7 @@ def test_wagon_recognize_uses_only_openai_and_saved_camera_without_accounting(
     assert response.status_code == 200, response.data
     assert response.data["number"] == expected
     assert response.data["observed_at"]
-    identity.capture_frame.assert_called_once_with("cam7")
+    ai.camera_main_frame_jpeg.assert_called_once_with("cam7")
     identity.gpt_number.assert_called_once_with(FRAME, recognition_model="wagon_number")
     identity.primary_number.assert_not_called()
     assert not AiCountingSession.objects.exists()
@@ -291,7 +291,7 @@ def test_truck_recognize_falls_back_on_same_frame_for_missing_or_failed_primary(
     response = auth_client(setup).post(URL + "recognize/")
     assert response.status_code == 200
     assert response.data["number"] == "456DEF02"
-    identity.capture_frame.assert_called_once_with("cam7")
+    ai.camera_main_frame_jpeg.assert_called_once_with("cam7")
     # The same general prompt as the shipping worker, not a truck-only schema.
     identity.gpt_number.assert_called_once_with(FRAME)
 
@@ -312,7 +312,7 @@ def test_recognize_uses_saved_zone_crop_for_primary_and_openai(setup, binding, a
     image.paste("blue", (60, 0, 120, 80))
     source = io.BytesIO()
     image.save(source, format="JPEG", quality=95, subsampling=0)
-    identity.capture_frame.return_value = source.getvalue()
+    ai.camera_main_frame_jpeg.return_value = source.getvalue()
     identity.primary_number.return_value = None
     binding.recognition_model = model
     binding.loading_zone = [0.5, 0.25, 1, 0.75]
@@ -344,7 +344,7 @@ def test_recognize_errors_are_not_unrecognized_numbers(
     setup, binding, auth_client, monkeypatch, error, expected
 ):
     monkeypatch.setattr(
-        identity, "capture_frame", Mock(side_effect=error)
+        ai, "camera_main_frame_jpeg", Mock(side_effect=error)
     )
     response = auth_client(setup).post(URL + "recognize/")
     assert response.status_code == expected
@@ -424,7 +424,7 @@ def test_missing_openai_key_is_service_unavailable_when_needed(setup, binding, a
 
 
 def test_missing_photo_never_calls_number_models(setup, binding, auth_client):
-    identity.capture_frame.return_value = None
+    ai.camera_main_frame_jpeg.return_value = None
     response = auth_client(setup).post(URL + "recognize/")
     assert response.status_code == 502
     identity.primary_number.assert_not_called()

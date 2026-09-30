@@ -1348,6 +1348,9 @@ export interface GrainWagon {
   /** Фото машины на въезде/выезде (последнее взвешивание с кадром). */
   entry_photo_url?: string | null;
   exit_photo_url?: string | null;
+  /** Кадр камеры в момент, когда она зафиксировала прибытие вагона (приход). */
+  arrival_photo_url?: string | null;
+  arrival_photo_taken_at?: string | null;
 }
 
 export interface GrainSupply {

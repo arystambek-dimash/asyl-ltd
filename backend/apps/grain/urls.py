@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework.routers import SimpleRouter
 
-from .photos import WeighingPhotoView
+from .photos import GrainPhotoView
 from .passage_views import PassageViewSet
 from .passage_history import PassageScaleHistoryView
 from .views import (
@@ -54,7 +54,7 @@ urlpatterns = [
         "truck-scales/<str:scale_key>/reading/",
         TruckScaleReadingView.as_view(),
     ),
-    path("grain/photos/<str:kind>/<int:pk>/", WeighingPhotoView.as_view()),
+    path("grain/photos/<str:kind>/<int:pk>/", GrainPhotoView.as_view()),
     path("grain/wagon-arch/stops/", WagonArchStopListView.as_view()),
     path(
         "grain/wagon-arch/stops/<int:pk>/dismiss/",

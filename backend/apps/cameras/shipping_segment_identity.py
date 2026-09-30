@@ -29,7 +29,8 @@ from . import ai
 from .models import ShippingLoadingSegment as Segment
 
 MAX_FRAME_AGE = timedelta(seconds=15)
-MAX_JPEG_BYTES = 4 * 1024 * 1024
+# Saved segment photos are main-stream frames: the same four-MB bound.
+MAX_JPEG_BYTES = ai.MAIN_FRAME_MAX_BYTES
 MAX_IDENTITY_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
 
@@ -134,11 +135,6 @@ def _claim_photo(segment_id=None):
     return segment, segment.identity_lease_until
 
 
-def capture_frame(camera):
-    """One main-stream JPEG request, bounded to four seconds and four MB."""
-    return ai.camera_frame_jpeg(ai.camera_id(camera) + "main", timeout=4, max_bytes=MAX_JPEG_BYTES)
-
-
 def capture_once(segment_id=None):
     """Attempt one newly started segment's original photo. Returns work found."""
     claimed = _claim_photo(segment_id)
@@ -148,8 +144,8 @@ def capture_once(segment_id=None):
     if lease is None:
         return True
     try:
-        frame = capture_frame(segment.number_camera)
-    except (http.client.HTTPException, OSError, ValueError, ai.AiError):
+        frame = ai.camera_main_frame_jpeg(segment.number_camera)
+    except ai.MAIN_FRAME_ERRORS:
         frame = None
     taken_at = timezone.now()
     # Replays after a deployment and responses crossing this deadline never

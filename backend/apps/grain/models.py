@@ -169,6 +169,10 @@ class GrainSupply(models.Model):
         return f"Поставка #{self.pk} · {self.supplier}"
 
 
+def wagon_arrival_photo_path(instance, filename: str) -> str:
+    return f"grain/arrivals/{instance.pk}/{filename}"
+
+
 class Wagon(models.Model):
     # Направление рейса. Приход: транспорт въезжает гружёным и оставляет зерно
     # в силосе, нетто = вход − выход. Проход: въезжает пустым, забирает отруби
@@ -221,6 +225,13 @@ class Wagon(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    # Снимок состава в момент, когда камера зафиксировала прибытие. Пишет
+    # только services.capture_arrival_photo, отдаёт — подписанная ссылка
+    # (photos.py). db_default: откат релиза вставляет рейсы без этой колонки.
+    arrival_photo = models.FileField(
+        upload_to=wagon_arrival_photo_path, blank=True, default="", db_default=""
+    )
+    arrival_photo_taken_at = models.DateTimeField(null=True, blank=True)
 
     gross_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)
     tare_weight_kg = models.PositiveBigIntegerField(null=True, blank=True)

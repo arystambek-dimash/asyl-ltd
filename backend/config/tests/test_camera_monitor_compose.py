@@ -1,4 +1,4 @@
-"""camera-monitor и ai-stock-monitor в проде: healthcheck по heartbeat цикла."""
+"""camera-monitor и ai-stock-monitor в проде: healthcheck по heartbeat цикла, общий media."""
 import pytest
 from django.conf import settings
 
@@ -25,3 +25,10 @@ def test_monitor_loop_is_health_checked_by_its_heartbeat(service, heartbeat_sett
     )
     assert f"- {directory}:rw,noexec,nosuid,nodev,size=1m,mode=1777" in block
     assert "restart: unless-stopped" in block
+
+
+def test_camera_monitor_writes_arrival_photos_to_the_shared_media_volume():
+    # poll_wagon_plate сохраняет фото прибытия вагона в camera-monitor, а отдаёт
+    # его защищённый API бэкенда — оба процесса должны видеть один и тот же media.
+    assert "volumes:\n      - mediadata:/app/media" in service_block(COMPOSE, "camera-monitor")
+    assert "- mediadata:/app/media" in service_block(COMPOSE, "backend")
