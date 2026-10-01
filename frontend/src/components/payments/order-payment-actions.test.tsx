@@ -137,6 +137,24 @@ describe("OrderPaymentActions", () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
+  it("shows the remainder under the amount and restores it with «Весь остаток»", async () => {
+    const user = userEvent.setup();
+    render(<OrderPaymentActions order={order} me={me} onChanged={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    const dialog = screen.getByRole("dialog", { name: "Принять оплату" });
+    expect(within(dialog).getByText(/^Остаток к оплате: 707\s000 ₸$/)).toBeInTheDocument();
+    // Сумма уже полная — подставлять нечего.
+    expect(within(dialog).queryByRole("button", { name: "Весь остаток" })).not.toBeInTheDocument();
+
+    await user.clear(within(dialog).getByLabelText("Сумма"));
+    await user.type(within(dialog).getByLabelText("Сумма"), "1000");
+    await user.click(within(dialog).getByRole("button", { name: "Весь остаток" }));
+
+    expect(within(dialog).getByLabelText("Сумма")).toHaveValue(707000);
+    expect(within(dialog).queryByRole("button", { name: "Весь остаток" })).not.toBeInTheDocument();
+  });
+
   it("does not offer more than the remainder left after pending payments", async () => {
     const user = userEvent.setup();
     const reserved = {

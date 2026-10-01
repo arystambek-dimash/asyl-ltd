@@ -1,17 +1,22 @@
-"""Денежные правила orders/debt.py: свободный остаток к оплате и статус оплаты."""
+"""Денежные правила orders/debt.py: свободный остаток к оплате, статус оплаты
+и порядок долгов «от старого к новому»."""
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.debt import (
     available_to_pay,
     confirmed_and_reserved,
+    oldest_debt_first,
     order_payment_status,
     payment_status,
 )
 from apps.orders.models import Order, OrderItem, Payment
+from apps.shipments.models import Shipment
 
 
 @pytest.mark.parametrize("total,paid,expected", [
@@ -69,3 +74,39 @@ def test_zero_total_order_has_nothing_to_pay():
 
     assert available_to_pay(order) == Decimal("0")
     assert order_payment_status(order) == "unpaid"
+
+
+def _client_orders(count):
+    client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
+    return [Order.objects.create(client=client, status="shipped") for _ in range(count)]
+
+
+@pytest.mark.django_db
+def test_oldest_debt_first_uses_shipment_day_then_creation_day():
+    now = timezone.now()
+    newest, created_old, backdated, undated = _client_orders(4)
+    # Заказ задним числом: создан сегодня, отгружен 20 дней назад — самый старый долг.
+    Shipment.objects.create(order=backdated, shipped_at=now - timedelta(days=20))
+    # Без отгрузки и с отгрузкой без даты — по дню создания заказа.
+    Order.objects.filter(pk=created_old.pk).update(created_at=now - timedelta(days=10))
+    Order.objects.filter(pk=undated.pk).update(created_at=now - timedelta(days=5))
+    Shipment.objects.create(order=undated, shipped_at=None)
+
+    orders = list(Order.objects.select_related("shipment").order_by("-pk"))
+
+    assert sorted(orders, key=oldest_debt_first) == [backdated, created_old, undated, newest]
+    # Без select_related и без отгрузки ключ тоже считается — по дню создания.
+    fresh = Order.objects.get(pk=newest.pk)
+    assert oldest_debt_first(fresh) == (fresh.created_at, fresh.pk)
+
+
+@pytest.mark.django_db
+def test_oldest_debt_first_breaks_ties_by_id():
+    first, second = _client_orders(2)
+    Order.objects.filter(pk__in=[first.pk, second.pk]).update(
+        created_at=timezone.now() - timedelta(days=3),
+    )
+
+    orders = list(Order.objects.select_related("shipment").order_by("-pk"))
+
+    assert sorted(orders, key=oldest_debt_first) == [first, second]

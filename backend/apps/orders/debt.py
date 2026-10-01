@@ -110,6 +110,17 @@ def debt_orders(orders) -> list:
     return [order for order in orders if order.is_debt]
 
 
+def oldest_debt_first(order) -> tuple:
+    """Ключ сортировки долгов «от старого к новому».
+
+    Старее тот заказ, что раньше отгружен (:attr:`Order.sale_at`: отгрузка,
+    без неё — создание заказа), при равенстве — меньший ``id``. В этом порядке
+    карточка «Долг · клиент» показывает заказы и «Внести оплату» гасит долг.
+    Отгрузку берёт из ``select_related("shipment")``, иначе — запрос на заказ.
+    """
+    return (order.sale_at, order.pk)
+
+
 def financial_orders(orders) -> list:
     return [order for order in orders if is_financial(order.status)]
 

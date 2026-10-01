@@ -86,6 +86,64 @@ export function ReceiveMethodPicker({
   );
 }
 
+/**
+ * Поле суммы «Принять оплату»: под полем — сколько можно принять, кнопка
+ * «Весь …» подставляет эту сумму целиком, ошибка суммы — прямо под полем.
+ * Им же вводят сумму во «Внести оплату» по клиенту.
+ */
+export function PaymentAmountField({
+  id,
+  value,
+  onChange,
+  hint,
+  fullValue,
+  fullLabel,
+  error,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  /** Строка под полем («Остаток к оплате: …»); "" — строки нет, пока доступная сумма неизвестна. */
+  hint: string;
+  /** Что подставляет кнопка «Весь …»; "" — кнопки нет. */
+  fullValue: string;
+  fullLabel: string;
+  /** Ошибка суммы; видна, только когда сумма введена. */
+  error: string;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={id}>Сумма</Label>
+      <Input
+        id={id}
+        type="number"
+        min="0.01"
+        step="0.01"
+        inputMode="decimal"
+        className="text-base"
+        value={value}
+        autoFocus
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {hint && (
+        <div className="flex items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
+          <span>{hint}</span>
+          {fullValue && value !== fullValue && (
+            <button
+              type="button"
+              className="font-medium text-[var(--foreground)] underline-offset-2 hover:underline"
+              onClick={() => onChange(fullValue)}
+            >
+              {fullLabel}
+            </button>
+          )}
+        </div>
+      )}
+      {value && error && <p className="text-xs text-[var(--destructive)]">{error}</p>}
+    </div>
+  );
+}
+
 /** Открыть «Принять оплату» сразу — например, когда форма заказа не смогла провести оплату. */
 export interface PaymentAutoOpen {
   method: string;
@@ -234,33 +292,15 @@ export function OrderPaymentActions({
         className="max-w-sm"
       >
         <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="grid gap-2">
-            <Label htmlFor={`payment-amount-${order.id}`}>Сумма</Label>
-            <Input
-              id={`payment-amount-${order.id}`}
-              type="number"
-              min="0.01"
-              step="0.01"
-              inputMode="decimal"
-              className="text-base"
-              value={amount}
-              autoFocus
-              onChange={(event) => setAmount(event.target.value)}
-            />
-            <div className="flex items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
-              <span>Остаток к оплате: {available}</span>
-              {amount !== String(maxCents / 100) && (
-                <button
-                  type="button"
-                  className="font-medium text-[var(--foreground)] underline-offset-2 hover:underline"
-                  onClick={() => setAmount(String(maxCents / 100))}
-                >
-                  Весь остаток
-                </button>
-              )}
-            </div>
-            {amount && amountProblem && <p className="text-xs text-[var(--destructive)]">{amountProblem}</p>}
-          </div>
+          <PaymentAmountField
+            id={`payment-amount-${order.id}`}
+            value={amount}
+            onChange={setAmount}
+            hint={`Остаток к оплате: ${available}`}
+            fullValue={String(maxCents / 100)}
+            fullLabel="Весь остаток"
+            error={amountProblem}
+          />
 
           {flow === "receive" && methods.length > 1 && (
             <div className="grid gap-2">

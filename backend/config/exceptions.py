@@ -13,7 +13,8 @@ def api_exception_handler(exc, context):
                                       and not isinstance(explicit_code, (dict, list))
                 else getattr(exc, "default_code", "error"))
         response.data = {"detail": detail, "code": code}
-        for key in ("request_id", "recognition_status", "retryable"):
+        # max_amount — потолок «Внести оплату» (amount_exceeds_debt) для кассы.
+        for key in ("request_id", "recognition_status", "retryable", "max_amount"):
             if key in original:
                 response.data[key] = original[key]
     return response

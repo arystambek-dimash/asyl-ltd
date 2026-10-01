@@ -5,7 +5,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { OtherCurrencyRows } from "@/components/ui/currency-amounts";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { PaymentHistoryTable } from "@/components/payment-history-table";
 import { Tabs } from "@/components/ui/tabs";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
@@ -20,10 +20,11 @@ import { orderTransportText } from "@/lib/wagons";
 import { can } from "@/lib/can";
 import { PaymentStageBadge, paidByMethod, paymentNetAmount } from "@/components/payment-chain";
 import { PaidMethodSummary } from "@/components/transactions/paid-method-summary";
+import { ClientDebtPaymentModal } from "@/components/payments/client-debt-payment-modal";
 import { OrderPaymentActions } from "@/components/payments/order-payment-actions";
 import { OrderPaymentBadge } from "@/components/payments/order-payment-badge";
 import { useAuth } from "@/store/auth";
-import { ArrowLeft, ChevronDown, ExternalLink, Info, Phone } from "lucide-react";
+import { ArrowLeft, ChevronDown, ExternalLink, HandCoins, Info, Phone } from "lucide-react";
 import type { ClientHistory, Me, Order } from "@/lib/types";
 import {
   blockingStore,
@@ -451,9 +452,16 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
   } = useApi<ClientHistory>(canViewReports ? `/clients/${id}/history/` : null);
   const [tab, setTab] = useState("orders");
   const [notice, setNotice] = useState("");
+  const [debtPaymentOpen, setDebtPaymentOpen] = useState(false);
 
   const payments = useMemo(() => history?.payments ?? [], [history]);
   const invoices = useMemo(() => payments.filter((p) => p.method === "invoice"), [payments]);
+  // Валюты долга для «Внести оплату»: основная — первой, с неё окно и откроется.
+  const debtCurrencies = useMemo(() => {
+    if (!data) return [];
+    const primary = data.debt_currency;
+    return Object.keys(data.debt_by_currency).sort((a, b) => Number(b === primary) - Number(a === primary));
+  }, [data]);
 
   if (!data) {
     return (
@@ -475,6 +483,15 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
     if (canViewReports) void reloadHistory();
   }
 
+  // Деньги приняты — по заказу или внесением по клиенту: уведомление и свежие суммы с сервера.
+  function afterPayment(message: string) {
+    setNotice(message);
+    refresh();
+  }
+
+  // Внесение по клиенту — то же право, что «Принять оплату»; без долга вносить нечего.
+  const canPayDebt = can(me, "payments.create") && debtCurrencies.length > 0;
+
   const orderContext: DebtOrderContext = {
     me,
     canViewOrder: canViewOrders,
@@ -482,10 +499,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
     clientPhone: data.client.phone,
     // Магазин с расписанием блокирует оплату вне окна.
     blockedFor: (order) => blockingStore(order, data.stores),
-    onPaid: (message) => {
-      setNotice(message);
-      refresh();
-    },
+    onPaid: afterPayment,
   };
 
   return (
@@ -515,7 +529,7 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               <div className="text-sm text-[var(--muted-foreground)]">Телефон не указан</div>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <div className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 md:w-auto">
             <div className="text-sm text-[var(--muted-foreground)]">
               Заказов в долге: <b className="tabular-nums text-[var(--foreground)]">{data.orders.length}</b>
             </div>
@@ -523,6 +537,11 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
               <Link href={`/clients/${id}`} className={buttonVariants({ size: "sm", variant: "ghost" })}>
                 Карточка клиента <ExternalLink className="size-3.5" />
               </Link>
+            )}
+            {canPayDebt && (
+              <Button size="sm" className="max-md:w-full" onClick={() => setDebtPaymentOpen(true)}>
+                <HandCoins className="size-4" /> Внести оплату
+              </Button>
             )}
           </div>
         </div>
@@ -620,6 +639,19 @@ function ClientDebtPageInner({ params }: { params: Promise<{ id: string }> }) {
           />
         )}
       </div>
+
+      {canPayDebt && (
+        <ClientDebtPaymentModal
+          clientId={Number(id)}
+          currencies={debtCurrencies}
+          open={debtPaymentOpen}
+          onClose={() => setDebtPaymentOpen(false)}
+          onPaid={(message) => {
+            setDebtPaymentOpen(false);
+            afterPayment(message);
+          }}
+        />
+      )}
     </AppShell>
   );
 }

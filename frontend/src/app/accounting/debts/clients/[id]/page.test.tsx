@@ -1,18 +1,19 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ClientDebtPaymentModal as RealModal } from "@/components/payments/client-debt-payment-modal";
 import { renderRoutePage } from "@/test-utils/route-page";
 import ClientDebtPage from "./page";
 import { stubPhoneMatchMedia } from "@/test-utils/cashier";
 import { resetNavigation } from "@/test-utils/next-navigation";
 import { formatCurrency, formatDateTime } from "@/lib/utils";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn() }));
+const SUPERUSER = { is_superuser: true, permissions: [] as string[] };
+const mocks = vi.hoisted(() => ({ get: vi.fn(), me: { is_superuser: true, permissions: [] as string[] } }));
 
 vi.mock("next/navigation", () => import("@/test-utils/next-navigation"));
-vi.mock("@/store/auth", () => ({
-  useAuth: () => ({ me: { is_superuser: true, permissions: [] }, loading: false }),
-}));
+vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("@/lib/api", () => ({
@@ -20,6 +21,21 @@ vi.mock("@/lib/api", () => ({
   apiError: (error: unknown) => (error instanceof Error ? error.message : "Ошибка"),
   blobApiError: async () => "Ошибка",
   isCanceledRequest: () => false,
+}));
+// Окно внесения проверено своими тестами; здесь — с чем страница его открывает и как применяет ответ.
+vi.mock("@/components/payments/client-debt-payment-modal", () => ({
+  ClientDebtPaymentModal: ({ clientId, currencies, open, onClose, onPaid }: ComponentProps<typeof RealModal>) =>
+    open ? (
+      <div role="dialog" aria-label="Внести оплату">
+        <span>{`клиент ${clientId} · ${currencies.join(", ")}`}</span>
+        <button type="button" onClick={() => onPaid("Внесено 195 840 ₸ на 1 заказ")}>
+          Подтвердить
+        </button>
+        <button type="button" onClick={onClose}>
+          Закрыть
+        </button>
+      </div>
+    ) : null,
 }));
 
 // Заказ #130 в долге: одна позиция, без частичной оплаты — минимум полей,
@@ -75,6 +91,7 @@ const clientHistory = {
 };
 
 beforeEach(() => {
+  mocks.me = SUPERUSER;
   resetNavigation("/accounting/debts/clients/1");
   mocks.get.mockReset();
   mocks.get.mockImplementation(async (raw: string) => {
@@ -103,8 +120,11 @@ it("renders debt orders as cards on phones with payment actions only inside deta
   expect(screen.getByText("Остаток")).toBeInTheDocument();
   expect(screen.queryByRole("columnheader", { name: "Отгружен" })).not.toBeInTheDocument();
   // Свёрнутая карточка: ни «Оплатить», ни «Открыть», ни «Внести оплату».
+  // Внесение по клиенту — в шапке: на телефоне видно сразу, без раскрытия карточек.
+  const card = within(screen.getByRole("listitem"));
   expect(screen.queryByRole("button", { name: "Оплатить" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Внести оплату/ })).not.toBeInTheDocument();
+  expect(card.queryByRole("button", { name: /Внести оплату/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Внести оплату" })).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /Открыть/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Принять оплату/ })).not.toBeInTheDocument();
 
@@ -223,4 +243,63 @@ it("shows write-offs net of refunds on the confirmation day", async () => {
   expect(screen.getByText("из 100 000 ₸, возврат 30 000 ₸")).toBeInTheDocument();
   expect(screen.getByText(formatDateTime("2026-07-22T12:30:00"))).toBeInTheDocument();
   expect(screen.queryByText(formatDateTime("2026-07-20T10:00:00"))).not.toBeInTheDocument();
+});
+
+/** Ответы страницы с другим долгом клиента; история — как обычно. */
+function serveDebtDetail(detail: object) {
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/clients/1/debt-detail/") return { data: detail };
+    if (url.pathname === "/clients/1/history/") return { data: clientHistory };
+    return { data: [] };
+  });
+}
+
+/** Сколько раз страница запросила долг клиента: `refresh()` перечитывает его. */
+const debtDetailLoads = () => mocks.get.mock.calls.filter(([url]) => url === "/clients/1/debt-detail/").length;
+
+it("hides «Внести оплату» without payments.create", async () => {
+  mocks.me = { is_superuser: false, permissions: ["reports.view"] };
+  await renderPage();
+
+  expect(await screen.findByText("Текущий долг")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Внести оплату" })).not.toBeInTheDocument();
+});
+
+it("hides «Внести оплату» when the client owes nothing", async () => {
+  serveDebtDetail({ ...debtDetail, debt_total: "0.00", debt_by_currency: {}, orders: [] });
+  await renderPage();
+
+  expect(await screen.findByText("Долгов нет.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Внести оплату" })).not.toBeInTheDocument();
+});
+
+it("opens the client debt payment with the client and its debt currencies, main one first", async () => {
+  mocks.me = { is_superuser: false, permissions: ["payments.create"] };
+  serveDebtDetail({ ...debtDetail, debt_by_currency: { USD: "500.00", KZT: "195840" } });
+  const user = userEvent.setup();
+  await renderPage();
+
+  expect(screen.queryByRole("dialog", { name: "Внести оплату" })).not.toBeInTheDocument();
+  await user.click(await screen.findByRole("button", { name: "Внести оплату" }));
+  const dialog = screen.getByRole("dialog", { name: "Внести оплату" });
+  expect(within(dialog).getByText("клиент 1 · KZT, USD")).toBeInTheDocument();
+
+  await user.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+  expect(screen.queryByRole("dialog", { name: "Внести оплату" })).not.toBeInTheDocument();
+});
+
+it("after a client debt payment closes the window, shows the notice and reloads the debt", async () => {
+  const user = userEvent.setup();
+  await renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "Внести оплату" }));
+  const loadsBefore = debtDetailLoads();
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Внести оплату" })).getByRole("button", { name: "Подтвердить" }),
+  );
+
+  expect(screen.getByText("Внесено 195 840 ₸ на 1 заказ")).toHaveAttribute("role", "status");
+  expect(screen.queryByRole("dialog", { name: "Внести оплату" })).not.toBeInTheDocument();
+  await waitFor(() => expect(debtDetailLoads()).toBe(loadsBefore + 1));
 });

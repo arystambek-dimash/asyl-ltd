@@ -444,6 +444,10 @@ default-менеджере, чтобы старые заказы и отчёты
 `GET /clients/picker/`, `POST /clients/{id}/assign-department/`,
 `POST /clients/{id}/purge/`, `GET /clients/debts/`,
 `GET /clients/{id}/debt-detail/`,
+`POST /clients/{id}/debt-payment/` («Внести оплату», право `payments.create`:
+сумма гасит долговые заказы клиента от старого к новому — по одной оплате на
+заказ и одно событие `debt_payment`; `preview` — только разбивка;
+`apps/orders/debt_payments.py`),
 `POST /stores/check-overdue/`.
 Новый клиент получает уникальный логин, отключённую учётку и unusable password.
 Сотрудник с `clients.manage_access` включает доступ действием «Выдать доступ в портал»:

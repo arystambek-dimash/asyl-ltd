@@ -10,6 +10,8 @@ DEFAULT_CURRENCY = "KZT"
 # Валюты заказов, цен и клиентов. Суммы в разных валютах не складываются.
 CURRENCY_CHOICES = (("KZT", "KZT (тенге)"), ("USD", "USD (доллар)"))
 CURRENCY_CODES = tuple(code for code, _label in CURRENCY_CHOICES)
+# Знак валюты в тексте для человека: «3 150 000 ₸». В данных и API — код.
+CURRENCY_SIGNS = {"KZT": "₸", "USD": "$"}
 
 
 def money_string(value) -> str:

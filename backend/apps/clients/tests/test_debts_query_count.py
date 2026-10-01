@@ -1,15 +1,20 @@
-"""Список должников не должен порождать запросы «на клиента» или «на заказ».
+"""Список должников и карточка долга клиента не должны порождать запросы
+«на клиента» или «на заказ».
 
 Считаем SQL-запросы на маленькой и большой выборке: число обязано совпасть —
 иначе остаток считается построчно, и касса на телефоне ждёт секунды.
 """
+from datetime import timedelta
+
 import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from rest_framework.test import APIClient
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import Order, OrderItem, Payment
+from apps.shipments.models import Shipment
 
 pytestmark = pytest.mark.django_db
 
@@ -83,3 +88,30 @@ def test_debts_skip_settled_orders_but_recheck_the_rest(boss):
     assert [(row["client_name"], row["debt_total"], row["orders_count"]) for row in rows] == [
         ("Дана X", "150.00", 1),
     ]
+
+
+def _debt_order(client, product, *, shipped_days_ago=None):
+    order = Order.objects.create(client=client, status="shipped", payment_status="unpaid")
+    OrderItem.objects.create(order=order, product=product, quantity=2, unit_price="100.00")
+    if shipped_days_ago is not None:
+        Shipment.objects.create(
+            order=order, shipped_at=timezone.now() - timedelta(days=shipped_days_ago),
+        )
+    return order
+
+
+def test_debt_detail_query_count_does_not_grow_with_orders(boss, count_queries):
+    """Порядок «от старого к новому» читает отгрузку из выборки, без запроса на заказ."""
+    product = Product.objects.create(name="P", color="Red", weight_kg="50")
+    client = Client.objects.create_with_user(first_name="Дана", last_name="X", phone="70002")
+    url = f"/api/clients/{client.id}/debt-detail/"
+    _debt_order(client, product, shipped_days_ago=1)
+    _debt_order(client, product)
+    small = count_queries(boss, url)
+
+    for days in range(2, 8):
+        _debt_order(client, product, shipped_days_ago=days)
+        _debt_order(client, product)
+    big = count_queries(boss, url)
+
+    assert big == small

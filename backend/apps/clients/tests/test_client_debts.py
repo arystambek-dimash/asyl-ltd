@@ -4,6 +4,7 @@ import pytest
 from django.utils import timezone
 from apps.clients.models import Client, Store
 from apps.orders.models import Order, OrderItem, Payment
+from apps.shipments.models import Shipment
 
 pytestmark = pytest.mark.django_db
 
@@ -142,3 +143,22 @@ def test_client_debt_detail_overdue_on_payment_day(boss, make_product, auth_clie
     assert r.status_code == 200
     assert r.data["debt_total"] == "300.00"
     assert r.data["overdue_total"] == "200.00"
+
+
+def test_client_debt_detail_lists_oldest_debt_first(boss, make_product, auth_client):
+    """«Заказы в долге» — от старого к новому по дню отгрузки (без неё — по дню
+    создания): в этом же порядке «Внести оплату» гасит долг."""
+    p = make_product()
+    c = Client.objects.create_with_user(first_name="A", last_name="B", phone="1")
+    now = timezone.now()
+    newest = _order(c, p)
+    created_old = _order(c, p)
+    backdated = _order(c, p)
+    Order.objects.filter(pk=created_old.pk).update(created_at=now - timedelta(days=10))
+    # Заказ задним числом: создан последним, но отгружен 20 дней назад.
+    Shipment.objects.create(order=backdated, shipped_at=now - timedelta(days=20))
+
+    r = auth_client(boss).get(f"/api/clients/{c.id}/debt-detail/")
+
+    assert r.status_code == 200
+    assert [row["id"] for row in r.data["orders"]] == [backdated.id, created_old.id, newest.id]

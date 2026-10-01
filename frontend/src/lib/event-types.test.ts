@@ -20,4 +20,10 @@ describe("event types", () => {
     expect(eventTypeMeta("shipment_sources_healed").label).toBe("Склады отгрузки выправлены");
     expect(eventTypeMeta("some_new_event").label).toBe("some_new_event");
   });
+
+  it("внесение оплаты по клиенту — в разделе «Оплаты и долги»", () => {
+    const group = EVENT_TYPE_GROUPS.find((g) => g.label === "Оплаты и долги");
+    expect(group?.types.debt_payment?.label).toBe("Внесение оплаты");
+    expect(eventTypeMeta("debt_payment").label).toBe("Внесение оплаты");
+  });
 });

@@ -174,6 +174,18 @@ def assert_payment_status_open(order: Order, *, method: str | None, by_client=Fa
         raise ValidationError(error)
 
 
+def assert_payment_method_allowed(currency: str, method: str) -> None:
+    """Валюта допускает деньги этим способом (:func:`statuses.is_payment_method_allowed`).
+
+    Одна ошибка для оплаты заказа и для внесения оплаты по клиенту.
+    """
+    if not is_payment_method_allowed(currency, method):
+        raise ValidationError({
+            "detail": "Kaspi и удалённая оплата принимаются только в тенге",
+            "code": "payment_kzt_only",
+        })
+
+
 def _validate_payment_open(order: Order, *, method: str | None, by_client=False) -> None:
     """Приём новой оплаты: статус заказа и окно оплаты магазина.
 
@@ -285,11 +297,7 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
     order = _locked_payment_order(order, user)
     _validate_payment_open(order, method=payment_open_method(method, stage))
-    if not is_payment_method_allowed(order.currency, method):
-        raise ValidationError({
-            "detail": "Kaspi и удалённая оплата принимаются только в тенге",
-            "code": "payment_kzt_only",
-        })
+    assert_payment_method_allowed(order.currency, method)
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
     amount = _positive_money(

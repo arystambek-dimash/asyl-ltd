@@ -1,6 +1,8 @@
 from decimal import Decimal
 
 from django.utils import timezone
+from rest_framework import status
+from rest_framework.exceptions import APIException, PermissionDenied
 
 from apps.common.money import (
     money_string as _d,
@@ -17,6 +19,64 @@ from apps.orders.debt import (
 )
 from apps.orders.labels import payment_method_label, payment_status_label
 from apps.orders.statuses import is_financial
+from apps.sales.access import scope_by_client_department
+
+from .models import Client
+
+
+class ClientNoLongerAvailable(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "client_not_active"
+
+    def __init__(self):
+        super().__init__({
+            "detail": "Клиент уже удалён",
+            "code": self.default_code,
+        })
+
+
+def lock_scoped_client(client_pk, user=None):
+    """Клиент под блокировкой строки; вызывать внутри ``transaction.atomic()``.
+
+    Удалённый клиент — 409 :class:`ClientNoLongerAvailable`; с ``user`` клиент
+    чужого отдела — 403.
+    """
+    try:
+        # Do not join here: PostgreSQL otherwise also locks related User and
+        # Department before the Client authorization boundary is established.
+        client = Client.objects.select_for_update().get(pk=client_pk)
+    except Client.DoesNotExist as exc:
+        raise ClientNoLongerAvailable() from exc
+    if user is not None and not scope_by_client_department(
+        Client.objects.filter(pk=client.pk),
+        user,
+    ).exists():
+        raise PermissionDenied("Клиент передан в другой отдел")
+    return client
+
+
+def lock_client_orders(client_pk):
+    """Все заказы клиента под блокировкой, включая корзину (``all_objects``), по ``pk``."""
+    from apps.orders.models import Order
+
+    return list(
+        Order.all_objects.select_for_update()
+        .filter(client_id=client_pk)
+        .only("pk", "status")
+        .order_by("pk")
+    )
+
+
+def lock_client_with_orders(client_pk, user):
+    """Заказы → клиент → заказы: блокировки для удаления клиента.
+
+    Порядок совпадает с сервисами заказов, которые пишут FK на клиента.
+    Повторный проход закрывает окно вставки: пока клиент заблокирован,
+    новый заказ не пройдёт проверку FK. Возвращает (клиент, его заказы).
+    """
+    lock_client_orders(client_pk)
+    client = lock_scoped_client(client_pk, user)
+    return client, lock_client_orders(client_pk)
 
 
 def client_history(client) -> dict:

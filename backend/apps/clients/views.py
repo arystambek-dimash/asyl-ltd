@@ -7,7 +7,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 
 from apps.catalog.models import ClientPrice, Product
@@ -24,7 +24,14 @@ from apps.common.permissions import SUPERUSER_ONLY, PermViewSetMixin
 from apps.common.query_params import parse_date_range, parse_money_param
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
-from apps.orders.debt import DEBT_STATUS, debt_fields, debt_orders, order_remaining
+from apps.orders.debt import (
+    DEBT_STATUS,
+    debt_fields,
+    debt_orders,
+    oldest_debt_first,
+    order_remaining,
+)
+from apps.orders.debt_payments import record_client_debt_payment
 from apps.orders.models import Order
 from apps.orders.querysets import (
     filter_order_scope,
@@ -59,18 +66,10 @@ from .services import (
     detect_overdue,
     is_payment_window_open,
     is_store_overdue,
+    lock_client_orders,
+    lock_client_with_orders,
+    lock_scoped_client,
 )
-
-
-class ClientNoLongerAvailable(APIException):
-    status_code = status.HTTP_409_CONFLICT
-    default_code = "client_not_active"
-
-    def __init__(self):
-        super().__init__({
-            "detail": "Клиент уже удалён",
-            "code": self.default_code,
-        })
 
 
 class ClientHasOrders(APIException):
@@ -93,42 +92,6 @@ class StoreChanged(APIException):
             "detail": "Магазин был изменён другим запросом; обновите страницу",
             "code": self.default_code,
         })
-
-
-def _lock_scoped_client(client_pk, user=None):
-    try:
-        # Do not join here: PostgreSQL otherwise also locks related User and
-        # Department before the Client authorization boundary is established.
-        client = Client.objects.select_for_update().get(pk=client_pk)
-    except Client.DoesNotExist as exc:
-        raise ClientNoLongerAvailable() from exc
-    if user is not None and not scope_by_client_department(
-        Client.objects.filter(pk=client.pk),
-        user,
-    ).exists():
-        raise PermissionDenied("Клиент передан в другой отдел")
-    return client
-
-
-def _lock_client_orders(client_pk):
-    return list(
-        Order.all_objects.select_for_update()
-        .filter(client_id=client_pk)
-        .only("pk", "status")
-        .order_by("pk")
-    )
-
-
-def _lock_client_with_orders(client_pk, user):
-    """Заказы → клиент → заказы: блокировки для удаления клиента.
-
-    Порядок совпадает с сервисами заказов, которые пишут FK на клиента.
-    Повторный проход закрывает окно вставки: пока клиент заблокирован,
-    новый заказ не пройдёт проверку FK. Возвращает (клиент, его заказы).
-    """
-    _lock_client_orders(client_pk)
-    client = _lock_scoped_client(client_pk, user)
-    return client, _lock_client_orders(client_pk)
 
 
 def _assert_no_active_loading(locked_orders):
@@ -200,6 +163,8 @@ class ClientViewSet(
         # payment. It does not grant reports/history access.
         "debts": ("reports.view", "payments.create"),
         "debt_detail": ("reports.view", "payments.create"),
+        # «Внести оплату» по клиенту — то же право, что «Принять оплату» в заказе.
+        "debt_payment": "payments.create",
         "history": "reports.view",
         "statement": "reports.export",
         "all_statement": "reports.export",
@@ -266,8 +231,8 @@ class ClientViewSet(
             # Order mutations already use Order→Client (for example when an
             # order creates a client notification).  Take existing Orders
             # first so this path never holds Client while waiting for Order.
-            _lock_client_orders(client_pk)
-        client = _lock_scoped_client(client_pk, self.request.user)
+            lock_client_orders(client_pk)
+        client = lock_scoped_client(client_pk, self.request.user)
         # Validation happens before ``perform_update``.  Replace its possibly
         # stale instance so a concurrent purge cannot turn ``save()`` into an
         # INSERT that resurrects the deleted Client row.
@@ -278,7 +243,7 @@ class ClientViewSet(
             # Repeat after Client is locked: an Order whose FK key lock began
             # before our Client lock may have committed after the first pass.
             # No new Order can pass its FK check while Client stays locked.
-            _assert_no_active_loading(_lock_client_orders(client_pk))
+            _assert_no_active_loading(lock_client_orders(client_pk))
         client = serializer.save()
         current = client.department
         if (previous.pk if previous else None) == (current.pk if current else None):
@@ -298,8 +263,8 @@ class ClientViewSet(
         department = Department.objects.filter(pk=raw).first() if str(raw).isdigit() else None
         with transaction.atomic():
             # Тот же порядок блокировок, что у переноса клиента: заказы → клиент.
-            _lock_client_orders(client_pk)
-            client = _lock_scoped_client(client_pk)
+            lock_client_orders(client_pk)
+            client = lock_scoped_client(client_pk)
             assign_client_department(client, department, request.user)
         client = self.get_queryset().get(pk=client_pk)
         return Response(ClientReadSerializer(client, context=self.get_serializer_context()).data)
@@ -310,7 +275,7 @@ class ClientViewSet(
 
         client_pk = self.get_object().pk
         with transaction.atomic():
-            client, locked_orders = _lock_client_with_orders(client_pk, request.user)
+            client, locked_orders = lock_client_with_orders(client_pk, request.user)
             _assert_no_active_loading(locked_orders)
             portal_user = client.user
             order_ids = [order.pk for order in locked_orders]
@@ -341,7 +306,7 @@ class ClientViewSet(
 
     @transaction.atomic
     def perform_destroy(self, instance):
-        instance, locked_orders = _lock_client_with_orders(instance.pk, self.request.user)
+        instance, locked_orders = lock_client_with_orders(instance.pk, self.request.user)
         # Заказы (и из корзины тоже) держат клиента через PROTECT: без этой
         # проверки delete() падает ProtectedError → 500.
         if locked_orders:
@@ -353,7 +318,7 @@ class ClientViewSet(
     @action(detail=True, methods=["post"], url_path="password")
     @transaction.atomic
     def set_password(self, request, pk=None):
-        client = _lock_scoped_client(self.get_object().pk, request.user)
+        client = lock_scoped_client(self.get_object().pk, request.user)
         context = self.get_serializer_context()
         context["client"] = client
         serializer = self.get_serializer(data=request.data, context=context)
@@ -471,7 +436,7 @@ class ClientViewSet(
         changed = 0
         removed = 0
         with transaction.atomic():
-            client = _lock_scoped_client(client.pk, request.user)
+            client = lock_scoped_client(client.pk, request.user)
             for row in serializer.validated_data["prices"]:
                 product = row["product"]
                 currency = row["currency"]
@@ -595,7 +560,8 @@ class ClientViewSet(
         can_view_reports = request.user.has_perm_code("reports.view")
         # Заказы предзагружены queryset'ом — фильтруем кэш без нового запроса.
         orders = debt_orders(client.orders.all())
-        orders.sort(key=lambda o: o.created_at, reverse=True)
+        # От старого к новому — в этом порядке «Внести оплату» гасит долг.
+        orders.sort(key=oldest_debt_first)
         totals = sum_by_currency(orders, order_remaining)
         fields = debt_fields(totals, fallback=client.currency)
         currency = fields["debt_currency"]
@@ -636,6 +602,38 @@ class ClientViewSet(
             "orders": OrderSerializer(orders, many=True, context={"request": request}).data,
         })
 
+    @action(detail=True, methods=["post"], url_path="debt-payment")
+    def debt_payment(self, request, pk=None):
+        """«Внести оплату»: сумма гасит долговые заказы клиента от старого к новому.
+
+        Распределение и проверки суммы и способа делает
+        ``apps.orders.debt_payments.record_client_debt_payment``, его коды
+        ошибок доходят до кассы как есть. Здесь проверяется только форма тела.
+        ``preview`` считает разбивку и ничего не пишет.
+        """
+        client = self.get_object()
+        currency = request.data.get("currency")
+        if currency not in CURRENCY_CODES:
+            raise ValidationError({
+                "detail": "Неизвестная валюта оплаты",
+                "code": "bad_currency",
+            })
+        preview = request.data.get("preview", False)
+        if not isinstance(preview, bool):
+            # Строка "true" не должна молча превратиться в запись денег.
+            raise ValidationError({
+                "detail": "Признак предпросмотра должен быть true или false",
+                "code": "bad_preview",
+            })
+        return Response(record_client_debt_payment(
+            client,
+            request.data.get("amount"),
+            request.user,
+            method=request.data.get("method"),
+            currency=currency,
+            preview=preview,
+        ))
+
 
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
     queryset = Store.objects.select_related("client__user").order_by("id")
@@ -658,7 +656,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        client = _lock_scoped_client(
+        client = lock_scoped_client(
             serializer.validated_data["client"].pk,
             self.request.user,
         )
@@ -677,7 +675,7 @@ class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         )
         if client_pk is None:
             raise StoreChanged()
-        client = _lock_scoped_client(client_pk, self.request.user)
+        client = lock_scoped_client(client_pk, self.request.user)
         try:
             store = Store.objects.select_for_update().get(pk=store_pk)
         except Store.DoesNotExist as exc:

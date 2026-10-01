@@ -8,6 +8,7 @@ import {
   CircleDot,
   CopyPlus,
   Forklift,
+  HandCoins,
   ListTodo,
   MessageCircle,
   Package,
@@ -72,6 +73,8 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
     label: "Оплаты и долги",
     types: {
       payment: { label: "Оплата", icon: Wallet, color: success },
+      // Сводка одного «Внести оплату» по клиенту; сами деньги — события payment по заказам.
+      debt_payment: { label: "Внесение оплаты", icon: HandCoins, color: success },
       debt_override: { label: "Согласование долга", icon: Scale, color: destructive },
       debt: { label: "Отгрузка в долг", icon: Scale, color: destructive },
     },

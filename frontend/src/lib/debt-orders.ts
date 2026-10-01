@@ -20,6 +20,34 @@ export interface ClientDebtDetail {
   orders: Order[];
 }
 
+/** Доля внесения на один заказ; `payment_id` — оплата заказа, в предпросмотре null. */
+export interface DebtPaymentSlice {
+  order_id: number;
+  shipped_at: string | null;
+  remaining_before: string;
+  amount: string;
+  remaining_after: string;
+  closes: boolean;
+  payment_id: number | null;
+}
+
+/** Долговой заказ, который внесение обходит: `detail` — причина для кассира. */
+export interface DebtPaymentSkipped {
+  order_id: number;
+  reason: string;
+  detail: string;
+}
+
+/** Ответ `POST /clients/{id}/debt-payment/`: разбивка от старого заказа к новому, считает сервер. */
+export interface DebtPaymentPlan {
+  currency: string;
+  method: string;
+  amount: string;
+  total_available: string;
+  slices: DebtPaymentSlice[];
+  skipped: DebtPaymentSkipped[];
+}
+
 export function remainingOf(order: Order): number {
   return Number(order.remaining_amount);
 }
