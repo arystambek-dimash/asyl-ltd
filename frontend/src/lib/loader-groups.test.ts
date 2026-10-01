@@ -7,19 +7,20 @@ import {
   loaderTransports,
   withHistoryRow,
   withQueueRow,
+  type LoaderQueueFilter,
 } from "./loader-groups";
 import { makeLoaderOrder, makeMe } from "@/test-utils/factories";
 
 describe("groupByPlannedDay", () => {
   const today = "2026-09-18";
 
-  it("puts overdue first, then today and tomorrow", () => {
+  it("labels overdue, today and tomorrow in the server order: oldest first under «Все»", () => {
     const groups = groupByPlannedDay(
       [
-        makeLoaderOrder(1, { planned_on: "2026-09-19" }),
-        makeLoaderOrder(2, { planned_on: "2026-09-18" }),
         makeLoaderOrder(3, { planned_on: "2026-09-16" }),
         makeLoaderOrder(4, { planned_on: "2026-09-17" }),
+        makeLoaderOrder(2, { planned_on: "2026-09-18" }),
+        makeLoaderOrder(1, { planned_on: "2026-09-19" }),
       ],
       today,
     );
@@ -29,6 +30,24 @@ describe("groupByPlannedDay", () => {
       ["2026-09-17", "ПРОСРОЧЕНО", true],
       ["2026-09-18", "СЕГОДНЯ", false],
       ["2026-09-19", "ЗАВТРА", false],
+    ]);
+  });
+
+  it("keeps «Сегодня» above the recent overdue, yesterday first — as the server sends it", () => {
+    const groups = groupByPlannedDay(
+      [
+        makeLoaderOrder(7, { planned_on: today }),
+        makeLoaderOrder(5, { planned_on: "2026-09-17" }),
+        makeLoaderOrder(6, { planned_on: "2026-09-17" }),
+        makeLoaderOrder(2, { planned_on: "2026-09-15" }),
+      ],
+      today,
+    );
+
+    expect(groups.map((group) => [group.day, group.label, group.orders.map((row) => row.id)])).toEqual([
+      [today, "СЕГОДНЯ", [7]],
+      ["2026-09-17", "ПРОСРОЧЕНО", [5, 6]],
+      ["2026-09-15", "ПРОСРОЧЕНО", [2]],
     ]);
   });
 
@@ -67,22 +86,47 @@ describe("initialLoaderTransport", () => {
   });
 });
 
+const queueFilter = (fields: Partial<LoaderQueueFilter> = {}): LoaderQueueFilter => ({
+  day: "",
+  overdue: "",
+  overdue_from: "",
+  search: "",
+  ...fields,
+});
+
 describe("withQueueRow", () => {
+  const ids = (rows: { id: number }[]) => rows.map((row) => row.id);
+
   it("puts a returned order back in the server order: planned day, then number", () => {
     const rows = [makeLoaderOrder(3, { planned_on: "2026-09-17" }), makeLoaderOrder(9, { planned_on: "2026-09-18" })];
 
-    expect(withQueueRow(rows, makeLoaderOrder(5, { planned_on: "2026-09-18" })).map((row) => row.id)).toEqual([
-      3, 5, 9,
-    ]);
-    expect(withQueueRow(rows, makeLoaderOrder(1, { planned_on: "2026-09-20" })).map((row) => row.id)).toEqual([
-      3, 9, 1,
-    ]);
+    expect(ids(withQueueRow(rows, makeLoaderOrder(5, { planned_on: "2026-09-18" }), queueFilter()))).toEqual([3, 5, 9]);
+    expect(ids(withQueueRow(rows, makeLoaderOrder(1, { planned_on: "2026-09-20" }), queueFilter()))).toEqual([3, 9, 1]);
+    // Окно просрочки без дня сервер не учитывает — порядок тот же.
+    const windowOnly = queueFilter({ overdue_from: "2026-09-15" });
+    expect(ids(withQueueRow(rows, makeLoaderOrder(5, { planned_on: "2026-09-18" }), windowOnly))).toEqual([3, 5, 9]);
+  });
+
+  it("under «Сегодня» with recent overdue: today first, then yesterday and older, then number", () => {
+    const today = "2026-09-18";
+    const filter = queueFilter({ day: today, overdue_from: "2026-09-15" });
+    const rows = [
+      makeLoaderOrder(4, { planned_on: today }),
+      makeLoaderOrder(8, { planned_on: today }),
+      makeLoaderOrder(5, { planned_on: "2026-09-17" }),
+      makeLoaderOrder(2, { planned_on: "2026-09-15" }),
+    ];
+
+    expect(ids(withQueueRow(rows, makeLoaderOrder(6, { planned_on: today }), filter))).toEqual([4, 6, 8, 5, 2]);
+    expect(ids(withQueueRow(rows, makeLoaderOrder(9, { planned_on: today }), filter))).toEqual([4, 8, 9, 5, 2]);
+    expect(ids(withQueueRow(rows, makeLoaderOrder(3, { planned_on: "2026-09-17" }), filter))).toEqual([4, 8, 3, 5, 2]);
+    expect(ids(withQueueRow(rows, makeLoaderOrder(1, { planned_on: "2026-09-16" }), filter))).toEqual([4, 8, 5, 1, 2]);
   });
 
   it("replaces a row that is already shown", () => {
     const rows = [makeLoaderOrder(3, { truck_number: "" }), makeLoaderOrder(4)];
 
-    const next = withQueueRow(rows, makeLoaderOrder(3, { truck_number: "403BJN13" }));
+    const next = withQueueRow(rows, makeLoaderOrder(3, { truck_number: "403BJN13" }), queueFilter());
 
     expect(next.map((row) => [row.id, row.truck_number])).toEqual([
       [3, "403BJN13"],
@@ -94,12 +138,7 @@ describe("withQueueRow", () => {
 describe("inQueueFilter", () => {
   const today = "2026-09-18";
   const planned = (day: string) => makeLoaderOrder(1, { planned_on: day });
-  const filter = (fields: { day?: string; overdue?: string; search?: string }) => ({
-    day: "",
-    overdue: "",
-    search: "",
-    ...fields,
-  });
+  const filter = queueFilter;
 
   it("matches the day the queue shows, the way the server filters", () => {
     expect(inQueueFilter(planned(today), filter({ day: today }), today)).toBe(true);
@@ -111,6 +150,16 @@ describe("inQueueFilter", () => {
     expect(inQueueFilter(planned("2026-09-17"), filter({ overdue: "1" }), today)).toBe(true);
     expect(inQueueFilter(planned(today), filter({ overdue: "1" }), today)).toBe(false);
     expect(inQueueFilter(planned("2026-01-01"), filter({}), today)).toBe(true);
+  });
+
+  it("under «Сегодня» also keeps the recent overdue window, up to yesterday", () => {
+    const window = filter({ day: today, overdue_from: "2026-09-15" });
+
+    expect(inQueueFilter(planned(today), window, today)).toBe(true);
+    expect(inQueueFilter(planned("2026-09-17"), window, today)).toBe(true);
+    expect(inQueueFilter(planned("2026-09-15"), window, today)).toBe(true);
+    expect(inQueueFilter(planned("2026-09-14"), window, today)).toBe(false);
+    expect(inQueueFilter(planned("2026-09-19"), window, today)).toBe(false);
   });
 
   it("leaves a search to the server", () => {

@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from django.db.models import F
+from django.db.models import Case, F, IntegerField, Q, Value, When
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -122,17 +122,27 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
         ``day`` — плановый день (дата приезда или создания). ``overdue=1`` — только
         просроченные: их грузчик разбирает отдельно, чтобы старьё не закрывало
-        сегодняшнюю работу. Без параметров — вся очередь.
+        сегодняшнюю работу. ``overdue_from`` вместе с ``day`` — ещё и просрочка
+        с этой даты по вчера: под днём, от вчерашних к старшим, а не весь хвост.
+        Без параметров — вся очередь.
         """
         today = timezone.localdate()
+        params = request.query_params
         queryset = self._tab(self.get_queryset()).filter(status__in=AWAITING_SHIPMENT_STATUSES)
-        if request.query_params.get("overdue") == "1":
+        if params.get("overdue") == "1":
             queryset = queryset.filter(planned_on__lt=today)
-        day = parse_iso_date(request.query_params.get("day"))
+        ordering = ("planned_on", "id")
+        day = parse_iso_date(params.get("day"))
         if day:
-            queryset = queryset.filter(planned_on=day)
-        queryset = filter_order_search(queryset, parse_search_param(request.query_params.get("search")))
-        return self._page(queryset.order_by("planned_on", "id"))
+            shown = Q(planned_on=day)
+            overdue_from = parse_iso_date(params.get("overdue_from"))
+            if overdue_from:
+                shown |= Q(planned_on__gte=overdue_from, planned_on__lt=today)
+                day_first = Case(When(planned_on=day, then=Value(0)), default=Value(1), output_field=IntegerField())
+                ordering = (day_first, F("planned_on").desc(), "id")
+            queryset = queryset.filter(shown)
+        queryset = filter_order_search(queryset, parse_search_param(params.get("search")))
+        return self._page(queryset.order_by(*ordering))
 
     def _shipped_in_period(self, queryset):
         """Фильтр истории: отгруженные за период по времени выезда (по умолчанию — сегодня) и поиск."""

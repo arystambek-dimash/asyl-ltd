@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +7,7 @@ import type { ShipmentSourcesSheet } from "@/components/loader/shipment-sources-
 import type { DispatchSource, DispatchSources, LoaderOrder, SourceAnswers } from "@/lib/loader";
 import { pagedState } from "@/test-utils/api";
 import { makeLoaderOrder } from "@/test-utils/factories";
-import { formatTime, todayLocalIsoDate } from "@/lib/utils";
+import { formatTime, shiftIsoDate, todayLocalIsoDate } from "@/lib/utils";
 import type { WagonReportScope, WagonReportSent } from "@/lib/wagon-report";
 
 import LoaderPage from "./page";
@@ -179,7 +179,10 @@ const order = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder =>
     ...fields,
   });
 
-function paged(items: LoaderOrder[], fields: { refreshError?: string; applyItems?: typeof mocks.applyItems } = {}) {
+function paged(
+  items: LoaderOrder[],
+  fields: { refreshError?: string; applyItems?: typeof mocks.applyItems; hasMore?: boolean } = {},
+) {
   return pagedState(items, { reload: mocks.reload, refresh: mocks.refresh, applyItems: mocks.applyItems, ...fields });
 }
 
@@ -508,17 +511,213 @@ describe("LoaderPage", () => {
     );
     render(<LoaderPage />);
 
-    // Очередь спрашивается за сегодня; параллельный вызов истории с null не мешает.
+    // Очередь спрашивается за сегодня вместе с просрочкой за 3 дня; параллельный вызов истории с null не мешает.
     const lastQueueUrl = () => queueUrls().at(-1);
     const today = todayLocalIsoDate();
-    expect(lastQueueUrl()).toBe(`/loader/queue/?transport=truck&day=${today}`);
+    expect(lastQueueUrl()).toBe(`/loader/queue/?transport=truck&day=${today}&overdue_from=${shiftIsoDate(today, -3)}`);
     expect(screen.getByRole("button", { name: "Сегодня" })).toHaveAttribute("aria-pressed", "true");
 
+    // Весь хвост — по-прежнему отдельной кнопкой, без окна.
     await user.click(await screen.findByRole("button", { name: /Просрочено · 3/ }));
     expect(lastQueueUrl()).toBe("/loader/queue/?transport=truck&overdue=1");
 
     await user.click(screen.getByRole("button", { name: "Все" }));
     expect(lastQueueUrl()).toBe("/loader/queue/?transport=truck");
+
+    await user.click(screen.getByRole("button", { name: "Завтра" }));
+    expect(lastQueueUrl()).toBe(`/loader/queue/?transport=truck&day=${shiftIsoDate(today, 1)}`);
+    expect(screen.queryByLabelText("Просроченные за")).not.toBeInTheDocument();
+  });
+
+  describe("просрочка за последние дни под «Сегодня»", () => {
+    const today = todayLocalIsoDate();
+    const yesterday = shiftIsoDate(today, -1);
+    const withQueue = (rows: LoaderOrder[]) =>
+      mocks.paged.mockImplementation((url: string | null) =>
+        url?.startsWith("/loader/queue/") ? paged(rows) : paged([]),
+      );
+    const before = (first: HTMLElement, second: HTMLElement) =>
+      Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    it("ниже сегодняшних — блок «Просрочено» с окном в 3 дня", () => {
+      withQueue([order(701, { planned_on: today }), order(702, { planned_on: yesterday })]);
+      render(<LoaderPage />);
+
+      const heading = screen.getByRole("heading", { name: "Просрочено" });
+      expect(screen.getByLabelText("Просроченные за")).toHaveValue("3");
+      expect(before(screen.getByRole("button", { name: /№701/ }), heading)).toBe(true);
+      expect(before(heading, screen.getByRole("button", { name: /№702/ }))).toBe(true);
+      expect(screen.queryByText(/Просроченных за/)).not.toBeInTheDocument();
+    });
+
+    it("окно меняется, запоминается и у каждой вкладки своё", async () => {
+      const user = userEvent.setup();
+      withQueue([order(702, { planned_on: yesterday })]);
+      const { unmount } = render(<LoaderPage />);
+
+      await user.selectOptions(screen.getByLabelText("Просроченные за"), "7");
+      expect(queueUrls().at(-1)).toBe(
+        `/loader/queue/?transport=truck&day=${today}&overdue_from=${shiftIsoDate(today, -7)}`,
+      );
+      expect(localStorage.getItem("loader:overdue-days:truck:1")).toBe("7");
+
+      // Вагоны — со своим окном: по умолчанию 3 дня; счётчик вкладки — тем же окном.
+      expect(mocks.apiUrls).toContainEqual(
+        `/loader/queue/?transport=train&day=${today}&overdue_from=${shiftIsoDate(today, -3)}&page=1&page_size=1`,
+      );
+      await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
+      expect(queueUrls().at(-1)).toBe(
+        `/loader/queue/?transport=train&day=${today}&overdue_from=${shiftIsoDate(today, -3)}`,
+      );
+      expect(screen.getByLabelText("Просроченные за")).toHaveValue("3");
+
+      unmount();
+      localStorage.setItem("loader:transport:1", "truck");
+      render(<LoaderPage />);
+      expect(queueUrls().at(-1)).toBe(
+        `/loader/queue/?transport=truck&day=${today}&overdue_from=${shiftIsoDate(today, -7)}`,
+      );
+      expect(screen.getByLabelText("Просроченные за")).toHaveValue("7");
+    });
+
+    it("на сегодня пусто, а просрочка есть — не «Все заказы отгружены», а блок просрочки", () => {
+      withQueue([order(702, { planned_on: yesterday })]);
+      render(<LoaderPage />);
+
+      expect(screen.queryByText("Все заказы отгружены")).not.toBeInTheDocument();
+      expect(screen.queryByText("Ничего не найдено")).not.toBeInTheDocument();
+      expect(screen.getByText("На сегодня ничего нет")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Просрочено" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /№702/ })).toBeInTheDocument();
+    });
+
+    it("просрочки за окно нет — тихая строка с выбором окна, чтобы расширить", async () => {
+      const user = userEvent.setup();
+      withQueue([order(701, { planned_on: today })]);
+      render(<LoaderPage />);
+
+      expect(screen.getByText("Просроченных за 3 дн. нет")).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Просрочено" })).not.toBeInTheDocument();
+      await user.selectOptions(screen.getByLabelText("Просроченные за"), "14");
+      expect(queueUrls().at(-1)).toBe(
+        `/loader/queue/?transport=truck&day=${today}&overdue_from=${shiftIsoDate(today, -14)}`,
+      );
+      expect(screen.getByText("Просроченных за 14 дн. нет")).toBeInTheDocument();
+    });
+
+    it("пусто и сегодня, и за окно — пустая очередь и та же тихая строка", () => {
+      withQueue([]);
+      render(<LoaderPage />);
+
+      expect(screen.queryByText("Все заказы отгружены")).not.toBeInTheDocument();
+      expect(screen.getByText("Просроченных за 3 дн. нет")).toBeInTheDocument();
+      expect(screen.getByLabelText("Просроченные за")).toHaveValue("3");
+    });
+
+    it("следующая страница ещё не загружена — «просрочки нет» не утверждает", () => {
+      mocks.paged.mockImplementation((url: string | null) =>
+        url?.startsWith("/loader/queue/") ? paged([order(701, { planned_on: today })], { hasMore: true }) : paged([]),
+      );
+      render(<LoaderPage />);
+
+      expect(screen.queryByText(/Просроченных за/)).not.toBeInTheDocument();
+    });
+
+    it("у вагонов — так же", async () => {
+      const user = userEvent.setup();
+      withQueue([
+        order(801, { transport_type: "train", planned_on: today }),
+        order(802, { transport_type: "train", planned_on: yesterday }),
+      ]);
+      render(<LoaderPage />);
+      await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
+
+      const heading = screen.getByRole("heading", { name: "Просрочено" });
+      expect(before(screen.getByRole("button", { name: /№801/ }), heading)).toBe(true);
+      expect(before(heading, screen.getByRole("button", { name: /№802/ }))).toBe(true);
+      await user.selectOptions(screen.getByLabelText("Просроченные за"), "1");
+      expect(queueUrls().at(-1)).toBe(
+        `/loader/queue/?transport=train&day=${today}&overdue_from=${shiftIsoDate(today, -1)}`,
+      );
+      expect(localStorage.getItem("loader:overdue-days:train:1")).toBe("1");
+    });
+
+    it("только под «Сегодня»: в «Просрочено», «Все» и выбранном дне блока и окна нет", async () => {
+      const user = userEvent.setup();
+      withQueue([order(701, { planned_on: today }), order(702, { planned_on: yesterday })]);
+      render(<LoaderPage />);
+      expect(screen.getByRole("heading", { name: "Просрочено" })).toBeInTheDocument();
+      const noRecentOverdue = () => {
+        expect(screen.queryByRole("heading", { name: "Просрочено" })).not.toBeInTheDocument();
+        expect(screen.queryByLabelText("Просроченные за")).not.toBeInTheDocument();
+        expect(screen.queryByText(/Просроченных за/)).not.toBeInTheDocument();
+      };
+
+      await user.click(screen.getByRole("button", { name: /Просрочено · / }));
+      noRecentOverdue();
+
+      await user.click(screen.getByRole("button", { name: "Все" }));
+      noRecentOverdue();
+
+      fireEvent.change(screen.getByLabelText("Плановый день"), { target: { value: yesterday } });
+      expect(queueUrls().at(-1)).toBe(`/loader/queue/?transport=truck&day=${yesterday}`);
+      noRecentOverdue();
+    });
+
+    it("планшет простоял за полночь: «Сегодня» и «Завтра» — от нового дня, выбранный день остаётся", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date(2026, 9, 2, 23, 59));
+        const user = userEvent.setup();
+        withQueue([]);
+        const { rerender } = render(<LoaderPage />);
+        expect(queueUrls().at(-1)).toBe("/loader/queue/?transport=truck&day=2026-10-02&overdue_from=2026-09-29");
+
+        // День и окно просрочки считаются от одного и того же «сегодня».
+        vi.setSystemTime(new Date(2026, 9, 3, 0, 1));
+        rerender(<LoaderPage />);
+        expect(queueUrls().at(-1)).toBe("/loader/queue/?transport=truck&day=2026-10-03&overdue_from=2026-09-30");
+        expect(screen.getByLabelText("Плановый день")).toHaveValue("2026-10-03");
+
+        await user.click(screen.getByRole("button", { name: "Завтра" }));
+        expect(queueUrls().at(-1)).toBe("/loader/queue/?transport=truck&day=2026-10-04");
+        vi.setSystemTime(new Date(2026, 9, 4, 0, 1));
+        rerender(<LoaderPage />);
+        expect(queueUrls().at(-1)).toBe("/loader/queue/?transport=truck&day=2026-10-05");
+
+        // Выбранный вручную день — это дата, а не «сегодня»: полночь его не двигает.
+        fireEvent.change(screen.getByLabelText("Плановый день"), { target: { value: "2026-09-25" } });
+        expect(queueUrls().at(-1)).toBe("/loader/queue/?transport=truck&day=2026-09-25");
+        vi.setSystemTime(new Date(2026, 9, 5, 0, 1));
+        rerender(<LoaderPage />);
+        expect(queueUrls().at(-1)).toBe("/loader/queue/?transport=truck&day=2026-09-25");
+        expect(screen.getByLabelText("Плановый день")).toHaveValue("2026-09-25");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("отменённая отгрузка встаёт в блок по порядку сервера: сегодня, затем вчера и старше", async () => {
+      const user = userEvent.setup();
+      const queueApply = vi.fn();
+      mocks.paged.mockImplementation((url: string | null) => {
+        if (url?.startsWith("/loader/queue/"))
+          return paged([order(624, { planned_on: today })], { applyItems: queueApply });
+        if (url?.startsWith("/loader/history/"))
+          return paged([order(620, { status: "shipped", shipped_at: `${today}T11:31:00+05:00`, can_rollback: true })]);
+        return paged([]);
+      });
+      mocks.post.mockResolvedValue({ data: order(620, { planned_on: yesterday }) });
+      render(<LoaderPage />);
+
+      await user.click(screen.getByRole("tab", { name: /История/ }));
+      await user.click(screen.getByRole("button", { name: /Отменить$/ }));
+
+      await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/loader/orders/620/rollback/", {}));
+      const [putBack] = queueApply.mock.calls.at(-1)!;
+      const rows = [order(624, { planned_on: today }), order(610, { planned_on: shiftIsoDate(today, -2) })];
+      expect(putBack(rows).map((row: LoaderOrder) => row.id)).toEqual([624, 620, 610]);
+    });
   });
 
   it("группирует очередь по дням: просрочка отдельно от сегодняшних", async () => {

@@ -4,12 +4,14 @@ import {
   dispatchSourcesPayload,
   loadWeight,
   readStoredLoaderTransport,
+  readStoredOverdueDays,
   sameSourceContext,
   shortageNote,
   sourcesText,
   splitLabel,
   splitRemainder,
   storeLoaderTransport,
+  storeOverdueDays,
   warehouseTone,
   type DispatchSources,
 } from "./loader";
@@ -36,6 +38,18 @@ describe("loader tab storage", () => {
     expect(readStoredLoaderTransport(8)).toBeNull();
   });
 
+  it("remembers the overdue window per user and per tab, 3 days by default", () => {
+    expect(readStoredOverdueDays("truck", 7)).toBe(3);
+    storeOverdueDays(7, "truck", 7);
+
+    expect(readStoredOverdueDays("truck", 7)).toBe(7);
+    expect(readStoredOverdueDays("train", 7)).toBe(3);
+    expect(readStoredOverdueDays("truck", 8)).toBe(3);
+    // Не из выбора (старое или чужое значение) — окно по умолчанию.
+    localStorage.setItem("loader:overdue-days:truck:7", "5");
+    expect(readStoredOverdueDays("truck", 7)).toBe(3);
+  });
+
   it("survives a browser without storage", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("denied");
@@ -46,6 +60,8 @@ describe("loader tab storage", () => {
 
     expect(() => storeLoaderTransport("truck", 7)).not.toThrow();
     expect(readStoredLoaderTransport(7)).toBeNull();
+    expect(() => storeOverdueDays(7, "truck", 7)).not.toThrow();
+    expect(readStoredOverdueDays("truck", 7)).toBe(3);
   });
 });
 

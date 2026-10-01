@@ -21,7 +21,7 @@ export function initialLoaderTransport(allowed: LoaderTransport[], stored: strin
   return allowed.find((key) => key === stored) ?? allowed[0] ?? null;
 }
 
-interface LoaderDayGroup {
+export interface LoaderDayGroup {
   day: string;
   /** «ПРОСРОЧЕНО», «СЕГОДНЯ», «ЗАВТРА» или дата — крупная плашка над карточками. */
   label: string;
@@ -39,8 +39,9 @@ export function plannedDayLabel(day: string, today: string): string {
 }
 
 /**
- * Очередь грузчика по дням: сначала просроченные (самые старые сверху),
- * потом сегодня, завтра и дальше. Внутри дня порядок остаётся серверным.
+ * Очередь грузчика по дням в серверном порядке: обычно от старых к новым
+ * (просроченные сверху), а под «Сегодня» с окном просрочки — сегодня, затем
+ * вчера и старше. Внутри дня порядок тоже серверный.
  */
 export function groupByPlannedDay(orders: LoaderOrder[], today: string): LoaderDayGroup[] {
   const byDay = new Map<string, LoaderOrder[]>();
@@ -48,45 +49,62 @@ export function groupByPlannedDay(orders: LoaderOrder[], today: string): LoaderD
     const day = order.planned_on;
     byDay.set(day, [...(byDay.get(day) ?? []), order]);
   }
-  return [...byDay.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([day, group]) => ({
-      day,
-      label: plannedDayLabel(day, today),
-      date: formatIsoDayMonth(day),
-      overdue: day < today,
-      orders: group,
-    }));
+  return [...byDay.entries()].map(([day, group]) => ({
+    day,
+    label: plannedDayLabel(day, today),
+    date: formatIsoDayMonth(day),
+    overdue: day < today,
+    orders: group,
+  }));
 }
 
-/** Фильтр очереди — как уходит в `?day=&overdue=1&search=`; пустое — без условия. */
+/** Фильтр очереди — как уходит в `?day=&overdue=1&overdue_from=&search=`; пустое — без условия. */
 export interface LoaderQueueFilter {
   day: string;
   overdue: string;
+  /** Вместе с `day` — ещё и просрочка с этой даты по вчера («Сегодня»); без `day` не действует. */
+  overdue_from: string;
   search: string;
+}
+
+/** Под днём — ещё и просрочка с `overdue_from` по вчера: так сервер читает пару `day` + `overdue_from`. */
+function withRecentOverdue(filter: LoaderQueueFilter): boolean {
+  return Boolean(filter.day && filter.overdue_from);
 }
 
 /**
  * Подходит ли заказ под показанную очередь — тем же правилом, что сервер:
- * плановый день и «Просрочено». Поиск сверяет только сервер — тогда `false`,
- * строку вернёт тихое обновление.
+ * плановый день (с окном недавней просрочки) и «Просрочено». Поиск сверяет
+ * только сервер — тогда `false`, строку вернёт тихое обновление.
  */
 export function inQueueFilter(order: LoaderOrder, filter: LoaderQueueFilter, today: string): boolean {
   if (filter.search) return false;
   const day = order.planned_on;
-  return (!filter.overdue || day < today) && (!filter.day || day === filter.day);
+  const recentOverdue = withRecentOverdue(filter) && day >= filter.overdue_from && day < today;
+  return (!filter.overdue || day < today) && (!filter.day || day === filter.day || recentOverdue);
+}
+
+/**
+ * Серверный порядок очереди: плановый день по возрастанию, затем номер. Под
+ * днём с окном просрочки — сначала сам день, потом просрочка от вчера к старшим.
+ */
+function compareQueueRows(a: LoaderOrder, b: LoaderOrder, filter: LoaderQueueFilter): number {
+  if (withRecentOverdue(filter)) {
+    const dayFirst = Number(a.planned_on !== filter.day) - Number(b.planned_on !== filter.day);
+    if (dayFirst) return dayFirst;
+    if (a.planned_on !== b.planned_on) return b.planned_on.localeCompare(a.planned_on);
+  } else if (a.planned_on !== b.planned_on) {
+    return a.planned_on.localeCompare(b.planned_on);
+  }
+  return a.id - b.id;
 }
 
 /**
  * Вернуть заказ в показанную очередь (ответ отмены отгрузки) в серверном
- * порядке: плановый день, затем номер. Строку с тем же номером заменяет.
+ * порядке для её фильтра. Строку с тем же номером заменяет.
  */
-export function withQueueRow(rows: LoaderOrder[], row: LoaderOrder): LoaderOrder[] {
-  return insertOrdered(
-    rows,
-    row,
-    (order) => order.planned_on > row.planned_on || (order.planned_on === row.planned_on && order.id > row.id),
-  );
+export function withQueueRow(rows: LoaderOrder[], row: LoaderOrder, filter: LoaderQueueFilter): LoaderOrder[] {
+  return insertOrdered(rows, row, (order) => compareQueueRows(order, row, filter) > 0);
 }
 
 /** День выезда отгрузки — как его отдал сервер (местное время). */

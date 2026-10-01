@@ -73,6 +73,24 @@ export function storeLoaderTransport(transport: LoaderOrder["transport_type"], u
   storeChoice(userChoiceKey("loader:transport", userId), transport);
 }
 
+/** «Просрочено» под «Сегодня»: за сколько последних дней. Весь хвост — отдельной кнопкой, иначе спам. */
+export const RECENT_OVERDUE_DAYS = [1, 3, 7, 14] as const;
+/** Окно, пока грузчик не выбрал своё. */
+export const DEFAULT_RECENT_OVERDUE_DAYS = 3;
+
+const overdueDaysKey = (transport: LoaderOrder["transport_type"], userId: number) =>
+  userChoiceKey(`loader:overdue-days:${transport}`, userId);
+
+/** Окно просрочки — своё у каждого на общем планшете и у каждой вкладки «Фуры | Вагоны». */
+export function readStoredOverdueDays(transport: LoaderOrder["transport_type"], userId: number): number {
+  const stored = Number(readStoredChoice(overdueDaysKey(transport, userId)));
+  return RECENT_OVERDUE_DAYS.find((days) => days === stored) ?? DEFAULT_RECENT_OVERDUE_DAYS;
+}
+
+export function storeOverdueDays(days: number, transport: LoaderOrder["transport_type"], userId: number) {
+  storeChoice(overdueDaysKey(transport, userId), String(days));
+}
+
 export function loaderUrl(path: "queue" | "history", params: Record<string, string>) {
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value));
   const suffix = query.toString();

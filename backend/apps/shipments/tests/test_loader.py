@@ -80,6 +80,80 @@ def test_queue_separates_overdue_from_today(auth_client, loader, product, make_o
     assert {row["id"] for row in api.get("/api/loader/queue/").data} == {fresh.pk, late.pk}
 
 
+def test_today_brings_recent_overdue_below_it(auth_client, loader, product, make_order):
+    """«Сегодня» с ``overdue_from``: под сегодняшними — просрочка за последние дни, а не весь хвост."""
+    today = timezone.localdate()
+
+    def days_ago(days):
+        return today - timedelta(days=days)
+
+    three_days = make_order(product, arrival_date=days_ago(3))
+    fresh = make_order(product, arrival_date=today)
+    yesterday = make_order(product, arrival_date=days_ago(1))
+    old = make_order(product, arrival_date=days_ago(4))
+    fresh_second = make_order(product, arrival_date=today)
+    yesterday_second = make_order(product, arrival_date=days_ago(1))
+    tomorrow = make_order(product, arrival_date=today + timedelta(days=1))
+    api = auth_client(loader)
+    window = {"day": str(today), "overdue_from": str(days_ago(3))}
+
+    # Сегодняшние сверху, под ними просрочка от вчера к старшим; внутри дня — по номеру.
+    assert [row["id"] for row in api.get("/api/loader/queue/", window).data] == [
+        fresh.pk, fresh_second.pk, yesterday.pk, yesterday_second.pk, three_days.pk,
+    ]
+    # Тот же порядок постранично: счётчик — сегодня вместе с окном просрочки.
+    page = api.get("/api/loader/queue/", {**window, "page": 1, "page_size": 2}).data
+    assert (page["count"], [row["id"] for row in page["results"]]) == (5, [fresh.pk, fresh_second.pk])
+    # Окно в один день — только вчерашние.
+    assert [row["id"] for row in api.get(
+        "/api/loader/queue/", {"day": str(today), "overdue_from": str(days_ago(1))}).data] == [
+        fresh.pk, fresh_second.pk, yesterday.pk, yesterday_second.pk,
+    ]
+    # Без дня окно ни на что не влияет: «Все» и «Просрочено» — как раньше, от старых к новым.
+    assert [row["id"] for row in api.get("/api/loader/queue/", {"overdue_from": str(days_ago(3))}).data] == [
+        old.pk, three_days.pk, yesterday.pk, yesterday_second.pk, fresh.pk, fresh_second.pk, tomorrow.pk,
+    ]
+    assert [row["id"] for row in api.get(
+        "/api/loader/queue/", {"overdue": "1", "overdue_from": str(days_ago(3))}).data] == [
+        old.pk, three_days.pk, yesterday.pk, yesterday_second.pk,
+    ]
+    # Окно не тянет просрочку в поиск чужого дня: поиск сужает всё вместе.
+    # Буквы номера, а не цифры: цифры совпали бы и с номером какого-нибудь заказа.
+    Order.objects.filter(pk=yesterday_second.pk).update(truck_number="612BEX13")
+    assert [row["id"] for row in api.get("/api/loader/queue/", {**window, "search": "BEX"}).data] == [
+        yesterday_second.pk,
+    ]
+
+
+def test_recent_overdue_window_rejects_a_bad_date(auth_client, loader, product, make_order):
+    make_order(product)
+    today = str(timezone.localdate())
+
+    response = auth_client(loader).get("/api/loader/queue/", {"day": today, "overdue_from": "вчера"})
+
+    assert (response.status_code, response.data["code"]) == (400, "bad_date")
+
+
+def test_recent_overdue_keeps_area_and_department_scope(
+    auth_client, user_with_perms, departments, product, make_order,
+):
+    mill, city = departments
+    today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
+    own = make_order(product, arrival_date=yesterday)
+    foreign = make_order(product, arrival_date=yesterday)
+    wagon = make_order(product, arrival_date=yesterday, transport_type="train")
+    Client.objects.filter(pk__in=[own.client_id, wagon.client_id]).update(department=mill)
+    Client.objects.filter(pk=foreign.client_id).update(department=city)
+    trucks_loader = user_with_perms(
+        "mill-trucks-loader", codes=["loader.view", "loader.confirm", "loader.trucks"], department=mill)
+
+    rows = auth_client(trucks_loader).get(
+        "/api/loader/queue/", {"day": str(today), "overdue_from": str(today - timedelta(days=3))}).data
+
+    assert [row["id"] for row in rows] == [own.pk]
+
+
 def test_one_button_ships_ordered_quantity_and_prints_waybill(auth_client, loader, product, make_order):
     order = make_order(product, quantity=3)
     api = auth_client(loader)
@@ -335,16 +409,23 @@ def test_queue_suggests_previous_pairs_of_the_client(auth_client, loader, produc
     assert rows[0]["transport_suggestions"] == [{"truck_number": "07KG695ADT", "trailer_number": "07KG837PB"}]
 
 
+@pytest.mark.parametrize("recent_overdue", [False, True], ids=["all", "today-with-recent-overdue"])
 def test_queue_query_count_does_not_grow_with_rows(
-    auth_client, loader, product, django_assert_max_num_queries, make_order,
+    auth_client, loader, product, django_assert_max_num_queries, make_order, recent_overdue,
 ):
+    today = timezone.localdate()
+    # «Сегодня» с окном просрочки — тот же один запрос очереди, без доплаты за строку.
+    params = {"day": str(today), "overdue_from": str(today - timedelta(days=3))} if recent_overdue else {}
+
     def fill(count):
         for index in range(count):
             previous = make_order(product, status="shipped", truck_number=f"{100 + index}ABC01")
             # Номер указал клиент: transport_locked читает владельца номера.
             waiting = Order.objects.create(
                 client=previous.client, status="confirmed",
-                truck_number=f"{200 + index}ABC01", truck_number_set_by=previous.client.user)
+                truck_number=f"{200 + index}ABC01", truck_number_set_by=previous.client.user,
+                # Под окном половина строк — вчерашняя просрочка.
+                arrival_date=today - timedelta(days=index % 2) if recent_overdue else None)
             OrderItem.objects.create(order=waiting, product=product, quantity=1, unit_price="10.00")
 
     api = auth_client(loader)
@@ -353,7 +434,7 @@ def test_queue_query_count_does_not_grow_with_rows(
         assert len(api.get("/api/loader/queue/").data) == 2
     fill(5)
     with django_assert_max_num_queries(len(small.captured_queries)):
-        assert len(api.get("/api/loader/queue/").data) == 7
+        assert len(api.get("/api/loader/queue/", params).data) == 7
 
 
 def test_dispatch_accepts_the_clients_own_number_in_another_spelling(

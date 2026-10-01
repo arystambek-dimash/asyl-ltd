@@ -26,16 +26,21 @@ import { DataGate, FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { SearchInput } from "@/components/ui/search-input";
 import { LoadMore } from "@/components/ui/load-more";
+import { Select } from "@/components/ui/select";
 import { Tabs } from "@/components/ui/tabs";
 import { api, apiError, apiErrorCode, blobApiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import {
+  DEFAULT_RECENT_OVERDUE_DAYS,
   loaderUrl,
   openWaybill,
   readStoredLoaderTransport,
+  readStoredOverdueDays,
+  RECENT_OVERDUE_DAYS,
   sameSourceContext,
   SOURCE_RESTART_CODES,
   storeLoaderTransport,
+  storeOverdueDays,
   type DispatchSource,
   type DispatchSources,
   type LoaderOrder,
@@ -51,6 +56,7 @@ import {
   shippedDay,
   withHistoryRow,
   withQueueRow,
+  type LoaderDayGroup,
   type LoaderQueueFilter,
   type LoaderTransport,
 } from "@/lib/loader-groups";
@@ -99,7 +105,21 @@ function LoaderPageInner() {
   const debouncedSearch = useDebounced(search.trim());
   // Очередь открывается на сегодняшнем дне: месячная просрочка не должна закрывать работу.
   const [queueFilter, setQueueFilter] = useState<"today" | "tomorrow" | "overdue" | "all" | "date">("today");
-  const [queueDay, setQueueDay] = useState(today);
+  // Выбранная вручную дата; «Сегодня» и «Завтра» считаются от живого дня — планшет переживает полночь.
+  const [pickedDay, setPickedDay] = useState("");
+  const queueDay = {
+    today,
+    tomorrow: shiftIsoDate(today, 1),
+    date: pickedDay,
+    overdue: "",
+    all: "",
+  }[queueFilter];
+  // Под «Сегодня» — ещё и просрочка за последние дни (по умолчанию 3), а не весь хвост:
+  // окно своё у каждой вкладки «Фуры | Вагоны».
+  const [overdueDays, setOverdueDays] = useState(() => ({
+    truck: me ? readStoredOverdueDays("truck", me.id) : DEFAULT_RECENT_OVERDUE_DAYS,
+    train: me ? readStoredOverdueDays("train", me.id) : DEFAULT_RECENT_OVERDUE_DAYS,
+  }));
   const [range, setRange] = useState({ from: today, to: today });
   // Заказ, каким его открыли; на экране — свежая строка очереди.
   const [openedOrder, setOpenedOrder] = useState<LoaderOrder | null>(null);
@@ -125,11 +145,13 @@ function LoaderPageInner() {
   // До листа кнопка говорит «Проверяем склады…», а не надпись отгрузки по умолчанию.
   const [checkingSources, setCheckingSources] = useState(false);
 
-  const queueParams: LoaderQueueFilter = {
-    day: queueFilter === "overdue" || queueFilter === "all" ? "" : queueDay,
+  const queueParamsOf = (key: LoaderTransport | null): LoaderQueueFilter => ({
+    day: queueDay,
     overdue: queueFilter === "overdue" ? "1" : "",
+    overdue_from: queueFilter === "today" && key ? shiftIsoDate(today, -overdueDays[key]) : "",
     search: debouncedSearch,
-  };
+  });
+  const queueParams = queueParamsOf(transport);
   const queue = usePagedApi<LoaderOrder>(transport ? loaderUrl("queue", { transport, ...queueParams }) : null);
   // Просроченные не теряются: их число видно на отдельной кнопке.
   const overdue = useApi<{ count: number }>(
@@ -142,7 +164,7 @@ function LoaderPageInner() {
   const otherTransport = transports.find((key) => key !== transport) ?? null;
   const otherQueue = useApi<{ count: number }>(
     otherTransport
-      ? loaderUrl("queue", { transport: otherTransport, ...queueParams, page: "1", page_size: "1" })
+      ? loaderUrl("queue", { transport: otherTransport, ...queueParamsOf(otherTransport), page: "1", page_size: "1" })
       : null,
   );
   const history = usePagedApi<LoaderOrder>(
@@ -195,6 +217,12 @@ function LoaderPageInner() {
   function refreshCounters() {
     void overdue.reload();
     void otherQueue.reload();
+  }
+
+  function pickOverdueDays(days: number) {
+    if (!transport) return;
+    setOverdueDays((current) => ({ ...current, [transport]: days }));
+    if (me) storeOverdueDays(days, transport, me.id);
   }
 
   function switchTransport(key: LoaderTransport) {
@@ -358,7 +386,9 @@ function LoaderPageInner() {
       // Ответ отмены — строка очереди: заказ возвращается туда, если подходит
       // под показанный день, и уходит из истории. Под поиском правило знает
       // только сервер — сверяемся тихо.
-      queue.applyItems((rows) => (inQueueFilter(data, queueParams, today) ? withQueueRow(rows, data) : rows));
+      queue.applyItems((rows) =>
+        inQueueFilter(data, queueParams, today) ? withQueueRow(rows, data, queueParams) : rows,
+      );
       if (queueParams.search) void queue.refresh();
       if (view === "history") history.applyItems((rows) => rows.filter((row) => row.id !== data.id));
       refreshCounters();
@@ -553,19 +583,12 @@ function LoaderPageInner() {
           <div className="flex flex-wrap items-center gap-2">
             {(
               [
-                ["today", "Сегодня", today],
-                ["tomorrow", "Завтра", shiftIsoDate(today, 1)],
-                ["all", "Все", ""],
+                ["today", "Сегодня"],
+                ["tomorrow", "Завтра"],
+                ["all", "Все"],
               ] as const
-            ).map(([key, label, day]) => (
-              <Chip
-                key={key}
-                active={queueFilter === key}
-                onClick={() => {
-                  setQueueFilter(key);
-                  if (day) setQueueDay(day);
-                }}
-              >
+            ).map(([key, label]) => (
+              <Chip key={key} active={queueFilter === key} onClick={() => setQueueFilter(key)}>
                 {label}
               </Chip>
             ))}
@@ -581,10 +604,10 @@ function LoaderPageInner() {
             <Input
               type="date"
               aria-label="Плановый день"
-              value={queueFilter === "overdue" || queueFilter === "all" ? "" : queueDay}
+              value={queueDay}
               onChange={(event) => {
                 if (!event.target.value) return;
-                setQueueDay(event.target.value);
+                setPickedDay(event.target.value);
                 setQueueFilter("date");
               }}
               className="h-8 w-auto text-xs"
@@ -636,6 +659,7 @@ function LoaderPageInner() {
             today={today}
             onOpen={openOrder}
             filtered={queueFilter !== "all" || Boolean(debouncedSearch)}
+            recentOverdue={queueFilter === "today" ? { days: overdueDays[transport], onDays: pickOverdueDays } : null}
           />
         ) : (
           <HistoryList
@@ -656,61 +680,70 @@ function LoaderPageInner() {
   );
 }
 
-/** Очередь по дням: просроченные сверху, дальше сегодня и план. */
+/** Окно «Просрочено» под «Сегодня»: дней назад и его выбор. */
+type RecentOverdue = { days: number; onDays: (days: number) => void };
+
+/**
+ * Очередь по дням: просроченные сверху, дальше сегодня и план. Под «Сегодня» —
+ * наоборот: сегодняшние, ниже блок просрочки за последние дни с выбором окна.
+ */
 function QueueList({
   queue,
   today,
   onOpen,
   filtered,
+  recentOverdue,
 }: {
   queue: Paged;
   today: string;
   onOpen: (order: LoaderOrder) => void;
   filtered: boolean;
+  recentOverdue: RecentOverdue | null;
 }) {
   if (queue.loading && queue.items.length === 0) return <DataGate loading error="" onRetry={queue.reload} />;
   if (queue.error) return <DataGate loading={false} error={queue.error} onRetry={queue.reload} />;
+  const groups = groupByPlannedDay(queue.items, today);
+  const main = recentOverdue ? groups.filter((group) => !group.overdue) : groups;
+  const late = recentOverdue ? groups.filter((group) => group.overdue) : [];
+  // Просрочка идёт после сегодняшних: пока есть следующая страница, «нет» не утверждаем.
+  const noRecentOverdue = recentOverdue && late.length === 0 && !queue.hasMore && (
+    <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--muted-foreground)]">
+      <span>Просроченных за {recentOverdue.days} дн. нет</span>
+      <OverdueDaysSelect {...recentOverdue} />
+    </div>
+  );
   if (queue.items.length === 0) {
     return (
-      <Card className="flex flex-col items-center gap-2 py-14 text-center">
-        <PackageCheck className="size-8 text-[var(--muted-foreground)]" />
-        <div className="font-medium">{filtered ? "Ничего не найдено" : "Все заказы отгружены"}</div>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          {filtered ? "Измените день или поиск." : "Новые подтверждённые заказы появятся здесь."}
-        </p>
-      </Card>
+      <div className="flex flex-col gap-3">
+        <Card className="flex flex-col items-center gap-2 py-14 text-center">
+          <PackageCheck className="size-8 text-[var(--muted-foreground)]" />
+          <div className="font-medium">{filtered ? "Ничего не найдено" : "Все заказы отгружены"}</div>
+          <p className="text-sm text-[var(--muted-foreground)]">
+            {filtered ? "Измените день или поиск." : "Новые подтверждённые заказы появятся здесь."}
+          </p>
+        </Card>
+        {noRecentOverdue}
+      </div>
     );
   }
-  const groups = groupByPlannedDay(queue.items, today);
   return (
     <div className="flex flex-col gap-5">
-      {groups.map((group) => (
-        <section key={group.day} className="flex min-w-0 flex-col gap-3">
-          <div className="flex items-center gap-2">
-            <span
-              className={cn(
-                "rounded-lg px-2.5 py-1 text-xs font-bold uppercase tracking-wide",
-                group.overdue
-                  ? "bg-[var(--destructive)] text-white"
-                  : group.label
-                    ? "bg-[var(--foreground)] text-[var(--background)]"
-                    : "bg-[var(--muted)] text-[var(--foreground)]",
-              )}
-            >
-              {group.label || group.date}
-            </span>
-            <span className="text-xs text-[var(--muted-foreground)] tabular-nums">
-              {group.label && `${group.date} · `}
-              {group.orders.length} {pluralRu(group.orders.length, ["заказ", "заказа", "заказов"])}
-            </span>
-          </div>
-          <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-            {group.orders.map((order) => (
-              <LoaderOrderCard key={order.id} order={order} overdue={group.overdue} onOpen={onOpen} />
-            ))}
-          </div>
-        </section>
+      {main.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">На сегодня ничего нет</p>}
+      {main.map((group) => (
+        <DayGroup key={group.day} group={group} onOpen={onOpen} />
       ))}
+      {recentOverdue && late.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-4">
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--destructive)]">
+            <AlertTriangle className="size-4" aria-hidden /> Просрочено
+          </h2>
+          <OverdueDaysSelect {...recentOverdue} />
+        </div>
+      )}
+      {late.map((group) => (
+        <DayGroup key={group.day} group={group} onOpen={onOpen} />
+      ))}
+      {noRecentOverdue}
       <LoadMore
         shown={queue.items.length}
         total={queue.count}
@@ -719,6 +752,55 @@ function QueueList({
         onClick={queue.loadMore}
       />
     </div>
+  );
+}
+
+/** «за 3 дня»: окно просрочки под «Сегодня». */
+function OverdueDaysSelect({ days, onDays }: RecentOverdue) {
+  return (
+    <Select
+      aria-label="Просроченные за"
+      value={days}
+      onChange={(event) => onDays(Number(event.target.value))}
+      className="h-8 w-auto text-xs"
+    >
+      {RECENT_OVERDUE_DAYS.map((option) => (
+        <option key={option} value={option}>
+          за {option} {pluralRu(option, ["день", "дня", "дней"])}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
+/** Плашка дня («ПРОСРОЧЕНО», «СЕГОДНЯ», дата) и карточки его заказов. */
+function DayGroup({ group, onOpen }: { group: LoaderDayGroup; onOpen: (order: LoaderOrder) => void }) {
+  return (
+    <section className="flex min-w-0 flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            "rounded-lg px-2.5 py-1 text-xs font-bold uppercase tracking-wide",
+            group.overdue
+              ? "bg-[var(--destructive)] text-white"
+              : group.label
+                ? "bg-[var(--foreground)] text-[var(--background)]"
+                : "bg-[var(--muted)] text-[var(--foreground)]",
+          )}
+        >
+          {group.label || group.date}
+        </span>
+        <span className="text-xs text-[var(--muted-foreground)] tabular-nums">
+          {group.label && `${group.date} · `}
+          {group.orders.length} {pluralRu(group.orders.length, ["заказ", "заказа", "заказов"])}
+        </span>
+      </div>
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+        {group.orders.map((order) => (
+          <LoaderOrderCard key={order.id} order={order} overdue={group.overdue} onOpen={onOpen} />
+        ))}
+      </div>
+    </section>
   );
 }
 
