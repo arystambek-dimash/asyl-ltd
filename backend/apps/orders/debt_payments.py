@@ -165,8 +165,8 @@ def _record_slices(client, plan: dict, user, *, method: str, currency: str) -> d
     return payment_ids
 
 
-def _plan_payload(plan: dict, *, currency: str, method: str, payment_ids: dict[int, int]) -> dict:
-    """План в ответе API: деньги строками, заказы номерами."""
+def _plan_payload(plan: dict, *, currency: str, method: str | None, payment_ids: dict[int, int]) -> dict:
+    """План в ответе API: деньги строками, заказы номерами; ``method=None`` — предпросмотр."""
     return {
         "currency": currency,
         "method": method,
@@ -192,12 +192,16 @@ def _plan_payload(plan: dict, *, currency: str, method: str, payment_ids: dict[i
 
 
 @transaction.atomic
-def record_client_debt_payment(client, amount, user, *, method: str, currency: str, preview: bool = False) -> dict:
+def record_client_debt_payment(
+    client, amount, user, *, method: str | None = None, currency: str, preview: bool = False,
+) -> dict:
     """Внести оплату клиента: погасить его долг в ``currency`` от старого заказа к новому.
 
     ``preview`` — только план, без блокировок и записи; ``amount=None``
-    допустим лишь в нём («Весь долг»). Больше свободного остатка не принимаем:
-    аванса у клиента нет. Без ``preview`` — заказы клиента и клиент под
+    допустим лишь в нём («Весь долг»). Способ в предпросмотре не участвует:
+    касса спрашивает его после «Подтвердить», в ответе ``method`` — ``None``.
+    Больше свободного остатка не принимаем: аванса у клиента нет. Без
+    ``preview`` способ обязателен; заказы клиента и клиент под
     блокировкой (порядок как у удаления клиента), область отдела сотрудника
     (:func:`clients.services.lock_scoped_client`), затем по доле на заказ через
     :func:`services.record_staff_payment` с общей пометкой и одно событие
@@ -209,13 +213,15 @@ def record_client_debt_payment(client, amount, user, *, method: str, currency: s
             detail="Сумма оплаты должна быть положительным денежным значением",
             code="invalid_amount",
         )
-    if method not in Payment.SETTLED_ON_RECORD:
-        raise ValidationError({
-            "detail": "Внести оплату можно наличными, Kaspi-терминалом или удалённо",
-            "code": "debt_payment_method",
-        })
-    assert_payment_method_allowed(currency, method)
-    if not preview:
+    if preview:
+        method = None
+    else:
+        if method not in Payment.SETTLED_ON_RECORD:
+            raise ValidationError({
+                "detail": "Внести оплату можно наличными, Kaspi-терминалом или удалённо",
+                "code": "debt_payment_method",
+            })
+        assert_payment_method_allowed(currency, method)
         lock_client_orders(client.pk)
         client = lock_scoped_client(client.pk, user)
     orders = _debt_candidates(client.pk, currency)

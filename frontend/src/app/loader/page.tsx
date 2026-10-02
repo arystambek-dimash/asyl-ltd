@@ -12,6 +12,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
+import { CopyTruckReportButton } from "@/components/loader/copy-truck-report-button";
 import { LoaderOrderCard } from "@/components/loader/loader-order-card";
 import { LoaderOrderScreen, LoaderShippedScreen } from "@/components/loader/loader-order-screen";
 import { RailReportSheet } from "@/components/loader/rail-report-sheet";
@@ -32,6 +33,7 @@ import { api, apiError, apiErrorCode, blobApiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import {
   DEFAULT_RECENT_OVERDUE_DAYS,
+  hasTruckReport,
   loaderUrl,
   openWaybill,
   readStoredLoaderTransport,
@@ -43,6 +45,7 @@ import {
   storeOverdueDays,
   type DispatchSource,
   type DispatchSources,
+  type HistoryReportScope,
   type LoaderOrder,
   type SourceAnswers,
 } from "@/lib/loader";
@@ -67,7 +70,7 @@ import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { bagsLabel, cn, formatIsoDayMonth, pluralRu, shiftIsoDate, todayLocalIsoDate } from "@/lib/utils";
-import { reportMarks, withReportSent, type WagonReportScope, type WagonReportSent } from "@/lib/wagon-report";
+import { reportMarks, withReportSent, type WagonReportSent } from "@/lib/wagon-report";
 import { useAuth } from "@/store/auth";
 
 type View = "queue" | "history";
@@ -136,7 +139,7 @@ function LoaderPageInner() {
   // «Отгрузить по отчёту» открытого заказа: новый заказ по отчёту проводит Telegram-бот.
   const [railSheet, setRailSheet] = useState<{ orderId: number } | null>(null);
   // «Отправить отчёт» получателям в Telegram: одна отгрузка истории или вся история с фильтрами экрана.
-  const [reportScope, setReportScope] = useState<WagonReportScope | null>(null);
+  const [reportScope, setReportScope] = useState<HistoryReportScope | null>(null);
   // «С какого склада?» у фуры при нескольких складах: лист, ответы грузчика и что показать в листе.
   const [sourceSheet, setSourceSheet] = useState<SourceSheetState | null>(null);
   const [sourceAnswers, setSourceAnswers] = useState<SourceAnswersState | null>(null);
@@ -554,6 +557,16 @@ function LoaderPageInner() {
               <Send className="size-4" /> Отправить отчёт
             </Button>
           )}
+          {transport === "truck" && view === "history" && (
+            // Отгрузки показанного периода — одним текстом для чата отгрузок в WhatsApp.
+            <CopyTruckReportButton
+              label="Скопировать все"
+              scope={{ date_from: range.from, date_to: range.to, search: debouncedSearch }}
+              disabled={history.items.length === 0}
+              className="w-full sm:w-auto"
+              buttonClassName="h-10 px-3"
+            />
+          )}
         </div>
         <FormError message={error} className="rounded-xl px-4 py-3" />
         {undone && (
@@ -848,6 +861,8 @@ function HistoryList({
               <Button variant="outline" className="h-11 flex-1" onClick={() => onPrint(order.id)}>
                 <Printer className="size-4" /> Накладная
               </Button>
+              {/* Отгрузка фуры — текстом для чата отгрузок: грузчик вставляет его в WhatsApp сам. */}
+              {hasTruckReport(order) && <CopyTruckReportButton scope={{ order: order.id }} className="flex-1" />}
               {/* Отгрузка вагонов — отчётом в формате владельца получателям в Telegram (копия — в окне). */}
               {order.transport_type === "train" && (
                 <Button variant="outline" className="h-11 flex-1" onClick={() => onSendReport(order)}>

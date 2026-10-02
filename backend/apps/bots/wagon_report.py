@@ -103,8 +103,8 @@ def _is_shipped_wagon_order(order) -> bool:
     )
 
 
-def _product_codes(orders) -> dict[int, str]:
-    """Товар → код отчёта: самое свежее написание из словаря («Д1с»)."""
+def product_codes(orders) -> dict[int, str]:
+    """Товар → код отчёта: самое свежее написание из словаря («Д1с»). Его же пишет отчёт фур."""
     # Товары строк отчёта: вагоны отгрузки, а у отгрузки кнопкой — позиции заказа.
     product_ids = {
         goods.product_id
@@ -121,8 +121,8 @@ def _product_codes(orders) -> dict[int, str]:
     }
 
 
-def _client_names(orders) -> dict[tuple[int, str], str]:
-    """(клиент, валюта) → как клиента называют отчёты (последний профиль)."""
+def client_names(orders) -> dict[tuple[int, str], str]:
+    """(клиент, валюта) → как клиента называют отчёты (последний профиль) — и вагонов, и фур."""
     return {
         (client_id, currency): name
         for client_id, currency, name in BotClientProfile.objects.filter(
@@ -167,8 +167,8 @@ def compose_rail_report(orders) -> ComposedReport:
     )
     if not shipped:
         return ComposedReport(text="", order_ids=[])
-    codes = _product_codes(shipped)
-    names = _client_names(shipped)
+    codes = product_codes(shipped)
+    names = client_names(shipped)
     blocks: dict[tuple, dict] = {}
     reported: list[int] = []
     for order in shipped:

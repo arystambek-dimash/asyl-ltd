@@ -1,4 +1,4 @@
-import type { LoaderOrder } from "@/lib/loader";
+import type { LoaderOrder, LoaderOrderItem } from "@/lib/loader";
 import type { Department, Me, Order, Payment, QrRefundState, ReportDay } from "@/lib/types";
 import type { BotMessage, TelegramBotSettings, TelegramBotStatus } from "@/lib/telegram-bot";
 
@@ -65,6 +65,18 @@ export function makeLoaderOrder(id: number, overrides: Partial<LoaderOrder> = {}
     wagons: [],
     report_sent_at: null,
     report_deliveries: [],
+    ...overrides,
+  };
+}
+
+/** Позиция заказа у грузчика: один красный мешок «Д1с» без договорной цены. */
+export function makeLoaderItem(overrides: Partial<LoaderOrderItem> = {}): LoaderOrderItem {
+  return {
+    label: "Д1с · Красный 50 кг",
+    quantity: 1,
+    weight_kg: "50.00",
+    unit_price: null,
+    color: "Red",
     ...overrides,
   };
 }

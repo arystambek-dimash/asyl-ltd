@@ -19,6 +19,8 @@ class LoaderOrderItemSerializer(serializers.Serializer):
     quantity = serializers.IntegerField()
     weight_kg = serializers.DecimalField(source="product_weight_kg", max_digits=10, decimal_places=2)
     unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
+    # Цвет мешка — точка у товара на экране грузчика; у удалённого товара цвета нет.
+    color = serializers.CharField(source="product.color", default="")
 
 
 class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, serializers.Serializer):

@@ -43,10 +43,8 @@ interface PayRetry extends PaymentAutoOpen {
 
 /** Повтор из адреса карточки; null — повтора нет. */
 export function payRetryFromParams(params: URLSearchParams): PayRetry | null {
-  const method = params.get(PAY_PARAM);
-  if (!method) return null;
+  if (!params.get(PAY_PARAM)) return null;
   return {
-    method,
     amount: params.get(AMOUNT_PARAM) ?? "",
     notice: "Заказ создан, но оплата не прошла — проверьте сумму и примите её ещё раз.",
     check: params.get(CHECK_PARAM) === "1",

@@ -45,18 +45,6 @@ export interface WagonReportSent {
   deliveries: WagonReportDelivery[];
 }
 
-/** Одна отгрузка из истории или вся история с фильтрами экрана. */
-export type WagonReportScope = { order: number } | { date_from: string; date_to: string; search: string };
-
-export function composeUrl(scope: WagonReportScope): string {
-  const params =
-    "order" in scope
-      ? { order: String(scope.order) }
-      : { date_from: scope.date_from, date_to: scope.date_to, search: scope.search };
-  const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value));
-  return `${WAGON_REPORT_API}/compose/?${query}`;
-}
-
 /** «Динара (@dinara_k)» или «@dinara_k», пока человек не писал боту. */
 export function recipientLabel(recipient: WagonReportRecipient): string {
   return recipient.name ? `${recipient.name} (@${recipient.username})` : `@${recipient.username}`;

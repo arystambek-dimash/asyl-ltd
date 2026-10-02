@@ -8,15 +8,14 @@ import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { api, apiError, apiErrorCode } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { historyReportUrl, type HistoryReportScope } from "@/lib/loader";
 import { cn } from "@/lib/utils";
 import {
   blockerText,
-  composeUrl,
   newSendKey,
   recipientLabel,
   WAGON_REPORT_API,
   type WagonReportDraft,
-  type WagonReportScope,
   type WagonReportSent,
 } from "@/lib/wagon-report";
 
@@ -34,11 +33,11 @@ export function WagonReportModal({
   onClose,
   onSent,
 }: {
-  scope: WagonReportScope;
+  scope: HistoryReportScope;
   onClose: () => void;
   onSent: (sent: WagonReportSent) => void;
 }) {
-  const url = composeUrl(scope);
+  const url = historyReportUrl("wagon-report/compose", scope);
   const [draft, setDraft] = useState<WagonReportDraft | null>(null);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientDebtPaymentModal } from "./client-debt-payment-modal";
@@ -14,7 +14,8 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 // Без задержки: предпросмотр уходит на каждый ввод суммы.
 vi.mock("@/lib/use-debounced", () => ({ useDebounced: (value: string) => value }));
 
-type Body = { amount: string | null; method: string; currency: string; preview: boolean };
+/** Предпросмотр уходит без способа: его выбирают только после «Подтвердить». */
+type Body = { amount: string | null; method?: string; currency: string; preview: boolean };
 
 const ENDPOINT = "/clients/7/debt-payment/";
 
@@ -41,7 +42,7 @@ const CLOSED_843: DebtPaymentSlice = { ...PARTIAL_843, amount: "1209500.00", rem
 function plan(body: Body, amount: string, slices: DebtPaymentSlice[]): DebtPaymentPlan {
   return {
     currency: body.currency,
-    method: body.method,
+    method: body.method ?? null,
     amount,
     total_available: "3109500.00",
     slices: body.preview ? slices : slices.map((slice, index) => ({ ...slice, payment_id: 500 + index })),
@@ -94,10 +95,13 @@ describe("ClientDebtPaymentModal", () => {
 
     expect(postMock).toHaveBeenCalledWith(
       ENDPOINT,
-      { amount: null, method: "cash", currency: "KZT", preview: true },
+      { amount: null, currency: "KZT", preview: true },
       expect.anything(),
     );
     expect(await within(dialog).findByText(/^Можно внести: 3\s109\s500 ₸$/)).toBeInTheDocument();
+    // Способа на шаге суммы нет: его спрашивают после «Подтвердить».
+    expect(within(dialog).queryByRole("button", { name: /Наличные/ })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
     expect(within(dialog).getByRole("region", { name: "Пропущены" })).toHaveTextContent(
       "#901 — не день оплаты по графику магазина",
     );
@@ -108,7 +112,7 @@ describe("ClientDebtPaymentModal", () => {
     expect(within(dialog).queryByRole("radiogroup", { name: "Валюта" })).not.toBeInTheDocument();
   });
 
-  it("shows the server breakdown from the oldest order and confirms it", async () => {
+  it("shows the server breakdown from the oldest order and asks the method only after «Подтвердить»", async () => {
     const user = userEvent.setup();
     const { dialog, onPaid, onClose } = renderModal();
 
@@ -121,6 +125,15 @@ describe("ClientDebtPaymentModal", () => {
     expect(rows[1]).toHaveTextContent("#843 — 300 000 из 1 209 500 ₸ → останется 909 500 ₸");
 
     await user.click(within(dialog).getByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+
+    // «Подтвердить» ещё ничего не записывает: окно спрашивает, как клиент заплатил.
+    expect(postMock.mock.calls.every(([, body]) => (body as Body).preview)).toBe(true);
+    expect(dialog).toHaveAccessibleName(/^Как клиент заплатил 2\s200\s000 ₸\?$/);
+    expect(within(dialog).queryByLabelText("Сумма")).not.toBeInTheDocument();
+    for (const name of [/Наличные/, "QR", /Удалённая оплата/]) {
+      expect(within(dialog).getByRole("button", { name })).not.toHaveAttribute("aria-pressed");
+    }
+    await user.click(within(dialog).getByRole("button", { name: /Наличные/ }));
 
     expect(postMock).toHaveBeenLastCalledWith(ENDPOINT, {
       amount: "2200000",
@@ -141,7 +154,7 @@ describe("ClientDebtPaymentModal", () => {
     expect(within(dialog).getByLabelText("Сумма")).toHaveValue(3109500);
     expect(postMock).toHaveBeenLastCalledWith(
       ENDPOINT,
-      { amount: "3109500", method: "cash", currency: "KZT", preview: true },
+      { amount: "3109500", currency: "KZT", preview: true },
       expect.anything(),
     );
     expect(await within(dialog).findByRole("button", { name: /^Подтвердить · 3\s109\s500 ₸$/ })).toBeEnabled();
@@ -189,11 +202,14 @@ describe("ClientDebtPaymentModal", () => {
 
     await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
     await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+    await user.click(within(dialog).getByRole("button", { name: /Наличные/ }));
 
+    // Отказ по сумме возвращает к шагу суммы: причина под полем, предпросмотр пересчитан.
     expect(await within(dialog).findByText(/^Можно внести: 2\s000\s000 ₸$/)).toBeInTheDocument();
+    expect(dialog).toHaveAccessibleName("Внести оплату");
     expect(postMock).toHaveBeenLastCalledWith(
       ENDPOINT,
-      { amount: "2200000", method: "cash", currency: "KZT", preview: true },
+      { amount: "2200000", currency: "KZT", preview: true },
       expect.anything(),
     );
     expect(within(dialog).getByText("Максимум к оплате 2 000 000 ₸")).toBeInTheDocument();
@@ -206,25 +222,25 @@ describe("ClientDebtPaymentModal", () => {
     expect(within(dialog).getByLabelText("Сумма")).toHaveValue(2000000);
   });
 
-  it("offers the till methods in tenge and only cash in dollars", async () => {
+  it("offers only cash in dollars, still as a tap after «Подтвердить»", async () => {
     const user = userEvent.setup();
     const { dialog, onPaid } = renderModal({ currencies: ["KZT", "USD"] });
 
-    expect(within(dialog).getByRole("button", { name: /Наличные/ })).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: "QR" }));
-    expect(within(dialog).getByRole("button", { name: /Удалённая оплата/ })).toBeInTheDocument();
-
     await user.click(within(dialog).getByRole("radio", { name: /USD/ }));
-    expect(within(dialog).queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: /Удалённая оплата/ })).not.toBeInTheDocument();
     expect(postMock).toHaveBeenLastCalledWith(
       ENDPOINT,
-      { amount: null, method: "cash", currency: "USD", preview: true },
+      { amount: null, currency: "USD", preview: true },
       expect.anything(),
     );
 
     await user.type(within(dialog).getByLabelText("Сумма"), "500");
     await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 500 \$$/ }));
+
+    expect(dialog).toHaveAccessibleName(/^Как клиент заплатил 500 \$\?$/);
+    expect(within(dialog).queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Удалённая оплата/ })).not.toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalledWith(ENDPOINT, expect.objectContaining({ preview: false }));
+    await user.click(within(dialog).getByRole("button", { name: /Наличные/ }));
 
     expect(postMock).toHaveBeenLastCalledWith(ENDPOINT, {
       amount: "500",
@@ -235,20 +251,72 @@ describe("ClientDebtPaymentModal", () => {
     expect(onPaid).toHaveBeenCalledWith("Внесено 500 $ на 1 заказ");
   });
 
-  it("sends the chosen tenge method with the payment", async () => {
+  it.each([
+    ["QR", "kaspi"],
+    [/Удалённая оплата/, "remote"],
+  ])("records the tapped tenge method %s as %s", async (name, method) => {
     const user = userEvent.setup();
     const { dialog } = renderModal();
 
-    await user.click(within(dialog).getByRole("button", { name: /Удалённая оплата/ }));
     await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
     await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+    await user.click(within(dialog).getByRole("button", { name }));
 
     expect(postMock).toHaveBeenLastCalledWith(ENDPOINT, {
       amount: "2200000",
-      method: "remote",
+      method,
       currency: "KZT",
       preview: false,
     });
+  });
+
+  it("puts focus on the method list, so a stray Enter after «Подтвердить» records nothing", async () => {
+    const user = userEvent.setup();
+    const { dialog } = renderModal();
+
+    await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
+    await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+
+    // Не на «Наличные»: иначе лишний Enter снова записал бы наличные.
+    expect(within(dialog).getByRole("group", { name: "Способ оплаты" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(postMock).not.toHaveBeenCalledWith(ENDPOINT, expect.objectContaining({ preview: false }));
+  });
+
+  it("goes «Назад» to the amount and keeps it", async () => {
+    const user = userEvent.setup();
+    const { dialog } = renderModal();
+
+    await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
+    await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Назад" }));
+
+    expect(dialog).toHaveAccessibleName("Внести оплату");
+    expect(within(dialog).getByLabelText("Сумма")).toHaveValue(2200000);
+    expect(within(dialog).getByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ })).toBeEnabled();
+    expect(within(dialog).queryByRole("button", { name: /Наличные/ })).not.toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalledWith(ENDPOINT, expect.objectContaining({ preview: false }));
+  });
+
+  it("shows the payment in progress on the tapped method and locks the others", async () => {
+    const user = userEvent.setup();
+    const { dialog, onPaid } = renderModal();
+    let finish: () => void = () => {};
+    postMock.mockImplementation(async (_url: string, body: Body) => {
+      if (!body.preview) await new Promise<void>((resolve) => (finish = resolve));
+      return { data: serve(body) };
+    });
+
+    await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
+    await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+    await user.click(within(dialog).getByRole("button", { name: "QR" }));
+
+    expect(within(dialog).getByRole("button", { name: "QR" })).toHaveAttribute("aria-busy", "true");
+    expect(within(dialog).getByRole("button", { name: "QR" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: /Наличные/ })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Назад" })).toBeDisabled();
+    finish();
+    await waitFor(() => expect(onPaid).toHaveBeenCalled());
   });
 
   it("keeps a preview error inside the dialog", async () => {
@@ -271,8 +339,12 @@ describe("ClientDebtPaymentModal", () => {
 
     await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
     await user.click(await within(dialog).findByRole("button", { name: /^Подтвердить · 2\s200\s000 ₸$/ }));
+    await user.click(within(dialog).getByRole("button", { name: /Наличные/ }));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("По заказу #843 уже идёт оплата");
+    // Отказ не про сумму — окно остаётся на шаге способа.
+    expect(dialog).toHaveAccessibleName(/^Как клиент заплатил 2\s200\s000 ₸\?$/);
+    expect(within(dialog).getByRole("button", { name: /Наличные/ })).toBeEnabled();
     expect(onPaid).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });

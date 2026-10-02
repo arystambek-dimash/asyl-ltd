@@ -91,6 +91,23 @@ def _matches(compact: str) -> list[tuple[str, re.Match]]:
     ]
 
 
+def detect_plate_country(compact: str) -> str | None:
+    """Страна номера (KZ, KG, UZ, RU); неоднозначный и незнакомый номер — ``None``."""
+    countries = {country for country, _ in _matches(normalize_plate(compact))}
+    return countries.pop() if len(countries) == 1 else None
+
+
+# Страны клиента (как в карточке клиента, frontend/src/lib/countries.ts) с известным форматом номера.
+_CLIENT_PLATE_COUNTRIES = {"Казахстан": "KZ", "Кыргызстан": "KG", "Узбекистан": "UZ", "Россия": "RU"}
+
+
+def client_plate_country(country: str) -> str | None:
+    """Страна номера по стране клиента; не указана — Казахстан (как поле номера на фронтенде)."""
+    if not country:
+        return "KZ"
+    return _CLIENT_PLATE_COUNTRIES.get(country)
+
+
 def is_known_plate(compact: str) -> bool:
     """Номер подходит под один из известных форматов KZ, KG, UZ, RU."""
     return bool(_matches(normalize_plate(compact)))

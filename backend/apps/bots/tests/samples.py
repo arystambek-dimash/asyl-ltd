@@ -3,7 +3,7 @@ from datetime import date
 
 from apps.orders.models import Order, OrderItem
 from apps.sales.models import Department
-from apps.shipments.models import Shipment, ShipmentWagon
+from apps.shipments.models import Shipment, ShipmentSource, ShipmentWagon
 from apps.warehouse.models import StockItem
 
 OWNER_DAY = date(2026, 9, 19)
@@ -59,6 +59,21 @@ def train_order(client, product, *, bags=None, unit_price="7.50", shipped_at=Non
         for position, number in enumerate(wagons, start=1):
             ShipmentWagon.objects.create(
                 shipment=shipment, number=number, product=product, bags=1360, weight_kg="68000", position=position)
+    return order
+
+
+def truck_order(client, *lines, shipped_at, truck="909ERD13", trailer="", sources=(), stock_deducted=True, **fields):
+    """Отгруженная фура в валюте клиента: ``lines`` — (товар, мешки), ``sources`` — (товар, склад, мешки)
+    ответа «С какого склада?»; без них — отгрузка до складов-источников."""
+    order = Order.objects.create(
+        client=client, **{"currency": client.currency, "transport_type": "truck", "status": "shipped",
+                          "truck_number": truck, "trailer_number": trailer, **fields})
+    for product, bags in lines:
+        OrderItem.objects.create(order=order, product=product, quantity=bags, unit_price="10000.00")
+    shipment = Shipment.objects.create(
+        order=order, bags_loaded=sum(bags for _, bags in lines), shipped_at=shipped_at, stock_deducted=stock_deducted)
+    for product, warehouse, bags in sources:
+        ShipmentSource.objects.create(shipment=shipment, product=product, warehouse=warehouse, bags=bags)
     return order
 
 

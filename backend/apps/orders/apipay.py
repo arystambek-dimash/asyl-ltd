@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +18,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from apps.clients.phone import kz_local_phone
 from apps.common.locks import advisory_lock
 from apps.eventlog.services import log_event
 from apps.sales.models import Department
@@ -198,11 +198,9 @@ def provider_scope_fence(order_id: int, user, *, require_live: bool = False):
 
 def normalize_phone(value: str) -> str:
     """Return the strict 8XXXXXXXXXX format required by POST /invoices."""
-    digits = re.sub(r"\D", "", value or "")
-    if len(digits) == 11 and digits[0] in ("7", "8"):
-        return "8" + digits[1:]
-    if len(digits) == 10:
-        return "8" + digits
+    phone = kz_local_phone(value)
+    if phone:
+        return phone
     raise ValidationError({
         "detail": "Для оплаты Kaspi укажите телефон в формате 8XXXXXXXXXX.",
         "code": "invalid_kaspi_phone",

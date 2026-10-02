@@ -8,6 +8,7 @@
 """
 from collections import Counter, defaultdict
 
+from django.db.models import Prefetch
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
@@ -287,6 +288,25 @@ def source_options(order, items) -> dict:
     }
 
 
+def _source_rows():
+    """Строки складов-источников со складом и товаром, по порядку (товар, склад)."""
+    return ShipmentSource.objects.select_related("product", "warehouse").order_by("product_id", "warehouse_id")
+
+
+def sources_prefetch() -> Prefetch:
+    """Предзагрузка строк для :func:`loaded_shipment_sources` — запрос на страницу, а не на заказ."""
+    return Prefetch("shipment__sources", queryset=_source_rows())
+
+
+def _sources_of(order, items, shipment, read_rows) -> tuple[str, list[ShipmentSource]]:
+    if shipment is not None and not shipment.stock_deducted:
+        return "not_deducted", []
+    rows = read_rows(shipment) if shipment is not None else []
+    if rows:
+        return "recorded", rows
+    return "legacy", default_sources(order, items)
+
+
 def shipment_sources(order, items) -> tuple[str, list[ShipmentSource]]:
     """Откуда взяты мешки отгрузки заказа — чистое чтение.
 
@@ -297,15 +317,14 @@ def shipment_sources(order, items) -> tuple[str, list[ShipmentSource]]:
     (:func:`default_sources`) и не пишутся.
     """
     shipment = Shipment.objects.filter(order_id=order.pk).first()
-    if shipment is not None and not shipment.stock_deducted:
-        return "not_deducted", []
-    if shipment is not None:
-        rows = list(
-            shipment.sources.select_related("product", "warehouse").order_by("product_id", "warehouse_id")
-        )
-        if rows:
-            return "recorded", rows
-    return "legacy", default_sources(order, items)
+    return _sources_of(order, items, shipment, lambda found: list(_source_rows().filter(shipment=found)))
+
+
+def loaded_shipment_sources(order, items) -> tuple[str, list[ShipmentSource]]:
+    """:func:`shipment_sources` списка заказов: ``order.shipment`` — через ``select_related``,
+    строки — из :func:`sources_prefetch`; без запросов на заказ."""
+    shipment = getattr(order, "shipment", None)
+    return _sources_of(order, items, shipment, lambda found: list(found.sources.all()))
 
 
 def checked_sources(order, items, user) -> tuple[str, list[ShipmentSource]]:

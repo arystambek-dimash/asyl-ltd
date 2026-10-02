@@ -3,7 +3,6 @@ import type { LoaderOrder } from "@/lib/loader";
 import { formatTime } from "@/lib/utils";
 import {
   blockerText,
-  composeUrl,
   newSendKey,
   recipientLabel,
   reportMarks,
@@ -49,13 +48,6 @@ const delivery = (to: string, status: WagonReportDelivery["status"], error = "")
 });
 
 describe("wagon report", () => {
-  it("составляет по одной отгрузке или по фильтру истории", () => {
-    expect(composeUrl({ order: 366 })).toBe("/loader/wagon-report/compose/?order=366");
-    expect(composeUrl({ date_from: "2026-09-18", date_to: "2026-09-24", search: "OSIYO" })).toBe(
-      "/loader/wagon-report/compose/?date_from=2026-09-18&date_to=2026-09-24&search=OSIYO",
-    );
-  });
-
   it("получатель — имя из Telegram и username, пока не писал боту — только username", () => {
     expect(recipientLabel({ username: "dinara_k", name: "Динара", ready: true })).toBe("Динара (@dinara_k)");
     expect(recipientLabel({ username: "d1maaash", name: "", ready: false })).toBe("@d1maaash");

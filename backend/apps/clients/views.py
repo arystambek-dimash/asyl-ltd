@@ -609,7 +609,8 @@ class ClientViewSet(
         Распределение и проверки суммы и способа делает
         ``apps.orders.debt_payments.record_client_debt_payment``, его коды
         ошибок доходят до кассы как есть. Здесь проверяется только форма тела.
-        ``preview`` считает разбивку и ничего не пишет.
+        ``preview`` считает разбивку и ничего не пишет; способ в нём не нужен —
+        касса спрашивает его после «Подтвердить».
         """
         client = self.get_object()
         currency = request.data.get("currency")

@@ -242,6 +242,7 @@ it("takes payment for a shipped order or moves it to debt from «Ждут опл
   await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
   expect(await screen.findByLabelText(/Сумма/)).toHaveValue(200);
   await user.click(screen.getByRole("button", { name: "Принять" }));
+  await user.click(screen.getByRole("button", { name: /Наличные/ }));
   await waitFor(() =>
     expect(mocks.post).toHaveBeenCalledWith("/orders/632/payments/", {
       amount: "200",
@@ -307,8 +308,8 @@ it("takes a prepayment for an order awaiting shipment from «К отгрузке
   expect(screen.queryByRole("button", { name: /Отправить удалённый счёт/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "В долг" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
-  await user.click(screen.getByRole("button", { name: /Удалённая оплата/ }));
   await user.click(screen.getByRole("button", { name: "Принять" }));
+  await user.click(screen.getByRole("button", { name: /Удалённая оплата/ }));
   await waitFor(() =>
     expect(mocks.post).toHaveBeenCalledWith("/orders/700/payments/", {
       amount: "500",

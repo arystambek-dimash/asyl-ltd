@@ -71,8 +71,9 @@ def rail_report_input(view, serializer_class, orders) -> tuple[dict, RailReport,
     return data, parse_rail_report(data["text"]), order
 
 
-class WagonReportComposeSerializer(serializers.Serializer):
-    """«Отправить отчёт»: одна отгрузка (``?order=``) или история с фильтрами экрана."""
+class ReportScopeSerializer(serializers.Serializer):
+    """Отчёт из истории грузчика («Отправить отчёт» вагонов, «Скопировать отчёт» фур):
+    одна отгрузка (``?order=``) или история с фильтрами экрана."""
 
     order = serializers.IntegerField(required=False, min_value=1)
 

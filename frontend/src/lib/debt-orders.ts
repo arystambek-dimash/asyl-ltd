@@ -41,7 +41,8 @@ export interface DebtPaymentSkipped {
 /** Ответ `POST /clients/{id}/debt-payment/`: разбивка от старого заказа к новому, считает сервер. */
 export interface DebtPaymentPlan {
   currency: string;
-  method: string;
+  /** null — предпросмотр: способ выбирают после «Подтвердить». */
+  method: string | null;
   amount: string;
   total_available: string;
   slices: DebtPaymentSlice[];

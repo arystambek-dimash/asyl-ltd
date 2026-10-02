@@ -55,10 +55,11 @@ describe("payAfterCreate", () => {
 });
 
 describe("pay retry link", () => {
-  it("round-trips the method and amount through the order address", () => {
+  it("round-trips the amount through the order address", () => {
     const href = payRetryHref(12, { method: "remote", amount: "1500.5" });
     const retry = payRetryFromParams(new URLSearchParams(href.split("?")[1]));
-    expect(retry).toMatchObject({ method: "remote", amount: "1500.5", check: false });
+    // Способ окно не подставляет — кассир выберет его после «Принять».
+    expect(retry).toEqual({ amount: "1500.5", notice: expect.any(String), check: false });
     expect(retry?.notice).toMatch(/оплата не прошла/i);
     expect(payRetryFromParams(new URLSearchParams("back=%2Forders"))).toBeNull();
 
@@ -69,7 +70,7 @@ describe("pay retry link", () => {
 });
 
 describe("payRetryPageNotice", () => {
-  const retry = { method: "cash", amount: "500", notice: "", check: false };
+  const retry = { amount: "500", notice: "", check: false };
 
   it("opens the receive dialog only when the payment surely was not recorded", () => {
     expect(payRetryPageNotice(retry, { ...confirmed, currency: "KZT", paid_total: "0" } as Order)).toBe("");

@@ -6,11 +6,12 @@ import { PlateSuggestions } from "@/components/ui/plate-input";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { TransportNumberFields } from "@/components/ui/transport-number-fields";
 import { WagonList } from "@/components/ui/wagon-list";
-import { loadWeight, type LoaderOrder } from "@/lib/loader";
+import { hasTruckReport, loadWeight, type LoaderOrder } from "@/lib/loader";
 import { plannedDayLabel } from "@/lib/loader-groups";
 import { transportNumberError, type TransportPair } from "@/lib/plates";
 import { bagsLabel, bagsWord, cn, formatIsoDayMonth } from "@/lib/utils";
-import { itemsSummary, PaymentMark } from "./loader-order-card";
+import { CopyTruckReportButton } from "./copy-truck-report-button";
+import { LoaderItemList, PaymentMark } from "./loader-order-card";
 
 /** Крупная строка «70 мешков · 3500 кг» (у вагона — тонны) — главное, что грузчик держит в голове. */
 function BagsHeadline({ order }: { order: LoaderOrder }) {
@@ -125,26 +126,18 @@ export function LoaderOrderScreen({
       </div>
 
       <div className="flex flex-col gap-5 rounded-2xl border-2 border-[var(--border)] bg-[var(--card)] p-5">
+        {/* Кому грузим — первым и крупно: так грузчик сверяет заказ с машиной. */}
+        <div>
+          <h2 className="break-words text-2xl font-black leading-tight">{order.client_name}</h2>
+          <div className="mt-1 text-sm font-medium tabular-nums text-[var(--muted-foreground)]">№{order.id}</div>
+        </div>
         <TransportNumbers order={order} numbers={numbers} onNumbers={onNumbers} />
         <div className="border-t pt-4">
           <BagsHeadline order={order} />
-          <div className="mt-3 text-base font-semibold">{itemsSummary(order)}</div>
-          <div className="mt-1 text-sm text-[var(--muted-foreground)]">
-            №{order.id} · {order.client_name}
-          </div>
+          <LoaderItemList items={order.items} className="mt-4" />
           {/* Оплату показываем, но отгрузку не блокируем: возят и в долг. */}
-          <PaymentMark order={order} className="mt-3" />
+          <PaymentMark order={order} className="mt-4" />
         </div>
-        {order.items.length > 1 && (
-          <ul className="flex flex-col gap-1 border-t pt-3 text-sm">
-            {order.items.map((item, index) => (
-              <li key={index} className="flex justify-between gap-3">
-                <span className="min-w-0 truncate">{item.label}</span>
-                <span className="shrink-0 font-semibold tabular-nums">{bagsLabel(item.quantity)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
       </div>
 
       <FormError message={error} className="rounded-xl px-4 py-3" />
@@ -169,7 +162,7 @@ export function LoaderOrderScreen({
   );
 }
 
-/** Экран после отгрузки: подтверждение крупно, накладная и возврат к списку. */
+/** Экран после отгрузки: подтверждение крупно, накладная, отчёт фуры для чата и возврат к списку. */
 export function LoaderShippedScreen({
   order,
   busy,
@@ -206,6 +199,13 @@ export function LoaderShippedScreen({
         <Button className="h-14 w-full bg-white text-base text-[var(--success)] hover:bg-white/90" onClick={onPrint}>
           <Printer className="size-5" /> Печать накладной
         </Button>
+        {/* Отгрузку фуры — сразу в чат отгрузок: текст в буфер, грузчик вставляет в WhatsApp. */}
+        {hasTruckReport(order) && (
+          <CopyTruckReportButton
+            scope={{ order: order.id }}
+            buttonClassName="h-14 border-white/60 bg-transparent text-base text-white hover:bg-white/10 hover:text-white"
+          />
+        )}
         <Button
           variant="outline"
           className="h-14 w-full border-white/60 bg-transparent text-base text-white hover:bg-white/10"

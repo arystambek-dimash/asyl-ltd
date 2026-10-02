@@ -179,10 +179,11 @@ it("shows the client with phone above the debt summary", async () => {
 it("takes lifetime totals from the client card summary and links to the card", async () => {
   await renderPage();
 
+  // Точная сумма до тенге, а не «104,2 тыс.»: кассир сверяет её с клиентом.
   const paid = (await screen.findByText("Оплачено за всё время")).nextElementSibling;
-  expect(paid).toHaveAttribute("title", formatCurrency("104160", "KZT"));
+  expect(paid?.textContent).toBe(formatCurrency("104160", "KZT"));
   const revenue = screen.getByText("Сумма продаж за всё время").nextElementSibling;
-  expect(revenue).toHaveAttribute("title", formatCurrency("300000", "KZT"));
+  expect(revenue?.textContent).toBe(formatCurrency("300000", "KZT"));
   expect(screen.getByRole("link", { name: /Карточка клиента/ })).toHaveAttribute("href", "/clients/1");
 });
 

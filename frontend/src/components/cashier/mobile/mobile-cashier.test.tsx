@@ -458,6 +458,7 @@ it("takes a prepayment on the payments screen from «К отгрузке»", asy
   expect(screen.queryByRole("button", { name: "В долг" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
   await user.click(screen.getByRole("button", { name: "Принять" }));
+  await user.click(screen.getByRole("button", { name: /Наличные/ }));
   await waitFor(() =>
     expect(mocks.post).toHaveBeenCalledWith("/orders/31/payments/", {
       amount: "250",

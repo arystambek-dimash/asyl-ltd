@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   PaymentAmountField,
   ReceiveMethodPicker,
+  methodStepHeading,
   receiveMethods,
   type ReceiveMethod,
 } from "@/components/payments/order-payment-actions";
@@ -25,7 +26,7 @@ import {
   toLocalIsoDate,
 } from "@/lib/utils";
 
-/** Отказы предпросмотра про саму сумму: текст под полем, «Подтвердить» выключен. */
+/** Отказы про саму сумму: текст под полем на шаге суммы, «Подтвердить» выключен. */
 const AMOUNT_ERROR_CODES = new Set(["invalid_amount", "amount_exceeds_debt"]);
 
 type ClientDebtPaymentProps = {
@@ -42,7 +43,8 @@ type ClientDebtPaymentProps = {
  * «Внести оплату» по клиенту: кассир вводит сумму, сервер гасит долговые
  * заказы от старого к новому (`POST /clients/{id}/debt-payment/`). Разбивку,
  * максимум и пропуски считает только сервер — окно показывает предпросмотр
- * и отправляет ту же сумму без `preview`. Поле суммы и способы — из «Принять оплату».
+ * (без способа) и после «Подтвердить» спрашивает, как клиент заплатил: нажатый
+ * способ отправляет ту же сумму без `preview`. Поле суммы и способы — из «Принять оплату».
  */
 export function ClientDebtPaymentModal({ open, ...props }: ClientDebtPaymentProps) {
   // Каждое открытие — с чистого листа: сумма, валюта и разбивка не переживают закрытие.
@@ -52,8 +54,10 @@ export function ClientDebtPaymentModal({ open, ...props }: ClientDebtPaymentProp
 
 function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit<ClientDebtPaymentProps, "open">) {
   const [currency, setCurrency] = useState(currencies[0] ?? "KZT");
-  const [chosen, setMethod] = useState<ReceiveMethod>("cash");
   const [amount, setAmount] = useState("");
+  // Способ спрашиваем только после «Подтвердить», заранее не выбран ни один:
+  // с наличными по умолчанию оплату по QR записывали наличными.
+  const [choosing, setChoosing] = useState(false);
   // Последний ответ предпросмотра и сумма, для которой он посчитан ("" — весь долг).
   const [preview, setPreview] = useState<{ amount: string; plan: DebtPaymentPlan } | null>(null);
   // «Можно внести» и пропуски переживают отказ по сумме: кассир видит, почему максимум меньше долга.
@@ -62,12 +66,12 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
   const [amountError, setAmountError] = useState("");
   const [previewError, setPreviewError] = useState("");
   const [submitError, setSubmitError] = useState("");
-  const [busy, setBusy] = useState(false);
+  // Способ, по которому идёт запись: на его кнопке индикатор, остальное выключено.
+  const [busy, setBusy] = useState<ReceiveMethod | null>(null);
   // Отказ при проведении: долг мог измениться после предпросмотра — пересчитать заново.
   const [refresh, setRefresh] = useState(0);
 
   const methods = receiveMethods(currency);
-  const method = methods.includes(chosen) ? chosen : methods[0];
   const typed = amount.trim();
   const requested = useDebounced(typed);
   const url = `/clients/${clientId}/debt-payment/`;
@@ -75,11 +79,7 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
   useEffect(() => {
     const controller = new AbortController();
     api
-      .post<DebtPaymentPlan>(
-        url,
-        { amount: requested || null, method, currency, preview: true },
-        { signal: controller.signal },
-      )
+      .post<DebtPaymentPlan>(url, { amount: requested || null, currency, preview: true }, { signal: controller.signal })
       .then(({ data }) => {
         if (controller.signal.aborted) return;
         setPreview({ amount: requested, plan: data });
@@ -91,6 +91,8 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
       .catch((cause: unknown) => {
         if (controller.signal.aborted) return;
         setPreview(null);
+        // Разбивки нет — подтверждать нечего: причина видна на шаге суммы.
+        setChoosing(false);
         const aboutAmount = AMOUNT_ERROR_CODES.has(apiErrorCode(cause));
         setAmountError(aboutAmount ? apiError(cause) : "");
         setPreviewError(aboutAmount ? "" : apiError(cause));
@@ -99,12 +101,14 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
         if (typeof max === "string") setAvailable(max);
       });
     return () => controller.abort();
-  }, [url, requested, method, currency, refresh]);
+  }, [url, requested, currency, refresh]);
 
   // Разбивка для введённой суммы; пока ответ на новую сумму не пришёл, прежняя видна бледной.
   const shown = preview && preview.amount ? preview.plan : null;
   const plan = preview && typed && preview.amount === typed ? preview.plan : null;
-  const canSubmit = !busy && plan !== null && plan.slices.length > 0 && !amountError && !previewError;
+  const canConfirm = plan !== null && plan.slices.length > 0 && !amountError && !previewError;
+  // Шаг способа — только для готовой разбивки.
+  const confirmed = choosing ? plan : null;
 
   function changeAmount(next: string) {
     setAmount(next);
@@ -120,9 +124,14 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
     setSubmitError("");
   }
 
-  async function submit() {
-    if (!canSubmit) return;
-    setBusy(true);
+  function confirm() {
+    if (!canConfirm) return;
+    setSubmitError("");
+    setChoosing(true);
+  }
+
+  async function pay(method: ReceiveMethod) {
+    setBusy(method);
     setSubmitError("");
     try {
       const { data } = await api.post<DebtPaymentPlan>(url, { amount: typed, method, currency, preview: false });
@@ -132,12 +141,15 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
       );
       onClose();
     } catch (cause) {
-      // Ошибка остаётся в окне: страница под оверлеем её не покажет. Отказ по сумме — под полем, как в предпросмотре.
-      if (AMOUNT_ERROR_CODES.has(apiErrorCode(cause))) setAmountError(apiError(cause));
-      else setSubmitError(apiError(cause));
+      // Ошибка остаётся в окне: страница под оверлеем её не покажет. Отказ по сумме —
+      // под полем на шаге суммы, как в предпросмотре; остальное — на шаге способа.
+      if (AMOUNT_ERROR_CODES.has(apiErrorCode(cause))) {
+        setAmountError(apiError(cause));
+        setChoosing(false);
+      } else setSubmitError(apiError(cause));
       setRefresh((n) => n + 1);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -148,83 +160,90 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
       variant="sheet"
       className="max-w-md"
       eyebrow="Долг клиента"
-      title="Внести оплату"
-      description="Деньги уже получены — долг гасится от старого заказа к новому. Ничего клиенту не отправляется."
+      {...(confirmed
+        ? methodStepHeading(formatCurrency(confirmed.amount, confirmed.currency))
+        : {
+            title: "Внести оплату",
+            description:
+              "Деньги уже получены — долг гасится от старого заказа к новому. Ничего клиенту не отправляется.",
+          })}
       footer={
-        <>
-          <Button variant="outline" disabled={busy} onClick={onClose}>
-            Отмена
+        confirmed ? (
+          <Button variant="outline" disabled={busy !== null} onClick={() => setChoosing(false)}>
+            Назад
           </Button>
-          <Button disabled={!canSubmit} onClick={() => void submit()}>
-            {busy
-              ? "Сохранение…"
-              : plan
-                ? `Подтвердить · ${formatCurrency(plan.amount, plan.currency)}`
-                : "Подтвердить"}
-          </Button>
-        </>
+        ) : (
+          <>
+            <Button variant="outline" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button disabled={!canConfirm} onClick={confirm}>
+              {plan ? `Подтвердить · ${formatCurrency(plan.amount, plan.currency)}` : "Подтвердить"}
+            </Button>
+          </>
+        )
       }
     >
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        {currencies.length > 1 && (
-          <div className="grid gap-2">
-            <Label>Валюта</Label>
-            <Segmented
-              ariaLabel="Валюта"
-              value={currency}
-              onChange={changeCurrency}
-              options={currencies.map((code) => ({ value: code, label: `${currencySymbol(code)} ${code}` }))}
-            />
-          </div>
-        )}
+      {confirmed ? (
+        <div className="flex flex-col gap-4">
+          <ReceiveMethodPicker methods={methods} onChange={(method) => void pay(method)} busy={busy} />
+          <FormError message={submitError} />
+        </div>
+      ) : (
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            confirm();
+          }}
+        >
+          {currencies.length > 1 && (
+            <div className="grid gap-2">
+              <Label>Валюта</Label>
+              <Segmented
+                ariaLabel="Валюта"
+                value={currency}
+                onChange={changeCurrency}
+                options={currencies.map((code) => ({ value: code, label: `${currencySymbol(code)} ${code}` }))}
+              />
+            </div>
+          )}
 
-        <PaymentAmountField
-          id="client-debt-payment-amount"
-          value={amount}
-          onChange={changeAmount}
-          hint={available ? `Можно внести: ${formatCurrency(available, currency)}` : ""}
-          fullValue={fullAmount(available)}
-          fullLabel="Весь долг"
-          error={amountError}
-        />
+          <PaymentAmountField
+            id="client-debt-payment-amount"
+            value={amount}
+            onChange={changeAmount}
+            hint={available ? `Можно внести: ${formatCurrency(available, currency)}` : ""}
+            fullValue={fullAmount(available)}
+            fullLabel="Весь долг"
+            error={amountError}
+          />
 
-        {methods.length > 1 && (
-          <div className="grid gap-2">
-            <Label>Способ</Label>
-            <ReceiveMethodPicker methods={methods} value={method} onChange={setMethod} />
-          </div>
-        )}
+          {shown && shown.slices.length > 0 && (
+            <section aria-label="Распределение" className={cn("grid gap-1.5", !plan && "opacity-60")}>
+              <div className="text-xs text-[var(--muted-foreground)]">От старого заказа к новому</div>
+              <ul className="divide-y rounded-lg border text-sm">
+                {shown.slices.map((slice) => (
+                  <SliceRow key={slice.order_id} slice={slice} currency={shown.currency} />
+                ))}
+              </ul>
+            </section>
+          )}
 
-        {shown && shown.slices.length > 0 && (
-          <section aria-label="Распределение" className={cn("grid gap-1.5", !plan && "opacity-60")}>
-            <div className="text-xs text-[var(--muted-foreground)]">От старого заказа к новому</div>
-            <ul className="divide-y rounded-lg border text-sm">
-              {shown.slices.map((slice) => (
-                <SliceRow key={slice.order_id} slice={slice} currency={shown.currency} />
-              ))}
-            </ul>
-          </section>
-        )}
+          {skipped.length > 0 && (
+            <section aria-label="Пропущены" className="grid gap-1.5">
+              <div className="text-xs text-[var(--muted-foreground)]">Пропущены</div>
+              <ul className="grid gap-1 text-sm text-[var(--muted-foreground)]">
+                {skipped.map((row) => (
+                  <SkippedRow key={row.order_id} row={row} />
+                ))}
+              </ul>
+            </section>
+          )}
 
-        {skipped.length > 0 && (
-          <section aria-label="Пропущены" className="grid gap-1.5">
-            <div className="text-xs text-[var(--muted-foreground)]">Пропущены</div>
-            <ul className="grid gap-1 text-sm text-[var(--muted-foreground)]">
-              {skipped.map((row) => (
-                <SkippedRow key={row.order_id} row={row} />
-              ))}
-            </ul>
-          </section>
-        )}
-
-        <FormError message={submitError || previewError} />
-      </form>
+          <FormError message={submitError || previewError} />
+        </form>
+      )}
     </Modal>
   );
 }

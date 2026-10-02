@@ -15,7 +15,7 @@ import { useApi } from "@/lib/use-api";
 import { useIsMobile } from "@/lib/use-media-query";
 import { withBack } from "@/lib/navigation";
 import { amountForCurrency, fieldByCurrency, primaryMoneyCurrency } from "@/lib/currency-map";
-import { cn, formatCompactCurrency, formatCurrency, formatDateTime, toggledSet } from "@/lib/utils";
+import { cn, formatCurrency, formatDateTime, toggledSet } from "@/lib/utils";
 import { orderTransportText } from "@/lib/wagons";
 import { can } from "@/lib/can";
 import { PaymentStageBadge, paidByMethod, paymentNetAmount } from "@/components/payment-chain";
@@ -35,7 +35,7 @@ import {
   type DebtStore,
 } from "@/lib/debt-orders";
 
-/* Денежная плитка шапки: сокращённая сумма в основной валюте, точная — в подсказке, прочие валюты строками ниже. */
+/* Денежная плитка шапки: точная сумма в основной валюте (кассир сверяет до тенге), прочие валюты строками ниже. */
 function MoneyStat({
   label,
   amount,
@@ -52,11 +52,8 @@ function MoneyStat({
   return (
     <div className="min-w-0">
       <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
-      <div
-        title={formatCurrency(amount, currency)}
-        className={cn("mt-1 truncate text-lg font-semibold leading-none tabular-nums", className)}
-      >
-        {formatCompactCurrency(amount, currency)}
+      <div className={cn("mt-1 text-lg font-semibold leading-tight tabular-nums", className)}>
+        {formatCurrency(amount, currency)}
       </div>
       <OtherCurrencyRows byCurrency={byCurrency} primary={currency} />
     </div>

@@ -199,7 +199,8 @@ it("reopens the receive dialog when the prepayment from the order form failed", 
 
   const dialog = await screen.findByRole("dialog", { name: "Принять оплату" });
   expect(within(dialog).getByLabelText("Сумма")).toHaveValue(5000);
-  expect(within(dialog).getByRole("button", { name: "QR" })).toHaveAttribute("aria-pressed", "true");
+  // Способ из формы заказа не подставляется: кассир выберет его после «Принять».
+  expect(within(dialog).queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
   expect(within(dialog).getByRole("alert")).toHaveTextContent("оплата не прошла");
   // Признак повтора уходит из адреса — обновление страницы окно не откроет.
   await waitFor(() => expect(currentUrl()).toBe("/orders/40?back=%2Forders"));

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   answersComplete,
   dispatchSourcesPayload,
+  hasTruckReport,
+  historyReportUrl,
   loadWeight,
   readStoredLoaderTransport,
   readStoredOverdueDays,
@@ -12,9 +14,16 @@ import {
   splitRemainder,
   storeLoaderTransport,
   storeOverdueDays,
+  truckReportText,
   warehouseTone,
   type DispatchSources,
 } from "./loader";
+
+const apiGet = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  api: { get: apiGet },
+}));
 
 describe("loadWeight", () => {
   it("shows a wagon in tonnes and a truck in kilograms", () => {
@@ -23,6 +32,31 @@ describe("loadWeight", () => {
     // Разряды у фуры — как у всех весов в CRM: «3 500 кг» (Intl ставит U+00A0).
     expect(loadWeight({ transport_type: "truck", total_kg: "3500.00" })).toBe("3\u00a0500 кг");
     expect(loadWeight({ transport_type: "train", total_kg: "67555.00" })).toBe("67,56 т");
+  });
+});
+
+describe("history reports", () => {
+  it("one shipment or the history filters; an empty search is not sent", () => {
+    expect(historyReportUrl("wagon-report/compose", { order: 366 })).toBe("/loader/wagon-report/compose/?order=366");
+    expect(
+      historyReportUrl("wagon-report/compose", { date_from: "2026-09-18", date_to: "2026-09-24", search: "OSIYO" }),
+    ).toBe("/loader/wagon-report/compose/?date_from=2026-09-18&date_to=2026-09-24&search=OSIYO");
+    expect(historyReportUrl("truck-report", { date_from: "2026-10-02", date_to: "2026-10-02", search: "" })).toBe(
+      "/loader/truck-report/?date_from=2026-10-02&date_to=2026-10-02",
+    );
+  });
+
+  it("only a shipped truck has a report to copy; wagons are reported by the bot", () => {
+    expect(hasTruckReport({ transport_type: "truck", status: "shipped" })).toBe(true);
+    expect(hasTruckReport({ transport_type: "truck", status: "confirmed" })).toBe(false);
+    expect(hasTruckReport({ transport_type: "train", status: "shipped" })).toBe(false);
+  });
+
+  it("the truck report text is composed by the server", async () => {
+    apiGet.mockResolvedValue({ data: { text: "Отгрузка 02.10.26\nkz 909 ERD 13", order_ids: [624] } });
+
+    await expect(truckReportText({ order: 624 })).resolves.toBe("Отгрузка 02.10.26\nkz 909 ERD 13");
+    expect(apiGet).toHaveBeenCalledWith("/loader/truck-report/?order=624");
   });
 });
 

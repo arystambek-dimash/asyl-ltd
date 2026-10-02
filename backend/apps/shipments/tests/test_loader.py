@@ -434,7 +434,28 @@ def test_queue_query_count_does_not_grow_with_rows(
         assert len(api.get("/api/loader/queue/").data) == 2
     fill(5)
     with django_assert_max_num_queries(len(small.captured_queries)):
-        assert len(api.get("/api/loader/queue/", params).data) == 7
+        rows = api.get("/api/loader/queue/", params).data
+    assert len(rows) == 7
+    # Цвет мешка — из уже подгруженного товара: позиции не доплачивают запросом.
+    assert {item["color"] for row in rows for item in row["items"]} == {"Red"}
+
+
+def test_queue_items_carry_bag_colour(auth_client, loader, product, make_product, make_order):
+    """Каждая позиция — с цветом мешка: грузчик находит товар по точке; у удалённого товара цвета нет."""
+    order = make_order(product, quantity=5)
+    green = make_product(name="Д1с", color="Green")
+    OrderItem.objects.create(order=order, product=green, quantity=12, unit_price="10000.00")
+    gone = make_product(name="Старый", color="Blue")
+    OrderItem.objects.create(order=order, product=gone, quantity=1, unit_price="10000.00")
+    gone.delete()
+
+    [row] = auth_client(loader).get("/api/loader/queue/").data
+
+    assert sorted((item["label"], item["quantity"], item["color"]) for item in row["items"]) == [
+        ("Д1с · Зелёный 50 кг", 12, "Green"),
+        ("Д1с · Красный 50 кг", 5, "Red"),
+        ("Старый · Синий 50 кг", 1, ""),
+    ]
 
 
 def test_dispatch_accepts_the_clients_own_number_in_another_spelling(

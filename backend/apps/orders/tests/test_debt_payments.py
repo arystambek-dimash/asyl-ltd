@@ -176,7 +176,7 @@ def test_usd_debt_is_paid_in_cash_only(cashier, departments):
     assert not Payment.objects.exists()
 
 
-@pytest.mark.parametrize("method", ["invoice", "card", "debt"])
+@pytest.mark.parametrize("method", ["invoice", "card", "debt", None])
 def test_only_money_already_at_the_till_can_be_paid_in(cashier, departments, method):
     client = _client(departments[0])
     _debt(client, "100.00")
@@ -272,6 +272,18 @@ def test_preview_writes_nothing(cashier, departments):
     assert EventLog.objects.count() == events_before
     order.refresh_from_db()
     assert order.payment_status == "unpaid"
+
+
+def test_preview_needs_no_method(cashier, departments):
+    """Способ кассир выбирает после «Подтвердить»: разбивка от него не зависит."""
+    client = _client(departments[0], currency="USD")
+    order = _debt(client, "100.00", currency="USD")
+
+    result = record_client_debt_payment(client, "40.00", cashier, currency="USD", preview=True)
+
+    assert result["method"] is None
+    assert [(row["order_id"], row["amount"]) for row in result["slices"]] == [(order.pk, "40.00")]
+    assert not Payment.objects.exists()
 
 
 def test_one_failing_share_rolls_back_the_whole_payment(cashier, departments, monkeypatch):

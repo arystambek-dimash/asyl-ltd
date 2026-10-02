@@ -4,11 +4,11 @@ import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AxiosError, AxiosHeaders } from "axios";
 import type { ShipmentSourcesSheet } from "@/components/loader/shipment-sources-sheet";
-import type { DispatchSource, DispatchSources, LoaderOrder, SourceAnswers } from "@/lib/loader";
+import type { DispatchSource, DispatchSources, HistoryReportScope, LoaderOrder, SourceAnswers } from "@/lib/loader";
 import { pagedState } from "@/test-utils/api";
-import { makeLoaderOrder } from "@/test-utils/factories";
+import { makeLoaderItem, makeLoaderOrder } from "@/test-utils/factories";
 import { formatTime, shiftIsoDate, todayLocalIsoDate } from "@/lib/utils";
-import type { WagonReportScope, WagonReportSent } from "@/lib/wagon-report";
+import type { WagonReportSent } from "@/lib/wagon-report";
 
 import LoaderPage from "./page";
 
@@ -101,13 +101,29 @@ vi.mock("@/components/loader/rail-report-sheet", () => ({
 }));
 // Окно отправки проверено своими тестами; здесь — с чем страница его открывает и как применяет ответ.
 vi.mock("@/components/loader/wagon-report-modal", () => ({
-  WagonReportModal: ({ scope, onSent }: { scope: WagonReportScope; onSent: (sent: WagonReportSent) => void }) => (
+  WagonReportModal: ({ scope, onSent }: { scope: HistoryReportScope; onSent: (sent: WagonReportSent) => void }) => (
     <div role="dialog" aria-label="Отправить отчёт">
       <span>{JSON.stringify(scope)}</span>
       <button type="button" onClick={() => onSent(mocks.reportSent!)}>
         Отправить
       </button>
     </div>
+  ),
+}));
+// Кнопка копирования проверена своими тестами; здесь — где она стоит и какой отчёт копирует.
+vi.mock("@/components/loader/copy-truck-report-button", () => ({
+  CopyTruckReportButton: ({
+    scope,
+    label = "Скопировать отчёт",
+    disabled,
+  }: {
+    scope: HistoryReportScope;
+    label?: string;
+    disabled?: boolean;
+  }) => (
+    <button type="button" data-scope={JSON.stringify(scope)} disabled={disabled}>
+      {label}
+    </button>
   ),
 }));
 // Окно настроек накладной — со своим черновиком; здесь важно, что каждое открытие начинается заново.
@@ -171,7 +187,7 @@ vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"))
 const order = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder =>
   makeLoaderOrder(id, {
     client_name: "ИП Мурат",
-    items: [{ label: "Д1с · Красный 50 кг", quantity: 2, weight_kg: "50.00", unit_price: "10000.00" }],
+    items: [makeLoaderItem({ quantity: 2, unit_price: "10000.00" })],
     bags: 2,
     total_kg: "100.00",
     total_amount: "20000.00",
@@ -265,7 +281,7 @@ describe("LoaderPage", () => {
 
     // В списке кнопки подтверждения нет — сначала открывается сам заказ.
     expect(screen.queryByRole("button", { name: /Подтвердить отгрузку/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /№624 · ИП Мурат/ }));
+    await user.click(screen.getByRole("button", { name: /^ИП Мурат.*№624/ }));
 
     // Номер всегда вводит оператор: пустое поле не даёт отгрузить.
     expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeDisabled();
@@ -289,8 +305,8 @@ describe("LoaderPage", () => {
     mocks.permissions = ["loader.view", "loader.trucks"];
     render(<LoaderPage />);
 
-    expect(screen.getByText(/№624 · ИП Мурат/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /№624 · ИП Мурат/ }));
+    expect(screen.getByText("ИП Мурат")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^ИП Мурат.*№624/ }));
     expect(screen.queryByRole("button", { name: /Подтвердить отгрузку/ })).not.toBeInTheDocument();
   });
 
@@ -771,10 +787,9 @@ describe("LoaderPage", () => {
 
     await user.click(screen.getByRole("tab", { name: /Вагоны/ }));
     expect(queueUrls().at(-1)).toMatch(/^\/loader\/queue\/\?transport=train&day=/);
-    // Карточка вагона: номер, тонны и мешки, клиент.
-    expect(screen.getByText("68 т")).toBeInTheDocument();
-    expect(screen.getByText("1360")).toBeInTheDocument();
-    expect(screen.getByText(/№625 · ТОО Вагон/)).toBeInTheDocument();
+    // Карточка вагона: клиент, итог в мешках и тоннах.
+    expect(screen.getByText("ТОО Вагон")).toBeInTheDocument();
+    expect(screen.getByText("Итого 1360 мешков · 68 т")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /История/ }));
     expect(mocks.paged).toHaveBeenLastCalledWith(expect.stringMatching(/^\/loader\/history\/\?transport=train&/));
 
@@ -791,7 +806,7 @@ describe("LoaderPage", () => {
     expect(screen.queryByRole("tab", { name: /Фуры/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /Вагоны/ })).not.toBeInTheDocument();
     expect(queueUrls().at(-1)).toMatch(/^\/loader\/queue\/\?transport=train&/);
-    expect(screen.getByText(/№625 · ТОО Вагон/)).toBeInTheDocument();
+    expect(screen.getByText("ТОО Вагон")).toBeInTheDocument();
   });
 
   it("без области ничего не запрашивает и объясняет почему", () => {
@@ -815,7 +830,7 @@ describe("LoaderPage", () => {
     expect(mocks.refresh).toHaveBeenCalled();
     expect(mocks.reload).not.toHaveBeenCalled();
     // Ошибка опроса — маленькая пометка, последние данные остаются.
-    expect(screen.getByText(/№624 · ИП Мурат/)).toBeInTheDocument();
+    expect(screen.getByText("ИП Мурат")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(/Не удалось обновить/);
   });
 
@@ -938,6 +953,8 @@ describe("LoaderPage", () => {
     await user.click(screen.getByRole("button", { name: "Провести отчёт" }));
 
     expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+    // Отчёт о вагонах уходит ботом из истории — копии у вагона нет.
+    expect(screen.queryByRole("button", { name: /Скопировать/ })).not.toBeInTheDocument();
     const [left] = queueApply.mock.calls.at(-1)!;
     expect(left([order(625), order(626)]).map((row: LoaderOrder) => row.id)).toEqual([626]);
     expect(screen.queryByText(/уже не ждёт отгрузки/)).not.toBeInTheDocument();
@@ -994,6 +1011,7 @@ describe("LoaderPage", () => {
     // Сверху — вся история, у каждой отгрузки — своя; копия отчёта — в окне.
     expect(buttons).toHaveLength(3);
     expect(screen.queryByRole("button", { name: /Скопировать отчёт/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Скопировать все/ })).not.toBeInTheDocument();
 
     await user.click(buttons[0]);
     expect(screen.getByRole("dialog", { name: "Отправить отчёт" })).toHaveTextContent(
@@ -1021,6 +1039,57 @@ describe("LoaderPage", () => {
     await user.click(screen.getAllByRole("button", { name: "Отправить отчёт" })[1]);
 
     expect(screen.getByRole("dialog", { name: "Отправить отчёт" })).toHaveTextContent(JSON.stringify({ order: 366 }));
+  });
+
+  it("у фур отчёт копируется: у каждой отгрузки рядом с накладной и весь период — по фильтрам истории", async () => {
+    const user = userEvent.setup();
+    const today = todayLocalIsoDate();
+    render(<LoaderPage />);
+
+    // В очереди копировать нечего: кнопки — только в истории.
+    expect(screen.queryByRole("button", { name: /Скопировать/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /История/ }));
+
+    const one = screen.getByRole("button", { name: "Скопировать отчёт" });
+    expect(one).toHaveAttribute("data-scope", JSON.stringify({ order: 620 }));
+    expect(one.parentElement).toContainElement(screen.getByRole("button", { name: /Накладная/ }));
+    const all = screen.getByRole("button", { name: "Скопировать все" });
+    expect(all).toBeEnabled();
+    expect(all).toHaveAttribute("data-scope", JSON.stringify({ date_from: today, date_to: today, search: "" }));
+
+    await user.click(screen.getByRole("button", { name: "Вчера" }));
+    await user.type(screen.getByLabelText("Поиск"), "403 bjn");
+    const yesterday = shiftIsoDate(today, -1);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Скопировать все" })).toHaveAttribute(
+        "data-scope",
+        JSON.stringify({ date_from: yesterday, date_to: yesterday, search: "403 bjn" }),
+      ),
+    );
+  });
+
+  it("за пустой период «Скопировать все» недоступно", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation(() => paged([]));
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("tab", { name: /История/ }));
+
+    expect(screen.getByRole("button", { name: "Скопировать все" })).toBeDisabled();
+  });
+
+  it("на экране «Отгрузка подтверждена» фуры отчёт копируется сразу", async () => {
+    const user = userEvent.setup();
+    mocks.post.mockResolvedValue({ data: order(624, { status: "shipped", truck_number: "403BJN13" }) });
+    render(<LoaderPage />);
+
+    await confirmTruck(user);
+
+    expect(await screen.findByText("Отгрузка подтверждена")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Скопировать отчёт" })).toHaveAttribute(
+      "data-scope",
+      JSON.stringify({ order: 624 }),
+    );
   });
 
   it("у фур отчёта о вагонах нет", async () => {
@@ -1344,13 +1413,13 @@ describe("LoaderPage", () => {
       answer({ data: SPLIT });
       const sheet = await screen.findByRole("dialog", SHEET);
       // Опросник — на экране проверенного заказа.
-      expect(screen.getByText("№624 · ИП Мурат")).toBeInTheDocument();
+      expect(screen.getByText("№624")).toBeInTheDocument();
       await user.click(within(sheet).getByRole("button", { name: "Закрыть" }));
       await user.click(screen.getByRole("button", { name: "Назад" }));
       expect(lastPoll().active).toBe(true);
 
       await user.click(screen.getByRole("button", { name: /№626/ }));
-      expect(screen.getByText("№626 · ИП Мурат")).toBeInTheDocument();
+      expect(screen.getByText("№626")).toBeInTheDocument();
       expect(screen.queryByRole("dialog", SHEET)).not.toBeInTheDocument();
       expect(lastPoll().active).toBe(true);
       expect(mocks.get).toHaveBeenCalledTimes(1);

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Banknote, HandCoins, QrCode, Send, Smartphone } from "lucide-react";
+import { Banknote, HandCoins, LoaderCircle, QrCode, Send, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -48,42 +48,83 @@ export function receivePayment(orderId: number, { amount, method }: { amount: st
   return api.post(`/orders/${orderId}/payments/`, { amount, method });
 }
 
-/** Выбор способа приёма денег: одна кнопка на способ, как в окне «Принять оплату». */
+/**
+ * Кнопки способов приёма денег, по одной на способ.
+ *
+ * С `value` — переключатель «Оплаты сразу» в форме заказа: выбранный способ подсвечен.
+ * Без `value` — шаг способа в окнах «Принять оплату» и «Внести оплату»: крупные
+ * кнопки во всю ширину, заранее не выбрано ничего, нажатие сразу записывает оплату
+ * этим способом. Фокус встаёт на сам список, а не на первую кнопку: лишний Enter
+ * после суммы не должен записать наличные.
+ */
 export function ReceiveMethodPicker({
   methods,
   value,
   onChange,
+  busy = null,
 }: {
   methods: readonly ReceiveMethod[];
-  value: ReceiveMethod;
+  value?: ReceiveMethod;
   onChange: (method: ReceiveMethod) => void;
+  /** Способ, по которому идёт запись: на нём индикатор, все кнопки выключены. */
+  busy?: ReceiveMethod | null;
 }) {
   const options = RECEIVE_METHOD_OPTIONS.filter(({ key }) => methods.includes(key));
+  const choosing = value === undefined;
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (choosing) list.current?.focus();
+  }, [choosing]);
   return (
-    <div className="grid grid-cols-2 gap-2">
-      {options.map(({ key, label, hint, icon: Icon }) => (
-        <button
-          key={key}
-          type="button"
-          aria-pressed={value === key}
-          onClick={() => onChange(key)}
-          className={cn(
-            "flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm font-medium transition-colors",
-            hint && "col-span-2",
-            value === key
-              ? "border-[var(--foreground)] bg-[var(--muted)]"
-              : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/40",
-          )}
-        >
-          <Icon className="size-4 shrink-0" />
-          <span>
-            {label}
-            {hint && <span className="ml-1 text-xs font-normal opacity-70">· {hint}</span>}
-          </span>
-        </button>
-      ))}
+    <div
+      ref={list}
+      role={choosing ? "group" : undefined}
+      aria-label={choosing ? "Способ оплаты" : undefined}
+      tabIndex={choosing ? -1 : undefined}
+      className={choosing ? "grid gap-2 outline-none" : "grid grid-cols-2 gap-2"}
+    >
+      {options.map(({ key, label, hint, icon }) => {
+        const saving = busy === key;
+        const Icon = saving ? LoaderCircle : icon;
+        return (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={choosing ? undefined : value === key}
+            aria-busy={saving || undefined}
+            disabled={busy !== null}
+            onClick={() => onChange(key)}
+            className={cn(
+              "flex items-center rounded-lg border text-left font-medium transition-colors",
+              choosing
+                ? cn(
+                    "w-full gap-3 px-4 py-4 text-base hover:border-[var(--foreground)] hover:bg-[var(--muted)]",
+                    !saving && "disabled:opacity-50",
+                  )
+                : cn(
+                    "gap-2 px-3 py-2.5 text-sm",
+                    hint && "col-span-2",
+                    value === key
+                      ? "border-[var(--foreground)] bg-[var(--muted)]"
+                      : "border-[var(--border)] text-[var(--muted-foreground)] hover:border-[var(--foreground)]/40",
+                  ),
+            )}
+          >
+            <Icon className={cn("shrink-0", choosing ? "size-5" : "size-4", saving && "animate-spin")} />
+            <span>
+              {label}
+              {hint && <span className="ml-1 text-xs font-normal opacity-70">· {hint}</span>}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
+}
+
+/** Заголовок окна оплаты на шаге способа — один в «Принять оплату» и «Внести оплату». */
+export function methodStepHeading(sum: string) {
+  return { title: `Как клиент заплатил ${sum}?`, description: "Нажмите способ — оплата запишется сразу." };
 }
 
 /**
@@ -144,9 +185,11 @@ export function PaymentAmountField({
   );
 }
 
-/** Открыть «Принять оплату» сразу — например, когда форма заказа не смогла провести оплату. */
+/**
+ * Открыть «Принять оплату» сразу — например, когда форма заказа не смогла провести
+ * оплату. Способ не переносится: его выбирают после «Принять», как при обычном приёме.
+ */
 export interface PaymentAutoOpen {
-  method: string;
   amount: string;
   /** Почему окно открылось само: показывается в нём как ошибка. */
   notice: string;
@@ -181,14 +224,18 @@ export function OrderPaymentActions({
   /** Почему оплата сейчас закрыта (например, окно оплаты магазина). */
   blockedReason?: string | null;
   className?: string;
-  /** Открыть окно приёма сразу с этими способом и суммой (один раз). */
+  /** Открыть окно приёма сразу с этой суммой (один раз). */
   autoOpen?: PaymentAutoOpen | null;
   /** Окно открылось по `autoOpen` — страница может убрать признак из адреса. */
   onAutoOpened?: () => void;
 }) {
   const [flow, setFlow] = useState<Flow | null>(null);
   const [amount, setAmount] = useState("");
-  const [method, setMethod] = useState<ReceiveMethod>("cash");
+  // Способ спрашиваем только после «Принять», заранее не выбран ни один:
+  // с наличными по умолчанию оплату по QR записывали наличными.
+  const [choosing, setChoosing] = useState(false);
+  // Способ, нажатый на шаге способа: на его кнопке идёт запись.
+  const [method, setMethod] = useState<ReceiveMethod | null>(null);
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -202,51 +249,37 @@ export function OrderPaymentActions({
     autoOpened.current = true;
     setFlow("receive");
     setAmount(autoOpen.amount || String(maxCents / 100));
-    setMethod(methods.find((key) => key === autoOpen.method) ?? methods[0]);
+    setChoosing(false);
     setPhone("");
     setError(autoOpen.notice);
     onAutoOpened?.();
-  }, [autoOpen, visible, maxCents, methods, onAutoOpened]);
+  }, [autoOpen, visible, maxCents, onAutoOpened]);
   if (!visible) return null;
 
   const remoteInvoice = Boolean(order.payment_request_open);
   // До отгрузки долга ещё нет: принятые деньги — предоплата, о долге в текстах не говорим.
   const prepayment = order.status !== "shipped";
   const available = formatCurrency(String(maxCents / 100), order.currency);
+  const sum = formatCurrency(amount, order.currency);
   const amountProblem = paymentAmountError(amount, maxCents);
   const phoneOk = isKaspiInvoicePhone(phone);
   const canSubmit = !busy && !amountProblem && (flow !== "remote" || phoneOk);
+  const methodStep = flow === "receive" && choosing;
 
   function open(next: Flow) {
     setFlow(next);
     setAmount(String(maxCents / 100));
-    setMethod(methods[0]);
+    setChoosing(false);
     setPhone(order.client_phone || clientPhone || "");
     setError("");
   }
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!canSubmit || flow === null) return;
+  async function save(send: () => Promise<unknown>, notice: string) {
     setBusy(true);
     setError("");
     try {
-      const sum = formatCurrency(amount, order.currency);
-      if (flow === "receive") {
-        await receivePayment(order.id, { amount, method });
-        onChanged(
-          prepayment
-            ? `Предоплата ${sum} по заказу #${order.id} принята.`
-            : `Оплата ${sum} по заказу #${order.id} принята — долг уменьшен.`,
-        );
-      } else {
-        await api.post(`/orders/${order.id}/payments/`, {
-          amount,
-          method: "invoice",
-          phone_number: phone,
-        });
-        onChanged(`Счёт на ${sum} по заказу #${order.id} отправлен в Kaspi — долг уменьшится после оплаты.`);
-      }
+      await send();
+      onChanged(notice);
       setFlow(null);
     } catch (err) {
       // Ошибка остаётся в окне: страница под оверлеем её не покажет.
@@ -256,7 +289,46 @@ export function OrderPaymentActions({
     }
   }
 
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canSubmit || flow === null) return;
+    if (flow === "receive") {
+      // Сумма готова — теперь «Как клиент заплатил?»: оплату записывает нажатый способ.
+      setError("");
+      setChoosing(true);
+      return;
+    }
+    void save(
+      () => api.post(`/orders/${order.id}/payments/`, { amount, method: "invoice", phone_number: phone }),
+      `Счёт на ${sum} по заказу #${order.id} отправлен в Kaspi — долг уменьшится после оплаты.`,
+    );
+  }
+
+  function pay(next: ReceiveMethod) {
+    setMethod(next);
+    void save(
+      () => receivePayment(order.id, { amount, method: next }),
+      prepayment
+        ? `Предоплата ${sum} по заказу #${order.id} принята.`
+        : `Оплата ${sum} по заказу #${order.id} принята — долг уменьшен.`,
+    );
+  }
+
   const blocked = Boolean(blockedReason);
+  const heading =
+    flow === "remote"
+      ? {
+          title: "Отправить удалённый счёт",
+          description: "Счёт придёт клиенту в Kaspi на телефон. Долг уменьшится сам, когда клиент оплатит.",
+        }
+      : methodStep
+        ? methodStepHeading(sum)
+        : {
+            title: "Принять оплату",
+            description: prepayment
+              ? "Деньги уже получены — это предоплата до отгрузки. Ничего клиенту не отправляется."
+              : "Деньги уже получены — долг уменьшится сразу. Ничего клиенту не отправляется.",
+          };
 
   return (
     <>
@@ -281,32 +353,22 @@ export function OrderPaymentActions({
         open={flow !== null}
         onClose={() => !busy && setFlow(null)}
         eyebrow={`Заказ #${order.id}${order.client_name ? ` · ${order.client_name}` : ""}`}
-        title={flow === "remote" ? "Отправить удалённый счёт" : "Принять оплату"}
-        description={
-          flow === "remote"
-            ? "Счёт придёт клиенту в Kaspi на телефон. Долг уменьшится сам, когда клиент оплатит."
-            : prepayment
-              ? "Деньги уже получены — это предоплата до отгрузки. Ничего клиенту не отправляется."
-              : "Деньги уже получены — долг уменьшится сразу. Ничего клиенту не отправляется."
-        }
+        {...heading}
         className="max-w-sm"
       >
         <form onSubmit={submit} className="flex flex-col gap-4">
-          <PaymentAmountField
-            id={`payment-amount-${order.id}`}
-            value={amount}
-            onChange={setAmount}
-            hint={`Остаток к оплате: ${available}`}
-            fullValue={String(maxCents / 100)}
-            fullLabel="Весь остаток"
-            error={amountProblem}
-          />
-
-          {flow === "receive" && methods.length > 1 && (
-            <div className="grid gap-2">
-              <Label>Способ</Label>
-              <ReceiveMethodPicker methods={methods} value={method} onChange={setMethod} />
-            </div>
+          {methodStep ? (
+            <ReceiveMethodPicker methods={methods} onChange={pay} busy={busy ? method : null} />
+          ) : (
+            <PaymentAmountField
+              id={`payment-amount-${order.id}`}
+              value={amount}
+              onChange={setAmount}
+              hint={`Остаток к оплате: ${available}`}
+              fullValue={String(maxCents / 100)}
+              fullLabel="Весь остаток"
+              error={amountProblem}
+            />
           )}
 
           {flow === "remote" && (
@@ -331,12 +393,20 @@ export function OrderPaymentActions({
             </p>
           )}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" disabled={busy} onClick={() => setFlow(null)}>
-              Отмена
-            </Button>
-            <Button type="submit" disabled={!canSubmit}>
-              {busy ? "Сохранение…" : flow === "remote" ? "Отправить счёт" : "Принять"}
-            </Button>
+            {methodStep ? (
+              <Button type="button" variant="outline" disabled={busy} onClick={() => setChoosing(false)}>
+                Назад
+              </Button>
+            ) : (
+              <>
+                <Button type="button" variant="outline" disabled={busy} onClick={() => setFlow(null)}>
+                  Отмена
+                </Button>
+                <Button type="submit" disabled={!canSubmit}>
+                  {busy ? "Сохранение…" : flow === "remote" ? "Отправить счёт" : "Принять"}
+                </Button>
+              </>
+            )}
           </div>
         </form>
       </Modal>

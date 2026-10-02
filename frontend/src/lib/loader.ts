@@ -11,6 +11,8 @@ export interface LoaderOrderItem {
   quantity: number;
   weight_kg: string;
   unit_price: string | null;
+  /** Цвет мешка (Red/Green/Blue); у удалённого товара — пусто. */
+  color: string;
 }
 
 /** Заказ на экране грузчика (GET /loader/queue/ и /loader/history/). */
@@ -91,10 +93,35 @@ export function storeOverdueDays(days: number, transport: LoaderOrder["transport
   storeChoice(overdueDaysKey(transport, userId), String(days));
 }
 
-export function loaderUrl(path: "queue" | "history", params: Record<string, string>) {
+type LoaderPath = "queue" | "history" | "wagon-report/compose" | "truck-report";
+
+export function loaderUrl(path: LoaderPath, params: Record<string, string>) {
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value));
   const suffix = query.toString();
   return `/loader/${path}/${suffix ? `?${suffix}` : ""}`;
+}
+
+/** Отчёт по истории грузчика: одна отгрузка или вся история с фильтрами экрана (период и поиск). */
+export type HistoryReportScope = { order: number } | { date_from: string; date_to: string; search: string };
+
+/** «Отправить отчёт» вагонов и «Скопировать отчёт» фур: ``?order=`` или фильтры истории. */
+export function historyReportUrl(path: "wagon-report/compose" | "truck-report", scope: HistoryReportScope) {
+  const params: Record<string, string> =
+    "order" in scope
+      ? { order: String(scope.order) }
+      : { date_from: scope.date_from, date_to: scope.date_to, search: scope.search };
+  return loaderUrl(path, params);
+}
+
+/** «Скопировать отчёт» — у отгруженной фуры; вагоны отчитываются ботом («Отправить отчёт»). */
+export function hasTruckReport(order: Pick<LoaderOrder, "transport_type" | "status">): boolean {
+  return order.transport_type === "truck" && order.status === "shipped";
+}
+
+/** «Скопировать отчёт» у фур: текст для чата отгрузок; составляет его сервер (GET /loader/truck-report/). */
+export async function truckReportText(scope: HistoryReportScope): Promise<string> {
+  const { data } = await api.get<{ text: string }>(historyReportUrl("truck-report", scope));
+  return data.text;
 }
 
 /**

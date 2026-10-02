@@ -27,6 +27,15 @@ def client(department):
 
 
 @pytest.fixture
+def nurzhan(department):
+    """Клиент фур из Казахстана — как в чате отгрузок: «Нуржан Сарыагаш 87029368080»."""
+    return Client.objects.create_with_user(
+        first_name="Нуржан", last_name="Сарыагаш", phone="+7 (702) 936-80-80",
+        currency="KZT", department=department, country="Казахстан",
+    )
+
+
+@pytest.fixture
 def product(boss):
     item = Product.objects.create(name="Мука высший сорт", color="Red", weight_kg="50")
     receive_stock(item, 20000, boss)

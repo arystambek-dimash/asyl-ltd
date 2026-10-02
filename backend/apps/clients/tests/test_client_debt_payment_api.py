@@ -31,6 +31,13 @@ def _body(**overrides):
     }
 
 
+def _preview_body(**overrides):
+    """Предпросмотр, как его шлёт касса: без способа — его выбирают после «Подтвердить»."""
+    body = _body(**overrides)
+    del body["method"]
+    return body
+
+
 def _debt_order(client, product, *, qty, days_ago):
     """Отгруженный заказ в долг на qty × 100 ₸, созданный days_ago дней назад."""
     order = Order.objects.create(client=client, status="shipped", settlement_intent="debt")
@@ -61,12 +68,12 @@ def debtor(make_product):
 def test_preview_returns_oldest_first_plan_and_writes_nothing(api_as, cashier, debtor):
     client, old, new = debtor
 
-    response = api_as(cashier).post(_url(client), _body(), format="json")
+    response = api_as(cashier).post(_url(client), _preview_body(), format="json")
 
     assert response.status_code == 200
     data = response.json()
     assert data["currency"] == "KZT"
-    assert data["method"] == "cash"
+    assert data["method"] is None
     assert data["amount"] == "350.00"
     assert data["total_available"] == "500.00"
     assert data["skipped"] == []
@@ -97,7 +104,7 @@ def test_preview_returns_oldest_first_plan_and_writes_nothing(api_as, cashier, d
 def test_preview_without_amount_offers_whole_debt(api_as, cashier, debtor):
     client, old, new = debtor
 
-    response = api_as(cashier).post(_url(client), _body(amount=None), format="json")
+    response = api_as(cashier).post(_url(client), _preview_body(amount=None), format="json")
 
     assert response.status_code == 200
     data = response.json()
@@ -169,7 +176,7 @@ def test_client_of_other_department_is_not_found(
     mill_cashier = user_with_perms("mill-cashier", codes=["payments.create"], department=mill)
     api = api_as(mill_cashier)
 
-    own_response = api.post(_url(own), _body(amount="100.00"), format="json")
+    own_response = api.post(_url(own), _preview_body(amount="100.00"), format="json")
     foreign_response = api.post(
         _url(foreign), _body(amount="100.00", preview=False), format="json",
     )
@@ -184,6 +191,7 @@ def test_client_of_other_department_is_not_found(
     [
         ({"amount": "0"}, "invalid_amount"),
         ({"amount": None}, "invalid_amount"),
+        ({"method": None}, "debt_payment_method"),
         ({"method": "invoice"}, "debt_payment_method"),
         ({"currency": "USD", "method": "kaspi"}, "payment_kzt_only"),
         ({"currency": "USD"}, "no_debt"),
@@ -207,7 +215,7 @@ def test_validation_codes_reach_the_cashier(api_as, cashier, debtor, overrides, 
 def test_amount_over_debt_reports_max_amount(api_as, cashier, debtor):
     client, _old, _new = debtor
 
-    response = api_as(cashier).post(_url(client), _body(amount="600.00"), format="json")
+    response = api_as(cashier).post(_url(client), _preview_body(amount="600.00"), format="json")
 
     assert response.status_code == 400
     data = response.json()

@@ -1,11 +1,13 @@
 "use client";
 import { ChevronRight, Wallet } from "lucide-react";
+import { ColorDot } from "@/components/monoblock/ui";
 import { Badge } from "@/components/ui/badge";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
-import { loadWeight, type LoaderOrder } from "@/lib/loader";
-import { bagsWord, cn, formatCurrency, formatTime } from "@/lib/utils";
+import { loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
+import { colorMeta } from "@/lib/monoblock-colors";
+import { bagsLabel, cn, formatCurrency, formatTime } from "@/lib/utils";
 
 /**
  * Оплата заказа одной плашкой: статус с сервера и остаток долга. «Не оплачен»
@@ -25,12 +27,28 @@ export function PaymentMark({ order, className }: { order: LoaderOrder; classNam
   );
 }
 
-/** Что грузить: товары заказа одной строкой. */
-export function itemsSummary(order: LoaderOrder): string {
-  return order.items.map((item) => item.label).join(" · ") || "состав не указан";
+/**
+ * Что грузить: каждый товар своей строкой — точка цвета мешка, полное название
+ * (переносится, не обрезается) и крупно мешки. Один список на карточке и на экране заказа.
+ */
+export function LoaderItemList({ items, className }: { items: LoaderOrderItem[]; className?: string }) {
+  if (items.length === 0) {
+    return <p className={cn("text-sm text-[var(--muted-foreground)]", className)}>состав не указан</p>;
+  }
+  return (
+    <ul aria-label="Товары" className={cn("flex flex-col gap-2", className)}>
+      {items.map((item, index) => (
+        <li key={index} className="flex items-start gap-2.5">
+          <ColorDot className={cn("mt-1.5 size-3", colorMeta(item.color).dot)} />
+          <span className="min-w-0 flex-1 break-words text-base font-semibold leading-snug">{item.label}</span>
+          <span className="shrink-0 text-lg font-black leading-tight tabular-nums">{bagsLabel(item.quantity)}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
-/** Карточка очереди: номер машины или вагона, сколько грузить (у вагона — в тоннах), что и кому. */
+/** Карточка очереди: кому (крупно), номер заказа и транспорт, каждый товар с мешками, итог и оплата. */
 export function LoaderOrderCard({
   order,
   onOpen,
@@ -42,26 +60,23 @@ export function LoaderOrderCard({
 }) {
   const content = (
     <>
+      {/* Грузчик ищет заказ по клиенту: имя первым и крупно, переносится целиком. */}
       <div className="flex items-start justify-between gap-3">
-        <span className="min-w-0 truncate">
-          <OrderTransportBadge order={order} />
-        </span>
+        <span className="min-w-0 break-words text-xl font-black leading-tight">{order.client_name}</span>
         {order.shipped_at ? (
-          <span className="shrink-0 text-sm font-semibold tabular-nums">{formatTime(order.shipped_at)}</span>
+          <span className="shrink-0 pt-0.5 text-sm font-semibold tabular-nums">{formatTime(order.shipped_at)}</span>
         ) : (
-          onOpen && <ChevronRight className="size-5 shrink-0 text-[var(--muted-foreground)]" />
+          onOpen && <ChevronRight className="mt-0.5 size-5 shrink-0 text-[var(--muted-foreground)]" />
         )}
       </div>
-      <div className="mt-2.5 flex flex-wrap items-baseline gap-x-2">
-        <span className="text-3xl font-black leading-none tabular-nums">{order.bags}</span>
-        <span className="text-sm font-medium text-[var(--muted-foreground)]">{bagsWord(order.bags)}</span>
-        <span className="text-sm font-semibold tabular-nums text-[var(--muted-foreground)]">·</span>
-        <span className="text-sm font-semibold tabular-nums text-[var(--muted-foreground)]">{loadWeight(order)}</span>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        <span className="text-sm font-medium tabular-nums text-[var(--muted-foreground)]">№{order.id} ·</span>
+        <OrderTransportBadge order={order} />
       </div>
-      <div className="mt-1.5 truncate text-sm font-medium">{itemsSummary(order)}</div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="min-w-0 truncate text-xs text-[var(--muted-foreground)]">
-          №{order.id} · {order.client_name}
+      <LoaderItemList items={order.items} className="mt-3" />
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t pt-2.5">
+        <span className="text-sm font-bold tabular-nums">
+          Итого {bagsLabel(order.bags)} · {loadWeight(order)}
         </span>
         <PaymentMark order={order} />
       </div>

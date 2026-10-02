@@ -6,6 +6,8 @@ from rest_framework.exceptions import ValidationError
 
 from apps.common.plates import (
     clean_plate,
+    client_plate_country,
+    detect_plate_country,
     format_plate,
     format_plate_pair,
     normalize_plate,
@@ -34,6 +36,22 @@ def test_plate_match_key(compact, expected):
 @pytest.mark.parametrize(("raw", "expected"), VECTORS["format"])
 def test_format_plate(raw, expected):
     assert format_plate(raw) == expected
+
+
+@pytest.mark.parametrize(("compact", "expected"), VECTORS["country"])
+def test_detect_plate_country(compact, expected):
+    assert detect_plate_country(compact) == expected
+
+
+@pytest.mark.parametrize(("country", "expected"), [
+    ("Казахстан", "KZ"), ("Кыргызстан", "KG"), ("Узбекистан", "UZ"), ("Россия", "RU"),
+    # Не указана — Казахстан, как поле номера на фронтенде (plateCountryIso).
+    ("", "KZ"),
+    # Номера этих стран не знаем — страны нет.
+    ("Таджикистан", None), ("Другая", None),
+])
+def test_client_plate_country(country, expected):
+    assert client_plate_country(country) == expected
 
 
 @pytest.mark.parametrize("raw", VECTORS["valid"])

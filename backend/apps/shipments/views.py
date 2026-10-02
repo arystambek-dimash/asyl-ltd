@@ -21,10 +21,11 @@ from apps.bots.serializers import (
     RailClientNameSerializer,
     RailProductCodeSerializer,
     RailReportSerializer,
-    WagonReportComposeSerializer,
+    ReportScopeSerializer,
     WagonReportSendSerializer,
     rail_report_input,
 )
+from apps.bots.truck_report import TRUCK_TRANSPORT, compose_truck_report
 from apps.bots.wagon_report import REPORT_MAX_ORDERS, report_draft, send_wagon_report, sent_payload
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import PermAPIViewMixin, PermViewSetMixin
@@ -49,6 +50,7 @@ from .services import (
     loader_rollback_blocker,
     rollback_shipment,
 )
+from .sources import sources_prefetch
 from .waybill import build_waybill_pdf
 
 
@@ -76,6 +78,8 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         # каждый, кто видит историю вагонов (область проверяет requested_transport).
         "report_compose": "loader.view",
         "report_send": "loader.view",
+        # «Скопировать отчёт» в истории фур — текст для чата WhatsApp; область проверяет requested_transport.
+        "truck_report": "loader.view",
     }
 
     def get_queryset(self):
@@ -162,37 +166,36 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         queryset = self._shipped_in_period(self._tab(self.get_queryset()))
         return self._page(queryset.order_by(F("shipment__shipped_at").desc(nulls_last=True), "-id"))
 
-    def _wagon_orders(self):
-        """Вагонные заказы своего отдела; без области «Вагоны» — 403, а не пустой отчёт."""
-        requested_transport(self.request.user, RAIL_TRANSPORT)
-        return self.get_queryset().filter(transport_type=RAIL_TRANSPORT)
+    def _area_orders(self, transport: str):
+        """Заказы области своего отдела; без области — 403, а не пустой отчёт."""
+        requested_transport(self.request.user, transport)
+        return self.get_queryset().filter(transport_type=transport)
+
+    def _report_rows(self, orders) -> list:
+        """Отгрузки отчёта: ``?order=`` — одна из истории; без него — вся история с фильтрами
+        экрана (период и поиск) по времени отгрузки, не больше ``REPORT_MAX_ORDERS``."""
+        query = ReportScopeSerializer(data=self.request.query_params)
+        query.is_valid(raise_exception=True)
+        order_id = query.validated_data.get("order")
+        if order_id is not None:
+            return [get_object_or_404(orders.filter(status="shipped"), pk=order_id)]
+        rows = list(self._shipped_in_period(orders).order_by("shipment__shipped_at", "id")[:REPORT_MAX_ORDERS + 1])
+        if len(rows) > REPORT_MAX_ORDERS:
+            raise ValidationError({
+                "detail": f"За период больше {REPORT_MAX_ORDERS} отгрузок — выберите период короче",
+                "code": "report_too_many_orders",
+            })
+        return rows
 
     @action(detail=False, methods=["get"], url_path="wagon-report/compose")
     def report_compose(self, request):
-        """«Отправить отчёт»: текст в формате владельца, кому он уйдёт и можно ли отправить. Ничего не пишет.
-
-        ``?order=`` — одна отгрузка из истории; без него — вся история вагонов
-        с фильтрами экрана (период и поиск).
-        """
-        query = WagonReportComposeSerializer(data=request.query_params)
-        query.is_valid(raise_exception=True)
-        orders = self._wagon_orders()
-        order_id = query.validated_data.get("order")
-        if order_id is not None:
-            rows = [get_object_or_404(orders.filter(status="shipped"), pk=order_id)]
-        else:
-            rows = list(self._shipped_in_period(orders).order_by("shipment__shipped_at", "id")[:REPORT_MAX_ORDERS + 1])
-            if len(rows) > REPORT_MAX_ORDERS:
-                raise ValidationError({
-                    "detail": f"За период больше {REPORT_MAX_ORDERS} отгрузок — выберите период короче",
-                    "code": "report_too_many_orders",
-                })
-        return Response(report_draft(rows))
+        """«Отправить отчёт»: текст в формате владельца, кому он уйдёт и можно ли отправить. Ничего не пишет."""
+        return Response(report_draft(self._report_rows(self._area_orders(RAIL_TRANSPORT))))
 
     @action(detail=False, methods=["post"], url_path="wagon-report/send")
     def report_send(self, request):
         """Отправить отчёт получателям — в очередь бота. Ответ экран применяет к строкам."""
-        orders = self._wagon_orders()
+        orders = self._area_orders(RAIL_TRANSPORT)
         serializer = WagonReportSendSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -202,6 +205,16 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
             raise NotFound("Заказ не найден или не отгружен")
         message = send_wagon_report(rows, data["text"], request.user, key=data["key"])
         return Response(sent_payload(message))
+
+    @action(detail=False, methods=["get"], url_path="truck-report")
+    def truck_report(self, request):
+        """«Скопировать отчёт» у фур: текст для чата отгрузок — грузчик вставляет его в WhatsApp сам.
+
+        Склад заказа и строки «С какого склада?» — запросом на весь отчёт. Ничего не пишет.
+        """
+        orders = self._area_orders(TRUCK_TRANSPORT).select_related("warehouse").prefetch_related(sources_prefetch())
+        report = compose_truck_report(self._report_rows(orders))
+        return Response({"text": report.text, "order_ids": report.order_ids})
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     def confirm(self, request, pk=None):
