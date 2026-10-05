@@ -6,6 +6,8 @@ interface SegmentedOption<T extends string> {
   value: T;
   label: React.ReactNode;
   caption?: React.ReactNode;
+  /** Одна недоступная опция (например, нет права), остальные выбираются. */
+  disabled?: boolean;
 }
 
 /** Ряд взаимоисключающих кнопок (radiogroup): валюта, транспорт, статус. */
@@ -37,7 +39,7 @@ export function Segmented<T extends string>({
             type="button"
             role="radio"
             aria-checked={active}
-            disabled={disabled}
+            disabled={disabled || option.disabled}
             onClick={() => onChange(option.value)}
             className={cn(
               "min-h-10 rounded-xl border px-2.5 py-1.5 text-left text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50",
@@ -100,7 +102,7 @@ export function PillToggle<T extends string>({
             key={option.value}
             type="button"
             aria-pressed={active}
-            disabled={disabled}
+            disabled={disabled || option.disabled}
             onClick={() => onChange(option.value)}
             className={cn(
               "inline-flex items-center justify-center gap-2 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-50",

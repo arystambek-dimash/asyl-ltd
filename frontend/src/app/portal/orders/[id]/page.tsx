@@ -139,7 +139,14 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                 {order.items.map((it) => (
                   <TR key={it.id}>
                     <TD>{it.product_label}</TD>
-                    <TD>{it.quantity}</TD>
+                    <TD>
+                      {it.quantity}
+                      {it.returned_quantity ? (
+                        <span className="block text-xs font-medium text-[var(--destructive)]">
+                          возврат {it.returned_quantity}
+                        </span>
+                      ) : null}
+                    </TD>
                   </TR>
                 ))}
               </TBody>

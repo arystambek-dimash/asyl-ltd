@@ -81,6 +81,7 @@ class StockMovement(models.Model):
         ("receipt", "Приёмка"),
         ("transfer_out", "Перемещение со склада"),
         ("transfer_in", "Перемещение на склад"),
+        ("client_return", "Возврат от клиента"),
     ]
 
     warehouse = models.ForeignKey(

@@ -465,6 +465,9 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
             "code": "invalid_status",
         })
     from apps.orders.debt import order_payment_status
+    from apps.orders.goods_returns import assert_no_returns
+
+    assert_no_returns(order)
     from apps.orders.services import assert_money_allows_status
 
     # Возврат в ожидание сохраняет деньги предоплатой; в заявку или отмену — без денег.

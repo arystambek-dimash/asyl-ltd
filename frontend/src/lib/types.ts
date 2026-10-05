@@ -286,6 +286,8 @@ interface OrderItem {
   product: number | null;
   product_label?: string;
   quantity: number;
+  /** Сколько мешков клиент вернул («Возврат»); деньги — за quantity − returned_quantity. */
+  returned_quantity?: number;
   unit_price?: string | null;
   client_price?: string | null;
   weight_kg?: string | null;

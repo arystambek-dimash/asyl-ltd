@@ -348,7 +348,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                   <TBody>
                     {order.items.map((it, i) => {
                       const price = Number(it.unit_price ?? 0);
-                      const sum = price * Number(it.quantity);
+                      const sum = price * (Number(it.quantity) - (it.returned_quantity ?? 0));
                       return (
                         <TR key={it.id ?? `new-${i}`}>
                           <TD>
@@ -361,7 +361,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                               )}
                             </span>
                           </TD>
-                          <TD className="text-right tabular-nums">{it.quantity}</TD>
+                          <TD className="text-right tabular-nums">
+                            {it.quantity}
+                            {it.returned_quantity ? (
+                              <span className="block text-xs font-medium text-[var(--destructive)]">
+                                возврат {it.returned_quantity}
+                              </span>
+                            ) : null}
+                          </TD>
                           <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
                             {price ? formatCurrency(it.unit_price!, order.currency) : "—"}
                           </TD>

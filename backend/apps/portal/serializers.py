@@ -57,10 +57,12 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
         min_value=1,
         max_value=MAX_PORTAL_ITEM_QUANTITY,
     )
+    # «Возврат»: сколько мешков клиент вернул; сумма заказа — за остаток.
+    returned_quantity = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "product_label", "quantity"]
+        fields = ["id", "product", "product_label", "quantity", "returned_quantity"]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }

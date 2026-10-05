@@ -32,6 +32,7 @@ from apps.orders.debt import (
     order_remaining,
 )
 from apps.orders.debt_payments import record_client_debt_payment
+from apps.orders.goods_returns import record_goods_return, returnable_products
 from apps.orders.models import Order
 from apps.orders.querysets import (
     filter_order_scope,
@@ -165,6 +166,9 @@ class ClientViewSet(
         "debt_detail": ("reports.view", "payments.create"),
         # «Внести оплату» по клиенту — то же право, что «Принять оплату» в заказе.
         "debt_payment": "payments.create",
+        # «Возврат» товара по клиенту (orders/goods_returns.py); «из кассы» сервис
+        # дополнительно проверяет payments.confirm.
+        "goods_return": "orders.edit",
         "history": "reports.view",
         "statement": "reports.export",
         "all_statement": "reports.export",
@@ -632,6 +636,34 @@ class ClientViewSet(
             request.user,
             method=request.data.get("method"),
             currency=currency,
+            preview=preview,
+        ))
+
+    @action(detail=True, methods=["get", "post"], url_path="goods-return")
+    def goods_return(self, request, pk=None):
+        """«Возврат»: мешки клиента раскладываются по его отгруженным заказам.
+
+        GET — мука, которую клиент может вернуть, и сколько
+        мешков поместится в счёт долга и из кассы. POST — раскладка
+        (``preview``) или проведение: всё делает
+        ``apps.orders.goods_returns.record_goods_return``; здесь проверяется
+        только форма признака предпросмотра.
+        """
+        client = self.get_object()
+        if request.method == "GET":
+            return Response({"products": returnable_products(client)})
+        preview = request.data.get("preview", False)
+        if not isinstance(preview, bool):
+            raise ValidationError({
+                "detail": "Признак предпросмотра должен быть true или false",
+                "code": "bad_preview",
+            })
+        return Response(record_goods_return(
+            client,
+            request.user,
+            settlement=request.data.get("settlement"),
+            warehouse=request.data.get("warehouse"),
+            lines=request.data.get("lines"),
             preview=preview,
         ))
 

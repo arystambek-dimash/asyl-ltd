@@ -3,6 +3,8 @@
 from collections import defaultdict
 from decimal import Decimal
 
+from .text import group_digits
+
 
 MONEY_PLACES = Decimal("0.01")
 ZERO = Decimal("0")
@@ -18,6 +20,11 @@ def money_string(value) -> str:
     if value is None:
         value = ZERO
     return str(Decimal(value).quantize(MONEY_PLACES))
+
+
+def money_text(value, currency: str) -> str:
+    """«3 150 000 ₸» — сумма в тексте для человека."""
+    return f"{group_digits(value)} {CURRENCY_SIGNS.get(currency, currency)}"
 
 
 def sum_by_currency(items, amount) -> dict[str, Decimal]:

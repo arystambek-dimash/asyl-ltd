@@ -183,8 +183,9 @@ class Order(models.Model):
     def total_amount(self) -> Decimal:
         # Единственный источник суммы — договорная цена, зафиксированная в заказе.
         # У товара общей цены нет; неподтверждённая позиция пока стоит 0.
+        # Возвращённые мешки («Возврат», orders/goods_returns.py) в сумму не входят.
         return sum(
-            (i.quantity * (i.unit_price if i.unit_price is not None else Decimal("0"))
+            (i.sold_quantity * (i.unit_price if i.unit_price is not None else Decimal("0"))
              for i in self.items.all()),
             Decimal("0"),
         )
@@ -233,6 +234,15 @@ class OrderItem(models.Model):
     # Договорная цена за мешок, зафиксированная при подтверждении заказа.
     unit_price = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True)
+    # Мешки, которые клиент вернул («Возврат», orders/goods_returns.py): отгружено
+    # остаётся ``quantity``, деньги считаются за :attr:`sold_quantity`.
+    # db_default: откат релиза вставляет позиции без этой колонки.
+    returned_quantity = models.PositiveIntegerField(default=0, db_default=0)
+
+    @property
+    def sold_quantity(self) -> int:
+        """Мешки, оставшиеся у клиента: за них и считаются деньги."""
+        return self.quantity - self.returned_quantity
 
     @property
     def product_label(self):
@@ -549,3 +559,33 @@ class StatusChangeRequest(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class GoodsReturn(models.Model):
+    """«Возврат»: клиент привёз мешки, они разложены по его отгруженным заказам.
+
+    Строки — :class:`GoodsReturnLine`; позиция заказа копит
+    ``OrderItem.returned_quantity``. Валюта — у каждого заказа своя. ``settlement`` — что с деньгами: ``debt``
+    уменьшает долг, ``cash`` — касса отдала деньги кассовыми возвратами оплат.
+    """
+
+    SETTLEMENTS = [("debt", "В счёт долга"), ("cash", "Из кассы")]
+
+    client = models.ForeignKey("clients.Client", on_delete=models.CASCADE, related_name="goods_returns")
+    settlement = models.CharField(max_length=10, choices=SETTLEMENTS)
+    warehouse = models.ForeignKey("warehouse.Warehouse", on_delete=models.PROTECT, related_name="goods_returns")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class GoodsReturnLine(models.Model):
+    """Сколько мешков возврата легло на позицию заказа и по какой цене."""
+
+    goods_return = models.ForeignKey(GoodsReturn, on_delete=models.CASCADE, related_name="lines")
+    # CASCADE: окончательная очистка корзины удаляет позиции заказа — она не должна падать.
+    order_item = models.ForeignKey(OrderItem, on_delete=models.CASCADE, related_name="return_lines")
+    bags = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)

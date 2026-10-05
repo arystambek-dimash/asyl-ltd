@@ -270,6 +270,22 @@ def receive_stock(
 
 
 @transaction.atomic
+def return_stock(product, bags, user, warehouse, note=""):
+    """Мешки, которые вернул клиент, — на склад движением «Возврат от клиента».
+
+    Не «Приёмка» (``StockReceipt`` — выпуск производства): возврат не должен
+    искажать производство. ``warehouse`` — уже проверенный склад.
+    """
+    if bags <= 0:
+        raise ValidationError(
+            {"detail": "Количество мешков должно быть больше нуля", "code": "invalid_bags"}
+        )
+    item = _locked_stock_item(product, warehouse, create=True)
+    _post_movement(item, bags, "client_return", user, note)
+    return item
+
+
+@transaction.atomic
 def transfer_stock(
     product,
     bags,

@@ -72,6 +72,7 @@ def operation_display(operation: StatementOperation) -> OperationDisplay:
             "Продажа / отгрузка",
             ", ".join(
                 f"{item.product_label} × {item.quantity}"
+                + (f" (возврат {item.returned_quantity})" if item.returned_quantity else "")
                 for item in order.items.all()
             ),
             public_status_label(order.status),

@@ -60,8 +60,11 @@ ZERO_MONEY = Value(Decimal("0"), output_field=MONEY)
 
 
 def item_value_sum():
-    """Сумма позиций заказа: позиция без цены даёт ноль, как в модели."""
-    return Sum(F("quantity") * Coalesce("unit_price", ZERO_MONEY), output_field=MONEY)
+    """Сумма позиций заказа за мешки у клиента (без возврата); позиция без цены даёт ноль, как в модели."""
+    return Sum(
+        (F("quantity") - F("returned_quantity")) * Coalesce("unit_price", ZERO_MONEY),
+        output_field=MONEY,
+    )
 
 
 def payment_net_sum():

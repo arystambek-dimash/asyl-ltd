@@ -8,6 +8,20 @@ describe("paymentBadgeStatus", () => {
     expect(paymentBadgeStatus({ status: "shipped", payment_status: "settled" })).toBe("settled");
   });
 
+  it("an order the client returned in full is «returned», not unpaid: there is nothing to pay", () => {
+    const items = [{ quantity: 10, returned_quantity: 10 }];
+    expect(paymentBadgeStatus({ status: "shipped", payment_status: "unpaid", items })).toBe("returned");
+    expect(
+      paymentBadgeStatus({
+        status: "shipped",
+        payment_status: "unpaid",
+        items: [{ quantity: 10, returned_quantity: 3 }],
+      }),
+    ).toBe("unpaid");
+    render(<OrderPaymentBadge order={{ status: "shipped", payment_status: "unpaid", items }} />);
+    expect(screen.getByText("Возвращён")).toBeInTheDocument();
+  });
+
   it("marks a prepaid order before shipment, but not an unpaid one: it is not a debt yet", () => {
     expect(paymentBadgeStatus({ status: "confirmed", payment_status: "settled" })).toBe("settled");
     expect(paymentBadgeStatus({ status: "loading", payment_status: "partial" })).toBe("partial");

@@ -462,10 +462,11 @@ def _items_sheet(wb, data: StatementData) -> None:
         Column("Товар", 40, lambda row: row[1].product_label),
         Column("Класс CV", 16, lambda row: row[1].product_cv_class or "—"),
         Column("Мешков", 12, lambda row: row[1].quantity, "number"),
+        Column("Возврат", 12, lambda row: row[1].returned_quantity, "number"),
         Column("Цена / мешок", 18, lambda row: row[1].unit_price, "money"),
         Column(
             "Сумма", 18,
-            lambda row: row[1].quantity * (row[1].unit_price or 0), "money",
+            lambda row: row[1].sold_quantity * (row[1].unit_price or 0), "money",
         ),
         Column("Валюта", 10, lambda row: row[0].currency),
         Column("Отдел", 22, lambda row: department_name(data, row[0].department)),

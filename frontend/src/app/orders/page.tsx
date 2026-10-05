@@ -61,10 +61,14 @@ import {
   Plus,
   RotateCcw,
   Trash2,
+  Undo2,
 } from "lucide-react";
 import type { Department, DepartmentSummary, Order, OrderListSummary } from "@/lib/types";
 
 const OrderForm = dynamic(() => import("@/components/order-form").then((m) => m.OrderForm));
+const GoodsReturnModal = dynamic(() =>
+  import("@/components/orders/goods-return-modal").then((m) => m.GoodsReturnModal),
+);
 
 function DateRangeFilter({
   dateFrom,
@@ -599,6 +603,8 @@ function OrdersPageInner() {
   // Смена ключа пересоздаёт форму заказа с нуля (кнопка «Очистить всё»).
   const [orderFormResetKey, setOrderFormResetKey] = useState(0);
   const [statementOpen, setStatementOpen] = useState(false);
+  // «Возврат»: клиент привёз мешки — раскладываются по его отгруженным заказам.
+  const [returnOpen, setReturnOpen] = useState(false);
   const { data: trashPreview, reload: reloadTrashPreview } = useApi<{ count: number; results: Order[] }>(
     canEdit && view === "orders" ? "/orders/trash-preview/" : null,
   );
@@ -686,7 +692,7 @@ function OrdersPageInner() {
       section="Работа"
       description="Единый центр заказов: отделы, статусы, выручка и отгрузка."
       actions={
-        canCreate || canManageDepartments || canExport ? (
+        canCreate || canEdit || canManageDepartments || canExport ? (
           <div className="flex items-center gap-2">
             {canManageDepartments && (
               <DepartmentManager
@@ -705,6 +711,11 @@ function OrdersPageInner() {
               >
                 <FileSpreadsheet className="size-4 text-emerald-600" />
                 <span className="hidden lg:inline">Excel-выписка</span>
+              </Button>
+            )}
+            {canEdit && (
+              <Button size="sm" variant="outline" aria-label="Возврат" onClick={() => setReturnOpen(true)}>
+                <Undo2 className="size-4" /> <span className="hidden sm:inline">Возврат</span>
               </Button>
             )}
             {canCreate && (
@@ -1026,6 +1037,15 @@ function OrdersPageInner() {
           </div>
         )}
       </Modal>
+
+      <GoodsReturnModal
+        open={returnOpen}
+        onClose={() => setReturnOpen(false)}
+        onDone={() => {
+          setReturnOpen(false);
+          reload();
+        }}
+      />
 
       <StatementExportModal
         open={statementOpen}

@@ -18,8 +18,8 @@ from apps.clients.services import (
     lock_client_orders,
     lock_scoped_client,
 )
-from apps.common.money import CURRENCY_SIGNS, ZERO, money_string
-from apps.common.text import group_digits, plural_ru
+from apps.common.money import ZERO, money_string, money_text
+from apps.common.text import plural_ru
 from apps.eventlog.services import log_event
 
 from .debt import (
@@ -97,11 +97,6 @@ def plan_debt_payment(orders, amount: Decimal | None, *, today) -> dict:
     }
 
 
-def _money_text(value: Decimal, currency: str) -> str:
-    """«3 150 000 ₸» — сумма в тексте для человека."""
-    return f"{group_digits(value)} {CURRENCY_SIGNS.get(currency, currency)}"
-
-
 def _method_text(method: str) -> str:
     """Способ внутри фразы: «наличные», «удалённая оплата»; «QR» остаётся как есть."""
     label = payment_method_label(method)
@@ -132,7 +127,7 @@ def _record_slices(client, plan: dict, user, *, method: str, currency: str) -> d
     slices = plan["slices"]
     count = len(slices)
     summary = (
-        f"{_money_text(plan['amount'], currency)}, {_method_text(method)} "
+        f"{money_text(plan['amount'], currency)}, {_method_text(method)} "
         f"({count} {plural_ru(count, 'заказ', 'заказа', 'заказов')})"
     )
     common_note = f"Внесение оплаты: {summary}"
@@ -230,7 +225,7 @@ def record_client_debt_payment(
     plan = plan_debt_payment(orders, amount, today=timezone.localdate())
     if plan["amount"] > plan["total_available"]:
         raise ValidationError({
-            "detail": f"Максимум к оплате {_money_text(plan['total_available'], currency)}",
+            "detail": f"Максимум к оплате {money_text(plan['total_available'], currency)}",
             "code": "amount_exceeds_debt",
             "max_amount": money_string(plan["total_available"]),
         })

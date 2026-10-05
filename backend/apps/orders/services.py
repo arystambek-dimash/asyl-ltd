@@ -1422,6 +1422,9 @@ def replace_items(
         raise ValidationError(
             {"detail": "В заказе должна остаться хотя бы одна позиция",
              "code": "items_empty"})
+    from .goods_returns import assert_no_returns
+
+    assert_no_returns(order)
 
     is_shipped = order.status == "shipped"
     reason = _shipped_edit_reason(edit_reason) if is_shipped else ""

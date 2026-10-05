@@ -41,6 +41,8 @@ from .transport import (
 class OrderItemSerializer(serializers.ModelSerializer):
     product_label = serializers.CharField(read_only=True)
     quantity = serializers.IntegerField(min_value=1, max_value=2_147_483_647)
+    # «Возврат»: сколько мешков клиент вернул; деньги — за quantity − returned_quantity.
+    returned_quantity = serializers.IntegerField(read_only=True)
     unit_price = serializers.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -57,6 +59,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "product",
             "product_label",
             "quantity",
+            "returned_quantity",
             "unit_price",
             "client_price",
             "weight_kg",
