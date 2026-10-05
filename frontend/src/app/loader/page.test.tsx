@@ -183,15 +183,13 @@ vi.mock("@/components/loader/shipment-sources-sheet", async () => {
 });
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
-/** Заказ ИП Мурат: два мешка «Д1с · 50 кг» на 20 000 ₸. */
+/** Заказ ИП Мурат: два мешка «Д1с · 50 кг». */
 const order = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder =>
   makeLoaderOrder(id, {
     client_name: "ИП Мурат",
-    items: [makeLoaderItem({ quantity: 2, unit_price: "10000.00" })],
+    items: [makeLoaderItem({ quantity: 2 })],
     bags: 2,
     total_kg: "100.00",
-    total_amount: "20000.00",
-    remaining_amount: "20000.00",
     ...fields,
   });
 
@@ -485,39 +483,29 @@ describe("LoaderPage", () => {
     expect(update([]).map((row: LoaderOrder) => row.id)).toEqual([]);
   });
 
-  it("показывает оплату заказа, но отгрузить даёт и в долг", async () => {
+  it("денег не показывает — ни в очереди, ни в заказе", async () => {
     const user = userEvent.setup();
     mocks.paged.mockImplementation((url: string | null) =>
-      url?.startsWith("/loader/queue/")
-        ? paged([
-            order(700, {
-              truck_number: "111 AAA 01",
-              payment_status: "settled",
-              remaining_amount: "0.00",
-            }),
-            order(701, {
-              truck_number: "222 BBB 02",
-              payment_status: "unpaid",
-              remaining_amount: "20000.00",
-            }),
-            // Заказ без суммы: остатка нет, но бэкенд считает его не оплаченным.
-            order(702, {
-              truck_number: "333 CCC 03",
-              payment_status: "unpaid",
-              remaining_amount: "0.00",
-            }),
-          ])
-        : paged([]),
+      url?.startsWith("/loader/queue/") ? paged([order(701, { truck_number: "222 BBB 02" })]) : paged([]),
     );
     render(<LoaderPage />);
 
-    expect(screen.getByText("Оплачен")).toBeInTheDocument();
-    expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
-    expect(screen.getByText(/Не оплачен · 0 ₸/)).toBeInTheDocument();
+    expect(screen.queryAllByText(/оплачен|₸/i)).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: /№701/ }));
-    expect(screen.getByText(/Не оплачен · 20 000 ₸/)).toBeInTheDocument();
+    expect(screen.queryAllByText(/оплачен|₸/i)).toHaveLength(0);
     expect(screen.getByRole("button", { name: /Подтвердить отгрузку/ })).toBeEnabled();
+  });
+
+  it("«Аналитика дня» открывает сводку открытой вкладки за сегодня", async () => {
+    const user = userEvent.setup();
+    mocks.paged.mockImplementation(() => paged([]));
+    render(<LoaderPage />);
+
+    await user.click(screen.getByRole("button", { name: "Аналитика дня" }));
+
+    expect(screen.getByRole("dialog", { name: "Аналитика дня" })).toBeInTheDocument();
+    expect(mocks.apiUrls).toContain(`/loader/day-summary/?transport=truck&day=${todayLocalIsoDate()}`);
   });
 
   it("открывается на сегодняшнем дне, просроченные — отдельной кнопкой", async () => {

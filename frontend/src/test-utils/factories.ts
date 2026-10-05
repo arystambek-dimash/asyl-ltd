@@ -39,27 +39,23 @@ export function makeOrder(overrides: Partial<Order> = {}): Order {
   };
 }
 
-/** Строка очереди грузчика: подтверждённая фура на 16.09, один мешок, не оплачена. */
+/** Строка очереди грузчика: подтверждённая фура на 16.09, один мешок. */
 export function makeLoaderOrder(id: number, overrides: Partial<LoaderOrder> = {}): LoaderOrder {
   return {
     id,
     status: "confirmed",
     transport_type: "truck",
     truck_number: "",
-    currency: "KZT",
     planned_on: "2026-09-16",
     client_name: "Клиент",
     items: [],
     bags: 1,
     total_kg: "50.00",
-    total_amount: "1000.00",
     shipped_at: null,
     trailer_number: "",
     transport_suggestions: [],
     transport_locked: false,
     client_country: "KZ",
-    payment_status: "unpaid",
-    remaining_amount: "1000.00",
     can_rollback: false,
     rail_station: "",
     wagons: [],
@@ -69,13 +65,11 @@ export function makeLoaderOrder(id: number, overrides: Partial<LoaderOrder> = {}
   };
 }
 
-/** Позиция заказа у грузчика: один мешок «Д1с» без договорной цены. */
+/** Позиция заказа у грузчика: один мешок «Д1с». */
 export function makeLoaderItem(overrides: Partial<LoaderOrderItem> = {}): LoaderOrderItem {
   return {
     label: "Д1с · 50 кг",
     quantity: 1,
-    weight_kg: "50.00",
-    unit_price: null,
     ...overrides,
   };
 }

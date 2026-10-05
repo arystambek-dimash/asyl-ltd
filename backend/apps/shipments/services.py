@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
+from apps.common.money import money_string
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.orders.backdate import backdate_events, backdate_moment
@@ -110,6 +111,31 @@ def estimated_load_kg(order) -> Decimal:
     return sum(
         (i.quantity * i.product_weight_kg for i in order.items.all()), Decimal(0)
     )
+
+
+def load_by_product(orders) -> dict:
+    """Груз заказов: всего мешков и вес, и мешки каждой муки — «Аналитика дня» грузчика.
+
+    ``orders`` — уже с областью и отделом грузчика. Товар — подпись без цвета,
+    позиции удалённого товара — по снимку подписи. Вес — как у карточки:
+    Σ(мешки × фасовка). Крупные позиции сверху.
+    """
+    labels: dict = {}
+    bags: Counter = Counter()
+    weight = Decimal(0)
+    for item in OrderItem.objects.filter(order__in=orders.values("pk")).select_related("product"):
+        key = item.product_id or item.product_plain_label
+        labels[key] = item.product_plain_label
+        bags[key] += item.quantity
+        weight += item.quantity * item.product_weight_kg
+    return {
+        "bags": sum(bags.values()),
+        "total_kg": money_string(weight),
+        "products": [
+            {"label": labels[key], "quantity": bags[key]}
+            for key in sorted(labels, key=lambda key: (-bags[key], labels[key]))
+        ],
+    }
 
 
 def _order_items(order, *, refusal: str) -> list[OrderItem]:

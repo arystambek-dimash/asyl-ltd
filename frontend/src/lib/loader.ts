@@ -9,11 +9,9 @@ import { formatMoney, formatTons } from "@/lib/utils";
 export interface LoaderOrderItem {
   label: string;
   quantity: number;
-  weight_kg: string;
-  unit_price: string | null;
 }
 
-/** Заказ на экране грузчика (GET /loader/queue/ и /loader/history/). */
+/** Заказ на экране грузчика (GET /loader/queue/ и /loader/history/): денег грузчик не видит. */
 export interface LoaderOrder {
   id: number;
   status: string;
@@ -24,7 +22,6 @@ export interface LoaderOrder {
   transport_suggestions: TransportPair[];
   /** Пару указал клиент: грузчик её не меняет. */
   transport_locked: boolean;
-  currency: "KZT" | "USD";
   /** Плановый день: дата приезда, иначе день создания (ГГГГ-ММ-ДД). */
   planned_on: string;
   client_name: string;
@@ -33,11 +30,7 @@ export interface LoaderOrder {
   items: LoaderOrderItem[];
   bags: number;
   total_kg: string;
-  total_amount: string;
   shipped_at: string | null;
-  /** Оплата заказа: грузчик видит, платил ли клиент заранее. */
-  payment_status: string;
-  remaining_amount: string;
   /** Грузчик может сам отменить эту отгрузку (своя и не старше часа). */
   can_rollback: boolean;
   /** Отгрузка по отчёту о вагонах: станция и вагоны. */
@@ -91,7 +84,15 @@ export function storeOverdueDays(days: number, transport: LoaderOrder["transport
   storeChoice(overdueDaysKey(transport, userId), String(days));
 }
 
-type LoaderPath = "queue" | "history" | "wagon-report/compose" | "truck-report";
+/** «Аналитика дня» вкладки (GET /loader/day-summary/): всего отгружено за день и мешки каждой муки. */
+export interface LoaderDaySummary {
+  day: string;
+  bags: number;
+  total_kg: string;
+  products: LoaderOrderItem[];
+}
+
+type LoaderPath = "queue" | "history" | "day-summary" | "wagon-report/compose" | "truck-report";
 
 export function loaderUrl(path: LoaderPath, params: Record<string, string>) {
   const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value));

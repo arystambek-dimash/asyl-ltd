@@ -36,24 +36,11 @@ def test_queue_shows_orders_waiting_for_shipment(auth_client, loader, product, m
     assert rows[0]["client_name"] == "ИП Мурат"
     assert rows[0]["bags"] == 2
     assert rows[0]["total_kg"] == "100.00"
-    assert rows[0]["total_amount"] == "20000.00"
-    # Оплата видна сразу: клиент мог заплатить заранее, грузчик это знает.
-    assert rows[0]["payment_status"] == "unpaid"
-    assert rows[0]["remaining_amount"] == "20000.00"
+    # Денег грузчик не видит: ни суммы, ни оплаты, ни цены мешка.
+    money = {"currency", "total_amount", "payment_status", "remaining_amount"}
+    assert not money & rows[0].keys()
+    assert not {"unit_price", "weight_kg"} & rows[0]["items"][0].keys()
     assert shipped.pk not in [row["id"] for row in rows]
-
-
-def test_queue_payment_status_follows_money_not_stored_field(auth_client, boss, loader, product, make_order):
-    """Сохранённый payment_status может отстать (ORD-33): грузчик видит статус по факту денег."""
-    from apps.orders.services import record_staff_payment
-
-    order = make_order(product, quantity=2)
-    record_staff_payment(order, "20000.00", boss, method="cash")
-    Order.objects.filter(pk=order.pk).update(payment_status="unpaid")
-
-    [row] = auth_client(loader).get("/api/loader/queue/").data
-
-    assert (row["payment_status"], row["remaining_amount"]) == ("settled", "0.00")
 
 
 def test_queue_filters_by_planned_day_and_search(auth_client, loader, product, make_order):
@@ -610,3 +597,48 @@ def test_loader_ships_and_undoes_a_prepaid_order_keeping_the_money(auth_client, 
     assert (order.status, order.payment_status) == ("confirmed", "partial")
     assert str(order.paid_total) == "15000.00"
     assert [row["id"] for row in api.get("/api/loader/queue/").data] == [order.pk]
+
+
+def _shipped(order, at):
+    Order.objects.filter(pk=order.pk).update(status="shipped")
+    Shipment.objects.create(order=order, shipped_at=at)
+    return order
+
+
+def test_day_summary_counts_bags_shipped_today_by_flour(auth_client, loader, product, make_product, make_order):
+    """«Аналитика дня» вкладки: всего отгружено за день (мешки и вес) и мешки каждой муки."""
+    now = timezone.now()
+    second = make_product(name="Высший сорт Алтын Тәжі 50кг", color="Blue")
+    first = _shipped(make_order(product, quantity=10), now)
+    OrderItem.objects.create(order=first, product=second, quantity=5, unit_price="10.00")
+    _shipped(make_order(product, quantity=20), now)
+    make_order(product, quantity=7)  # ещё не отгружен
+    _shipped(make_order(product, quantity=40), now - timedelta(days=1))  # вчера — не сегодня
+    _shipped(make_order(product, quantity=60, transport_type="train"), now)  # другая вкладка
+    trashed = _shipped(make_order(product, quantity=90), now)
+    Order.all_objects.filter(pk=trashed.pk).update(deleted_at=now)  # корзина = удалённое
+
+    data = auth_client(loader).get("/api/loader/day-summary/", {"transport": "truck"}).data
+
+    assert data == {
+        "day": str(timezone.localdate()),
+        "bags": 35,
+        "total_kg": "1750.00",
+        "products": [
+            {"label": "Д1с · 50 кг", "quantity": 30},
+            {"label": "Высший сорт Алтын Тәжі 50кг", "quantity": 5},
+        ],
+    }
+
+
+def test_day_summary_for_another_day_and_area(auth_client, loader, trucks_loader, product, make_order):
+    yesterday = timezone.localdate() - timedelta(days=1)
+    _shipped(make_order(product, quantity=40), timezone.now() - timedelta(days=1))
+    _shipped(make_order(product, quantity=60, transport_type="train"), timezone.now())
+
+    trucks = auth_client(loader).get("/api/loader/day-summary/", {"transport": "truck", "day": str(yesterday)}).data
+    wagons = auth_client(loader).get("/api/loader/day-summary/", {"transport": "train"}).data
+
+    assert (trucks["bags"], wagons["bags"], wagons["total_kg"]) == (40, 60, "3000.00")
+    # Чужая область — 403, как у истории.
+    assert auth_client(trucks_loader).get("/api/loader/day-summary/", {"transport": "train"}).status_code == 403

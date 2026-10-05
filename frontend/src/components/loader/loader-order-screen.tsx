@@ -9,24 +9,9 @@ import { WagonList } from "@/components/ui/wagon-list";
 import { hasTruckReport, loadWeight, type LoaderOrder } from "@/lib/loader";
 import { plannedDayLabel } from "@/lib/loader-groups";
 import { transportNumberError, type TransportPair } from "@/lib/plates";
-import { bagsLabel, bagsWord, cn, formatIsoDayMonth } from "@/lib/utils";
+import { bagsLabel, cn, formatIsoDayMonth } from "@/lib/utils";
 import { CopyTruckReportButton } from "./copy-truck-report-button";
-import { LoaderItemList, PaymentMark } from "./loader-order-card";
-
-/** Крупная строка «70 мешков · 3500 кг» (у вагона — тонны) — главное, что грузчик держит в голове. */
-function BagsHeadline({ order }: { order: LoaderOrder }) {
-  return (
-    <div>
-      <div className="flex flex-wrap items-baseline gap-x-3">
-        <span className="text-[56px] font-black leading-none tabular-nums text-[var(--loader-number)]">
-          {order.bags}
-        </span>
-        <span className="text-xl font-semibold text-[var(--muted-foreground)]">{bagsWord(order.bags)}</span>
-      </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums text-[var(--loader-number)]">{loadWeight(order)}</div>
-    </div>
-  );
-}
+import { BagsHeadline, LoaderItemList } from "./loader-order-card";
 
 const FIELD_LABEL = "text-xs font-medium uppercase tracking-wide text-[var(--muted-foreground)]";
 
@@ -135,10 +120,8 @@ export function LoaderOrderScreen({
         </div>
         <TransportNumbers order={order} numbers={numbers} onNumbers={onNumbers} />
         <div className="border-t-2 border-[var(--loader-border)]/50! pt-4">
-          <BagsHeadline order={order} />
+          <BagsHeadline load={order} />
           <LoaderItemList items={order.items} className="mt-4" />
-          {/* Оплату показываем, но отгрузку не блокируем: возят и в долг. */}
-          <PaymentMark order={order} className="mt-4" />
         </div>
       </div>
 

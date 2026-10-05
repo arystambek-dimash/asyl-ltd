@@ -45,6 +45,7 @@ from .serializers import (
     WaybillSettingsSerializer,
 )
 from .services import (
+    load_by_product,
     loader_dispatch,
     loader_dispatch_preflight,
     loader_rollback_blocker,
@@ -80,11 +81,11 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "report_send": "loader.view",
         # «Скопировать отчёт» в истории фур — текст для чата WhatsApp; область проверяет requested_transport.
         "truck_report": "loader.view",
+        "day_summary": "loader.view",
     }
 
     def get_queryset(self):
-        # Оплаты нужны для статуса в очереди, владелец номера — для
-        # transport_locked: без них это запрос на строку.
+        # Владелец номера нужен для transport_locked: без него это запрос на строку.
         # Заказ чужой области («Фуры | Вагоны») грузчику не виден вовсе:
         # отгрузка, откат и накладная по нему — 404.
         # Плановый день — на каждой строке, в том числе в ответе действия:
@@ -94,7 +95,7 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         ).select_related(
             "client__user", "shipment__report_message", "truck_number_set_by",
         ).prefetch_related(
-            "items__product", "payments", "shipment__wagons", "shipment__report_message__deliveries",
+            "items__product", "shipment__wagons", "shipment__report_message__deliveries",
         ).annotate(planned_on=planned_day())
         return scope_by_client_department(queryset, self.request.user, client_path="client")
 
@@ -165,6 +166,14 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         """Отгруженные за период по времени выезда; по умолчанию — сегодня."""
         queryset = self._shipped_in_period(self._tab(self.get_queryset()))
         return self._page(queryset.order_by(F("shipment__shipped_at").desc(nulls_last=True), "-id"))
+
+    @action(detail=False, methods=["get"], url_path="day-summary")
+    def day_summary(self, request):
+        """«Аналитика дня» вкладки: сколько отгружено за ``?day=`` (по времени выезда) —
+        всего и по каждой муке. По умолчанию — сегодня."""
+        day = parse_iso_date(request.query_params.get("day")) or timezone.localdate()
+        shipped = self._tab(self.get_queryset()).filter(status="shipped", shipment__shipped_at__date=day)
+        return Response({"day": day.isoformat(), **load_by_product(shipped)})
 
     def _area_orders(self, transport: str):
         """Заказы области своего отдела; без области — 403, а не пустой отчёт."""

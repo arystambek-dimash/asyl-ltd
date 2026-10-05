@@ -1,27 +1,22 @@
 "use client";
-import { ChevronRight, Wallet } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { ChevronRight } from "lucide-react";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
-import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
-import { bagsLabel, cn, formatCurrency, formatTime } from "@/lib/utils";
+import { bagsLabel, bagsWord, cn, formatTime } from "@/lib/utils";
 
-/**
- * Оплата заказа одной плашкой: статус с сервера и остаток долга. «Не оплачен»
- * здесь серый, а не красный: в долг возят почти всё, красным в очереди — просрочка.
- */
-export function PaymentMark({ order, className }: { order: LoaderOrder; className?: string }) {
-  const status = order.payment_status;
+/** Крупно «70 мешков», под ним вес (у вагона — тонны) — главное, что грузчик держит в голове. */
+export function BagsHeadline({ load }: { load: Pick<LoaderOrder, "bags" | "transport_type" | "total_kg"> }) {
   return (
-    <Badge
-      tone={status === "unpaid" ? "muted" : (PAYMENT_STATUS_TONE[status] ?? "muted")}
-      className={cn("h-auto rounded-lg py-1 font-semibold", className)}
-    >
-      <Wallet className="size-3.5" />
-      {PAYMENT_STATUS_LABELS[status] ?? status}
-      {status !== "settled" && ` · ${formatCurrency(order.remaining_amount, order.currency)}`}
-    </Badge>
+    <div>
+      <div className="flex flex-wrap items-baseline gap-x-3">
+        <span className="text-[56px] font-black leading-none tabular-nums text-[var(--loader-number)]">
+          {load.bags}
+        </span>
+        <span className="text-xl font-semibold text-[var(--muted-foreground)]">{bagsWord(load.bags)}</span>
+      </div>
+      <div className="mt-2 text-2xl font-bold tabular-nums text-[var(--loader-number)]">{loadWeight(load)}</div>
+    </div>
   );
 }
 
@@ -47,7 +42,7 @@ export function LoaderItemList({ items, className }: { items: LoaderOrderItem[];
   );
 }
 
-/** Карточка очереди: кому (крупно), номер заказа и транспорт, каждый товар с мешками, итог и оплата. */
+/** Карточка очереди: кому (крупно), номер заказа и транспорт, каждый товар с мешками и итог. */
 export function LoaderOrderCard({
   order,
   onOpen,
@@ -73,11 +68,8 @@ export function LoaderOrderCard({
         <OrderTransportBadge order={order} />
       </div>
       <LoaderItemList items={order.items} className="mt-3" />
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t-2 border-[var(--loader-border)]/50! pt-2.5">
-        <span className="text-sm font-bold tabular-nums text-[var(--loader-number)]">
-          Итого {bagsLabel(order.bags)} · {loadWeight(order)}
-        </span>
-        <PaymentMark order={order} />
+      <div className="mt-3 border-t-2 border-[var(--loader-border)]/50! pt-2.5 text-sm font-bold tabular-nums text-[var(--loader-number)]">
+        Итого {bagsLabel(order.bags)} · {loadWeight(order)}
       </div>
       {/* Номера вагонов отгрузки по отчёту; заголовок «12 вагонов» — в табличке сверху. */}
       <WagonList wagons={order.wagons} headline={false} className="mt-2.5" />

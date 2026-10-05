@@ -2,7 +2,6 @@ from rest_framework import serializers
 
 from apps.bots.wagon_report import delivery_payload
 from apps.common.money import money_string
-from apps.orders.debt import order_payment_status, order_remaining
 from apps.orders.serializers import OrderWagonsMixin, TransportNumbersSerializer, TransportSuggestionsMixin
 from apps.orders.services import can_set_truck_number
 
@@ -16,17 +15,12 @@ class LoadSerializer(serializers.Serializer):
 
 class LoaderOrderItemSerializer(serializers.Serializer):
     # Мука и фасовка, без цвета мешка.
-    label = serializers.SerializerMethodField()
+    label = serializers.CharField(source="product_plain_label")
     quantity = serializers.IntegerField()
-    weight_kg = serializers.DecimalField(source="product_weight_kg", max_digits=10, decimal_places=2)
-    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
-
-    def get_label(self, item):
-        return item.product.plain_label if item.product_id else item.product_label
 
 
 class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, serializers.Serializer):
-    """Заказ на экране грузчика: кому, на чём, что и сколько — без истории поста."""
+    """Заказ на экране грузчика: кому, на чём, что и сколько — без истории поста и без денег."""
 
     id = serializers.IntegerField()
     status = serializers.CharField()
@@ -47,7 +41,6 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
     # дописывает. Статус замком здесь не считается — пустой номер после въезда
     # грузчик дописать может, а замену непустого отклонит сервис.
     transport_locked = serializers.SerializerMethodField()
-    currency = serializers.CharField()
     # Плановый день (дата приезда, иначе день создания) — по нему очередь делится на дни.
     planned_on = serializers.DateField()
     client_name = serializers.SerializerMethodField()
@@ -56,12 +49,8 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
     items = LoaderOrderItemSerializer(many=True, source="items.all")
     bags = serializers.SerializerMethodField()
     total_kg = serializers.SerializerMethodField()
-    total_amount = serializers.SerializerMethodField()
     shipped_at = serializers.SerializerMethodField()
     can_rollback = serializers.SerializerMethodField()
-    # Грузчик должен видеть, оплачен ли заказ: клиент мог заплатить заранее.
-    payment_status = serializers.SerializerMethodField()
-    remaining_amount = serializers.SerializerMethodField()
 
     def get_client_name(self, order):
         return order.client.display_name
@@ -85,17 +74,6 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
 
     def get_total_kg(self, order):
         return money_string(estimated_load_kg(order))
-
-    def get_total_amount(self, order):
-        return money_string(order.total_amount)
-
-    def get_payment_status(self, order):
-        # По факту денег, а не по сохранённому payment_status: у заказов,
-        # отгруженных до 1e1b940, он может отставать (ORD-33).
-        return order_payment_status(order)
-
-    def get_remaining_amount(self, order):
-        return money_string(order_remaining(order))
 
     def get_shipped_at(self, order):
         shipment = getattr(order, "shipment", None)

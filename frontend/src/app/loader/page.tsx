@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BarChart3,
   CheckCheck,
   Clock3,
   PackageCheck,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { CopyTruckReportButton } from "@/components/loader/copy-truck-report-button";
+import { DaySummarySheet } from "@/components/loader/day-summary-sheet";
 import { LoaderOrderCard } from "@/components/loader/loader-order-card";
 import { LoaderOrderScreen, LoaderShippedScreen } from "@/components/loader/loader-order-screen";
 import { RailReportSheet } from "@/components/loader/rail-report-sheet";
@@ -136,6 +138,7 @@ function LoaderPageInner() {
   // Открытый заказ ушёл из очереди без нас (отгружен с другого устройства).
   const [lost, setLost] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [daySummaryOpen, setDaySummaryOpen] = useState(false);
   // «Отгрузить по отчёту» открытого заказа: новый заказ по отчёту проводит Telegram-бот.
   const [railSheet, setRailSheet] = useState<{ orderId: number } | null>(null);
   // «Отправить отчёт» получателям в Telegram: одна отгрузка истории или вся история с фильтрами экрана.
@@ -524,11 +527,16 @@ function LoaderPageInner() {
         ) : undefined
       }
       actions={
-        canEditSettings && (
-          <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true)} aria-label="Настройки накладной">
-            <Settings2 className="size-4" /> <span className="hidden sm:inline">Накладная</span>
+        <div className="flex items-center gap-2">
+          {canEditSettings && (
+            <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true)} aria-label="Настройки накладной">
+              <Settings2 className="size-4" /> <span className="hidden sm:inline">Накладная</span>
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={() => setDaySummaryOpen(true)}>
+            <BarChart3 className="size-4" /> Аналитика дня
           </Button>
-        )
+        </div>
       }
     >
       <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-4">
@@ -687,6 +695,7 @@ function LoaderPageInner() {
       </div>
 
       {settingsOpen && <WaybillSettingsModal onClose={() => setSettingsOpen(false)} />}
+      {daySummaryOpen && <DaySummarySheet transport={transport} onClose={() => setDaySummaryOpen(false)} />}
       {railReportSheet}
       {reportScope && <WagonReportModal scope={reportScope} onClose={() => setReportScope(null)} onSent={reportSent} />}
     </AppShell>

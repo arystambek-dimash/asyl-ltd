@@ -241,6 +241,11 @@ class OrderItem(models.Model):
         return str(self.product) if self.product_id else "Удалённый товар"
 
     @property
+    def product_plain_label(self):
+        """Подпись без цвета (``Product.plain_label``); у удалённого товара — снимок как есть."""
+        return self.product.plain_label if self.product_id else self.product_label
+
+    @property
     def product_weight_kg(self):
         if self.product_weight_kg_snapshot is not None:
             return self.product_weight_kg_snapshot

@@ -5,6 +5,7 @@ from .views import LoaderViewSet, WaybillSettingsView
 urlpatterns = [
     path("loader/queue/", LoaderViewSet.as_view({"get": "queue"})),
     path("loader/history/", LoaderViewSet.as_view({"get": "history"})),
+    path("loader/day-summary/", LoaderViewSet.as_view({"get": "day_summary"})),
     path("loader/orders/<int:pk>/dispatch/", LoaderViewSet.as_view({"post": "confirm"})),
     path("loader/orders/<int:pk>/dispatch-sources/", LoaderViewSet.as_view({"get": "dispatch_sources"})),
     path("loader/orders/<int:pk>/rollback/", LoaderViewSet.as_view({"post": "rollback"})),
