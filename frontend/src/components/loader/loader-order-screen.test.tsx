@@ -106,7 +106,7 @@ describe("что и кому грузить", () => {
     const rows = itemRows();
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent("Д1с · Красный 50 кг");
+    expect(rows[0]).toHaveTextContent("Д1с · 50 кг");
     expect(within(rows[0]).getByText("20 мешков")).toBeInTheDocument();
   });
 
@@ -114,8 +114,8 @@ describe("что и кому грузить", () => {
     const order: LoaderOrder = {
       ...truckOrder,
       items: [
-        makeLoaderItem({ label: "Первый сорт DIKHAN BABA NAN 50кг · Красный 50 кг", quantity: 5 }),
-        makeLoaderItem({ label: "Высший сорт · Зелёный 50 кг", quantity: 12, color: "Green" }),
+        makeLoaderItem({ label: "Первый сорт DIKHAN BABA NAN 50кг", quantity: 5 }),
+        makeLoaderItem({ label: "Высший сорт · 50 кг", quantity: 12 }),
       ],
       bags: 17,
     };

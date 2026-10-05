@@ -69,14 +69,13 @@ export function makeLoaderOrder(id: number, overrides: Partial<LoaderOrder> = {}
   };
 }
 
-/** Позиция заказа у грузчика: один красный мешок «Д1с» без договорной цены. */
+/** Позиция заказа у грузчика: один мешок «Д1с» без договорной цены. */
 export function makeLoaderItem(overrides: Partial<LoaderOrderItem> = {}): LoaderOrderItem {
   return {
-    label: "Д1с · Красный 50 кг",
+    label: "Д1с · 50 кг",
     quantity: 1,
     weight_kg: "50.00",
     unit_price: null,
-    color: "Red",
     ...overrides,
   };
 }

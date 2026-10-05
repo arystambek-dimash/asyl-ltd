@@ -13,8 +13,8 @@ const TWO: DispatchSources = {
     { id: 2, name: "Мельница 2" },
   ],
   products: [
-    { product: 12, label: "Д1с · Красный 50 кг", color: "Red", bags: 20, short: { "2": 0 } },
-    { product: 15, label: "Б · Синий 25 кг", color: "Blue", bags: 40, short: {} },
+    { product: 12, label: "Д1с · 50 кг", bags: 20, short: { "2": 0 } },
+    { product: 15, label: "Б · 25 кг", bags: 40, short: {} },
   ],
 };
 
@@ -94,7 +94,7 @@ describe("ShipmentSourcesSheet", () => {
 
     const dialog = screen.getByRole("dialog", { name: "С какого склада?" });
     expect(within(dialog).getByText("1 из 2")).toBeInTheDocument();
-    expect(within(dialog).getByText("Д1с · Красный 50 кг")).toBeInTheDocument();
+    expect(within(dialog).getByText("Д1с · 50 кг")).toBeInTheDocument();
     expect(within(dialog).getByText("20 мешков")).toBeInTheDocument();
     expect(within(dialog).queryAllByRole("button", { pressed: true })).toHaveLength(0);
     expect(within(dialog).getByRole("button", { name: "Мельница", pressed: false })).toBeInTheDocument();
@@ -104,7 +104,7 @@ describe("ShipmentSourcesSheet", () => {
 
     expect(onAnswers).toHaveBeenLastCalledWith({ 12: { 2: 20 } });
     expect(screen.getByText("2 из 2")).toBeInTheDocument();
-    expect(screen.getByText("Б · Синий 25 кг")).toBeInTheDocument();
+    expect(screen.getByText("Б · 25 кг")).toBeInTheDocument();
     expect(screen.queryAllByRole("button", { pressed: true })).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: "Назад" }));
@@ -127,7 +127,7 @@ describe("ShipmentSourcesSheet", () => {
     await user.click(screen.getByRole("button", { name: "Мельница" }));
 
     // У «Б» мешков хватает на обоих складах — остатков не видно.
-    expect(screen.getByText("Б · Синий 25 кг")).toBeInTheDocument();
+    expect(screen.getByText("Б · 25 кг")).toBeInTheDocument();
     expect(screen.queryByText(/уйдёт в минус/)).not.toBeInTheDocument();
   });
 
@@ -189,10 +189,10 @@ describe("ShipmentSourcesSheet", () => {
 
     // Ответы уже есть (лист открыт снова) — сразу сводка.
     expect(screen.getByRole("dialog", { name: "Проверьте и отгрузите" })).toBeInTheDocument();
-    const first = screen.getByRole("region", { name: "Д1с · Красный 50 кг" });
+    const first = screen.getByRole("region", { name: "Д1с · 50 кг" });
     expect(within(first).getByText("Мельница — 12, Мельница 2 — 8")).toBeInTheDocument();
     expect(within(first).getByText("Мельница 2: осталось 0 — уйдёт в минус")).toBeInTheDocument();
-    const second = screen.getByRole("region", { name: "Б · Синий 25 кг" });
+    const second = screen.getByRole("region", { name: "Б · 25 кг" });
     expect(within(second).getByText("со склада: Мельница 2")).toBeInTheDocument();
     expect(within(second).queryByText(/уйдёт в минус/)).not.toBeInTheDocument();
 
@@ -204,7 +204,7 @@ describe("ShipmentSourcesSheet", () => {
 
     await user.click(screen.getByRole("button", { name: "Мельница" }));
 
-    const changed = screen.getByRole("region", { name: "Б · Синий 25 кг" });
+    const changed = screen.getByRole("region", { name: "Б · 25 кг" });
     expect(within(changed).getByText("со склада: Мельница")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Отгрузить · 60 мешков" }));
@@ -244,7 +244,7 @@ describe("ShipmentSourcesSheet", () => {
     rerender(sheet({ answers: {} }));
 
     expect(screen.getByText("1 из 2")).toBeInTheDocument();
-    expect(screen.getByText("Д1с · Красный 50 кг")).toBeInTheDocument();
+    expect(screen.getByText("Д1с · 50 кг")).toBeInTheDocument();
   });
 
   it("один склад — без «С двух складов…»: разбивать не на что", () => {

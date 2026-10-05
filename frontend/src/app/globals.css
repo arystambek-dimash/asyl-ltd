@@ -30,6 +30,10 @@
   --analytics-hero: #0c1c50;
   --analytics-hero-foreground: #ffffff;
   --analytics-hero-accent: #dce5ff;
+  /* Экран грузчика читают на улице под солнцем: цифры коричнево-красные, рамки тёмные.
+     Цвет рамки там задан с `!`: `* { border-color }` ниже вне слоёв и перебивает утилиты. */
+  --loader-number: #8b1a10;
+  --loader-border: #5f5c55;
 }
 
 .dark {
@@ -52,6 +56,8 @@
   --sidebar-foreground: #e6e3dc;
   --sidebar-accent: #2f2f2f;
   --sidebar-accent-foreground: #e6e3dc;
+  --loader-number: #ff8f7d;
+  --loader-border: #8f8c84;
 }
 
 @theme inline {

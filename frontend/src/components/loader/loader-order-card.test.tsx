@@ -1,11 +1,10 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { colorMeta } from "@/lib/monoblock-colors";
 import { makeLoaderItem, makeLoaderOrder } from "@/test-utils/factories";
 import { LoaderOrderCard } from "./loader-order-card";
 
 const CLIENT = "ТОО Длинное название клиента из Шымкента";
-const FIRST_FLOUR = "Первый сорт DIKHAN BABA NAN 50кг · Красный 50 кг";
+const FIRST_FLOUR = "Первый сорт DIKHAN BABA NAN 50кг";
 
 /** Заказ из жалобы грузчиков: длинное название первой муки и вторая мука — 5 и 12 мешков. */
 const twoFlours = makeLoaderOrder(943, {
@@ -13,7 +12,7 @@ const twoFlours = makeLoaderOrder(943, {
   truck_number: "403BJN13",
   items: [
     makeLoaderItem({ label: FIRST_FLOUR, quantity: 5 }),
-    makeLoaderItem({ label: "Высший сорт · Зелёный 50 кг", quantity: 12, color: "Green" }),
+    makeLoaderItem({ label: "Высший сорт · 50 кг", quantity: 12 }),
   ],
   bags: 17,
   total_kg: "850.00",
@@ -33,17 +32,16 @@ describe("карточка заказа у грузчика", () => {
     expect(before(screen.getByText(CLIENT), itemRows()[0])).toBe(true);
   });
 
-  it("каждый товар — своей строкой: точка цвета мешка, полное название и мешки", () => {
+  it("каждый товар — своей строкой: мука с фасовкой и мешки, без цвета мешка", () => {
     render(<LoaderOrderCard order={twoFlours} onOpen={vi.fn()} />);
     const rows = itemRows();
 
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent(FIRST_FLOUR);
     expect(within(rows[0]).getByText("5 мешков")).toBeInTheDocument();
-    expect(rows[0].querySelector("[aria-hidden]")).toHaveClass(colorMeta("Red").dot);
-    expect(rows[1]).toHaveTextContent("Высший сорт · Зелёный 50 кг");
+    expect(rows[1]).toHaveTextContent("Высший сорт · 50 кг");
     expect(within(rows[1]).getByText("12 мешков")).toBeInTheDocument();
-    expect(rows[1].querySelector("[aria-hidden]")).toHaveClass(colorMeta("Green").dot);
+    expect(screen.getByRole("list", { name: "Товары" }).querySelector("[aria-hidden]")).toBeNull();
   });
 
   it("ни имя, ни товары не обрезаются", () => {

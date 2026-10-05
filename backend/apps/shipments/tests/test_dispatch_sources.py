@@ -42,8 +42,7 @@ def test_truck_with_two_active_warehouses_asks_where_from(
         ],
         "products": [{
             "product": product.pk,
-            "label": "Д1с · Красный 50 кг",
-            "color": "Red",
+            "label": "Д1с · 50 кг",
             "bags": 2,
             # На «Основном» 100 ≥ 2 — остаток не показываем; у «Мельницы 2» карточки нет — 0.
             "short": {str(mill_two.pk): 0},
@@ -106,15 +105,13 @@ def test_short_shows_only_warehouses_without_enough_bags(
     assert response.data["products"] == [
         {
             "product": blue.pk,
-            "label": "Б · Синий 25 кг",
-            "color": "Blue",
+            "label": "Б · 25 кг",
             "bags": 40,
             "short": {str(mill_two.pk): 0, str(main_warehouse.pk): 0},
         },
         {
             "product": product.pk,
-            "label": "Д1с · Красный 50 кг",
-            "color": "Red",
+            "label": "Д1с · 50 кг",
             "bags": 120,
             # «Мельница 2»: 120 из 120 — хватает, в short её нет.
             "short": {str(main_warehouse.pk): 100},

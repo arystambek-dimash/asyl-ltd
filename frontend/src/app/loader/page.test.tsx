@@ -183,7 +183,7 @@ vi.mock("@/components/loader/shipment-sources-sheet", async () => {
 });
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 
-/** Заказ ИП Мурат: два мешка «Д1с · Красный 50 кг» на 20 000 ₸. */
+/** Заказ ИП Мурат: два мешка «Д1с · 50 кг» на 20 000 ₸. */
 const order = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder =>
   makeLoaderOrder(id, {
     client_name: "ИП Мурат",
@@ -210,7 +210,7 @@ const lastPoll = () => mocks.polling.at(-1)!;
 const ONE_WAREHOUSE: DispatchSources = {
   choose: false,
   warehouses: [{ id: 1, name: "Мельница" }],
-  products: [{ product: 12, label: "Д1с · Красный 50 кг", color: "Red", bags: 2, short: {} }],
+  products: [{ product: 12, label: "Д1с · 50 кг", bags: 2, short: {} }],
 };
 /** Два склада; на «Мельнице 2» карточки нет — там нехватка. */
 const SPLIT: DispatchSources = {
@@ -219,7 +219,7 @@ const SPLIT: DispatchSources = {
     { id: 1, name: "Мельница" },
     { id: 2, name: "Мельница 2" },
   ],
-  products: [{ product: 12, label: "Д1с · Красный 50 кг", color: "Red", bags: 2, short: { "2": 0 } }],
+  products: [{ product: 12, label: "Д1с · 50 кг", bags: 2, short: { "2": 0 } }],
 };
 /** Ответ грузчика: мешок с «Мельницы», мешок с «Мельницы 2». */
 const SPLIT_ANSWERS: SourceAnswers = { 12: { 1: 1, 2: 1 } };
@@ -1132,7 +1132,7 @@ describe("LoaderPage", () => {
       // Выбор всегда сознательный: без ответа ничего не отгружается.
       expect(mocks.post).not.toHaveBeenCalled();
       expect(sheet).toHaveTextContent("начало: первый товар");
-      expect(sheet).toHaveTextContent("товары: Д1с · Красный 50 кг — 2");
+      expect(sheet).toHaveTextContent("товары: Д1с · 50 кг — 2");
       await user.click(within(sheet).getByRole("button", { name: "Ответить" }));
       await user.click(within(sheet).getByRole("button", { name: "Отгрузить" }));
 
@@ -1211,7 +1211,7 @@ describe("LoaderPage", () => {
       expect(mocks.get).toHaveBeenLastCalledWith("/loader/orders/624/dispatch-sources/", {
         params: { truck_number: "403BJN13" },
       });
-      expect(restarted).toHaveTextContent("товары: Д1с · Красный 50 кг — 3");
+      expect(restarted).toHaveTextContent("товары: Д1с · 50 кг — 3");
       // Прежние ответы сброшены, опрос — с первого товара, а не со сводки.
       expect(restarted).toHaveTextContent("ответы: {}");
       expect(restarted).toHaveTextContent("начало: первый товар");

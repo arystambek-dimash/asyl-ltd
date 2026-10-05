@@ -11,8 +11,6 @@ export interface LoaderOrderItem {
   quantity: number;
   weight_kg: string;
   unit_price: string | null;
-  /** Цвет мешка (Red/Green/Blue); у удалённого товара — пусто. */
-  color: string;
 }
 
 /** Заказ на экране грузчика (GET /loader/queue/ и /loader/history/). */
@@ -155,7 +153,6 @@ export interface DispatchWarehouse {
 export interface DispatchSourceProduct {
   product: number;
   label: string;
-  color: string;
   bags: number;
   /** Остаток склада (ключ — id склада) — только где его меньше, чем `bags`; нет карточки = 0. */
   short: Record<string, number>;

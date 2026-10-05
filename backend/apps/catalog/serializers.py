@@ -46,7 +46,7 @@ class ProductSerializer(serializers.ModelSerializer):
     def get_label(self, obj):
         if self._can_view_color():
             return str(obj)
-        return f"{obj.name} · {obj.packaging_label}"
+        return obj.plain_label
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

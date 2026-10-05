@@ -1,7 +1,6 @@
 "use client";
 import { useId, useState, type ReactNode } from "react";
 import { LoaderCircle, PackageCheck } from "lucide-react";
-import { ColorDot } from "@/components/monoblock/ui";
 import { Button } from "@/components/ui/button";
 import { DepartmentDot } from "@/components/ui/department-badge";
 import { FormError } from "@/components/ui/data-state";
@@ -22,7 +21,6 @@ import {
   type DispatchWarehouse,
   type SourceAnswers,
 } from "@/lib/loader";
-import { colorMeta } from "@/lib/monoblock-colors";
 import { eraseAmount, pressAmountDigit } from "@/lib/payment-amount";
 import { bagsLabel, cn } from "@/lib/utils";
 
@@ -260,14 +258,9 @@ export function ShipmentSourcesSheet({
   );
 }
 
-/** Название товара с точкой цвета мешка. */
+/** Название товара: мука с фасовкой. */
 function ProductName({ product }: { product: DispatchSourceProduct }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 text-base font-semibold">
-      <ColorDot className={cn("size-3", colorMeta(product.color).dot)} />
-      <span className="min-w-0 break-words">{product.label}</span>
-    </div>
-  );
+  return <div className="min-w-0 break-words text-base font-semibold">{product.label}</div>;
 }
 
 /** Шапка шага товара: название и крупно — сколько мешков разложить. */

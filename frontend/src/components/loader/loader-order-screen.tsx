@@ -18,10 +18,12 @@ function BagsHeadline({ order }: { order: LoaderOrder }) {
   return (
     <div>
       <div className="flex flex-wrap items-baseline gap-x-3">
-        <span className="text-[56px] font-black leading-none tabular-nums">{order.bags}</span>
+        <span className="text-[56px] font-black leading-none tabular-nums text-[var(--loader-number)]">
+          {order.bags}
+        </span>
         <span className="text-xl font-semibold text-[var(--muted-foreground)]">{bagsWord(order.bags)}</span>
       </div>
-      <div className="mt-2 text-2xl font-bold tabular-nums">{loadWeight(order)}</div>
+      <div className="mt-2 text-2xl font-bold tabular-nums text-[var(--loader-number)]">{loadWeight(order)}</div>
     </div>
   );
 }
@@ -125,14 +127,14 @@ export function LoaderOrderScreen({
         </span>
       </div>
 
-      <div className="flex flex-col gap-5 rounded-2xl border-2 border-[var(--border)] bg-[var(--card)] p-5">
+      <div className="flex flex-col gap-5 rounded-2xl border-2 border-[var(--loader-border)]! bg-[var(--card)] p-5">
         {/* Кому грузим — первым и крупно: так грузчик сверяет заказ с машиной. */}
         <div>
           <h2 className="break-words text-2xl font-black leading-tight">{order.client_name}</h2>
           <div className="mt-1 text-sm font-medium tabular-nums text-[var(--muted-foreground)]">№{order.id}</div>
         </div>
         <TransportNumbers order={order} numbers={numbers} onNumbers={onNumbers} />
-        <div className="border-t pt-4">
+        <div className="border-t-2 border-[var(--loader-border)]/50! pt-4">
           <BagsHeadline order={order} />
           <LoaderItemList items={order.items} className="mt-4" />
           {/* Оплату показываем, но отгрузку не блокируем: возят и в долг. */}

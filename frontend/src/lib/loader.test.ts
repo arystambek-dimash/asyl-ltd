@@ -107,8 +107,8 @@ const context: DispatchSources = {
     { id: 2, name: "Мельница 2" },
   ],
   products: [
-    { product: 12, label: "Д1с · Красный 50 кг", color: "Red", bags: 20, short: { "2": 0 } },
-    { product: 15, label: "Б · Синий 25 кг", color: "Blue", bags: 40, short: {} },
+    { product: 12, label: "Д1с · 50 кг", bags: 20, short: { "2": 0 } },
+    { product: 15, label: "Б · 25 кг", bags: 40, short: {} },
   ],
 };
 const [flour, bran] = context.products;

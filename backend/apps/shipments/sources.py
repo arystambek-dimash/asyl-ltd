@@ -256,7 +256,7 @@ def source_options(order, items) -> dict:
     ``choose`` — тот же предикат, по которому отгрузка требует ``sources``
     (:func:`loader_must_choose`). Склады — только активные, в порядке Meta
     (имя, id): выключенный склад заказа не предлагается. Товары — в порядке
-    первой позиции, подпись — ``product_label`` этой позиции, мешки — сумма
+    первой позиции, подпись — без цвета (``Product.plain_label``), мешки — сумма
     позиций товара. ``short`` — {id склада строкой: остаток} только там, где
     остатка меньше, чем нужно; нет карточки — 0. Остаток грузчик видит лишь
     при нехватке (D2). Ничего не пишет.
@@ -274,8 +274,7 @@ def source_options(order, items) -> dict:
         "products": [
             {
                 "product": product_id,
-                "label": item.product_label,
-                "color": item.product.color,
+                "label": item.product.plain_label,
                 "bags": needed[product_id],
                 "short": {
                     str(warehouse.pk): balances[warehouse.pk][product_id]

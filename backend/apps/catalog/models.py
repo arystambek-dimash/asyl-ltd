@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.conf import settings
@@ -71,6 +72,16 @@ class Product(models.Model):
     @property
     def packaging_label(self):
         return f"{int(self.weight_kg)} кг"
+
+    @property
+    def plain_label(self):
+        """Подпись без цвета: «Д1с · 50 кг» — кому цвет не показывают, и грузчику.
+
+        Фасовку, уже записанную в названии («Высший сорт 50кг»), не повторяет.
+        """
+        if re.search(rf"(?<!\d){int(self.weight_kg)}\s*(кг|kg)", self.name, re.IGNORECASE):
+            return self.name
+        return f"{self.name} · {self.packaging_label}"
 
     def __str__(self):
         color = dict(self.COLORS).get(self.color, self.color)

@@ -1,12 +1,10 @@
 "use client";
 import { ChevronRight, Wallet } from "lucide-react";
-import { ColorDot } from "@/components/monoblock/ui";
 import { Badge } from "@/components/ui/badge";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
 import { PAYMENT_STATUS_LABELS, PAYMENT_STATUS_TONE } from "@/lib/constants";
 import { loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
-import { colorMeta } from "@/lib/monoblock-colors";
 import { bagsLabel, cn, formatCurrency, formatTime } from "@/lib/utils";
 
 /**
@@ -28,8 +26,8 @@ export function PaymentMark({ order, className }: { order: LoaderOrder; classNam
 }
 
 /**
- * Что грузить: каждый товар своей строкой — точка цвета мешка, полное название
- * (переносится, не обрезается) и крупно мешки. Один список на карточке и на экране заказа.
+ * Что грузить: каждый товар своей строкой — мука с фасовкой (переносится, не
+ * обрезается) и крупно мешки. Один список на карточке и на экране заказа.
  */
 export function LoaderItemList({ items, className }: { items: LoaderOrderItem[]; className?: string }) {
   if (items.length === 0) {
@@ -39,9 +37,10 @@ export function LoaderItemList({ items, className }: { items: LoaderOrderItem[];
     <ul aria-label="Товары" className={cn("flex flex-col gap-2", className)}>
       {items.map((item, index) => (
         <li key={index} className="flex items-start gap-2.5">
-          <ColorDot className={cn("mt-1.5 size-3", colorMeta(item.color).dot)} />
           <span className="min-w-0 flex-1 break-words text-base font-semibold leading-snug">{item.label}</span>
-          <span className="shrink-0 text-lg font-black leading-tight tabular-nums">{bagsLabel(item.quantity)}</span>
+          <span className="shrink-0 text-lg font-black leading-tight tabular-nums text-[var(--loader-number)]">
+            {bagsLabel(item.quantity)}
+          </span>
         </li>
       ))}
     </ul>
@@ -74,8 +73,8 @@ export function LoaderOrderCard({
         <OrderTransportBadge order={order} />
       </div>
       <LoaderItemList items={order.items} className="mt-3" />
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t pt-2.5">
-        <span className="text-sm font-bold tabular-nums">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t-2 border-[var(--loader-border)]/50! pt-2.5">
+        <span className="text-sm font-bold tabular-nums text-[var(--loader-number)]">
           Итого {bagsLabel(order.bags)} · {loadWeight(order)}
         </span>
         <PaymentMark order={order} />
@@ -86,7 +85,7 @@ export function LoaderOrderCard({
   );
   const className = cn(
     "block w-full min-w-0 overflow-hidden rounded-2xl border-2 bg-[var(--card)] p-4 text-left shadow-card",
-    overdue ? "border-[var(--destructive)]" : "border-[var(--border)]",
+    overdue ? "border-[var(--destructive)]!" : "border-[var(--loader-border)]!",
   );
   if (!onOpen) return <div className={className}>{content}</div>;
   return (

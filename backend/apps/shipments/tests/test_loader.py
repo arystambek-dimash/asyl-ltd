@@ -436,26 +436,33 @@ def test_queue_query_count_does_not_grow_with_rows(
     with django_assert_max_num_queries(len(small.captured_queries)):
         rows = api.get("/api/loader/queue/", params).data
     assert len(rows) == 7
-    # Цвет мешка — из уже подгруженного товара: позиции не доплачивают запросом.
-    assert {item["color"] for row in rows for item in row["items"]} == {"Red"}
+    # Подпись — из уже подгруженного товара: позиции не доплачивают запросом.
+    assert {item["label"] for row in rows for item in row["items"]} == {"Д1с · 50 кг"}
 
 
-def test_queue_items_carry_bag_colour(auth_client, loader, product, make_product, make_order):
-    """Каждая позиция — с цветом мешка: грузчик находит товар по точке; у удалённого товара цвета нет."""
+def test_queue_items_show_flour_and_packaging_without_colour(auth_client, loader, product, make_product, make_order):
+    """Грузчику — мука и фасовка, без цвета мешка ни словом, ни полем.
+
+    Фасовка, уже записанная в названии, не повторяется; удалённый товар — по снимку подписи.
+    """
     order = make_order(product, quantity=5)
     green = make_product(name="Д1с", color="Green")
     OrderItem.objects.create(order=order, product=green, quantity=12, unit_price="10000.00")
+    packed = make_product(name="Высший сорт Алтын Тәжі 50кг", color="Blue")
+    OrderItem.objects.create(order=order, product=packed, quantity=40, unit_price="10000.00")
     gone = make_product(name="Старый", color="Blue")
     OrderItem.objects.create(order=order, product=gone, quantity=1, unit_price="10000.00")
     gone.delete()
 
     [row] = auth_client(loader).get("/api/loader/queue/").data
 
-    assert sorted((item["label"], item["quantity"], item["color"]) for item in row["items"]) == [
-        ("Д1с · Зелёный 50 кг", 12, "Green"),
-        ("Д1с · Красный 50 кг", 5, "Red"),
-        ("Старый · Синий 50 кг", 1, ""),
+    assert sorted((item["label"], item["quantity"]) for item in row["items"]) == [
+        ("Высший сорт Алтын Тәжі 50кг", 40),
+        ("Д1с · 50 кг", 5),
+        ("Д1с · 50 кг", 12),
+        ("Старый · Синий 50 кг", 1),
     ]
+    assert all("color" not in item for item in row["items"])
 
 
 def test_dispatch_accepts_the_clients_own_number_in_another_spelling(
