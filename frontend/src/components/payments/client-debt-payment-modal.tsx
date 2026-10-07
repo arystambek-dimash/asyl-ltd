@@ -2,8 +2,11 @@
 import { useEffect, useState } from "react";
 import {
   PaymentAmountField,
+  PaymentDateField,
   ReceiveMethodPicker,
   methodStepHeading,
+  paymentDateBody,
+  paymentDateError,
   receiveMethods,
   type ReceiveMethod,
 } from "@/components/payments/order-payment-actions";
@@ -20,10 +23,12 @@ import {
   cn,
   currencySymbol,
   formatCurrency,
+  formatIsoDate,
   formatIsoDayMonth,
   formatMoney,
   pluralRu,
   toLocalIsoDate,
+  todayLocalIsoDate,
 } from "@/lib/utils";
 
 /** Отказы про саму сумму: текст под полем на шаге суммы, «Подтвердить» выключен. */
@@ -55,6 +60,8 @@ export function ClientDebtPaymentModal({ open, ...props }: ClientDebtPaymentProp
 function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit<ClientDebtPaymentProps, "open">) {
   const [currency, setCurrency] = useState(currencies[0] ?? "KZT");
   const [amount, setAmount] = useState("");
+  // День, которым запишется оплата: `null` — не тронут (сегодня).
+  const [payDate, setPayDate] = useState<string | null>(null);
   // Способ спрашиваем только после «Подтвердить», заранее не выбран ни один:
   // с наличными по умолчанию оплату по QR записывали наличными.
   const [choosing, setChoosing] = useState(false);
@@ -77,9 +84,15 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
   const url = `/clients/${clientId}/debt-payment/`;
 
   useEffect(() => {
+    // Неверная дата — ошибка уже под полем; на сервер её не шлём.
+    if (paymentDateError(payDate)) return;
     const controller = new AbortController();
     api
-      .post<DebtPaymentPlan>(url, { amount: requested || null, currency, preview: true }, { signal: controller.signal })
+      .post<DebtPaymentPlan>(
+        url,
+        { amount: requested || null, currency, preview: true, ...paymentDateBody(payDate) },
+        { signal: controller.signal },
+      )
       .then(({ data }) => {
         if (controller.signal.aborted) return;
         setPreview({ amount: requested, plan: data });
@@ -101,12 +114,13 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
         if (typeof max === "string") setAvailable(max);
       });
     return () => controller.abort();
-  }, [url, requested, currency, refresh]);
+  }, [url, requested, currency, payDate, refresh]);
 
   // Разбивка для введённой суммы; пока ответ на новую сумму не пришёл, прежняя видна бледной.
   const shown = preview && preview.amount ? preview.plan : null;
   const plan = preview && typed && preview.amount === typed ? preview.plan : null;
-  const canConfirm = plan !== null && plan.slices.length > 0 && !amountError && !previewError;
+  const dateProblem = paymentDateError(payDate);
+  const canConfirm = plan !== null && plan.slices.length > 0 && !amountError && !previewError && !dateProblem;
   // Шаг способа — только для готовой разбивки.
   const confirmed = choosing ? plan : null;
 
@@ -134,10 +148,18 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
     setBusy(method);
     setSubmitError("");
     try {
-      const { data } = await api.post<DebtPaymentPlan>(url, { amount: typed, method, currency, preview: false });
+      const { data } = await api.post<DebtPaymentPlan>(url, {
+        amount: typed,
+        method,
+        currency,
+        preview: false,
+        ...paymentDateBody(payDate),
+      });
       const count = data.slices.length;
+      const sentDate = paymentDateBody(payDate).date;
+      const dated = sentDate ? ` датой ${formatIsoDate(sentDate)}` : "";
       onPaid(
-        `Внесено ${formatCurrency(data.amount, data.currency)} на ${count} ${pluralRu(count, ["заказ", "заказа", "заказов"])}`,
+        `Внесено ${formatCurrency(data.amount, data.currency)}${dated} на ${count} ${pluralRu(count, ["заказ", "заказа", "заказов"])}`,
       );
       onClose();
     } catch (cause) {
@@ -217,6 +239,17 @@ function ClientDebtPaymentDialog({ clientId, currencies, onClose, onPaid }: Omit
             fullValue={fullAmount(available)}
             fullLabel="Весь долг"
             error={amountError}
+          />
+
+          <PaymentDateField
+            id="client-debt-payment-date"
+            value={payDate}
+            error={dateProblem}
+            onChange={(next) => {
+              // Сегодня — как не тронутая дата: окно через полночь не датирует оплату вчерашним днём.
+              setPayDate(next === todayLocalIsoDate() ? null : next);
+              setSubmitError("");
+            }}
           />
 
           {shown && shown.slices.length > 0 && (

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OrderPaymentActions } from "./order-payment-actions";
@@ -79,6 +79,37 @@ describe("OrderPaymentActions", () => {
       method: "cash",
     });
     expect(onChanged).toHaveBeenCalledWith(expect.stringContaining("долг уменьшен"));
+  });
+
+  it("records money received on a past day with that date", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    render(<OrderPaymentActions order={order} me={me} onChanged={onChanged} />);
+
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    const dateField = screen.getByLabelText("Дата оплаты");
+    fireEvent.change(dateField, { target: { value: "2026-09-15" } });
+    expect(screen.getByText(/Оплата запишется 15\.09\.2026/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Принять" }));
+    await user.click(screen.getByRole("button", { name: "QR" }));
+
+    expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", {
+      amount: "707000",
+      method: "kaspi",
+      date: "2026-09-15",
+    });
+    expect(onChanged).toHaveBeenCalledWith(expect.stringContaining("датой 15.09.2026"));
+  });
+
+  it("does not let a payment date in the future through", async () => {
+    const user = userEvent.setup();
+    render(<OrderPaymentActions order={order} me={me} onChanged={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    fireEvent.change(screen.getByLabelText("Дата оплаты"), { target: { value: "2099-01-01" } });
+
+    expect(screen.getByRole("button", { name: "Принять" })).toBeDisabled();
+    expect(screen.getByText("Дата оплаты не может быть в будущем.")).toBeInTheDocument();
   });
 
   it("receives QR at the till terminal as money already on hand", async () => {

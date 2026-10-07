@@ -27,6 +27,7 @@ import {
   type OrderProductOption,
 } from "@/components/orders/order-form-parts";
 import { OptionToggle } from "@/components/orders/option-toggle";
+import { ProductPicker } from "@/components/orders/product-picker";
 import { PayNowFields, payAfterCreate, usePayNow } from "@/components/orders/pay-now";
 import { moneyCents } from "@/lib/debt-orders";
 import { useApi } from "@/lib/use-api";
@@ -575,32 +576,16 @@ export function OrderForm({
                         key={row.id}
                         className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_36px] gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_96px_128px_112px_36px] sm:gap-3 sm:items-center"
                       >
-                        <Select
+                        <ProductPicker
+                          products={selectableProducts}
                           value={row.product}
-                          className="col-span-3 h-10 rounded-lg sm:col-span-1"
-                          aria-label={`Товар, позиция ${index + 1}`}
+                          className="col-span-3 sm:col-span-1"
+                          ariaLabel={`Товар, позиция ${index + 1}`}
                           disabled={compositionLocked}
-                          onChange={(event) => {
-                            const product = event.target.value;
-                            updateRow(index, { product, price: clientPrices[product] ?? "" });
-                          }}
-                        >
-                          <option value="">Выберите товар</option>
-                          {selectableProducts.map((product) => {
-                            const bags = productBagsAtWarehouse(product, warehouse);
-                            const unavailable = bags <= 0 && !allowOutOfStock;
-                            return (
-                              <option key={product.id} value={product.id} disabled={unavailable}>
-                                {product.label}
-                                {bags > 0
-                                  ? ` · ${bags} меш.`
-                                  : allowOutOfStock
-                                    ? " — нет остатка, но доступен"
-                                    : " — нет в наличии"}
-                              </option>
-                            );
-                          })}
-                        </Select>
+                          bagsOf={(product) => productBagsAtWarehouse(product, warehouse)}
+                          allowOutOfStock={allowOutOfStock}
+                          onChange={(product) => updateRow(index, { product, price: clientPrices[product] ?? "" })}
+                        />
                         <Input
                           type="number"
                           min="1"

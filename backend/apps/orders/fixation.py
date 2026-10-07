@@ -161,19 +161,7 @@ def _fix_paid(order: Order, moment: datetime, method: str, user) -> None:
     remaining = order_remaining(order)
     if remaining <= 0:
         raise ValidationError({"detail": "Заказ уже оплачен", "code": "already_paid"})
-    payment = record_staff_payment(
-        order, remaining, user, method=method, note="Зафиксировано задним числом",
-    )
-    Payment.objects.filter(pk=payment.pk).update(
-        paid_at=moment, received_at=moment, confirmed_at=moment,
-    )
-    # Журнал кассы и сводки по дням читают события оплаты по created_at.
-    from apps.eventlog.models import EventLog
-
-    backdate_events(
-        EventLog.objects.filter(order=order, event_type="payment", payload__payment_id=payment.pk),
-        moment,
-    )
+    record_staff_payment(order, remaining, user, method=method, note="Зафиксировано задним числом", paid_at=moment)
 
 
 @transaction.atomic

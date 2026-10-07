@@ -78,6 +78,10 @@ def test_order_permission_grants_minimal_form_options(
     assert products[product.id] == {
         "id": product.id,
         "label": "Мука · Синий 50 кг",
+        "name": "Мука",
+        "weight_kg": "50.00",
+        "codes": [],
+        "color_label": "Синий",
         "available_bags": 37,
         "stock_by_warehouse": {str(main.pk): 37},
     }

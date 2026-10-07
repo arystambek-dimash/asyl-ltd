@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientDebtPaymentModal } from "./client-debt-payment-modal";
@@ -15,7 +15,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 vi.mock("@/lib/use-debounced", () => ({ useDebounced: (value: string) => value }));
 
 /** Предпросмотр уходит без способа: его выбирают только после «Подтвердить». */
-type Body = { amount: string | null; method?: string; currency: string; preview: boolean };
+type Body = { amount: string | null; method?: string; currency: string; preview: boolean; date?: string };
 
 const ENDPOINT = "/clients/7/debt-payment/";
 
@@ -81,6 +81,32 @@ beforeEach(() => {
 });
 
 describe("ClientDebtPaymentModal", () => {
+  it("previews and records a payment received on a past day with that date", async () => {
+    const user = userEvent.setup();
+    const { dialog, onPaid } = renderModal();
+
+    fireEvent.change(within(dialog).getByLabelText("Дата оплаты"), { target: { value: "2026-09-20" } });
+    await user.type(within(dialog).getByLabelText("Сумма"), "2200000");
+    await waitFor(() =>
+      expect(postMock).toHaveBeenLastCalledWith(
+        ENDPOINT,
+        { amount: "2200000", currency: "KZT", preview: true, date: "2026-09-20" },
+        expect.anything(),
+      ),
+    );
+    await user.click(await within(dialog).findByRole("button", { name: /Подтвердить · 2\s200\s000 ₸/ }));
+    await user.click(screen.getByRole("button", { name: /Наличные/ }));
+
+    expect(postMock).toHaveBeenLastCalledWith(ENDPOINT, {
+      amount: "2200000",
+      method: "cash",
+      currency: "KZT",
+      preview: false,
+      date: "2026-09-20",
+    });
+    await waitFor(() => expect(onPaid).toHaveBeenCalledWith(expect.stringContaining("датой 20.09.2026")));
+  });
+
   it("renders nothing and asks nothing while closed", () => {
     render(
       <ClientDebtPaymentModal clientId={7} currencies={["KZT"]} open={false} onClose={vi.fn()} onPaid={vi.fn()} />,

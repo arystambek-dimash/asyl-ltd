@@ -9,7 +9,7 @@ False``, поэтому откат и правка такого заказа с�
 """
 import importlib
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -610,6 +610,143 @@ def test_loader_can_cancel_a_fresh_reship_after_an_earlier_move(backdater, boss,
     dispatch_order(Order.objects.get(pk=order.pk), boss)
 
     assert loader_rollback_blocker(Order.objects.select_related("shipment").get(pk=order.pk), boss) == ""
+
+
+@pytest.fixture
+def cashier(user_with_perms):
+    return user_with_perms("till", codes=["orders.view", "payments.view", "payments.create"])
+
+
+def test_cashier_accepts_a_payment_dated_a_past_day(backdater, cashier, setup, api_as):
+    order = _fixated(backdater, setup, api_as)  # отгружен 10.09.2026, в долг 45 000
+
+    response = api_as(cashier).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "20000", "method": "kaspi", "date": "2026-09-15"}, format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    payment = Payment.objects.get(order=order)
+    assert payment.status == "confirmed"
+    for stamp in (payment.paid_at, payment.received_at, payment.confirmed_at):
+        assert _local_date(stamp) == date(2026, 9, 15)
+    # Все события этой оплаты, включая «Статус оплаты», — тем днём.
+    events = EventLog.objects.filter(order=order, event_type="payment")
+    assert events.exists()
+    assert {_local_date(e.created_at) for e in events} == {date(2026, 9, 15)}
+    order.refresh_from_db()
+    assert order.payment_status == "partial"
+    audit = EventLog.objects.filter(order=order, event_type="order_backdated", payload__payment_id=payment.pk).get()
+    assert audit.payload["date"] == "2026-09-15"
+    assert _local_date(audit.created_at) == timezone.localdate()
+
+
+def test_payment_dated_today_is_an_ordinary_payment(backdater, cashier, setup, api_as):
+    order = _fixated(backdater, setup, api_as)
+
+    response = api_as(cashier).post(
+        f"/api/orders/{order.id}/payments/",
+        {"amount": "1000", "method": "cash", "date": timezone.localdate().isoformat()},
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    assert not EventLog.objects.filter(order=order, event_type="order_backdated", payload__payment_id__isnull=False).exists()
+    assert _local_date(Payment.objects.get(order=order).confirmed_at) == timezone.localdate()
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"method": "cash", "date": "2099-01-01"}, "payment_date_in_future"),
+        ({"method": "cash", "date": "2026-09-01"}, "payment_before_order"),
+        ({"method": "cash", "date": "вчера"}, "bad_payment_date"),
+        ({"method": "invoice", "date": "2026-09-15"}, "payment_date_not_allowed"),
+        ({"method": "kaspi", "channel": "qr", "date": "2026-09-15"}, "payment_date_not_allowed"),
+    ],
+)
+def test_payment_date_is_validated(backdater, cashier, setup, api_as, body, code):
+    order = _fixated(backdater, setup, api_as)
+
+    response = api_as(cashier).post(f"/api/orders/{order.id}/payments/", {"amount": "1000", **body}, format="json")
+
+    assert response.status_code == 400
+    assert response.data["code"] == code
+    assert not Payment.objects.filter(order=order).exists()
+
+
+def test_fixated_existing_order_takes_a_payment_dated_after_its_shipment(backdater, cashier, setup, api_as):
+    """Заказ внесён сегодня, отгрузка зафиксирована 10.09: оплату 15.09 записать можно."""
+    client, product, _ = setup
+    body = _body(client, product)
+    body.pop("backdate")
+    order_id = api_as(backdater).post("/api/orders/", body, format="json").data["id"]
+    api_as(backdater).post(f"/api/orders/{order_id}/fixate/", {"date": "2026-09-10", "status": "shipped"}, format="json")
+
+    response = api_as(cashier).post(
+        f"/api/orders/{order_id}/payments/", {"amount": "1000", "method": "cash", "date": "2026-09-15"}, format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    assert _local_date(Payment.objects.get(order_id=order_id).confirmed_at) == date(2026, 9, 15)
+
+
+def test_store_payment_window_is_checked_on_the_payment_day(backdater, cashier, setup, api_as):
+    from apps.clients.models import Store
+
+    client, _, _ = setup
+    order = _fixated(backdater, setup, api_as)
+    store_day = date(2026, 9, 15)
+    store = Store.objects.create(
+        client=client, name="Магазин", payment_schedule_type="weekly", payment_days=[store_day.isoweekday()],
+    )
+    Order.objects.filter(pk=order.pk).update(store=store)
+
+    other_day = api_as(cashier).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "1000", "method": "cash", "date": "2026-09-16"}, format="json",
+    )
+    assert other_day.status_code == 400
+    assert other_day.data["code"] == "payment_window_closed"
+
+    response = api_as(cashier).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "1000", "method": "cash", "date": store_day.isoformat()},
+        format="json",
+    )
+    assert response.status_code == 201, response.data
+
+
+def test_payment_dated_the_day_of_an_evening_order_is_not_before_it(backdater, boss, cashier, setup, api_as):
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    yesterday = timezone.localdate() - timedelta(days=1)
+    evening = timezone.make_aware(datetime.combine(yesterday, time(18, 0)))
+    Order.objects.filter(pk=order.pk).update(created_at=evening)
+    Shipment.objects.filter(order=order).update(shipped_at=evening + timedelta(hours=1))
+    Payment.objects.filter(order=order).delete()
+
+    response = api_as(cashier).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "1000", "method": "cash", "date": yesterday.isoformat()},
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    # Не в полдень — заказа тогда ещё не было; и не раньше отгрузки в 19:00.
+    assert Payment.objects.get(order=order).paid_at == evening + timedelta(hours=1)
+
+
+def test_payment_dated_the_shipping_day_is_not_before_the_evening_shipment(backdater, boss, cashier, setup, api_as):
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    yesterday = timezone.localdate() - timedelta(days=1)
+    shipped = timezone.make_aware(datetime.combine(yesterday, time(18, 0)))
+    Order.objects.filter(pk=order.pk).update(created_at=shipped - timedelta(days=3))
+    Shipment.objects.filter(order=order).update(shipped_at=shipped)
+    Payment.objects.filter(order=order).delete()
+
+    response = api_as(cashier).post(
+        f"/api/orders/{order.id}/payments/", {"amount": "1000", "method": "cash", "date": yesterday.isoformat()},
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
+    assert Payment.objects.get(order=order).paid_at == shipped, "погашение не раньше самой продажи"
 
 BACKFILL_MIGRATION = "apps.shipments.migrations.0019_backfill_fixation_stock_deducted"
 _FIXATION = {"source": "fixation", "stock_deducted": False}

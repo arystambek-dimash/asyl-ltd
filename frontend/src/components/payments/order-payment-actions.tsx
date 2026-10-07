@@ -11,7 +11,7 @@ import { availableCents } from "@/lib/debt-orders";
 import { paymentAmountError } from "@/lib/payment-amount";
 import { isKaspiInvoicePhone } from "@/lib/phone";
 import type { Me, Order } from "@/lib/types";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, formatIsoDate, todayLocalIsoDate } from "@/lib/utils";
 
 type Flow = "receive" | "remote";
 export type ReceiveMethod = "cash" | "kaspi" | "remote";
@@ -44,8 +44,70 @@ export function receiveMethods(currency: string, open?: readonly string[]): Rece
 }
 
 /** «Принять оплату»: деньги уже у кассы, оплата закрывается сразу (и как предоплата до отгрузки). */
-export function receivePayment(orderId: number, { amount, method }: { amount: string; method: ReceiveMethod }) {
-  return api.post(`/orders/${orderId}/payments/`, { amount, method });
+export function receivePayment(
+  orderId: number,
+  { amount, method, date }: { amount: string; method: ReceiveMethod; date?: string | null },
+) {
+  return api.post(`/orders/${orderId}/payments/`, { amount, method, ...paymentDateBody(date) });
+}
+
+/**
+ * День оплаты в теле запроса. `null` — кассир дату не трогал: ничего не отправляем,
+ * сервер пишет «сейчас» (окно, оставленное открытым через полночь, не датирует
+ * оплату вчерашним днём). Выбранный сегодняшний день тоже не отправляем.
+ */
+export function paymentDateBody(date?: string | null): { date?: string } {
+  return date && date !== todayLocalIsoDate() ? { date } : {};
+}
+
+/**
+ * «Дата оплаты» в «Принять оплату» и «Внести оплату»: пока не тронута — сегодня
+ * (`value` = `null`); прошлый день — деньги получены тогда, в кассе и выписке
+ * оплата встанет тем днём. Ошибка даты — прямо под полем.
+ */
+export function PaymentDateField({
+  id,
+  value,
+  onChange,
+  error,
+}: {
+  id: string;
+  value: string | null;
+  onChange: (value: string) => void;
+  error?: string;
+}) {
+  const shown = value ?? todayLocalIsoDate();
+  const past = Boolean(shown) && shown !== todayLocalIsoDate();
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={id}>Дата оплаты</Label>
+      <Input
+        id={id}
+        type="date"
+        max={todayLocalIsoDate()}
+        className="text-base tabular-nums"
+        value={shown}
+        aria-invalid={Boolean(error) || undefined}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {error ? (
+        <p className="text-xs text-[var(--destructive)]">{error}</p>
+      ) : (
+        past && (
+          <p className="text-xs text-[var(--warning)]">
+            Оплата запишется {formatIsoDate(shown)} — в кассе и выписке за тот день.
+          </p>
+        )
+      )}
+    </div>
+  );
+}
+
+/** Ошибка даты оплаты до запроса: будущее сервер тоже не примет; `null` — сегодня. */
+export function paymentDateError(date: string | null): string {
+  if (date === null) return "";
+  if (!date) return "Укажите дату оплаты.";
+  return date > todayLocalIsoDate() ? "Дата оплаты не может быть в будущем." : "";
 }
 
 /**
@@ -237,6 +299,8 @@ export function OrderPaymentActions({
   // Способ, нажатый на шаге способа: на его кнопке идёт запись.
   const [method, setMethod] = useState<ReceiveMethod | null>(null);
   const [phone, setPhone] = useState("");
+  // День, которым запишутся деньги: `null` — не тронут (сегодня), прошлый — «клиент заплатил вчера».
+  const [payDate, setPayDate] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -263,7 +327,8 @@ export function OrderPaymentActions({
   const sum = formatCurrency(amount, order.currency);
   const amountProblem = paymentAmountError(amount, maxCents);
   const phoneOk = isKaspiInvoicePhone(phone);
-  const canSubmit = !busy && !amountProblem && (flow !== "remote" || phoneOk);
+  const dateProblem = flow === "receive" ? paymentDateError(payDate) : "";
+  const canSubmit = !busy && !amountProblem && !dateProblem && (flow !== "remote" || phoneOk);
   const methodStep = flow === "receive" && choosing;
 
   function open(next: Flow) {
@@ -271,6 +336,7 @@ export function OrderPaymentActions({
     setAmount(String(maxCents / 100));
     setChoosing(false);
     setPhone(order.client_phone || clientPhone || "");
+    setPayDate(null);
     setError("");
   }
 
@@ -306,11 +372,13 @@ export function OrderPaymentActions({
 
   function pay(next: ReceiveMethod) {
     setMethod(next);
+    const sentDate = paymentDateBody(payDate).date;
+    const dated = sentDate ? ` датой ${formatIsoDate(sentDate)}` : "";
     void save(
-      () => receivePayment(order.id, { amount, method: next }),
+      () => receivePayment(order.id, { amount, method: next, date: payDate }),
       prepayment
-        ? `Предоплата ${sum} по заказу #${order.id} принята.`
-        : `Оплата ${sum} по заказу #${order.id} принята — долг уменьшен.`,
+        ? `Предоплата ${sum} по заказу #${order.id} принята${dated}.`
+        : `Оплата ${sum} по заказу #${order.id} принята${dated} — долг уменьшен.`,
     );
   }
 
@@ -368,6 +436,20 @@ export function OrderPaymentActions({
               fullValue={String(maxCents / 100)}
               fullLabel="Весь остаток"
               error={amountProblem}
+            />
+          )}
+
+          {flow === "receive" && !methodStep && (
+            <PaymentDateField
+              id={`payment-date-${order.id}`}
+              value={payDate}
+              error={dateProblem}
+              onChange={(next) => {
+                // Сегодня — как не тронутая дата: окно через полночь не датирует оплату вчерашним днём.
+                setPayDate(next === todayLocalIsoDate() ? null : next);
+                // Отказ сервера по прежней дате к новой дате не относится.
+                setError("");
+              }}
             />
           )}
 

@@ -66,13 +66,17 @@ const COUNTRY_MARKERS: [string, string, PlateCountry][] = [
   ["", "UZ", "UZ"],
 ];
 
+/**
+ * Заглавные буквы, кириллические двойники — латиницей: «Д1с» и «Д1c», «А123» и
+ * «A123» совпадают (как ``common.text.match_key`` на бэкенде).
+ */
+export function lookalikeKey(raw: string): string {
+  return raw.toUpperCase().replace(/[АВЕКМНОРСТУХ]/g, (char) => CYRILLIC_TWINS[char]);
+}
+
 /** Слитная запись номера: заглавные латинские буквы и цифры. «KG» и O/0 не трогает. */
 export function normalizePlate(raw: string | null | undefined): string {
-  return String(raw ?? "")
-    .trim()
-    .toUpperCase()
-    .replace(/[АВЕКМНОРСТУХ]/g, (char) => CYRILLIC_TWINS[char])
-    .replace(SEPARATORS, "");
+  return lookalikeKey(String(raw ?? "").trim()).replace(SEPARATORS, "");
 }
 
 function matches(compact: string): [PlateCountry, RegExpMatchArray][] {

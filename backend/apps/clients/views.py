@@ -31,6 +31,7 @@ from apps.orders.debt import (
     oldest_debt_first,
     order_remaining,
 )
+from apps.orders.backdate import payment_day
 from apps.orders.debt_payments import record_client_debt_payment
 from apps.orders.goods_returns import record_goods_return, returnable_products
 from apps.orders.models import Order
@@ -637,6 +638,7 @@ class ClientViewSet(
             method=request.data.get("method"),
             currency=currency,
             preview=preview,
+            day=payment_day(request.data.get("date")),
         ))
 
     @action(detail=True, methods=["get", "post"], url_path="goods-return")

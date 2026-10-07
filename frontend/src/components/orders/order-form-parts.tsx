@@ -10,7 +10,11 @@ export type OrderClientOption = Pick<Client, "id" | "name" | "company_name" | "p
   department_code?: string;
   department_name?: string;
 };
-export type OrderProductOption = Pick<Product, "id" | "label" | "available_bags"> & {
+export type OrderProductOption = Pick<Product, "id" | "label" | "name" | "weight_kg" | "available_bags"> & {
+  /** Коды отчётов («Д1с») — поиск в выборе товара. */
+  codes: string[];
+  /** Цвет — только чтобы различить два товара с одинаковой подписью. */
+  color_label: string;
   /** Остаток мешков по складам: ключ — id склада; склада без записи у товара нет. */
   stock_by_warehouse: Record<string, number>;
 };

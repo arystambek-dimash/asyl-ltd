@@ -41,7 +41,8 @@ def build_order_form_options(user) -> dict:
                 queryset=StockItem.objects.filter(warehouse__is_active=True)
                 .order_by("warehouse__name", "warehouse_id", "id"),
                 to_attr="warehouse_stocks",
-            )
+            ),
+            "aliases",
         )
         .only(
             "id",
@@ -143,6 +144,12 @@ def _product_option(product, default_warehouse) -> dict:
     return {
         "id": product.id,
         "label": str(product),
+        # Выбор товара в форме — без цвета: марка и сорт из названия, фасовка,
+        # коды отчётов («Д1с») для поиска; цвет — только различить двойников.
+        "name": product.name,
+        "weight_kg": str(product.weight_kg),
+        "codes": [alias.display_code for alias in product.aliases.all()],
+        "color_label": product.get_color_display(),
         "available_bags": available,
         "stock_by_warehouse": stock_by_warehouse,
     }

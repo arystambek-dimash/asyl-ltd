@@ -33,9 +33,19 @@ const client = {
 const product = {
   id: 2,
   label: "Мука 50 кг",
+  name: "Мука 50 кг",
+  weight_kg: "50.00",
+  codes: ["М1"],
+  color_label: "Синий",
   available_bags: 20,
   stock_by_warehouse: {} as Record<string, number>,
 };
+
+/** Выбор товара позиции: кнопка раскрывает список под строкой. */
+async function chooseProduct(user: ReturnType<typeof userEvent.setup>, name: RegExp = /^Мука50 кг/) {
+  await user.click(screen.getByRole("button", { name: /^Товар, позиция 1/ }));
+  await user.click(screen.getByRole("option", { name }));
+}
 
 const department = makeDepartment({ id: 3, code: "sales", name: "Продажи", color: "#111111" });
 
@@ -162,6 +172,10 @@ describe("OrderForm reference data resilience", () => {
     const secondaryProduct = {
       id: 4,
       label: "Мука со второго склада 50 кг",
+      name: "Мука со второго склада 50 кг",
+      weight_kg: "50.00",
+      codes: [],
+      color_label: "Красный",
       available_bags: 14,
       stock_by_warehouse: { "22": 14 },
     };
@@ -183,7 +197,8 @@ describe("OrderForm reference data resilience", () => {
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
     await user.selectOptions(screen.getByLabelText("Склад отгрузки"), "22");
 
-    expect(screen.getByRole("option", { name: "Мука 50 кг · 7 меш." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Товар, позиция 1/ }));
+    expect(screen.getByRole("option", { name: /^Мука50 кг7 меш\./ })).toBeInTheDocument();
     expect(screen.queryByText("Цех 2")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
 
@@ -229,7 +244,7 @@ describe("OrderForm reference data resilience", () => {
     render(<OrderForm template={template} onCancel={vi.fn()} onDone={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByLabelText("Склад отгрузки")).toHaveValue("11"));
-    expect(screen.getByLabelText("Товар, позиция 1")).toHaveValue("");
+    expect(screen.getByLabelText("Товар, позиция 1")).toHaveTextContent("Выберите товар");
   });
 
   it("requires an audit reason and sends it when a shipped order is corrected", async () => {
@@ -248,7 +263,8 @@ describe("OrderForm reference data resilience", () => {
     const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
 
-    expect(screen.getByRole("option", { name: /нет остатка, но доступен/ })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /^Товар, позиция 1/ }));
+    expect(screen.getByRole("option", { name: /нет остатка/ })).toBeEnabled();
     const save = screen.getByRole("button", { name: /Сохранить изменения/ });
     expect(save).toBeDisabled();
     await user.type(screen.getByLabelText("Причина корректировки отгруженного заказа"), "Исправили факт");
@@ -278,7 +294,7 @@ describe("OrderForm reference data resilience", () => {
     const user = userEvent.setup();
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
 
-    expect(screen.getByLabelText("Товар, позиция 1")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Товар, позиция 1/ })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     const body = patchMock.mock.calls[0][1] as Record<string, unknown>;
     expect(body).not.toHaveProperty("items");
@@ -621,7 +637,7 @@ describe("OrderForm draft", () => {
     expect(screen.getByRole("button", { name: "Изменить" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 1" })).toHaveValue(4);
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Товар, позиция 1" }), "2");
+    await chooseProduct(user);
     await user.selectOptions(screen.getByRole("combobox", { name: "Отдел продаж" }), "sales");
     await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
     await waitFor(() => expect(postMock).toHaveBeenCalledOnce());
@@ -671,7 +687,7 @@ describe("OrderForm draft", () => {
     const user = userEvent.setup();
     const first = render(<OrderForm onCancel={vi.fn()} onDone={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: /Тестовый клиент/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Товар, позиция 1" }), "2");
+    await chooseProduct(user);
     await user.type(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }), "4");
     await user.selectOptions(screen.getByRole("combobox", { name: "Отдел продаж" }), "sales");
     await user.type(screen.getByLabelText("Тягач"), "07kg695adt");

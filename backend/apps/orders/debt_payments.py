@@ -22,6 +22,7 @@ from apps.common.money import ZERO, money_string, money_text
 from apps.common.text import plural_ru
 from apps.eventlog.services import log_event
 
+from .backdate import backdate_events, log_payment_backdated, order_start, payment_moment
 from .debt import (
     DEBT_STATUS,
     available_to_pay,
@@ -41,6 +42,7 @@ from .services import (
 _SKIP_DETAILS = {
     "payment_window_closed": "не день оплаты по графику магазина",
     "payment_in_progress": "оплата уже в процессе",
+    "after_payment_day": "заказ появился позже даты оплаты",
 }
 
 
@@ -48,20 +50,25 @@ def _skipped(order, reason: str) -> dict:
     return {"order": order, "reason": reason, "detail": _SKIP_DETAILS[reason]}
 
 
-def plan_debt_payment(orders, amount: Decimal | None, *, today) -> dict:
+def plan_debt_payment(orders, amount: Decimal | None, *, today, paid_on=None) -> dict:
     """Распределить сумму по долговым заказам клиента — без записи.
 
     ``orders`` — долговые заказы клиента одной валюты, уже отсортированные
     :func:`debt.oldest_debt_first`, с ``store`` и предзагруженными
     ``payments`` и ``items``. Заказ магазина вне дня оплаты по графику и заказ,
     чей остаток целиком занят оплатой в работе, пропускаются: деньги идут на
-    следующие. Доля заказа не больше свободного остатка
+    следующие. ``today`` — день, на который проверяется окно магазина;
+    ``paid_on`` — оплата прошлым днём: заказ, появившийся позже, пропускается.
+    Доля заказа не больше свободного остатка
     (:func:`debt.available_to_pay`). ``amount=None`` — план на весь свободный
     остаток (кнопка «Весь долг»). Сумму проверяет вызывающий.
     """
     payable = []
     skipped = []
     for order in orders:
+        if paid_on is not None and timezone.localdate(order_start(order)) > paid_on:
+            skipped.append(_skipped(order, "after_payment_day"))
+            continue
         # Долговой заказ всегда отгружен, а окно магазина — график погашения долга.
         if order.store_id is not None and not is_payment_window_open(order.store, today):
             skipped.append(_skipped(order, "payment_window_closed"))
@@ -118,7 +125,7 @@ def _debt_candidates(client_pk: int, currency: str) -> list:
     return sorted(debt_orders(orders), key=oldest_debt_first)
 
 
-def _record_slices(client, plan: dict, user, *, method: str, currency: str) -> dict[int, int]:
+def _record_slices(client, plan: dict, user, *, method: str, currency: str, day=None) -> dict[int, int]:
     """Провести доли обычными оплатами заказов и записать одно сводное событие.
 
     Возвращает ``{order_id: payment_id}``. Ошибка любой доли откатывает всё
@@ -131,13 +138,18 @@ def _record_slices(client, plan: dict, user, *, method: str, currency: str) -> d
         f"({count} {plural_ru(count, 'заказ', 'заказа', 'заказов')})"
     )
     common_note = f"Внесение оплаты: {summary}"
+    paid_at = payment_moment(day, [share["order"] for share in slices])
     payment_ids = {}
     for share in slices:
-        payment = record_staff_payment(share["order"], share["amount"], user, method=method, note=common_note)
+        payment = record_staff_payment(
+            share["order"], share["amount"], user, method=method, note=common_note, paid_at=paid_at,
+        )
         payment_ids[share["order"].pk] = payment.pk
+        if paid_at is not None:
+            log_payment_backdated(payment, day, user)
     # Не «payment»: журнал кассы и сводки по дням читают события оплат заказов,
     # а они уже записаны — по одному на каждую долю.
-    log_event(
+    event = log_event(
         "debt_payment",
         f"Внесение оплаты клиента «{client.display_name}»: {summary}",
         user=user,
@@ -157,6 +169,8 @@ def _record_slices(client, plan: dict, user, *, method: str, currency: str) -> d
             ],
         },
     )
+    if paid_at is not None:
+        backdate_events([event], paid_at)
     return payment_ids
 
 
@@ -188,7 +202,7 @@ def _plan_payload(plan: dict, *, currency: str, method: str | None, payment_ids:
 
 @transaction.atomic
 def record_client_debt_payment(
-    client, amount, user, *, method: str | None = None, currency: str, preview: bool = False,
+    client, amount, user, *, method: str | None = None, currency: str, preview: bool = False, day=None,
 ) -> dict:
     """Внести оплату клиента: погасить его долг в ``currency`` от старого заказа к новому.
 
@@ -200,7 +214,9 @@ def record_client_debt_payment(
     блокировкой (порядок как у удаления клиента), область отдела сотрудника
     (:func:`clients.services.lock_scoped_client`), затем по доле на заказ через
     :func:`services.record_staff_payment` с общей пометкой и одно событие
-    ``debt_payment`` без заказа.
+    ``debt_payment`` без заказа. ``day`` — клиент заплатил прошлым днём: план
+    считается на этот день (заказы позже него пропускаются), доли и событие
+    ложатся им.
     """
     if amount is not None or not preview:
         amount = _positive_money(
@@ -222,7 +238,7 @@ def record_client_debt_payment(
     orders = _debt_candidates(client.pk, currency)
     if not orders:
         raise ValidationError({"detail": f"У клиента нет долга в {currency}", "code": "no_debt"})
-    plan = plan_debt_payment(orders, amount, today=timezone.localdate())
+    plan = plan_debt_payment(orders, amount, today=day or timezone.localdate(), paid_on=day)
     if plan["amount"] > plan["total_available"]:
         raise ValidationError({
             "detail": f"Максимум к оплате {money_text(plan['total_available'], currency)}",
@@ -231,5 +247,5 @@ def record_client_debt_payment(
         })
     payment_ids = {}
     if not preview:
-        payment_ids = _record_slices(client, plan, user, method=method, currency=currency)
+        payment_ids = _record_slices(client, plan, user, method=method, currency=currency, day=day)
     return _plan_payload(plan, currency=currency, method=method, payment_ids=payment_ids)

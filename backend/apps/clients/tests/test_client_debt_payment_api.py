@@ -222,3 +222,58 @@ def test_amount_over_debt_reports_max_amount(api_as, cashier, debtor):
     assert data["code"] == "amount_exceeds_debt"
     assert data["max_amount"] == "500.00"
     assert data["detail"].startswith("Максимум к оплате")
+
+
+def test_debt_payment_can_be_dated_a_past_day(api_as, cashier, debtor):
+    """Клиент заплатил вчера: доли и сводное событие ложатся вчерашним днём."""
+    client, old, new = debtor
+    yesterday = timezone.localdate() - timedelta(days=1)
+
+    response = api_as(cashier).post(
+        _url(client), _body(amount="350.00", preview=False, date=yesterday.isoformat()), format="json",
+    )
+
+    assert response.status_code == 200, response.json()
+    payments = Payment.objects.filter(order__client=client)
+    assert {timezone.localdate(p.confirmed_at) for p in payments} == {yesterday}
+    assert {timezone.localdate(p.paid_at) for p in payments} == {yesterday}
+    moved = EventLog.objects.filter(order__client=client, event_type="payment")
+    assert {timezone.localdate(e.created_at) for e in moved} == {yesterday}
+    summary = EventLog.objects.get(event_type="debt_payment", payload__client_id=client.pk)
+    assert timezone.localdate(summary.created_at) == yesterday
+    # Кто и когда внёс оплату прошлым днём — сегодняшняя запись на каждую долю.
+    audit = EventLog.objects.filter(event_type="order_backdated", order__client=client)
+    assert audit.count() == 2
+    assert {timezone.localdate(e.created_at) for e in audit} == {timezone.localdate()}
+
+
+def test_debt_payment_dated_before_a_newer_order_skips_it(api_as, cashier, debtor):
+    """Оплата пятидневной давности: новый заказ (вчерашний) тогда ещё не существовал."""
+    client, old, new = debtor
+    before_new = (timezone.localdate() - timedelta(days=5)).isoformat()
+
+    preview = api_as(cashier).post(_url(client), _preview_body(amount=None, date=before_new), format="json")
+    assert preview.status_code == 200, preview.json()
+    data = preview.json()
+    # «Весь долг» на тот день — только старый заказ, новый в «Пропущены» с причиной.
+    assert data["total_available"] == "300.00"
+    assert [row["order_id"] for row in data["slices"]] == [old.id]
+    assert [(row["order_id"], row["reason"]) for row in data["skipped"]] == [(new.id, "after_payment_day")]
+
+    response = api_as(cashier).post(_url(client), _body(amount="350.00", preview=False, date=before_new), format="json")
+    assert response.status_code == 400
+    assert response.json()["code"] == "amount_exceeds_debt"
+
+    response = api_as(cashier).post(_url(client), _body(amount="300.00", preview=False, date=before_new), format="json")
+    assert response.status_code == 200, response.json()
+
+
+def test_debt_payment_date_in_future_is_refused(api_as, cashier, debtor):
+    client, _, _ = debtor
+    tomorrow = (timezone.localdate() + timedelta(days=1)).isoformat()
+
+    response = api_as(cashier).post(_url(client), _body(preview=False, date=tomorrow), format="json")
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "payment_date_in_future"
+    assert not Payment.objects.filter(order__client=client).exists()

@@ -68,6 +68,7 @@ from .statuses import (
 from .serializers import (ConfirmOrderSerializer, OrderSerializer, PaymentSerializer,
                           PaymentQueueSerializer, StatusChangeRequestSerializer)
 from .transport import transport_locked
+from .backdate import assert_paid_after_order, log_payment_backdated, payment_day, payment_moment
 from .services import (add_payment, confirm_order, confirm_stock_context, reject_order,
                        accountant_confirm_payment, assert_payment_status_open,
                        correct_order_prices,
@@ -1124,6 +1125,16 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 "detail": "Недопустимый канал оплаты.",
                 "code": "invalid_payment_channel",
             })
+        # Касса принимает деньги прошлым днём: «клиент заплатил вчера».
+        day = payment_day(request.data.get("date"))
+        if day is not None:
+            # Счёт и QR через кассу — оплата, которая только начинается сейчас.
+            if channel or method not in Payment.SETTLED_ON_RECORD:
+                raise ValidationError({
+                    "detail": "Прошлым днём записываются только полученные деньги: наличные, QR или удалённая оплата",
+                    "code": "payment_date_not_allowed",
+                })
+            assert_paid_after_order(order, day)
         if method == "kaspi" and channel == "qr":
             payment = _issue_staff_qr_payment(
                 order, request.data.get("amount"), request.user
@@ -1134,10 +1145,15 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             phone_number = normalize_phone(
                 phone_number or order.client.phone
             )
-        payment = record_staff_payment(
-            order, request.data.get("amount"), request.user,
-            method=method,
-            note=request.data.get("note") or "")
+        paid_at = payment_moment(day, [order])
+        with transaction.atomic():
+            payment = record_staff_payment(
+                order, request.data.get("amount"), request.user,
+                method=method,
+                note=request.data.get("note") or "",
+                paid_at=paid_at)
+            if paid_at is not None:
+                log_payment_backdated(payment, day, request.user)
         if method in PROVIDER_METHOD_CHANNELS:
             try:
                 _issue_provider_payment(

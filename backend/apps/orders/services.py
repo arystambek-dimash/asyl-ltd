@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -9,6 +10,7 @@ from apps.clients.assignment import assign_client_department
 from apps.clients.models import Client
 from apps.clients.services import is_payment_window_open
 from apps.common.money import money_string
+from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.sales.access import assigned_department_id
@@ -16,6 +18,7 @@ from apps.sales.models import Department
 from apps.shipments.services import ROLLBACK_TARGET_STATUSES, assert_no_open_ai_session, has_open_ai_session
 from apps.shipments.sources import reconcile_sources
 
+from .backdate import backdate_events
 from .debt import (
     available_to_pay,
     confirmed_and_reserved,
@@ -186,20 +189,22 @@ def assert_payment_method_allowed(currency: str, method: str) -> None:
         })
 
 
-def _validate_payment_open(order: Order, *, method: str | None, by_client=False) -> None:
+def _validate_payment_open(order: Order, *, method: str | None, by_client=False, day=None) -> None:
     """Приём новой оплаты: статус заказа и окно оплаты магазина.
 
     Окно оплаты магазина — график погашения долга, поэтому оно действует только
-    на отгруженный заказ: предоплату магазин вносит в любой день.
+    на отгруженный заказ: предоплату магазин вносит в любой день. ``day`` — день
+    оплаты, принятой прошлым днём: окно проверяется на него, а не на сегодня.
     """
     assert_payment_status_open(order, method=method, by_client=by_client)
     if (
         order.status == "shipped"
         and order.store
-        and not is_payment_window_open(order.store, timezone.localdate())
+        and not is_payment_window_open(order.store, day or timezone.localdate())
     ):
+        when = f"{day:%d.%m.%Y}" if day else "сегодня"
         raise ValidationError(
-            {"detail": f"Оплата для магазина «{order.store.name}» сегодня недоступна",
+            {"detail": f"Оплата для магазина «{order.store.name}» {when} недоступна",
              "code": "payment_window_closed"}
         )
 
@@ -293,10 +298,13 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
 
 @transaction.atomic
 def add_payment(order: Order, amount, user, method="cash", stage="received",
-                note="") -> Payment:
-    """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера)."""
+                note="", day=None) -> Payment:
+    """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера).
+
+    ``day`` — оплата прошлым днём: окно оплаты магазина проверяется на него.
+    """
     order = _locked_payment_order(order, user)
-    _validate_payment_open(order, method=payment_open_method(method, stage))
+    _validate_payment_open(order, method=payment_open_method(method, stage), day=day)
     assert_payment_method_allowed(order.currency, method)
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
@@ -619,8 +627,14 @@ def record_staff_payment(
     *,
     method="cash",
     note="",
+    paid_at=None,
 ) -> Payment:
     """Record money from the CRM and settle funds already received by staff.
+
+    ``paid_at`` — оплата прошлым днём («касса принимает за вчера», фиксация):
+    после обычной записи оплата и все её события (приём, подтверждение,
+    «Статус оплаты») переносятся на этот момент. Только для денег, которые
+    закрываются сразу (``Payment.SETTLED_ON_RECORD``), не для счёта.
 
     The CRM endpoint itself is protected by ``payments.create`` and cannot be
     called by portal users.  Consequently the source boundary, rather than a
@@ -631,11 +645,24 @@ def record_staff_payment(
     Invoices deliberately remain requests: issuing a PDF or provider invoice
     is not evidence that money arrived.
     """
+    if paid_at is not None and method not in Payment.SETTLED_ON_RECORD:
+        raise ValidationError({
+            "detail": "Прошлым днём записываются только полученные деньги: наличные, QR или удалённая оплата",
+            "code": "payment_date_not_allowed",
+        })
+    day = last_event = None
+    if paid_at is not None:
+        day = timezone.localdate(paid_at)
+        # Заказ под блокировкой до отметки журнала: события чужой оплаты этого
+        # заказа (вебхук, второй кассир) не попадут в перенос на прошлый день.
+        order = _locked_payment_order(order, user)
+        last_event = EventLog.objects.order_by("-pk").values_list("pk", flat=True).first() or 0
     payment = add_payment(
         order,
         amount,
         user,
         method=method,
+        day=day,
         # The CRM action is source-authoritative: choosing cash/Kaspi means
         # the employee is recording money already received at the till.
         # Invoices are the inverse: issuing one never proves that the client paid.
@@ -645,6 +672,17 @@ def record_staff_payment(
     if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
         # Подтверждение перечитывает этот же экземпляр после блокировки.
         accountant_confirm_payment(payment, user)
+    if paid_at is not None:
+        Payment.objects.filter(pk=payment.pk).update(paid_at=paid_at, received_at=paid_at, confirmed_at=paid_at)
+        # Касса и сводки по дням читают события оплат по created_at: приём и
+        # подтверждение этой оплаты и «Статус оплаты» (у него нет payment_id).
+        backdate_events(
+            EventLog.objects.filter(pk__gt=last_event, order=payment.order_id, event_type="payment").filter(
+                Q(payload__payment_id=payment.pk) | Q(payload__has_key="payment_status")
+            ),
+            paid_at,
+        )
+        payment.refresh_from_db()
     return payment
 
 
