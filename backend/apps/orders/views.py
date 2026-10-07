@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import re
 from django.core.paginator import Paginator
-from django.db.models import Count, Exists, F, OuterRef, Q, Sum
+from django.db.models import Count, Exists, F, Max, OuterRef, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermAPIViewMixin, PermViewSetMixin
@@ -749,21 +749,22 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         date_from, date_to = parse_date_range(request.query_params)
 
         queue = qs.filter(status__in=("arrived", "loading")).order_by("id")
-        shipment_events = EventLog.objects.filter(
-            order__in=qs.filter(status="shipped"),
-            event_type="shipment",
-        ).only("id", "order_id", "payload", "created_at")
+        # A rolled-back and re-shipped order can have several snapshots; the
+        # current one is the last written (max id). Its created_at may be
+        # backdated (fixation, moved shipment), so pick it before the dates.
+        latest_ids = (
+            EventLog.objects.filter(order__in=qs.filter(status="shipped"), event_type="shipment")
+            .values("order_id")
+            .annotate(last=Max("id"))
+            .values("last")
+        )
         shipment_events = filter_date_range(
-            shipment_events,
+            EventLog.objects.filter(pk__in=latest_ids).only("id", "order_id", "payload", "created_at"),
             "created_at",
             date_from,
             date_to,
-        ).order_by("order_id", "-created_at", "-id")
-
-        # A rolled-back and re-shipped order can have several snapshots.
-        latest_by_order: dict[int, EventLog] = {}
-        for event in shipment_events:
-            latest_by_order.setdefault(event.order_id, event)
+        )
+        latest_by_order = {event.order_id: event for event in shipment_events}
 
         days: dict[str, dict[str, int]] = defaultdict(
             lambda: {"bags": 0, "orders": 0}

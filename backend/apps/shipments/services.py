@@ -422,6 +422,18 @@ def loader_rollback_blocker(order, user) -> str:
     # списку очереди пришлось бы читать журнал по каждой строке.
     if timezone.now() - shipment.shipped_at > LOADER_ROLLBACK_WINDOW:
         return "Прошло больше часа — отмену оформляет старший в «Заказах»"
+    # Суперюзер переносил отгрузку на другой день: «свежая» по времени, она
+    # не та, что грузчик только что отгрузил.
+    # Считается только перенос этой отгрузки: после отката и новой отгрузки
+    # окно у грузчика снова обычное.
+    last_shipment = (
+        EventLog.objects.filter(event_type="shipment", order=order).order_by("-id").values_list("id", flat=True).first()
+    )
+    if EventLog.objects.filter(
+        event_type="order_backdated", order=order, payload__has_key="shipment_moved_from",
+        pk__gt=last_shipment or 0,
+    ).exists():
+        return "Отгрузку переносили задним числом — отмену оформляет старший в «Заказах»"
     # Оплата не мешает: заказ возвращается в ожидание, деньги остаются предоплатой.
     last = (
         EventLog.objects.filter(event_type="shipment", order=order)

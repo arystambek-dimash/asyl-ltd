@@ -7,6 +7,7 @@ import { can } from "@/lib/can";
 import { ORDER_AWAITING_SHIPMENT_STATUSES } from "@/lib/constants";
 import { useAuth } from "@/store/auth";
 import type { Order } from "@/lib/types";
+import { toLocalIsoDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { FormError } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
@@ -18,10 +19,15 @@ import {
   type FixationDraft,
 } from "@/components/orders/fixation-fields";
 
-/** Какие заказы можно зафиксировать задним числом из списка/карточки. */
-export function canFixateOrder(order: Order): boolean {
+/**
+ * Какие заказы можно зафиксировать задним числом из списка/карточки. Суперюзер
+ * открывает и оплаченный отгруженный заказ — перенести его отгрузку на другой
+ * день, если отгрузка записана (у старых заказов её даты нет).
+ */
+export function canFixateOrder(order: Order, { superuser = false } = {}): boolean {
   if (ORDER_AWAITING_SHIPMENT_STATUSES.includes(order.status)) return true;
-  return order.status === "shipped" && !order.is_fully_paid;
+  if (order.status !== "shipped") return false;
+  return !order.is_fully_paid || (superuser && Boolean(order.shipped_at));
 }
 
 export function OrderFixationModal({
@@ -34,12 +40,16 @@ export function OrderFixationModal({
   onChanged: () => unknown;
 }) {
   const { me } = useAuth();
-  const canPay = can(me, "payments.create");
+  const superuser = Boolean(me?.is_superuser);
+  // Оплаченный целиком заказ доплатить нечем — остаётся только перенос отгрузки.
+  const canPay = can(me, "payments.create") && !order?.is_fully_paid;
   const [draft, setDraft] = useState<FixationDraft>(emptyFixationDraft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const shippedAlready = order?.status === "shipped";
+  // Перенести можно только состоявшуюся отгрузку — у старых заказов её записи нет.
+  const canMoveShipment = shippedAlready && superuser && Boolean(order?.shipped_at);
   const orderId = order?.id ?? null;
   const orderStatus = order?.status ?? "";
 
@@ -50,13 +60,18 @@ export function OrderFixationModal({
     setDraft({
       ...emptyFixationDraft(),
       status: orderStatus === "shipped" ? "" : "shipped",
-      paid: orderStatus === "shipped" && canPay,
+      // Окно могут открыть ради переноса отгрузки — тогда оплату отмечают сами.
+      paid: orderStatus === "shipped" && canPay && !canMoveShipment,
     });
     setError("");
-  }, [orderId, orderStatus, canPay]);
+  }, [orderId, orderStatus, canPay, canMoveShipment]);
 
   if (!order) return null;
-  const draftError = fixationDraftError(draft, { orderStatus: order.status, currency: order.currency });
+  const movingShipment = canMoveShipment && draft.status === "shipped";
+  const draftError =
+    movingShipment && draft.date === toLocalIsoDate(new Date(order.shipped_at!))
+      ? "Отгрузка уже стоит на этой дате."
+      : fixationDraftError(draft, { orderStatus: order.status, currency: order.currency });
   const nothingToDo = !draft.status && !draft.paid;
 
   async function apply() {
@@ -81,9 +96,15 @@ export function OrderFixationModal({
       title="Зафиксировать статус и оплату"
       className="max-w-xl"
       description={
-        shippedAlready
-          ? "Заказ уже отгружен — можно зафиксировать оплату нужной датой."
-          : "Проставить отгрузку или оплату (в том числе предоплату) задним числом без поста и кассы."
+        canMoveShipment
+          ? canPay
+            ? "Заказ уже отгружен — можно перенести отгрузку на другой день и зафиксировать оплату."
+            : "Заказ уже отгружен и оплачен — можно перенести отгрузку на другой день."
+          : shippedAlready
+            ? "Заказ уже отгружен — можно зафиксировать оплату нужной датой."
+            : canPay
+              ? "Проставить отгрузку или оплату (в том числе предоплату) задним числом без поста и кассы."
+              : "Проставить отгрузку задним числом без поста."
       }
       footer={
         <>
@@ -104,6 +125,7 @@ export function OrderFixationModal({
           canPay={canPay}
           currency={order.currency}
           orderStatus={order.status}
+          canMoveShipment={canMoveShipment}
           idPrefix={`fixation-${order.id}`}
         />
         <FormError message={error || (draft.date ? draftError : null)} className="rounded-xl py-2.5 font-medium" />

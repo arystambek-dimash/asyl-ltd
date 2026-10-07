@@ -42,7 +42,7 @@ export function useOrderActions({ onChanged, onArchived }: { onChanged: () => un
             },
           ]
         : []),
-      ...(canEdit && canFixateOrder(order)
+      ...(canEdit && canFixateOrder(order, { superuser: Boolean(me?.is_superuser) })
         ? [
             {
               key: "fixate",

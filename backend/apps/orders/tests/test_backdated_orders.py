@@ -426,6 +426,191 @@ def test_reship_after_fixation_rollback_deducts_and_restores_normally(backdater,
     }]
 
 
+
+@pytest.fixture
+def root(django_user_model):
+    return django_user_model.objects.create_superuser(username="root", password="x")
+
+
+def _dispatched_today(backdater, boss, setup, api_as):
+    """Обычная отгрузка грузчиком сегодня: склад списан, затем частичная оплата."""
+    from apps.orders.services import record_staff_payment
+
+    client, product, _ = setup
+    body = _body(client, product)
+    body.pop("backdate")
+    order = Order.objects.get(pk=api_as(backdater).post("/api/orders/", body, format="json").data["id"])
+    dispatch_order(order, boss)
+    record_staff_payment(order, Decimal("1000"), backdater, method="cash")
+    order.refresh_from_db()
+    return order
+
+
+def test_superuser_moves_todays_shipment_to_yesterday(backdater, boss, root, setup, api_as):
+    _, _, stock = setup
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    shipment = Shipment.objects.get(order=order)
+    shipped_time = timezone.localtime(shipment.shipped_at).time()
+    moves = StockMovement.objects.count()
+    today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
+
+    response = api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": yesterday.isoformat(), "status": "shipped"}, format="json",
+    )
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    shipment.refresh_from_db()
+    assert order.status == "shipped"
+    assert _local_date(shipment.shipped_at) == yesterday
+    assert timezone.localtime(shipment.shipped_at).time() == shipped_time, "время суток то же"
+    assert shipment.arrived_at is None or _local_date(shipment.arrived_at) == yesterday
+    # Заказ создан сегодня — без переноса он оказался бы создан после отгрузки.
+    assert _local_date(order.created_at) == yesterday
+    for event_type in ("shipment", "debt", "status"):
+        assert {_local_date(e.created_at) for e in EventLog.objects.filter(order=order, event_type=event_type)} == {yesterday}
+    # Деньги и склад остаются в своём дне.
+    payment = Payment.objects.get(order=order)
+    assert _local_date(payment.confirmed_at) == today
+    assert {_local_date(e.created_at) for e in EventLog.objects.filter(order=order, event_type="payment")} == {today}
+    stock.refresh_from_db()
+    assert stock.bags == 497
+    assert StockMovement.objects.count() == moves
+    audit = EventLog.objects.get(order=order, event_type="order_backdated")
+    assert audit.payload["shipment_moved_from"] == today.isoformat()
+    assert _local_date(audit.created_at) == today
+
+
+def test_superuser_moves_shipment_later_keeps_created_date(backdater, root, setup, api_as):
+    order = _fixated(backdater, setup, api_as)
+
+    response = api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": "2026-09-12", "status": "shipped"}, format="json",
+    )
+
+    assert response.status_code == 200, response.data
+    order.refresh_from_db()
+    assert _local_date(Shipment.objects.get(order=order).shipped_at) == date(2026, 9, 12)
+    assert _local_date(order.created_at) == date(2026, 9, 10)
+
+
+def test_moving_shipment_needs_superuser_and_other_date(backdater, boss, root, setup, api_as):
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+
+    response = api_as(backdater).post(
+        f"/api/orders/{order.id}/fixate/", {"date": yesterday, "status": "shipped"}, format="json",
+    )
+    assert response.status_code == 400
+    assert response.data["code"] == "already_shipped"
+
+    response = api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": timezone.localdate().isoformat(), "status": "shipped"},
+        format="json",
+    )
+    assert response.status_code == 400
+    assert response.data["code"] == "same_shipment_date"
+    assert _local_date(Shipment.objects.get(order=order).shipped_at) == timezone.localdate()
+
+
+def test_moved_shipment_never_leaves_order_created_after_it(backdater, root, setup, api_as):
+    """Фиксация существующего заказа: создан сегодня, отгружен прошлым днём."""
+    client, product, _ = setup
+    body = _body(client, product)
+    body.pop("backdate")
+    order_id = api_as(backdater).post("/api/orders/", body, format="json").data["id"]
+    api_as(backdater).post(f"/api/orders/{order_id}/fixate/", {"date": "2026-09-10", "status": "shipped"}, format="json")
+
+    for day in ("2026-09-12", "2026-09-05"):
+        response = api_as(root).post(f"/api/orders/{order_id}/fixate/", {"date": day, "status": "shipped"}, format="json")
+        assert response.status_code == 200, response.data
+        order = Order.objects.get(pk=order_id)
+        shipped_at = Shipment.objects.get(order=order).shipped_at
+        assert _local_date(shipped_at) == date.fromisoformat(day)
+        assert order.created_at <= shipped_at, "заказ не создан после отгрузки"
+        assert order.created_at <= timezone.now(), "и не в будущем"
+
+
+def test_dashboard_counts_moved_shipment_after_rollback_and_reship(backdater, boss, root, setup, api_as):
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    Order.objects.filter(pk=order.pk).update(created_at=timezone.now() - timedelta(days=5))
+    rollback_shipment(order, boss, target_status="confirmed", reason="Перегрузим")
+    dispatch_order(Order.objects.get(pk=order.pk), boss)
+    today = timezone.localdate()
+    yesterday = today - timedelta(days=1)
+
+    response = api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": yesterday.isoformat(), "status": "shipped"}, format="json",
+    )
+    assert response.status_code == 200, response.data
+
+    dashboard = api_as(root).get(
+        f"/api/orders/dashboard-operational/?date_from={yesterday}&date_to={today}"
+    ).data
+    assert [(day["date"], day["orders"]) for day in dashboard["days"] if day["orders"]] == [(yesterday.isoformat(), 1)]
+
+
+def test_moving_a_shipment_without_shipment_record_is_refused(root, setup, api_as):
+    client, _, _ = setup
+    order = Order.objects.create(client=client, status="shipped")
+
+    response = api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": "2026-09-05", "status": "shipped"}, format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "shipment_missing"
+
+
+def test_loader_cannot_cancel_a_shipment_moved_to_today(backdater, boss, root, setup, api_as):
+    from apps.shipments.services import loader_rollback_blocker
+
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+    api_as(root).post(f"/api/orders/{order.id}/fixate/", {"date": yesterday, "status": "shipped"}, format="json")
+    api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": timezone.localdate().isoformat(), "status": "shipped"}, format="json",
+    )
+
+    order = Order.objects.select_related("shipment").get(pk=order.pk)
+    assert timezone.now() - order.shipment.shipped_at < timedelta(hours=1)
+    assert "задним числом" in loader_rollback_blocker(order, boss)
+
+
+def test_overnight_truck_events_move_once_with_the_shipment(backdater, boss, root, setup, api_as):
+    """Машина простояла на посту ночь: события не уезжают дальше самой отгрузки."""
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    shipment = Shipment.objects.get(order=order)
+    Shipment.objects.filter(pk=shipment.pk).update(
+        arrived_at=shipment.shipped_at - timedelta(hours=23),
+        loading_started_at=shipment.shipped_at - timedelta(hours=23),
+    )
+    Order.objects.filter(pk=order.pk).update(created_at=shipment.shipped_at - timedelta(hours=25))
+    yesterday = timezone.localdate() - timedelta(days=1)
+
+    response = api_as(root).post(
+        f"/api/orders/{order.id}/fixate/", {"date": yesterday.isoformat(), "status": "shipped"}, format="json",
+    )
+
+    assert response.status_code == 200, response.data
+    shipment.refresh_from_db()
+    assert _local_date(shipment.shipped_at) == yesterday
+    for event_type in ("shipment", "debt"):
+        assert {_local_date(e.created_at) for e in EventLog.objects.filter(order=order, event_type=event_type)} == {yesterday}
+
+
+def test_loader_can_cancel_a_fresh_reship_after_an_earlier_move(backdater, boss, root, setup, api_as):
+    from apps.shipments.services import loader_rollback_blocker
+
+    order = _dispatched_today(backdater, boss, setup, api_as)
+    yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+    api_as(root).post(f"/api/orders/{order.id}/fixate/", {"date": yesterday, "status": "shipped"}, format="json")
+    rollback_shipment(Order.objects.get(pk=order.pk), boss, target_status="confirmed", reason="Перегрузим")
+    dispatch_order(Order.objects.get(pk=order.pk), boss)
+
+    assert loader_rollback_blocker(Order.objects.select_related("shipment").get(pk=order.pk), boss) == ""
+
 BACKFILL_MIGRATION = "apps.shipments.migrations.0019_backfill_fixation_stock_deducted"
 _FIXATION = {"source": "fixation", "stock_deducted": False}
 

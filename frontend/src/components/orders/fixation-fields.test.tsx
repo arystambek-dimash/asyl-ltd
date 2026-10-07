@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { OrderFixationModal } from "@/components/order-fixation-modal";
+import { OrderFixationModal, canFixateOrder } from "@/components/order-fixation-modal";
 import type { Order } from "@/lib/types";
 import {
   FixationFields,
@@ -14,9 +14,8 @@ import {
 
 const postMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ api: { post: postMock }, apiError: () => "Ошибка" }));
-vi.mock("@/store/auth", () => ({
-  useAuth: () => ({ me: { is_superuser: false, permissions: ["orders.edit", "payments.create"] } }),
-}));
+const authMe = vi.hoisted(() => ({ is_superuser: false, permissions: ["orders.edit", "payments.create"] }));
+vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: authMe }) }));
 
 const draft = (patch: Partial<FixationDraft> = {}): FixationDraft => ({
   ...emptyFixationDraft(),
@@ -93,8 +92,57 @@ describe("FixationFields", () => {
 
 describe("OrderFixationModal", () => {
   beforeEach(() => {
+    authMe.is_superuser = false;
     postMock.mockReset();
     postMock.mockResolvedValue({ data: { id: 5 } });
+  });
+
+  it("opens a paid shipped order only for the superuser", () => {
+    const paidShipped = { status: "shipped", is_fully_paid: true } as Order;
+    expect(canFixateOrder(paidShipped)).toBe(false);
+    expect(canFixateOrder(paidShipped, { superuser: true })).toBe(false);
+    expect(canFixateOrder({ ...paidShipped, shipped_at: "2026-09-01T07:11:00Z" }, { superuser: true })).toBe(true);
+    expect(canFixateOrder({ status: "shipped", is_fully_paid: false } as Order)).toBe(true);
+  });
+
+  it("lets the superuser move a shipment to another day without touching money", async () => {
+    authMe.is_superuser = true;
+    const user = userEvent.setup();
+    const order = {
+      id: 5,
+      status: "shipped",
+      currency: "KZT",
+      is_fully_paid: true,
+      shipped_at: "2026-09-01T07:11:00Z",
+    } as Order;
+    render(<OrderFixationModal order={order} onClose={vi.fn()} onChanged={vi.fn()} />);
+
+    expect(screen.getByText(/уже отгружен и оплачен/)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Оплачен полностью/ })).not.toBeInTheDocument();
+    const fixate = screen.getByRole("button", { name: /Зафиксировать/ });
+    expect(fixate).toBeDisabled();
+    await user.click(screen.getByRole("radio", { name: /Перенести отгрузку/ }));
+    await user.click(fixate);
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/orders/5/fixate/",
+      expect.objectContaining({ status: "shipped", paid: false }),
+    );
+  });
+
+  it("keeps only the payment, pre-checked, when a shipment cannot be moved", () => {
+    authMe.is_superuser = true;
+    const order = { id: 5, status: "shipped", currency: "KZT", is_fully_paid: false, shipped_at: null } as Order;
+    render(<OrderFixationModal order={order} onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(screen.queryByRole("radio", { name: /Перенести отгрузку/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Оплачен полностью/ })).toBeChecked();
+  });
+
+  it("does not offer moving a shipment to staff", () => {
+    const order = { id: 5, status: "shipped", currency: "KZT", is_fully_paid: false } as Order;
+    render(<OrderFixationModal order={order} onClose={vi.fn()} onChanged={vi.fn()} />);
+    expect(screen.queryByRole("radio", { name: /Перенести отгрузку/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Оплачен полностью/ })).toBeChecked();
   });
 
   it("fixes only the payment of a confirmed order, keeping its status", async () => {

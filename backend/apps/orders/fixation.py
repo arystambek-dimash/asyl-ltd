@@ -10,11 +10,13 @@
 * ``POST /orders/`` с ``backdate`` — новый заказ сразу получает дату,
   статус и оплату;
 * ``POST /orders/{id}/fixate/`` — то же для уже существующего заказа
-  (дата создания при этом не переписывается).
+  (дата создания при этом не переписывается). Уже отгруженному заказу
+  суперюзер так же переносит отгрузку на другой день (``_move_shipped``).
 """
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from django.db import transaction
+from django.db.models import F, Max
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -27,6 +29,11 @@ from .models import Order, Payment
 from .statuses import AWAITING_SHIPMENT_STATUSES, is_payment_open, public_status_label
 
 FIXATION_STATUSES = ("confirmed", "shipped")
+# События отгрузки, которые переезжают вместе с ней: прибытие и статусы,
+# погрузка, камера, долг и сама отгрузка. Деньги остаются в своём дне.
+SHIPMENT_EVENT_TYPES = (
+    "status", "loading_start", "loading", "loading_done", "camera_bound", "debt", "shipment",
+)
 # Фиксация начинается с подтверждённого заказа: без цен и отдела нет денег.
 _CONFIRMATION_REQUIRED = {
     "detail": "Сначала подтвердите заказ — у него должны быть цены и отдел",
@@ -95,6 +102,59 @@ def _fix_shipped(order: Order, moment: datetime, user) -> None:
     backdate_events([event, debt_event], moment)
 
 
+def _move_shipped(order: Order, day: date, user) -> date:
+    """Перенести уже состоявшуюся отгрузку на другой день — только суперюзер.
+
+    Время суток сохраняется. Вместе с отгрузкой едут её события и дата
+    создания заказа, если иначе заказ оказался бы создан после отгрузки.
+    Склад и оплаты не трогаем: списание стоит в журнале склада по порядку
+    остатков, а деньги принадлежат своему дню кассы. Возвращает прежний день.
+    """
+    from apps.eventlog.models import EventLog
+    from apps.shipments.models import Shipment
+
+    if not user.is_superuser:
+        raise ValidationError({"detail": "Заказ уже отгружен", "code": "already_shipped"})
+    shipment = Shipment.objects.select_for_update().filter(order=order).first()
+    if shipment is None or shipment.shipped_at is None:
+        raise ValidationError({"detail": "У заказа нет даты отгрузки — переносить нечего", "code": "shipment_missing"})
+    shipped_at = shipment.shipped_at
+    old_day = timezone.localtime(shipped_at).date()
+    if day == old_day:
+        raise ValidationError({"detail": "Отгрузка уже стоит на этой дате", "code": "same_shipment_date"})
+    # Сегодняшний день с поздним временем отгрузки не уходит в будущее.
+    shift = min(shipped_at + timedelta(days=(day - old_day).days), timezone.now()) - shipped_at
+    first = min(moment for moment in (shipment.arrived_at, shipment.loading_started_at, shipped_at) if moment)
+
+    # Только события текущей отгрузки: откатанные раньше — уже история.
+    last_rollback = EventLog.objects.filter(
+        order=order, event_type="shipment_rollback",
+    ).aggregate(last=Max("pk"))["last"] or 0
+    events = EventLog.objects.filter(order=order, event_type__in=SHIPMENT_EVENT_TYPES, pk__gt=last_rollback)
+    # Обе выборки — по исходным датам и до первого сдвига: иначе событие,
+    # уже переехавшее назад, попало бы во вторую выборку и сдвинулось дважды.
+    shipment_events = list(events.filter(
+        created_at__gte=first, created_at__lte=shipped_at + timedelta(minutes=1),
+    ).values_list("pk", flat=True))
+    # Заказ не бывает создан после отгрузки: дату создания двигаем только
+    # назад — на тот же сдвиг, а если и так поздно, то к началу отгрузки.
+    created_at = order.created_at
+    created = min(created_at + shift, first + shift) if created_at > first + shift else None
+    early_events = list(events.filter(
+        created_at__gte=created_at, created_at__lt=first,
+    ).values_list("pk", flat=True)) if created else []
+    EventLog.objects.filter(pk__in=shipment_events).update(created_at=F("created_at") + shift)
+    if created:
+        EventLog.objects.filter(pk__in=early_events).update(created_at=F("created_at") + (created - created_at))
+        Order.objects.filter(pk=order.pk).update(created_at=created)
+    Shipment.objects.filter(pk=shipment.pk).update(
+        arrived_at=F("arrived_at") + shift,
+        loading_started_at=F("loading_started_at") + shift,
+        shipped_at=F("shipped_at") + shift,
+    )
+    return old_day
+
+
 def _fix_paid(order: Order, moment: datetime, method: str, user) -> None:
     from .services import record_staff_payment
 
@@ -134,7 +194,10 @@ def fixate_order(
     order = lock_live_order(order, user)
     moment = backdate_moment(date)
 
-    if status == "shipped":
+    moved_from = None
+    if status == "shipped" and order.status == "shipped":
+        moved_from = _move_shipped(order, date, user)
+    elif status == "shipped":
         _fix_shipped(order, moment, user)
     elif status == "confirmed" and order.status != "confirmed":
         raise ValidationError(_CONFIRMATION_REQUIRED)
@@ -155,6 +218,7 @@ def fixate_order(
         "order_backdated",
         f"Заказ зафиксирован задним числом: {date.isoformat()}"
         + (f", {public_status_label(status)}" if status else "")
+        + (f", отгрузка перенесена с {moved_from:%d.%m.%Y}" if moved_from else "")
         + (", оплачен" if paid else ""),
         user=user,
         order=order,
@@ -164,6 +228,8 @@ def fixate_order(
             "paid": paid,
             "payment_method": payment_method if paid else None,
             "created_at_set": set_created,
+            # Ключ только у переноса: по нему грузчику закрыта отмена такой отгрузки.
+            **({"shipment_moved_from": moved_from.isoformat()} if moved_from else {}),
         },
     )
     order.refresh_from_db()

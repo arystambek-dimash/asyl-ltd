@@ -27,6 +27,12 @@ const FIXATION_STATUS_OPTIONS: { value: FixationStatus; label: string; caption: 
   { value: "shipped", label: "Отгружено", caption: "Склад не списывается" },
 ];
 
+/** Уже отгруженный заказ (только суперюзер): оставить отгрузку или перенести её на дату. */
+const MOVE_SHIPMENT_OPTIONS: { value: FixationStatus; label: string; caption: string }[] = [
+  { value: "", label: "Не менять", caption: "Дата отгрузки прежняя" },
+  { value: "shipped", label: "Перенести отгрузку", caption: "Время прежнее, но не позже текущего" },
+];
+
 const FIXATION_METHOD_OPTIONS = RECEIVE_METHOD_OPTIONS.map(({ key, label }) => ({ value: key, label }));
 
 export function emptyFixationDraft(): FixationDraft {
@@ -84,6 +90,7 @@ export function FixationFields({
   currency,
   /** Статус уже созданного заказа (окно «Зафиксировать»); у нового заказа не задан. */
   orderStatus,
+  canMoveShipment = false,
   idPrefix = "fixation",
 }: {
   draft: FixationDraft;
@@ -92,11 +99,14 @@ export function FixationFields({
   /** Валюта заказа: Kaspi и удалённая оплата — только в тенге. */
   currency: string;
   orderStatus?: string;
+  /** Суперюзер может перенести уже состоявшуюся отгрузку на другой день. */
+  canMoveShipment?: boolean;
   idPrefix?: string;
 }) {
   const update = (patch: Partial<FixationDraft>) => onChange({ ...draft, ...patch });
-  // Отгруженный заказ: статус не меняем, фиксируем только оплату.
+  // Отгруженный заказ: статус не меняем — фиксируем оплату, а суперюзер ещё и переносит отгрузку.
   const shippedAlready = orderStatus === "shipped";
+  const movingShipment = shippedAlready && draft.status === "shipped";
   const paymentAllowed = canPay && fixationPaymentAllowed(draft, orderStatus);
   const methods = receiveMethods(currency);
 
@@ -117,13 +127,13 @@ export function FixationFields({
             />
           </div>
         </div>
-        {!shippedAlready && (
+        {(!shippedAlready || canMoveShipment) && (
           <div className="grid gap-1.5">
-            <Label>Статус</Label>
+            <Label>{shippedAlready ? "Отгрузка" : "Статус"}</Label>
             <Segmented
-              ariaLabel="Статус заказа"
+              ariaLabel={shippedAlready ? "Отгрузка" : "Статус заказа"}
               value={draft.status}
-              options={statusOptions(orderStatus)}
+              options={shippedAlready ? MOVE_SHIPMENT_OPTIONS : statusOptions(orderStatus)}
               onChange={(status) => update({ status })}
             />
           </div>
@@ -169,8 +179,9 @@ export function FixationFields({
       <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-xs text-amber-900">
         <Info className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
         <span>
-          Всё проставится указанной датой и попадёт в журнал с пометкой «задним числом». Склад при этом не списывается —
-          остатки считаются уже сверенными.
+          {movingShipment
+            ? "Отгрузка и её события переедут на этот день в то же время (на сегодня — не позже текущего момента). Склад и уже принятые оплаты не меняются, в журнале останется пометка «задним числом»."
+            : "Всё проставится указанной датой и попадёт в журнал с пометкой «задним числом». Склад при этом не списывается — остатки считаются уже сверенными."}
         </span>
       </div>
     </div>
