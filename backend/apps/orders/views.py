@@ -47,6 +47,7 @@ from .goods_returns import (
     confirm_goods_return_item,
     goods_return_rows,
     goods_returns_list,
+    reopen_goods_return,
     storekeeper_returns,
     storekeeper_rows,
     visible_goods_returns,
@@ -1362,7 +1363,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
 
 
 class StorekeeperViewSet(PermViewSetMixin, viewsets.GenericViewSet):
-    """Страница «Кладовщик»: возвраты на приёмку, подтверждение муки и закрытие возврата.
+    """Страница «Кладовщик»: возвраты на приёмку, подтверждение муки, закрытие,
+    отмена и исправление закрытого возврата.
 
     Денег здесь нет: строки — мука и мешки (orders/goods_returns.py). Область —
     отдел клиента, как у грузчика; чужой возврат — 404. Ответ действия — строка
@@ -1374,6 +1376,8 @@ class StorekeeperViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         "returns": "storekeeper.view",
         "confirm_item": "storekeeper.confirm",
         "close": "storekeeper.confirm",
+        "cancel": "storekeeper.confirm",
+        "reopen": "storekeeper.confirm",
     }
 
     def get_queryset(self):
@@ -1395,3 +1399,11 @@ class StorekeeperViewSet(PermViewSetMixin, viewsets.GenericViewSet):
 
     def close(self, request, pk=None):
         return self._row(close_goods_return(self.get_object(), request.user))
+
+    def cancel(self, request, pk=None):
+        """«Отменить возврат», который ждёт приёмки."""
+        return self._row(cancel_goods_return(self.get_object(), request.user, by_storekeeper=True))
+
+    def reopen(self, request, pk=None):
+        """«Исправить» закрытый возврат: всё откатывается, он снова ждёт приёмки с прежними числами."""
+        return self._row(reopen_goods_return(self.get_object(), request.user))

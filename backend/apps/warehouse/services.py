@@ -426,11 +426,14 @@ def deduct_stock(
     require_active=True,
     note="",
     order=None,
+    reason="shipment",
 ):
-    """Списание по факту отгрузки: остаток может уйти в минус.
+    """Списание по факту: остаток может уйти в минус.
 
-    ``note`` пишется в проводку склада, ``order`` — в событие «списание в
-    минус», чтобы минус был виден в журнале заказа.
+    ``reason`` — причина проводки: ``shipment`` — отгрузка, ``client_return_undo`` —
+    мешки исправленного «Возврата» уходят со склада, куда пришли (их могли уже
+    отгрузить). ``note`` пишется в проводку склада, ``order`` — в событие
+    «списание в минус», чтобы минус был виден в журнале заказа.
     """
     warehouse = resolve_warehouse(warehouse, require_active=require_active)
     item = _locked_stock_item(product, warehouse, create=True)
@@ -448,7 +451,7 @@ def deduct_stock(
                 "deduct": bags,
             },
         )
-    _post_movement(item, -bags, "shipment", user, note)
+    _post_movement(item, -bags, reason, user, note)
     return item
 
 

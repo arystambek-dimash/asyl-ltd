@@ -1,6 +1,7 @@
 "use client";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, Pencil } from "lucide-react";
 import { GoodsReturnAcceptedBy, GoodsReturnStatusBadge } from "@/components/orders/goods-return-status";
+import { Button } from "@/components/ui/button";
 import type { StorekeeperReturn } from "@/lib/types";
 import { acceptedBagsLabel, bagsLabel, cn, formatDateTime } from "@/lib/utils";
 
@@ -80,14 +81,17 @@ export function ReturnSummary({ row }: { row: StorekeeperReturn }) {
 
 /**
  * Карточка возврата: клиент крупно, откуда и от кого, мука с мешками и итог.
- * В очереди открывает экран приёмки, в истории — со статусом и кто принял.
+ * В очереди открывает экран приёмки, в истории — со статусом и кто принял;
+ * `onFix` — «Исправить»: вернуть закрытый возврат на приёмку (если `can_reopen`).
  */
 export function StorekeeperReturnCard({
   row,
   onOpen,
+  onFix,
 }: {
   row: StorekeeperReturn;
   onOpen?: (row: StorekeeperReturn) => void;
+  onFix?: (row: StorekeeperReturn) => void;
 }) {
   const content = (
     <>
@@ -110,7 +114,23 @@ export function StorekeeperReturnCard({
   );
   const className =
     "block w-full min-w-0 overflow-hidden rounded-2xl border-2 border-[var(--loader-border)]! bg-[var(--card)] p-4 text-left shadow-card";
-  if (!onOpen) return <div className={className}>{content}</div>;
+  if (!onOpen) {
+    return (
+      <div className={className}>
+        {content}
+        {onFix && row.can_reopen && (
+          <Button
+            variant="outline"
+            className="mt-3 h-11 w-full text-base"
+            aria-label={`Исправить возврат №${row.id}`}
+            onClick={() => onFix(row)}
+          >
+            <Pencil className="size-4" /> Исправить
+          </Button>
+        )}
+      </div>
+    );
+  }
   return (
     <button
       type="button"

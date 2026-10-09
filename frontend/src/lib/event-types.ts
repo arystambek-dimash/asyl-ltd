@@ -61,9 +61,10 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
       order_edit: { label: "Правка заказа", icon: Pencil, color: ring },
       order_price_correction: { label: "Корректировка стоимости", icon: Pencil, color: warning },
       order_repeat: { label: "Повтор заказа", icon: CopyPlus, color: ring },
-      // «Возврат»: мешки клиента разложены по его отгруженным заказам (orders/goods_returns.py).
+      // «Возврат»: мешки клиента разложены по его отгруженным заказам (orders/goods_returns.py)
+      // или сняты с них, когда кладовщик вернул закрытый возврат на приёмку («Исправить»).
       goods_return: { label: "Возврат товара", icon: RotateCcw, color: warning },
-      // Сам возврат: создан менеджером, закрыт кладовщиком или отменён до приёмки.
+      // Сам возврат: создан менеджером, закрыт или отменён, возвращён на приёмку — было/стало.
       goods_return_status: { label: "Статус возврата", icon: PackageCheck, color: ring },
       order_backdated: { label: "Задним числом", icon: CalendarClock, color: warning },
       order: { label: "Корзина заказов", icon: Trash2, color: destructive },

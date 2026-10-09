@@ -29,4 +29,6 @@ urlpatterns = [
     path("storekeeper/returns/<int:pk>/items/<int:item_id>/",
          StorekeeperViewSet.as_view({"post": "confirm_item"})),
     path("storekeeper/returns/<int:pk>/close/", StorekeeperViewSet.as_view({"post": "close"})),
+    path("storekeeper/returns/<int:pk>/cancel/", StorekeeperViewSet.as_view({"post": "cancel"})),
+    path("storekeeper/returns/<int:pk>/reopen/", StorekeeperViewSet.as_view({"post": "reopen"})),
 ] + router.urls

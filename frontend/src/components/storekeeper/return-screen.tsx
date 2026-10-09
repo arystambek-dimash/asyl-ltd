@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { ArrowLeft, Check, CircleCheck, Minus, PackageCheck, Plus } from "lucide-react";
+import { ArrowLeft, Check, CircleCheck, Minus, PackageCheck, Plus, Undo2 } from "lucide-react";
 import { GoodsReturnStatusBadge } from "@/components/orders/goods-return-status";
 import { BADGE_TONE_COLOR } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -193,7 +193,7 @@ function ReturnLineCheck({
 /**
  * Экран приёмки одного возврата: кто привёз, сколько всего и проверка по
  * списку — строка за строкой. Денег кладовщик не видит. Без storekeeper.confirm
- * экран справочный.
+ * экран справочный: ни приёмки строк, ни «Отменить возврат».
  */
 export function StorekeeperReturnScreen({
   row,
@@ -204,6 +204,7 @@ export function StorekeeperReturnScreen({
   onEditingChange,
   onBack,
   onAccept,
+  onCancel,
 }: {
   row: StorekeeperReturn;
   canConfirm: boolean;
@@ -214,6 +215,8 @@ export function StorekeeperReturnScreen({
   onEditingChange: (item: GoodsReturnItem, editing: boolean) => void;
   onBack: () => void;
   onAccept: (item: GoodsReturnItem, bags: number) => Promise<boolean>;
+  /** «Отменить возврат»: ошибочный возврат уходит в историю, склад не меняется. */
+  onCancel: () => void;
 }) {
   return (
     <div className="mx-auto flex w-full max-w-lg flex-col gap-5">
@@ -256,6 +259,17 @@ export function StorekeeperReturnScreen({
       </div>
 
       <FormError message={error} className="rounded-xl px-4 py-3" />
+
+      {canConfirm && (
+        <Button
+          variant="outline"
+          className="h-12 w-full text-base text-[var(--destructive)]"
+          disabled={busy}
+          onClick={onCancel}
+        >
+          <Undo2 className="size-4" /> Отменить возврат
+        </Button>
+      )}
     </div>
   );
 }

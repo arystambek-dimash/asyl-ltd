@@ -72,6 +72,14 @@ def _close(api, goods_return):
     return api.post(f"{URL}{goods_return.pk}/close/")
 
 
+def _reopen(api, goods_return):
+    return api.post(f"{URL}{goods_return.pk}/reopen/")
+
+
+def _cancel(api, goods_return):
+    return api.post(f"{URL}{goods_return.pk}/cancel/")
+
+
 def test_storekeeper_accepts_lowers_and_closes_a_return_without_seeing_money(
     api_as, storekeeper, manager, departments,
 ):
@@ -96,6 +104,7 @@ def test_storekeeper_accepts_lowers_and_closes_a_return_without_seeing_money(
         "accepted_at": None,
         "bags": 16,
         "accepted_bags": None,
+        "can_reopen": False,
         "items": [
             {"id": first.pk, "product_label": "Первый сорт DIKHAN 50кг", "bags": 10, "accepted_bags": None},
             {"id": second.pk, "product_label": "Второй сорт KOROL 50кг", "bags": 6, "accepted_bags": None},
@@ -116,6 +125,7 @@ def test_storekeeper_accepts_lowers_and_closes_a_return_without_seeing_money(
     assert closed.status_code == 200, closed.data
     assert (closed.data["status"], closed.data["status_label"]) == ("partial", "Частично возвращено")
     assert (closed.data["accepted_by_name"], closed.data["bags"], closed.data["accepted_bags"]) == ("A B", 16, 15)
+    assert closed.data["can_reopen"] is True
     assert MONEY_KEYS.isdisjoint(closed.data) and MONEY_KEYS.isdisjoint(row)
     assert dict(OrderItem.objects.filter(order=order).values_list("product_id", "returned_quantity")) == {
         dikhan.pk: 10, korol.pk: 5,
@@ -218,6 +228,8 @@ def test_storekeeper_sees_only_own_department(api_as, user_with_perms, manager, 
     assert _get(api) == []
     assert _confirm(api, goods_return, goods_return.items.get(), 1).status_code == 404
     assert _close(api, goods_return).status_code == 404
+    assert _cancel(api, goods_return).status_code == 404
+    assert _reopen(api, goods_return).status_code == 404
 
 
 def test_permissions_split_the_manager_and_the_storekeeper(api_as, user_with_perms, storekeeper, manager, departments):
@@ -234,6 +246,15 @@ def test_permissions_split_the_manager_and_the_storekeeper(api_as, user_with_per
     assert _close(manager_api, goods_return).status_code == 403
     assert _confirm(api_as(viewer), goods_return, item, 1).status_code == 403
     assert _close(api_as(viewer), goods_return).status_code == 403
+    assert _cancel(api_as(viewer), goods_return).status_code == 403
+    assert _cancel(manager_api, goods_return).status_code == 403
+    keeper = api_as(storekeeper)
+    _confirm(keeper, goods_return, item, 1)
+    assert _close(keeper, goods_return).status_code == 200
+    assert _reopen(api_as(viewer), goods_return).status_code == 403
+    assert _reopen(manager_api, goods_return).status_code == 403
+    goods_return.refresh_from_db()
+    assert goods_return.status == "full"
     keeper_api = api_as(storekeeper)
     body = {"settlement": "debt", "lines": [{"product": flour.pk, "bags": 1}], "preview": True}
     assert keeper_api.post(f"/api/clients/{client.pk}/goods-return/", body, format="json").status_code == 403
@@ -257,3 +278,78 @@ def test_query_count_does_not_grow_with_returns(count_queries, storekeeper, mana
     many = count_queries(storekeeper, f"{URL}?page=1")
 
     assert few == many
+
+
+def test_storekeeper_corrects_a_closed_return_and_closes_it_again(api_as, storekeeper, manager, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 20, "3000")])
+    goods_return = _pending(client, manager, [(flour, 10)])
+    item = goods_return.items.get()
+    api = api_as(storekeeper)
+    _confirm(api, goods_return, item, 10)
+    assert _close(api, goods_return).status_code == 200  # ошибся: на деле привезли 8
+
+    reopened = _reopen(api, goods_return)
+
+    assert reopened.status_code == 200, reopened.data
+    assert (reopened.data["status"], reopened.data["status_label"]) == ("pending", "Ждёт приёмки")
+    assert (reopened.data["accepted_by_name"], reopened.data["accepted_at"]) == (None, None)
+    assert (reopened.data["bags"], reopened.data["accepted_bags"]) == (10, 10)  # прежние числа
+    assert reopened.data["can_reopen"] is False
+    assert MONEY_KEYS.isdisjoint(reopened.data)
+    assert [row["id"] for row in _get(api)] == [goods_return.pk]
+    assert _get(api, state="closed") == []
+    assert OrderItem.objects.get(order=order).returned_quantity == 0
+    assert StockItem.objects.get(product=flour).bags == 0
+    twice = _reopen(api, goods_return)
+    assert (twice.status_code, twice.data["code"]) == (400, "goods_return_not_closed")
+
+    assert _confirm(api, goods_return, item, 8).data["accepted_bags"] == 8
+    closed = _close(api, goods_return)
+
+    assert closed.status_code == 200, closed.data
+    assert (closed.data["status"], closed.data["accepted_bags"], closed.data["accepted_by_name"]) == (
+        "partial", 8, "A B",
+    )
+    assert OrderItem.objects.get(order=order).returned_quantity == 8
+    assert StockItem.objects.get(product=flour).bags == 8
+
+
+def test_storekeeper_cancels_a_pending_return(api_as, storekeeper, manager, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 20, "3000")])
+    goods_return = _pending(client, manager, [(flour, 10)])
+    api = api_as(storekeeper)
+
+    cancelled = _cancel(api, goods_return)
+
+    assert cancelled.status_code == 200, cancelled.data
+    assert (cancelled.data["status"], cancelled.data["status_label"]) == ("cancelled", "Отменён")
+    assert cancelled.data["accepted_by_name"] == "A B" and cancelled.data["accepted_at"]
+    assert cancelled.data["can_reopen"] is True  # свою отмену кладовщик может исправить
+    assert MONEY_KEYS.isdisjoint(cancelled.data)
+    assert _get(api) == []
+    assert [row["id"] for row in _get(api, state="closed")] == [goods_return.pk]
+    again = _cancel(api, goods_return)
+    assert (again.status_code, again.data["code"]) == (400, "goods_return_not_pending")
+    assert OrderItem.objects.get().returned_quantity == 0
+
+
+def test_storekeeper_cannot_fix_a_return_the_manager_cancelled(api_as, storekeeper, manager, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 20, "3000")])
+    goods_return = _pending(client, manager, [(flour, 10)])
+    cancelled = api_as(manager).post(f"/api/orders/returns/{goods_return.pk}/cancel/")
+    assert cancelled.status_code == 200, cancelled.data
+    api = api_as(storekeeper)
+
+    [row] = _get(api, state="closed")
+    refused = _reopen(api, goods_return)
+
+    assert (row["status"], row["can_reopen"]) == ("cancelled", False)
+    assert (refused.status_code, refused.data["code"]) == (400, "goods_return_cannot_reopen")
+    goods_return.refresh_from_db()
+    assert goods_return.status == "cancelled"

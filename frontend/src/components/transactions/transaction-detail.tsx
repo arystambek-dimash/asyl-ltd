@@ -79,6 +79,16 @@ function StatusExplanation({ status }: { status: string }) {
   );
 }
 
+type RefundStatus = NonNullable<Payment["refunds"]>[number]["status"];
+
+const REFUND_STATUS_LABEL: Record<RefundStatus, string> = {
+  completed: "Завершён",
+  pending: "В обработке",
+  failed: "Ошибка",
+  // Исправление «Возврата» товара отменило выплату: деньги снова в оплате.
+  cancelled: "Отменён (исправление возврата)",
+};
+
 /** Содержимое окна «Статус операции»: сумма, смысл статуса, журнал операции, возвраты. */
 export function TransactionDetail({ payment }: { payment: Payment }) {
   const steps = [
@@ -151,14 +161,15 @@ export function TransactionDetail({ payment }: { payment: Payment }) {
             {payment.refunds!.map((refund) => (
               <div key={refund.id} className="rounded-lg border px-3 py-2 text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-medium">{formatCurrency(refund.amount, payment.currency)}</span>
-                  <span className="text-xs text-[var(--muted-foreground)]">
-                    {refund.status === "completed"
-                      ? "Завершён"
-                      : refund.status === "pending"
-                        ? "В обработке"
-                        : "Ошибка"}
+                  <span
+                    className={cn(
+                      "font-medium",
+                      refund.status === "cancelled" && "text-[var(--muted-foreground)] line-through",
+                    )}
+                  >
+                    {formatCurrency(refund.amount, payment.currency)}
                   </span>
+                  <span className="text-xs text-[var(--muted-foreground)]">{REFUND_STATUS_LABEL[refund.status]}</span>
                 </div>
                 <div className="mt-1 text-xs text-[var(--muted-foreground)]">
                   {refund.method === "apipay_qr" ? "По QR Kaspi" : refund.method === "apipay" ? "По счёту" : "Из кассы"}{" "}

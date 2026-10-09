@@ -33,6 +33,14 @@ const RETURNS_URL = "/storekeeper/returns/";
 /** Возвраты создают менеджеры, закрыть может второй кладовщик — сверяемся тихо. */
 const QUEUE_POLL_MS = 15_000;
 
+/** Что сделает «Исправить»: закрытие откатывается, возврат снова ждёт приёмки с прежними числами. */
+function reopenText(row: StorekeeperReturn) {
+  const back = "возврат снова будет ждать приёмки с прежними числами";
+  return row.status === "cancelled"
+    ? `Склад не менялся — ${back}.`
+    : `Мешки уйдут со склада «${row.warehouse_name}», долг и касса вернутся как были, ${back}.`;
+}
+
 function StorekeeperPageInner() {
   const { me } = useAuth();
   const canConfirm = can(me, "storekeeper.confirm");
@@ -66,13 +74,14 @@ function StorekeeperPageInner() {
     });
   }
 
-  const closeAction = useConfirmAction<StorekeeperReturn>(async (row) => {
+  /** «Закрыть возврат» и «Отменить возврат» с экрана приёмки: возврат уходит в историю. */
+  async function finish(row: StorekeeperReturn, action: "close" | "cancel") {
     try {
-      const { data } = await api.post<StorekeeperReturn>(`${RETURNS_URL}${row.id}/close/`, {});
+      const { data } = await api.post<StorekeeperReturn>(`${RETURNS_URL}${row.id}/${action}/`, {});
       setOpenedId(null);
       setError("");
       setClosed(data);
-      // Ответ закрытия — истина: возврат ушёл из очереди, опрос в полёте его не вернёт.
+      // Ответ — истина: возврат ушёл из очереди, опрос в полёте его не вернёт.
       queue.applyItems((rows) => rows.filter((item) => item.id !== data.id));
     } catch (cause) {
       // «Не всё проверено», «уже не помещается»: причина остаётся на экране и после окна,
@@ -81,35 +90,41 @@ function StorekeeperPageInner() {
       void queue.refresh();
       throw cause;
     }
+  }
+  const closeAction = useConfirmAction<StorekeeperReturn>((row) => finish(row, "close"));
+  const cancelAction = useConfirmAction<StorekeeperReturn>((row) => finish(row, "cancel"));
+  // «Исправить» в истории: закрытие откатывается, возврат снова в очереди — сразу на экран приёмки.
+  const reopenAction = useConfirmAction<StorekeeperReturn>(async (row) => {
+    try {
+      const { data } = await api.post<StorekeeperReturn>(`${RETURNS_URL}${row.id}/reopen/`, {});
+      queue.applyItems((rows) => [data, ...rows.filter((item) => item.id !== data.id)]);
+      setView("pending");
+      openReturn(data);
+    } catch (cause) {
+      // Возврат уже исправили с другого устройства — история могла устареть.
+      void history.refresh();
+      throw cause;
+    }
   });
-  const working = busy || closeAction.busy;
+  const working = busy || closeAction.busy || cancelAction.busy;
+  // Открыто окно «Закрыть» или «Отменить»: возврат на экране не трогаем.
+  const confirming = closeAction.item !== null || cancelAction.item !== null;
   const opened =
-    queue.items.find((row) => row.id === openedId) ??
-    (openedId !== null && (working || closeAction.item) ? snapshot : null);
+    queue.items.find((row) => row.id === openedId) ?? (openedId !== null && (working || confirming) ? snapshot : null);
 
   // Тихий опрос очереди: без индикатора, ошибка не заменяет список. Пока идёт
-  // приёмка строки или открыто окно закрытия, очередь не трогаем.
-  useVisiblePolling(
-    () => queue.refresh(),
-    QUEUE_POLL_MS,
-    view === "pending" && !working && !closed && closeAction.item === null,
-  );
+  // приёмка строки или открыто окно закрытия или отмены, очередь не трогаем.
+  useVisiblePolling(() => queue.refresh(), QUEUE_POLL_MS, view === "pending" && !working && !closed && !confirming);
 
-  // Возврат, открытый у этого кладовщика, закрыли с другого устройства или
-  // отменил менеджер — назад к списку с пояснением, а не молча.
+  // Возврат, открытый у этого кладовщика, закрыли или отменили с другого
+  // устройства — назад к списку с пояснением, а не молча.
   useEffect(() => {
-    if (
-      openedId === null ||
-      working ||
-      closeAction.item !== null ||
-      queue.loading ||
-      queue.items.some((row) => row.id === openedId)
-    )
+    if (openedId === null || working || confirming || queue.loading || queue.items.some((row) => row.id === openedId))
       return;
     setOpenedId(null);
     setError("");
-    setLost(`Возврат №${openedId} уже не ждёт приёмки — его закрыли с другого устройства или отменил менеджер.`);
-  }, [openedId, working, closeAction.item, queue.items, queue.loading]);
+    setLost(`Возврат №${openedId} уже не ждёт приёмки — его закрыли или отменили с другого устройства.`);
+  }, [openedId, working, confirming, queue.items, queue.loading]);
 
   function openReturn(row: StorekeeperReturn) {
     setSnapshot(row);
@@ -179,6 +194,7 @@ function StorekeeperPageInner() {
           onEditingChange={setItemEditing}
           onBack={backToList}
           onAccept={(item, bags) => acceptItem(opened, item, bags)}
+          onCancel={() => cancelAction.open(opened)}
         />
         <ConfirmDialog
           {...closeAction.dialog}
@@ -186,10 +202,16 @@ function StorekeeperPageInner() {
           description={
             verdict.outcome === "cancelled"
               ? `${verdict.text}. Склад не изменится.`
-              : `${verdict.text}. Принятые мешки лягут на склад «${closing.warehouse_name}», изменить приёмку после закрытия нельзя.`
+              : `${verdict.text}. Принятые мешки лягут на склад «${closing.warehouse_name}». Если ошиблись — «Исправить» в «Истории».`
           }
           confirmLabel="Закрыть возврат"
           confirmVariant="default"
+        />
+        <ConfirmDialog
+          {...cancelAction.dialog}
+          title={`Отменить возврат №${(cancelAction.item ?? opened).id}?`}
+          description="Мешки не принимаются, склад не изменится. Возврат уйдёт в «Историю» отменённым."
+          confirmLabel="Отменить возврат"
         />
       </AppShell>
     );
@@ -243,6 +265,7 @@ function StorekeeperPageInner() {
         ) : (
           <ReturnList
             list={history}
+            onFix={canConfirm ? reopenAction.open : undefined}
             empty={
               debouncedSearch
                 ? { title: "Ничего не найдено", text: "Измените поиск." }
@@ -251,18 +274,27 @@ function StorekeeperPageInner() {
           />
         )}
       </div>
+      <ConfirmDialog
+        {...reopenAction.dialog}
+        title={`Исправить возврат №${reopenAction.item?.id ?? ""}?`}
+        description={reopenAction.item ? reopenText(reopenAction.item) : undefined}
+        confirmLabel="Вернуть на приёмку"
+        confirmVariant="default"
+      />
     </AppShell>
   );
 }
 
-/** Карточки возвратов страницами; в очереди карточка открывает экран приёмки. */
+/** Карточки возвратов страницами; в очереди карточка открывает экран приёмки, в истории — «Исправить». */
 function ReturnList({
   list,
   onOpen,
+  onFix,
   empty,
 }: {
   list: Paged;
   onOpen?: (row: StorekeeperReturn) => void;
+  onFix?: (row: StorekeeperReturn) => void;
   empty: { title: string; text: string };
 }) {
   if (list.loading && list.items.length === 0) return <DataGate loading error="" onRetry={list.reload} />;
@@ -280,7 +312,7 @@ function ReturnList({
     <div className="flex flex-col gap-3">
       <div className="grid min-w-0 gap-3 sm:grid-cols-2">
         {list.items.map((row) => (
-          <StorekeeperReturnCard key={row.id} row={row} onOpen={onOpen} />
+          <StorekeeperReturnCard key={row.id} row={row} onOpen={onOpen} onFix={onFix} />
         ))}
       </div>
       <LoadMore

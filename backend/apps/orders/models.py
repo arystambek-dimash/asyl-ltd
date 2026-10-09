@@ -467,6 +467,9 @@ class PaymentRefund(models.Model):
     # apipay | apipay_qr | cash. apipay_qr — возврат по Kaspi QR через ссылку
     # покупателю (ApiPayQrRefund).
     method = models.CharField(max_length=20)
+    # pending | completed | failed | cancelled. В суммы оплаты (refunds.sync_refund_totals),
+    # отчёты и выписки входят только pending и completed; cancelled — кассовый
+    # возврат «Возврата» товара, отменённый его исправлением: деньги снова в оплате.
     status = models.CharField(max_length=20, default="pending")
     reason = models.CharField(max_length=500)
     provider_refund = models.OneToOneField(
@@ -476,6 +479,11 @@ class PaymentRefund(models.Model):
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="requested_payment_refunds",
+    )
+    # «Возврат» товара, при закрытии которого касса отдала эти деньги
+    # (orders/goods_returns.py): его исправление отменяет ровно эти возвраты.
+    goods_return = models.ForeignKey(
+        "GoodsReturn", null=True, blank=True, on_delete=models.SET_NULL, related_name="refunds",
     )
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -590,7 +598,9 @@ class GoodsReturn(models.Model):
     :class:`GoodsReturnLine` на отгруженные заказы, позиция копит
     ``OrderItem.returned_quantity``. Валюта — у каждого заказа своя.
     ``settlement`` — что с деньгами: ``debt`` уменьшает долг, ``cash`` — касса
-    отдаёт деньги кассовыми возвратами оплат. Сервисы — ``orders/goods_returns.py``.
+    отдаёт деньги кассовыми возвратами оплат. Ошибку в закрытом возврате
+    кладовщик исправляет: закрытие откатывается, возврат снова «Ждёт приёмки».
+    Сервисы — ``orders/goods_returns.py``.
     """
 
     SETTLEMENTS = [("debt", "В счёт долга"), ("cash", "Из кассы")]
@@ -612,11 +622,16 @@ class GoodsReturn(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    # Кто и когда вывел возврат из «Ждёт приёмки»: кладовщик закрыл или менеджер отменил.
+    # Кто и когда вывел возврат из «Ждёт приёмки»: кладовщик закрыл, менеджер или кладовщик
+    # отменил. «Исправить» возвращает возврат на приёмку и очищает их.
     accepted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
     )
     accepted_at = models.DateTimeField(null=True, blank=True)
+    # Из «Ждёт приёмки» возврат вывел кладовщик — закрыл или отменил на своей
+    # странице. Отмену менеджера кладовщик на приёмку не возвращает: «Исправить» —
+    # только для своей работы. db_default — строку без колонки вставляет откат релиза.
+    closed_by_storekeeper = models.BooleanField(default=False, db_default=False)
 
 
 class GoodsReturnItem(models.Model):

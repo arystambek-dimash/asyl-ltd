@@ -96,12 +96,14 @@ def settle_reserved_refund(
 
 @transaction.atomic
 def create_cash_refund(
-    payment: Payment, user, *, amount: object = None, reason: str = "", any_department=False
+    payment: Payment, user, *, amount: object = None, reason: str = "", any_department=False,
+    goods_return=None,
 ) -> PaymentRefund:
     """Касса отдаёт деньги по оплате от имени ``user``.
 
     ``any_department`` — отдел клиента уже проверил вызывающий (закрытие
     возврата товара кладовщиком), ``user`` только записывается автором.
+    ``goods_return`` — «Возврат» товара, который отдаёт эти деньги при закрытии.
     """
     order = lock_live_order(payment.order_id, user, any_department=any_department)
     payment = (
@@ -120,6 +122,7 @@ def create_cash_refund(
         reason=reason[:500],
         requested_by=user,
         completed_at=timezone.now(),
+        goods_return=goods_return,
     )
     sync_refund_totals(payment, order)
     log_event(
@@ -133,6 +136,49 @@ def create_cash_refund(
             "refund_id": refund.pk,
             "amount": str(value),
             "reason": reason[:500],
+        },
+    )
+    return refund
+
+
+@transaction.atomic
+def cancel_cash_refund(refund_id: int, user, *, reason: str, any_department=False) -> PaymentRefund:
+    """Отменить завершённый кассовый возврат: деньги снова считаются в оплате.
+
+    Возврат не превращается в новый долг — он отменяется: статус «cancelled»
+    не входит ни в суммы оплаты (:func:`sync_refund_totals`), ни в отчёты и
+    выписки (они берут только «completed»), строка остаётся в истории.
+    Блокировки — Order → Payment → PaymentRefund, как у :func:`settle_reserved_refund`;
+    заказ в корзине — ошибка (:func:`lock_live_order`). ``any_department`` —
+    отдел клиента уже проверил вызывающий (исправление возврата товара кладовщиком).
+    """
+    payment_id, order_id = PaymentRefund.objects.values_list(
+        "payment_id", "payment__order_id"
+    ).get(pk=refund_id)
+    order = lock_live_order(order_id, user, any_department=any_department)
+    payment = Payment.objects.select_for_update().get(pk=payment_id)
+    refund = PaymentRefund.objects.select_for_update().get(pk=refund_id)
+    if (refund.method, refund.status) != ("cash", "completed"):
+        raise ValidationError({
+            "detail": "Отменить можно только завершённый возврат из кассы.",
+            "code": "refund_not_cancellable",
+        })
+    refund.status = "cancelled"
+    refund.save(update_fields=["status", "updated_at"])
+    payment.order = order
+    sync_refund_totals(payment, order)
+    reason = reason[:500]
+    log_event(
+        "payment",
+        f"Возврат из кассы {refund.amount} {order.currency} отменён",
+        user=user,
+        order=order,
+        payload={
+            "action": "cash_refund_cancelled",
+            "payment_id": payment.pk,
+            "refund_id": refund.pk,
+            "amount": str(refund.amount),
+            "reason": reason,
         },
     )
     return refund

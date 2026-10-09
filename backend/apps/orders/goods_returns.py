@@ -5,7 +5,10 @@
 «Ждёт приёмки», долг, касса и склад не меняются. Кладовщик подтверждает каждую
 муку (:func:`confirm_goods_return_item`; привезли меньше — вводит сколько) и
 закрывает возврат (:func:`close_goods_return`): проводятся только принятые мешки.
-Пока возврат ждёт приёмки, менеджер может его отменить (:func:`cancel_goods_return`).
+Пока возврат ждёт приёмки, менеджер или кладовщик может его отменить
+(:func:`cancel_goods_return`). Ошибку в закрытом возврате кладовщик исправляет
+(:func:`reopen_goods_return`): всё, что сделало закрытие, отменяется, и возврат
+снова ждёт приёмки с прежними числами.
 
 Проведение раскладывает мешки по отгруженным заказам клиента. Позиция копит
 ``OrderItem.returned_quantity``: отгружено остаётся как было, сумма и долг
@@ -31,17 +34,18 @@ from apps.clients.services import lock_client_orders, lock_scoped_client
 from apps.common.money import as_money_strings, money_string, money_text, sum_by_currency
 from apps.common.query_params import filter_date_range, parse_date_range, parse_search_param
 from apps.common.text import plural_ru
+from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
 from apps.sales.access import scope_by_client_department
 from apps.sales.labels import UNASSIGNED_CODE, department_label
 from apps.sales.models import Department
-from apps.warehouse.services import resolve_warehouse, return_stock
+from apps.warehouse.services import deduct_stock, resolve_warehouse, return_stock
 
 from .debt import DEBT_STATUS, available_to_pay, oldest_debt_first, order_remaining
 from .labels import bonus_mark
-from .models import GoodsReturn, GoodsReturnItem, GoodsReturnLine, Order, OrderItem
+from .models import GoodsReturn, GoodsReturnItem, GoodsReturnLine, Order, OrderItem, PaymentRefund
 from .querysets import client_search_q, filter_order_scope, filter_order_search, order_department
-from .refunds import create_cash_refund
+from .refunds import cancel_cash_refund, create_cash_refund
 from .services import sync_payment_status
 
 SETTLEMENT_TEXT = {"debt": "в счёт долга", "cash": "из кассы"}
@@ -200,11 +204,27 @@ def _short_text(short: dict, settlement: str) -> str:
     )
 
 
-def _log_status(goods_return, user, text: str, **payload) -> None:
-    """Событие самого возврата: создан, закрыт кладовщиком, отменён.
+def _items_snapshot(goods_return) -> list[dict]:
+    """Мука возврата для журнала: сколько указал менеджер и сколько принято (``None`` — не проверена)."""
+    return [
+        {
+            "item_id": item.pk,
+            "product_id": item.product_id,
+            "product_label": item.product_plain_label,
+            "bags": item.bags,
+            "accepted_bags": item.accepted_bags,
+        }
+        for item in goods_return.items.select_related("product").order_by("id")
+    ]
 
-    Деньги и мешки по заказам при закрытии — события ``goods_return`` у заказов.
-    У этого события заказа нет: владелец — клиент (``client_id``), как у «Внесения оплаты».
+
+def _log_status(goods_return, user, text: str, **payload) -> None:
+    """Событие самого возврата: создан, закрыт кладовщиком, отменён, возвращён на приёмку.
+
+    ``items`` — мука и принятые мешки на момент события: по событиям видно,
+    что было и что стало после исправления. Деньги и мешки по заказам —
+    события ``goods_return`` у заказов. У этого события заказа нет: владелец —
+    клиент (``client_id``), как у «Внесения оплаты».
     """
     client = goods_return.client
     log_event(
@@ -217,6 +237,7 @@ def _log_status(goods_return, user, text: str, **payload) -> None:
             "goods_return_id": goods_return.pk,
             "status": goods_return.status,
             "settlement": goods_return.settlement,
+            "items": _items_snapshot(goods_return),
             **payload,
         },
     )
@@ -317,15 +338,20 @@ def record_goods_return(
     return payload
 
 
-def _locked_pending(goods_return) -> GoodsReturn:
-    """Возврат под блокировкой строки — только пока он ждёт приёмки.
-
-    Повторное закрытие, отмена закрытого или правка муки после закрытия —
-    ошибка: статус читается под той же блокировкой, что и пишется.
-    """
+def _locked(goods_return) -> GoodsReturn:
+    """Возврат под блокировкой строки: статус читается под той же блокировкой, что и пишется."""
     locked = GoodsReturn.objects.select_for_update().filter(pk=goods_return.pk).first()
     if locked is None:
         raise NotFound("Возврат не найден")
+    return locked
+
+
+def _locked_pending(goods_return) -> GoodsReturn:
+    """Возврат под блокировкой — только пока он ждёт приёмки.
+
+    Повторное закрытие, отмена закрытого или правка муки после закрытия — ошибка.
+    """
+    locked = _locked(goods_return)
     if locked.status != "pending":
         raise ValidationError({
             "detail": f"Возврат №{locked.pk} уже не ждёт приёмки: «{locked.get_status_display()}»",
@@ -334,12 +360,13 @@ def _locked_pending(goods_return) -> GoodsReturn:
     return locked
 
 
-def _finish(goods_return, user, status: str) -> None:
-    """Вывести возврат из «Ждёт приёмки»: кто и когда закрыл или отменил."""
+def _finish(goods_return, user, status: str, *, by_storekeeper: bool) -> None:
+    """Вывести возврат из «Ждёт приёмки»: кто и когда закрыл или отменил, кладовщик ли это."""
     goods_return.status = status
     goods_return.accepted_by = user
     goods_return.accepted_at = timezone.now()
-    goods_return.save(update_fields=["status", "accepted_by", "accepted_at"])
+    goods_return.closed_by_storekeeper = by_storekeeper
+    goods_return.save(update_fields=["status", "accepted_by", "accepted_at", "closed_by_storekeeper"])
 
 
 @transaction.atomic
@@ -371,12 +398,13 @@ def _no_longer_fits(reason: str) -> ValidationError:
     })
 
 
-def _refund_cash(order, amount: Decimal, user, reason: str) -> list[int]:
+def _refund_cash(goods_return, order, amount: Decimal, reason: str) -> list[int]:
     """Касса отдаёт ``amount`` кассовыми возвратами оплат заказа — сначала новой оплаты.
 
     Отдел клиента уже проверен у закрывающего кладовщика под блокировкой
-    клиента; ``user`` — создавший возврат, только автор возврата денег: его
-    отдел или отдел клиента могли смениться после создания.
+    клиента; автор возврата денег — создавший возврат: его отдел или отдел
+    клиента могли смениться после создания. Возвраты оплат привязаны к
+    возврату товара — его исправление отменит ровно их.
     """
     refund_ids = []
     left = amount
@@ -384,7 +412,10 @@ def _refund_cash(order, amount: Decimal, user, reason: str) -> list[int]:
         share = min(left, payment.available_for_refund)
         if share <= 0:
             continue
-        refund = create_cash_refund(payment, user, amount=share, reason=reason, any_department=True)
+        refund = create_cash_refund(
+            payment, goods_return.created_by, amount=share, reason=reason, any_department=True,
+            goods_return=goods_return,
+        )
         refund_ids.append(refund.pk)
         left -= share
         if not left:
@@ -430,9 +461,7 @@ def _record(goods_return, client, user, items) -> None:
                 unit_price=item.unit_price, amount=item.unit_price * bags,
             )
             OrderItem.objects.filter(pk=item.pk).update(returned_quantity=F("returned_quantity") + bags)
-        refund_ids = (
-            _refund_cash(order, share["amount"], goods_return.created_by, reason) if settlement == "cash" else []
-        )
+        refund_ids = _refund_cash(goods_return, order, share["amount"], reason) if settlement == "cash" else []
         sync_payment_status(Order.objects.get(pk=order.pk))
         bags = sum(count for _item, count in share["items"])
         log_event(
@@ -487,7 +516,10 @@ def close_goods_return(goods_return, user) -> GoodsReturn:
         _record(goods_return, client, user, accepted)
     requested = sum(item.bags for item in items)
     taken = sum(item.accepted_bags for item in accepted)
-    _finish(goods_return, user, "cancelled" if not taken else "full" if taken == requested else "partial")
+    _finish(
+        goods_return, user, "cancelled" if not taken else "full" if taken == requested else "partial",
+        by_storekeeper=True,
+    )
     _log_status(
         goods_return, user,
         # «из N» — родительный падеж: «из 1 мешка», «из 4 мешков».
@@ -500,11 +532,234 @@ def close_goods_return(goods_return, user) -> GoodsReturn:
 
 
 @transaction.atomic
-def cancel_goods_return(goods_return, user) -> GoodsReturn:
-    """Менеджер отменяет возврат, который ждёт приёмки: ничего не проводилось — откатывать нечего."""
+def cancel_goods_return(goods_return, user, *, by_storekeeper: bool = False) -> GoodsReturn:
+    """Менеджер или кладовщик (``by_storekeeper``) отменяет возврат, который ждёт приёмки.
+
+    Ничего не проводилось — откатывать нечего: и у нового возврата, и у
+    возвращённого на приёмку (:func:`reopen_goods_return` уже всё откатил).
+    Свою отмену кладовщик может исправить, отмену менеджера — нет.
+    """
     goods_return = _locked_pending(goods_return)
-    _finish(goods_return, user, "cancelled")
+    _finish(goods_return, user, "cancelled", by_storekeeper=by_storekeeper)
     _log_status(goods_return, user, "отменён до приёмки")
+    return goods_return
+
+
+def _locked_closed(goods_return) -> GoodsReturn:
+    """Возврат под блокировкой — только закрытый: второе «Исправить» видит «Ждёт приёмки»."""
+    locked = _locked(goods_return)
+    if locked.status not in GoodsReturn.CLOSED_STATUSES:
+        raise ValidationError({
+            "detail": f"Возврат №{locked.pk} уже ждёт приёмки — исправьте числа и закройте его",
+            "code": "goods_return_not_closed",
+        })
+    return locked
+
+
+def _cannot_reopen(goods_return, reason: str) -> ValidationError:
+    return ValidationError({
+        "detail": f"Возврат №{goods_return.pk} нельзя вернуть на приёмку: {reason}",
+        "code": "goods_return_cannot_reopen",
+    })
+
+
+def _orders_text(order_ids: list[int], forms=("заказ", "заказы")) -> str:
+    """«заказ #5» или «заказы #5, #6»; ``forms`` — другой падеж: («заказу», «заказам»)."""
+    numbers = ", ".join(f"#{pk}" for pk in order_ids)
+    return f"{forms[len(order_ids) > 1]} {numbers}"
+
+
+def _refuse_trashed(goods_return, orders: dict) -> None:
+    """Заказ возврата в корзине — не трогаем. Восстановить его может менеджер, удалённый навсегда — никто."""
+    purged = sorted(pk for pk, order in orders.items() if order.purged_at)
+    if purged:
+        gone = "удалены" if len(purged) > 1 else "удалён"
+        raise _cannot_reopen(goods_return, f"{_orders_text(purged)} {gone} навсегда")
+    trashed = sorted(pk for pk, order in orders.items() if order.deleted_at)
+    if trashed:
+        them = "их" if len(trashed) > 1 else "его"
+        raise _cannot_reopen(
+            goods_return,
+            f"{_orders_text(trashed)} в корзине — попросите менеджера восстановить {them},"
+            " потом нажмите «Исправить» снова",
+        )
+
+
+def _close_refunds(goods_return, by_order: dict) -> tuple[dict[int, list], list[int]]:
+    """Кассовые возвраты оплат, которые отдало закрытие, по заказам — ровно на сумму строк заказа.
+
+    Обычно их держит связь ``PaymentRefund.goods_return``. Закрытие старым
+    релизом (откат деплоя после миграции связи) её не ставит — недостающие
+    берутся из ``refund_ids`` событий закрытия ``goods_return`` у заказа (без
+    ``action``: их пишет каждая версия). Не сходится и так — исправлять нельзя:
+    деньги, которые касса уже отдала, не должны молча стать новым долгом.
+    Второе значение — найденные по событиям, им ставится связь.
+    """
+    cash = goods_return.settlement == "cash"
+    expected = {
+        order_id: sum((line.amount for line in lines), _ZERO) if cash else _ZERO
+        for order_id, lines in by_order.items()
+    }
+    completed = (
+        PaymentRefund.objects.filter(method="cash", status="completed")
+        .select_related("payment")
+        .order_by("payment__order_id", "payment_id", "pk")
+    )
+    refunds: dict[int, list] = defaultdict(list)
+    for refund in completed.filter(goods_return=goods_return):
+        refunds[refund.payment.order_id].append(refund)
+
+    def off() -> list[int]:
+        return sorted(
+            order_id
+            for order_id in set(expected) | set(refunds)
+            if sum((refund.amount for refund in refunds[order_id]), _ZERO) != expected.get(order_id, _ZERO)
+        )
+
+    unlinked = []
+    missing = off()
+    if missing:
+        closes = EventLog.objects.filter(
+            event_type="goods_return", order_id__in=missing, payload__goods_return_id=goods_return.pk,
+        ).exclude(payload__has_key="action")
+        ids = {pk for payload in closes.values_list("payload", flat=True) for pk in payload.get("refund_ids") or []}
+        for refund in completed.filter(pk__in=ids, goods_return__isnull=True, payment__order_id__in=missing):
+            refunds[refund.payment.order_id].append(refund)
+            unlinked.append(refund.pk)
+    wrong = off()
+    if wrong:
+        raise _cannot_reopen(
+            goods_return,
+            f"выплаты из кассы по {_orders_text(wrong, ('заказу', 'заказам'))} не сходятся с возвратом"
+            " — сообщите руководителю",
+        )
+    return refunds, unlinked
+
+
+def _unrecord(goods_return, client, user, items) -> None:
+    """Отменить проведение :func:`_record` — всё возвращается туда, откуда взято.
+
+    Позиции заказов отдают мешки возврата (``returned_quantity``), строки по
+    заказам удаляются: «В счёт долга» — долг возвращается; «Из кассы» —
+    кассовые возвраты оплат, которые отдало закрытие (:func:`_close_refunds`),
+    отменяются, и деньги снова считаются в оплате, а не становятся новым
+    долгом. Чужие возвраты оплат не трогаем. Принятые мешки уходят со склада,
+    куда пришли, — даже в минус, если их уже отгрузили. Заказ в корзине не
+    трогаем: сначала его восстанавливают. Проведённое не сходится с принятым —
+    ничего не пишем.
+    """
+    settlement = goods_return.settlement
+    # «Отменён» ничего не проводил — даже если до отмены муку успели проверить.
+    recorded = goods_return.status != "cancelled"
+    accepted = Counter({item.product_id: item.accepted_bags for item in items if recorded and item.accepted_bags})
+    lines = list(goods_return.lines.select_related("order_item").order_by("id"))
+    on_lines: Counter = Counter()
+    by_order: dict[int, list] = defaultdict(list)
+    for line in lines:
+        on_lines[line.order_item.product_id] += line.bags
+        by_order[line.order_item.order_id].append(line)
+    if None in accepted or accepted != on_lines:
+        raise _cannot_reopen(goods_return, "проведённые мешки не совпадают с принятыми или мука удалена из каталога")
+    order_ids = sorted(by_order)
+    orders = Order.all_objects.in_bulk(order_ids)
+    _refuse_trashed(goods_return, orders)
+    refunds, unlinked = _close_refunds(goods_return, by_order)
+    reason = f"Исправление возврата товара №{goods_return.pk}"
+    for order_id in order_ids:
+        order = orders[order_id]
+        order_lines = by_order[order_id]
+        for line in order_lines:
+            taken_back = OrderItem.objects.filter(pk=line.order_item_id, returned_quantity__gte=line.bags).update(
+                returned_quantity=F("returned_quantity") - line.bags,
+            )
+            if not taken_back:
+                raise _cannot_reopen(goods_return, f"у заказа #{order_id} возвращено меньше мешков, чем в возврате")
+        cancelled = [
+            cancel_cash_refund(refund.pk, user, reason=reason, any_department=True).pk for refund in refunds[order_id]
+        ]
+        sync_payment_status(Order.objects.get(pk=order_id))
+        bags = sum(line.bags for line in order_lines)
+        amount = sum((line.amount for line in order_lines), _ZERO)
+        log_event(
+            "goods_return",
+            f"{reason}: отменено {_bags_text(bags)} · {money_text(amount, order.currency)}"
+            f" {SETTLEMENT_TEXT[settlement]} — возврат снова ждёт приёмки",
+            user=user,
+            order=order,
+            payload={
+                "goods_return_id": goods_return.pk,
+                "action": "reopen",
+                "settlement": settlement,
+                "bags": bags,
+                "amount": money_string(amount),
+                "lines": [
+                    {
+                        "order_item_id": line.order_item_id,
+                        "product_id": line.order_item.product_id,
+                        "bags": line.bags,
+                        "amount": money_string(line.amount),
+                    }
+                    for line in order_lines
+                ],
+                "cancelled_refund_ids": cancelled,
+            },
+        )
+    # Под блокировками отмены выше: выплаты, найденные по событиям, — тоже этого возврата.
+    PaymentRefund.objects.filter(pk__in=unlinked).update(goods_return=goods_return)
+    goods_return.lines.all().delete()
+    warehouse = resolve_warehouse(goods_return.warehouse_id, require_active=False)
+    products = {item.product_id: item.product for item in items}
+    for product_id in sorted(accepted):
+        deduct_stock(
+            products[product_id], accepted[product_id], user, warehouse, require_active=False,
+            note=f"{reason}, клиент «{client.display_name}»", reason="client_return_undo",
+        )
+
+
+@transaction.atomic
+def reopen_goods_return(goods_return, user) -> GoodsReturn:
+    """«Исправить» закрытый возврат: он снова «Ждёт приёмки» с прежними числами.
+
+    Блокировки — как у закрытия: заказы клиента → клиент в области отдела
+    кладовщика → сам возврат; статус читается под блокировкой строки, поэтому
+    второе «Исправить» или исправление во время закрытия — ошибка. Всё, что
+    сделало закрытие, отменяется (:func:`_unrecord`). Мука сохраняет принятые
+    числа и время проверки: кладовщик меняет только ошибочное и закрывает
+    снова — итог тот же, что у одного закрытия с новыми числами, — или
+    отменяет возврат. Отмену менеджера кладовщик не исправляет: менеджер решил,
+    что возврата не будет, — в том числе денег из кассы. Срока нет; в журнале —
+    кто, когда, что было и что стало.
+    """
+    lock_client_orders(goods_return.client_id)
+    client = lock_scoped_client(goods_return.client_id, user)
+    goods_return = _locked_closed(goods_return)
+    if goods_return.status == "cancelled" and not goods_return.closed_by_storekeeper:
+        raise _cannot_reopen(goods_return, "его отменил менеджер — если возврат всё же нужен, менеджер создаст новый")
+    items = list(goods_return.items.select_related("product").order_by("id"))
+    before = {
+        "status": goods_return.status,
+        "accepted_by": _person(goods_return.accepted_by),
+        "accepted_at": _local_iso(goods_return.accepted_at),
+    }
+    was = goods_return.get_status_display()
+    _unrecord(goods_return, client, user, items)
+    goods_return.status = "pending"
+    goods_return.accepted_by = None
+    goods_return.accepted_at = None
+    goods_return.closed_by_storekeeper = False
+    goods_return.save(update_fields=["status", "accepted_by", "accepted_at", "closed_by_storekeeper"])
+    requested = sum(item.bags for item in items)
+    taken = sum(item.accepted_bags or 0 for item in items)
+    _log_status(
+        goods_return, user,
+        f"возвращён на приёмку для исправления: был «{was}», принято {taken} из {requested}"
+        f" {plural_ru(requested, 'мешка', 'мешков', 'мешков')}",
+        action="reopen",
+        before=before,
+        after={"status": goods_return.status},
+        bags=requested,
+        accepted_bags=taken,
+    )
     return goods_return
 
 
@@ -688,7 +943,9 @@ def storekeeper_rows(returns) -> list[dict]:
     """Возвраты для кладовщика: мука и мешки, денег нет вовсе.
 
     ``bags`` — сколько указал менеджер, ``accepted_bags`` — сумма принятого по
-    проверенной муке (``None``, пока не проверена ни одна).
+    проверенной муке (``None``, пока не проверена ни одна). ``can_reopen`` —
+    закрытый возврат можно «Исправить» (:func:`reopen_goods_return`): отмену
+    менеджера — нет.
     """
     rows = []
     for goods_return in returns:
@@ -696,5 +953,8 @@ def storekeeper_rows(returns) -> list[dict]:
         checked = [item["accepted_bags"] for item in row["items"] if item["accepted_bags"] is not None]
         row["bags"] = sum(item["bags"] for item in row["items"])
         row["accepted_bags"] = sum(checked) if checked else None
+        row["can_reopen"] = goods_return.status in GoodsReturn.CLOSED_STATUSES and (
+            goods_return.status != "cancelled" or goods_return.closed_by_storekeeper
+        )
         rows.append(row)
     return rows

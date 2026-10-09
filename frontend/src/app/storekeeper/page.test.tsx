@@ -43,6 +43,7 @@ function makeReturn(fields: Partial<StorekeeperReturn> = {}): StorekeeperReturn 
     accepted_at: null,
     bags: 20,
     accepted_bags: null,
+    can_reopen: false,
     items: [
       { id: 31, product_label: "Первый сорт DIKHAN 50кг", bags: 16, accepted_bags: null },
       { id: 32, product_label: "Второй сорт KOROL 50кг", bags: 4, accepted_bags: null },
@@ -308,6 +309,135 @@ describe("Кладовщик", () => {
     expect(card).not.toHaveTextContent(/16 из 16|Принято|Закрыл/);
   });
 
+  it("«Исправить» в истории возвращает закрытый возврат на приёмку с прежними числами", async () => {
+    const user = userEvent.setup();
+    pending = [];
+    closedRows = [
+      checked(16, 3, {
+        status: "partial",
+        status_label: "Частично возвращено",
+        accepted_by_name: "Айдос",
+        accepted_at: "2026-10-08T15:10:00+05:00",
+        can_reopen: true,
+      }),
+    ];
+    mocks.post
+      .mockResolvedValueOnce({ data: checked(16, 3) })
+      .mockResolvedValueOnce({ data: checked(16, 4) })
+      .mockResolvedValueOnce({
+        data: checked(16, 4, {
+          status: "full",
+          status_label: "Полностью возвращено",
+          accepted_by_name: "Айдос",
+          accepted_at: "2026-10-09T10:00:00+05:00",
+        }),
+      });
+    render(<StorekeeperPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "История" }));
+    await user.click(await screen.findByRole("button", { name: "Исправить возврат №21" }));
+    const dialog = screen.getByRole("dialog", { name: "Исправить возврат №21?" });
+    expect(dialog).toHaveTextContent(
+      "Мешки уйдут со склада «Мельница», долг и касса вернутся как были, возврат снова будет ждать приёмки с прежними числами.",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Вернуть на приёмку" }));
+
+    expect(mocks.post).toHaveBeenCalledWith("/storekeeper/returns/21/reopen/", {});
+    expect(await screen.findByRole("list", { name: "Проверка по списку" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("Ждёт приёмки")).toBeInTheDocument();
+    expect(within(line("Первый сорт DIKHAN 50кг")).getByText("принято 16 из 16")).toBeInTheDocument();
+    const korol = line("Второй сорт KOROL 50кг");
+    expect(within(korol).getByText("принято 3 из 4")).toBeInTheDocument();
+    expect(footer()).toHaveTextContent("Принято 19 из 20 мешков — частично");
+
+    // Кладовщик исправляет ошибочную строку и закрывает заново.
+    await user.click(within(korol).getByRole("button", { name: "Изменить" }));
+    await user.click(within(korol).getByRole("button", { name: "На мешок больше" }));
+    await user.click(within(korol).getByRole("button", { name: "Принять 4 мешка" }));
+    expect(mocks.post).toHaveBeenLastCalledWith("/storekeeper/returns/21/items/32/", { accepted_bags: 4 });
+    expect(await within(footer()).findByText("Принято 20 из 20 мешков — полностью")).toBeInTheDocument();
+
+    await user.click(within(footer()).getByRole("button", { name: "Закрыть возврат" }));
+    const close = screen.getByRole("dialog", { name: "Закрыть возврат №21?" });
+    await user.click(within(close).getByRole("button", { name: "Закрыть возврат" }));
+    expect(mocks.post).toHaveBeenLastCalledWith("/storekeeper/returns/21/close/", {});
+    expect(await screen.findByText("Полностью возвращено")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "К списку возвратов" }));
+    expect(await screen.findByText("Возвратов на приёмку нет")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Ждут приёмки, 0" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("«Исправить» отменённого возврата: склад не менялся", async () => {
+    const user = userEvent.setup();
+    closedRows = [
+      checked(0, 0, {
+        status: "cancelled",
+        status_label: "Отменён",
+        accepted_by_name: "Айдос",
+        accepted_at: "2026-10-08T15:10:00+05:00",
+        can_reopen: true,
+      }),
+    ];
+    render(<StorekeeperPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "История" }));
+    await user.click(await screen.findByRole("button", { name: "Исправить возврат №21" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Исправить возврат №21?" });
+    expect(dialog).toHaveTextContent("Склад не менялся — возврат снова будет ждать приёмки с прежними числами.");
+    expect(dialog).not.toHaveTextContent(/долг|касс/);
+  });
+
+  it("отказ «Исправить» остаётся в окне, история перечитывается", async () => {
+    const user = userEvent.setup();
+    closedRows = [checked(16, 4, { status: "full", status_label: "Полностью возвращено", can_reopen: true })];
+    const refusal =
+      "Возврат №21 нельзя вернуть на приёмку: заказ #5 в корзине — попросите менеджера восстановить его, потом нажмите «Исправить» снова";
+    mocks.post.mockRejectedValueOnce(new Error(refusal));
+    render(<StorekeeperPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "История" }));
+    await user.click(await screen.findByRole("button", { name: "Исправить возврат №21" }));
+    const dialog = screen.getByRole("dialog", { name: "Исправить возврат №21?" });
+    const before = mocks.get.mock.calls.length;
+    await user.click(within(dialog).getByRole("button", { name: "Вернуть на приёмку" }));
+
+    expect(await within(dialog).findByText(refusal)).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Проверка по списку" })).toBeNull();
+    await waitFor(() => expect(mocks.get.mock.calls.length).toBeGreaterThan(before));
+    expect(requested().at(-1)?.searchParams.get("state")).toBe("closed");
+  });
+
+  it("«Отменить возврат» на экране приёмки — возврат уходит в историю отменённым", async () => {
+    const user = userEvent.setup();
+    pending = [checked(16, null)];
+    mocks.post.mockResolvedValueOnce({
+      data: checked(16, null, {
+        status: "cancelled",
+        status_label: "Отменён",
+        accepted_by_name: "Айдос",
+        accepted_at: "2026-10-09T10:00:00+05:00",
+      }),
+    });
+    render(<StorekeeperPage />);
+
+    await openReturn(user);
+    await user.click(screen.getByRole("button", { name: "Отменить возврат" }));
+    const dialog = screen.getByRole("dialog", { name: "Отменить возврат №21?" });
+    expect(dialog).toHaveTextContent("склад не изменится");
+    await user.click(within(dialog).getByRole("button", { name: "Отменить возврат" }));
+
+    expect(mocks.post).toHaveBeenCalledWith("/storekeeper/returns/21/cancel/", {});
+    const done = await screen.findByText("Отменён");
+    expect(done.parentElement).toHaveTextContent("Возврат №21 закрыт");
+    expect(done.parentElement).toHaveTextContent("Ничего не принято");
+
+    await user.click(screen.getByRole("button", { name: "К списку возвратов" }));
+    expect(await screen.findByText("Возвратов на приёмку нет")).toBeInTheDocument();
+  });
+
   it("без права приёмки экран только для просмотра", async () => {
     const user = userEvent.setup();
     mocks.permissions = ["storekeeper.view"];
@@ -316,6 +446,38 @@ describe("Кладовщик", () => {
     await openReturn(user);
     expect(screen.queryByRole("button", { name: "Подтвердить" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Меньше?" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Отменить возврат" })).toBeNull();
     expect(footer()).toBeEmptyDOMElement();
+  });
+
+  it("без права приёмки в истории нет «Исправить»", async () => {
+    const user = userEvent.setup();
+    mocks.permissions = ["storekeeper.view"];
+    closedRows = [checked(16, 4, { status: "full", status_label: "Полностью возвращено", can_reopen: true })];
+    render(<StorekeeperPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "История" }));
+
+    expect(await screen.findByText("Полностью возвращено")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Исправить/ })).toBeNull();
+  });
+
+  it("отмену менеджера кладовщик не исправляет — «Исправить» нет", async () => {
+    const user = userEvent.setup();
+    closedRows = [
+      checked(16, null, {
+        status: "cancelled",
+        status_label: "Отменён",
+        accepted_by_name: "Иван Петров",
+        accepted_at: "2026-10-08T15:10:00+05:00",
+        can_reopen: false,
+      }),
+    ];
+    render(<StorekeeperPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "История" }));
+
+    expect(await screen.findByText("Отменён")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Исправить/ })).toBeNull();
   });
 });

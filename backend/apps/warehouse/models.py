@@ -82,6 +82,8 @@ class StockMovement(models.Model):
         ("transfer_out", "Перемещение со склада"),
         ("transfer_in", "Перемещение на склад"),
         ("client_return", "Возврат от клиента"),
+        # Исправление закрытого «Возврата»: принятые мешки уходят со склада, куда пришли.
+        ("client_return_undo", "Отмена возврата от клиента"),
     ]
 
     warehouse = models.ForeignKey(

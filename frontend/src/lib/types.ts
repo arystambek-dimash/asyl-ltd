@@ -187,6 +187,8 @@ export interface StorekeeperReturn extends GoodsReturnHead {
   bags: number;
   /** Принято всего; null — ни одна строка ещё не проверена. */
   accepted_bags: number | null;
+  /** Закрытый возврат можно «Исправить» — вернуть на приёмку; отмену менеджера — нельзя. */
+  can_reopen: boolean;
 }
 
 export interface ReportDay {
@@ -529,7 +531,8 @@ export interface Payment {
     id: number;
     amount: string;
     method: "apipay" | "apipay_qr" | "cash";
-    status: "pending" | "completed" | "failed";
+    /** cancelled — кассовый возврат «Возврата» товара, отменённый его исправлением: деньги снова в оплате. */
+    status: "pending" | "completed" | "failed" | "cancelled";
     reason: string;
     requested_by_name: string | null;
     completed_at: string | null;
