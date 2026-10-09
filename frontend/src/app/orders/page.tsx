@@ -956,8 +956,8 @@ function OrdersPageInner() {
         open={returnOpen}
         onClose={() => setReturnOpen(false)}
         onDone={() => {
+          // Заказы не меняются, пока кладовщик не примет мешки: перечитываем только «Возвраты».
           setReturnOpen(false);
-          reload();
           setReturnsVersion((version) => version + 1);
         }}
       />

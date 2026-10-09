@@ -3,7 +3,7 @@ from rest_framework.routers import SimpleRouter
 from .views import (
     OrderViewSet, PaymentReceiptView, PaymentRefundView,
     PaymentProviderIssueView, PaymentQrRefundView, PaymentRestoreView,
-    PaymentTransactionListView, ReportSummaryView,
+    PaymentTransactionListView, ReportSummaryView, StorekeeperViewSet,
 )
 
 router = SimpleRouter()
@@ -24,4 +24,9 @@ urlpatterns = [
          PaymentRestoreView.as_view(), name="payment-restore"),
     path("payment-transactions/<int:payment_id>/issue/",
          PaymentProviderIssueView.as_view(), name="payment-provider-issue"),
+    # Страница «Кладовщик»: приёмка возвратов товара.
+    path("storekeeper/returns/", StorekeeperViewSet.as_view({"get": "returns"})),
+    path("storekeeper/returns/<int:pk>/items/<int:item_id>/",
+         StorekeeperViewSet.as_view({"post": "confirm_item"})),
+    path("storekeeper/returns/<int:pk>/close/", StorekeeperViewSet.as_view({"post": "close"})),
 ] + router.urls

@@ -19,6 +19,15 @@ describe("permission presets", () => {
     expect(loaders[1].codes).not.toContain("loader.trucks");
   });
 
+  it("give the storekeeper the returns page next to the warehouse", () => {
+    const storekeeper = PERMISSION_PRESETS.find((preset) => preset.key === "storekeeper")!;
+
+    expect(storekeeper.label).toBe("Кладовщик");
+    expect(storekeeper.codes).toEqual(
+      expect.arrayContaining(["warehouse.view", "warehouse.adjust", "storekeeper.view", "storekeeper.confirm"]),
+    );
+  });
+
   it("keep «Главная» and «Задачи» in every template: hiding them is a manual untick", () => {
     for (const preset of PERMISSION_PRESETS) {
       expect(preset.codes).toEqual(expect.arrayContaining(["dashboard.view", "tasks.own"]));

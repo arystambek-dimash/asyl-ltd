@@ -1,4 +1,4 @@
-import type { Payment } from "./types";
+import type { GoodsReturnStatus, Payment } from "./types";
 
 /** Тон бейджа (`components/ui/badge`) — общий для всех словарей тонов. */
 export type BadgeTone = "muted" | "primary" | "success" | "warning" | "destructive" | "outline";
@@ -80,6 +80,14 @@ export const PAYMENT_STATUS_TONE: Record<string, BadgeTone> = {
   unpaid: "destructive",
   partial: "warning",
   settled: "success",
+};
+
+// Тон статуса возврата товара; подпись приходит с бэка (status_label из choices модели).
+export const GOODS_RETURN_STATUS_TONE: Record<GoodsReturnStatus, BadgeTone> = {
+  pending: "outline",
+  full: "success",
+  partial: "warning",
+  cancelled: "muted",
 };
 
 // Тон этапа оплаты; подпись приходит с бэка (status_label из labels.py).

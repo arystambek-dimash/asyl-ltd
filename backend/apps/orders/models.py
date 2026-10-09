@@ -582,22 +582,77 @@ class StatusChangeRequest(models.Model):
 
 
 class GoodsReturn(models.Model):
-    """«Возврат»: клиент привёз мешки, они разложены по его отгруженным заказам.
+    """«Возврат»: клиент привёз мешки, кладовщик их принимает, принятые раскладываются по заказам.
 
-    Строки — :class:`GoodsReturnLine`; позиция заказа копит
-    ``OrderItem.returned_quantity``. Валюта — у каждого заказа своя. ``settlement`` — что с деньгами: ``debt``
-    уменьшает долг, ``cash`` — касса отдала деньги кассовыми возвратами оплат.
+    Менеджер создаёт возврат с мукой и мешками (:class:`GoodsReturnItem`) — он
+    «Ждёт приёмки», долг, касса и склад не меняются. Кладовщик подтверждает
+    каждую муку и закрывает возврат: только принятые мешки ложатся строками
+    :class:`GoodsReturnLine` на отгруженные заказы, позиция копит
+    ``OrderItem.returned_quantity``. Валюта — у каждого заказа своя.
+    ``settlement`` — что с деньгами: ``debt`` уменьшает долг, ``cash`` — касса
+    отдаёт деньги кассовыми возвратами оплат. Сервисы — ``orders/goods_returns.py``.
     """
 
     SETTLEMENTS = [("debt", "В счёт долга"), ("cash", "Из кассы")]
+    STATUSES = [
+        ("pending", "Ждёт приёмки"),
+        ("full", "Полностью возвращено"),
+        ("partial", "Частично возвращено"),
+        ("cancelled", "Отменён"),
+    ]
+    CLOSED_STATUSES = ("full", "partial", "cancelled")
 
     client = models.ForeignKey("clients.Client", on_delete=models.CASCADE, related_name="goods_returns")
     settlement = models.CharField(max_length=10, choices=SETTLEMENTS)
     warehouse = models.ForeignKey("warehouse.Warehouse", on_delete=models.PROTECT, related_name="goods_returns")
+    # db_default «full»: откат релиза проводит возврат сразу, без приёмки, и
+    # вставляет строку без этой колонки — такой возврат уже полностью проведён.
+    status = models.CharField(max_length=10, choices=STATUSES, default="pending", db_default="full")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # Кто и когда вывел возврат из «Ждёт приёмки»: кладовщик закрыл или менеджер отменил.
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+
+class GoodsReturnItem(models.Model):
+    """Мука возврата: сколько мешков указал менеджер и сколько принял кладовщик.
+
+    Одна строка на товар. ``accepted_bags`` — ``None``, пока кладовщик муку не
+    проверил; меньше ``bags`` — привезли не всё. ``paid_bags`` — сколько из
+    ``bags`` раскладка при создании положила на платные позиции (за деньги,
+    которые увидел менеджер); остальные — бонусные, без денег.
+    """
+
+    goods_return = models.ForeignKey(GoodsReturn, on_delete=models.CASCADE, related_name="items")
+    # Как у позиции заказа: товар можно удалить физически, снимок подписи остаётся.
+    product = models.ForeignKey(
+        "catalog.Product", null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+    )
+    product_label_snapshot = models.CharField(max_length=255)
+    bags = models.PositiveIntegerField()
+    paid_bags = models.PositiveIntegerField()
+    accepted_bags = models.PositiveIntegerField(null=True, blank=True)
+    checked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["goods_return", "product"], name="goods_return_item_product_once"),
+            models.CheckConstraint(name="goods_return_item_bags_positive", condition=Q(bags__gt=0)),
+            models.CheckConstraint(
+                name="goods_return_item_accepted_within_bags",
+                condition=Q(accepted_bags__isnull=True) | Q(accepted_bags__lte=models.F("bags")),
+            ),
+        ]
+
+    @property
+    def product_plain_label(self):
+        """Подпись без цвета (``Product.plain_label``); у удалённого товара — снимок."""
+        return self.product.plain_label if self.product_id else self.product_label_snapshot
 
 
 class GoodsReturnLine(models.Model):

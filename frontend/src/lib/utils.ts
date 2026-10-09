@@ -220,3 +220,7 @@ export const bagsWord = (count: number) => pluralRu(count, ["мешок", "ме�
 
 /** «3 мешка». */
 export const bagsLabel = (count: number) => `${count} ${bagsWord(count)}`;
+
+/** «Принято 15 из 16 мешков»: после «из» — родительный падеж («из 21 мешка»). */
+export const acceptedBagsLabel = (accepted: number, requested: number) =>
+  `Принято ${accepted} из ${requested} ${pluralRu(requested, ["мешка", "мешков", "мешков"])}`;

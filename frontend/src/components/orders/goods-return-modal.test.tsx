@@ -13,7 +13,6 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: { id: 1, is_superuser: false, permissions: mocks.permissions }, loading: false }),
 }));
-vi.mock("@/lib/toast", () => ({ showSuccess: vi.fn() }));
 
 const OPTIONS = {
   clients: [{ id: 7, name: "Нуржан Сарыагаш", company_name: "", phone: "+7 (700) 000-00-00", currency: "KZT" }],
@@ -68,10 +67,12 @@ describe("GoodsReturnModal", () => {
     mocks.permissions = ["orders.edit"];
   });
 
-  it("сначала раскладка с сервера по заказам, потом подтверждение", async () => {
+  it("сначала раскладка с сервера по заказам, потом возврат создаётся и ждёт кладовщика", async () => {
     const user = userEvent.setup();
     const onDone = vi.fn();
-    mocks.post.mockResolvedValueOnce({ data: PLAN }).mockResolvedValueOnce({ data: { ...PLAN, return_id: 12 } });
+    mocks.post
+      .mockResolvedValueOnce({ data: PLAN })
+      .mockResolvedValueOnce({ data: { ...PLAN, return_id: 12, status: "pending" } });
     render(<GoodsReturnModal open onClose={vi.fn()} onDone={onDone} />);
 
     await fillForm(user);
@@ -81,6 +82,9 @@ describe("GoodsReturnModal", () => {
     expect(within(plan).getByText(/#903 · отгружен 04\.10/)).toBeInTheDocument();
     expect(plan).toHaveTextContent("20 мешков");
     expect(plan).toHaveTextContent("Итого 50 мешков");
+    // Деньги — прогноз: долг уменьшится, когда кладовщик примет мешки.
+    expect(plan).toHaveTextContent("Долг уменьшится после приёмки на 154 000 ₸");
+    expect(plan).toHaveTextContent("деньги — только за принятые");
     expect(mocks.post).toHaveBeenLastCalledWith("/clients/7/goods-return/", {
       settlement: "debt",
       warehouse: 1,
@@ -88,12 +92,41 @@ describe("GoodsReturnModal", () => {
       preview: true,
     });
 
-    await user.click(screen.getByRole("button", { name: "Подтвердить возврат" }));
-    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "Подтвердить возврат" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Создать возврат" }));
     expect(mocks.post).toHaveBeenLastCalledWith(
       "/clients/7/goods-return/",
       expect.objectContaining({ preview: false }),
     );
+
+    const created = await screen.findByRole("status");
+    expect(created).toHaveTextContent("Возврат №12 создан");
+    expect(created).toHaveTextContent("Кладовщик примет мешки на складе «Мельница»");
+    expect(created).toHaveTextContent("Долг уменьшится после приёмки — только за принятые мешки");
+    expect(onDone).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Готово" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("закрытие окна после создания тоже перечитывает «Возвраты»", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onDone = vi.fn();
+    mocks.permissions = ["orders.edit", "payments.confirm"];
+    mocks.post
+      .mockResolvedValueOnce({ data: { ...PLAN, settlement: "cash" } })
+      .mockResolvedValueOnce({ data: { ...PLAN, settlement: "cash", return_id: 14, status: "pending" } });
+    render(<GoodsReturnModal open onClose={onClose} onDone={onDone} />);
+
+    await fillForm(user);
+    await user.click(screen.getByRole("radio", { name: "Деньги из кассы" }));
+    await user.click(screen.getByRole("button", { name: "Проверить" }));
+    await user.click(await screen.findByRole("button", { name: "Создать возврат" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("Касса отдаст деньги после приёмки");
+    await user.click(screen.getByRole("button", { name: "Закрыть" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("«Деньги из кассы» — только с правом возврата оплаты", async () => {
@@ -148,7 +181,7 @@ describe("GoodsReturnModal", () => {
     expect(screen.getByText("Нет заказов в долге с этой мукой — выберите «Деньги из кассы»")).toBeInTheDocument();
   });
 
-  it("пустая лишняя строка не мешает, двойное нажатие проводит возврат один раз", async () => {
+  it("пустая лишняя строка не мешает, двойное нажатие создаёт возврат один раз", async () => {
     const user = userEvent.setup();
     let finish: (value: unknown) => void = () => undefined;
     mocks.post
@@ -159,7 +192,7 @@ describe("GoodsReturnModal", () => {
     await fillForm(user);
     await user.click(screen.getByRole("button", { name: "Ещё мука" }));
     await user.click(screen.getByRole("button", { name: "Проверить" }));
-    const confirm = await screen.findByRole("button", { name: "Подтвердить возврат" });
+    const confirm = await screen.findByRole("button", { name: "Создать возврат" });
     confirm.click();
     confirm.click();
     finish({ data: { ...PLAN, return_id: 12 } });
@@ -206,6 +239,6 @@ describe("GoodsReturnModal", () => {
     await user.click(screen.getByRole("button", { name: "Проверить" }));
 
     const plan = await screen.findByRole("region", { name: "Раскладка возврата" });
-    expect(plan).toHaveTextContent("Итого 12 мешковКасса отдаёт: 200 $ и 2 000 ₸");
+    expect(plan).toHaveTextContent("Итого 12 мешковКасса отдаст после приёмки: 200 $ и 2 000 ₸");
   });
 });

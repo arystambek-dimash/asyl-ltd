@@ -1,19 +1,27 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { Undo2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { DepartmentBadge } from "@/components/ui/department-badge";
 import { LoadMore } from "@/components/ui/load-more";
 import { SearchInput } from "@/components/ui/search-input";
 import { EmptyRow, Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
+import { GoodsReturnAcceptedBy, GoodsReturnStatusBadge } from "@/components/orders/goods-return-status";
 import { DateRangeFilter, DepartmentFilter } from "@/components/orders/order-filters";
+import { api } from "@/lib/api";
+import { can } from "@/lib/can";
 import { withBack } from "@/lib/navigation";
+import { useConfirmAction } from "@/lib/use-confirm-action";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { useDebounced } from "@/lib/use-debounced";
-import { apiUrl, bagsLabel, formatDateTime } from "@/lib/utils";
+import { acceptedBagsLabel, apiUrl, bagsLabel, cn, formatDateTime } from "@/lib/utils";
 import type { Department, GoodsReturn } from "@/lib/types";
+import { useAuth } from "@/store/auth";
 
 const BACK = "/orders?tab=returns";
 const COLUMNS = 7;
@@ -60,8 +68,28 @@ function ReturnDepartments({ row, departments }: { row: GoodsReturn; departments
   );
 }
 
+/** Принят ли возврат: только у принятого есть строки по заказам и деньги. */
+const isAccepted = (row: GoodsReturn) => row.status === "full" || row.status === "partial";
+
+/**
+ * Мука и мешки: у принятого — что легло на заказы, у частичного ещё и «принято
+ * N из M»; пока не принят (и у отменённого) — что менеджер записал в возврат.
+ */
 function ReturnProducts({ row }: { row: GoodsReturn }) {
+  if (!isAccepted(row)) {
+    return (
+      <ul className={cn("flex flex-col gap-0.5", row.status === "cancelled" && "text-[var(--muted-foreground)]")}>
+        {row.items.map((item) => (
+          <li key={item.id}>
+            {item.product_label} <span className="whitespace-nowrap tabular-nums">· {bagsLabel(item.bags)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
   const products = bagsByProduct(row.lines);
+  const requested = row.items.reduce((sum, item) => sum + item.bags, 0);
+  const accepted = row.items.reduce((sum, item) => sum + (item.accepted_bags ?? 0), 0);
   return (
     <ul className="flex flex-col gap-0.5">
       {products.map((product) => (
@@ -69,8 +97,14 @@ function ReturnProducts({ row }: { row: GoodsReturn }) {
           {product.label} <span className="whitespace-nowrap tabular-nums">· {bagsLabel(product.bags)}</span>
         </li>
       ))}
-      {products.length > 1 && (
-        <li className="text-xs tabular-nums text-[var(--muted-foreground)]">Всего {bagsLabel(row.bags)}</li>
+      {row.status === "partial" ? (
+        <li className="text-xs font-medium tabular-nums text-[var(--warning)]">
+          {acceptedBagsLabel(accepted, requested)}
+        </li>
+      ) : (
+        products.length > 1 && (
+          <li className="text-xs tabular-nums text-[var(--muted-foreground)]">Всего {bagsLabel(row.bags)}</li>
+        )
       )}
     </ul>
   );
@@ -93,20 +127,53 @@ function ReturnOrders({ row }: { row: GoodsReturn }) {
   );
 }
 
-/** Что стало с деньгами: «В счёт долга» / «Из кассы» и сумма — ₸ и $ отдельными равными итогами. */
+/**
+ * Что стало с деньгами: «В счёт долга» / «Из кассы» и сумма — ₸ и $ отдельными
+ * равными итогами. До приёмки денег нет: «—», «после приёмки».
+ */
 function ReturnMoney({ row, className }: { row: GoodsReturn; className?: string }) {
   return (
     <div className={className}>
       <div className="text-xs text-[var(--muted-foreground)]">{row.settlement_label}</div>
-      <CurrencyAmounts byCurrency={row.amounts} equal amountClassName="font-semibold tabular-nums" />
+      {isAccepted(row) ? (
+        <CurrencyAmounts byCurrency={row.amounts} equal amountClassName="font-semibold tabular-nums" />
+      ) : (
+        <>
+          <div className="font-semibold">—</div>
+          {row.status === "pending" && <div className="text-xs text-[var(--muted-foreground)]">после приёмки</div>}
+        </>
+      )}
     </div>
   );
 }
 
+/** «Отменить» ждущего приёмки возврата: долг, касса и склад ещё не менялись. */
+function CancelReturnButton({
+  row,
+  onCancel,
+  className,
+}: {
+  row: GoodsReturn;
+  onCancel: (row: GoodsReturn) => void;
+  className?: string;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className={className}
+      onClick={() => onCancel(row)}
+      aria-label={`Отменить возврат №${row.id}`}
+    >
+      <Undo2 className="size-4" /> Отменить
+    </Button>
+  );
+}
+
 /**
- * Вкладка «Возвраты» в «Заказах»: проведённые возвраты товара, новые сверху.
- * Строки, суммы и видимость по отделам считает сервер; заказы из корзины в
- * список не попадают.
+ * Вкладка «Возвраты» в «Заказах»: возвраты товара со статусом приёмки, новые
+ * сверху. Строки, суммы и видимость по отделам считает сервер; заказы из
+ * корзины в список не попадают. Ждущий приёмки возврат менеджер может отменить.
  *
  * `refreshKey` меняется после нового возврата — список перечитывается с теми же фильтрами.
  */
@@ -127,6 +194,14 @@ export function GoodsReturnsSection({
     50,
   );
   const { items, loading, error, reload } = paged;
+  const { me } = useAuth();
+  const canCancel = can(me, "orders.edit");
+  // Ответ отмены — свежая строка списка: применяем её, а не перечитываем.
+  const cancel = useConfirmAction<GoodsReturn>(async (row) => {
+    const { data } = await api.post<GoodsReturn>(`/orders/returns/${row.id}/cancel/`, {});
+    paged.applyItems((rows) => rows.map((current) => (current.id === data.id ? data : current)));
+  });
+  const cancellable = (row: GoodsReturn) => canCancel && row.status === "pending";
   const filtered = Boolean(search || dateFrom || dateTo || dept !== "all");
   const emptyText = filtered ? "По этим условиям возвратов нет." : "Возвратов пока нет.";
   const showDept =
@@ -181,22 +256,33 @@ export function GoodsReturnsSection({
                   <div className="text-xs tabular-nums text-[var(--muted-foreground)]">
                     Возврат №{row.id} · {formatDateTime(row.created_at)}
                   </div>
+                  <div className="mt-1">
+                    <GoodsReturnStatusBadge row={row} />
+                  </div>
                 </div>
                 {showDept && <ReturnDepartments row={row} departments={departments} />}
               </div>
               <div className="text-sm">
                 <ReturnProducts row={row} />
               </div>
-              <div className="text-sm">
-                <ReturnOrders row={row} />
-              </div>
+              {row.lines.length > 0 && (
+                <div className="text-sm">
+                  <ReturnOrders row={row} />
+                </div>
+              )}
               <div className="flex items-end justify-between gap-3 border-t pt-2">
                 <div className="min-w-0 text-xs text-[var(--muted-foreground)]">
                   <div className="truncate">{row.warehouse_name}</div>
                   {row.created_by_name && <div className="truncate">{row.created_by_name}</div>}
+                  <GoodsReturnAcceptedBy row={row} />
                 </div>
                 <ReturnMoney row={row} className="flex shrink-0 flex-col items-end text-right" />
               </div>
+              {cancellable(row) && (
+                <div className="flex justify-end">
+                  <CancelReturnButton row={row} onCancel={cancel.open} />
+                </div>
+              )}
             </li>
           ))
         )}
@@ -227,6 +313,12 @@ export function GoodsReturnsSection({
                     <TD className="whitespace-nowrap py-3 align-top tabular-nums">
                       <div>{formatDateTime(row.created_at)}</div>
                       <div className="text-xs text-[var(--muted-foreground)]">Возврат №{row.id}</div>
+                      <div className="mt-1">
+                        <GoodsReturnStatusBadge row={row} />
+                      </div>
+                      {cancellable(row) && (
+                        <CancelReturnButton row={row} onCancel={cancel.open} className="-ml-3 mt-1" />
+                      )}
                     </TD>
                     <TD className="py-3 align-top">
                       <div className="font-medium">{row.client_name}</div>
@@ -246,7 +338,10 @@ export function GoodsReturnsSection({
                       <ReturnMoney row={row} className="flex flex-col items-end text-right" />
                     </TD>
                     <TD className="py-3 align-top text-[var(--muted-foreground)]">{row.warehouse_name}</TD>
-                    <TD className="py-3 align-top text-[var(--muted-foreground)]">{row.created_by_name || "—"}</TD>
+                    <TD className="py-3 align-top text-[var(--muted-foreground)]">
+                      <div>{row.created_by_name || "—"}</div>
+                      <GoodsReturnAcceptedBy row={row} className="text-xs" />
+                    </TD>
                   </TR>
                 ))
               )}
@@ -260,6 +355,12 @@ export function GoodsReturnsSection({
         hasMore={paged.hasMore}
         loading={paged.loading || paged.loadingMore}
         onClick={paged.loadMore}
+      />
+      <ConfirmDialog
+        {...cancel.dialog}
+        title={`Отменить возврат №${cancel.item?.id ?? ""}?`}
+        description="Кладовщик не будет принимать эти мешки. Долг, касса и склад не менялись — возврат ещё не принят."
+        confirmLabel="Отменить возврат"
       />
     </section>
   );

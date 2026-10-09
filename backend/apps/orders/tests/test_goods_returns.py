@@ -1,21 +1,32 @@
-"""«Возврат» по клиенту: мешки раскладываются по отгруженным заказам — от новой отгрузки к старой."""
+"""«Возврат» по клиенту: менеджер создаёт, кладовщик принимает, принятые мешки раскладываются по заказам.
+
+Раскладка — от новой отгрузки к старой. Долг, касса и склад меняются только при
+закрытии возврата кладовщиком и только за принятые мешки.
+"""
 
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.db import connection
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.eventlog.models import EventLog
-from apps.orders.goods_returns import record_goods_return
+from apps.orders.goods_returns import (
+    cancel_goods_return,
+    close_goods_return,
+    confirm_goods_return_item,
+    record_goods_return,
+)
 from apps.orders.models import GoodsReturn, Order, OrderItem, PaymentRefund
 from apps.orders.querysets import order_remaining_by_id, with_order_amounts
 from apps.orders.services import record_staff_payment
 from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem, StockMovement, Warehouse
+from apps.warehouse.services import get_default_warehouse
 
 pytestmark = pytest.mark.django_db
 
@@ -25,6 +36,11 @@ def manager(user_with_perms, departments):
     return user_with_perms(
         "mill-manager", codes=["orders.edit", "payments.confirm", "payments.create"], department=departments[0],
     )
+
+
+@pytest.fixture
+def storekeeper(user_with_perms):
+    return user_with_perms("storekeeper", codes=["storekeeper.view", "storekeeper.confirm"])
 
 
 def _client(department, *, currency="KZT"):
@@ -49,10 +65,27 @@ def _shipped(client, items, *, currency="KZT", shipped=None):
     return order
 
 
-def _return(client, user, lines, *, settlement="debt", preview=False, warehouse=None):
+def _create(client, user, lines, *, settlement="debt", preview=False, warehouse=None):
+    """Менеджер: «Проверить» (``preview``) или «Создать возврат» — ждёт приёмки."""
     return record_goods_return(
         client, user, settlement=settlement, warehouse=warehouse, lines=lines, preview=preview,
     )
+
+
+def _accept(return_id, storekeeper, counts=None):
+    """Кладовщик подтверждает каждую муку (``counts`` — {товар: принято}, иначе всё) и закрывает."""
+    goods_return = GoodsReturn.objects.get(pk=return_id)
+    for item in goods_return.items.all():
+        accepted = item.bags if counts is None else counts[item.product_id]
+        confirm_goods_return_item(goods_return, item.pk, accepted)
+    return close_goods_return(goods_return, storekeeper)
+
+
+def _return(client, user, lines, *, storekeeper=None, **options):
+    """Создать возврат и принять его целиком; ответ — раскладка создания."""
+    plan = _create(client, user, lines, **options)
+    _accept(plan["return_id"], storekeeper or user)
+    return plan
 
 
 def test_order_amount_counts_only_bags_kept_by_the_client(departments):
@@ -95,7 +128,7 @@ def test_preview_writes_nothing(manager, departments):
     flour = _flour()
     _shipped(client, [(flour, 10, "3000")])
 
-    plan = _return(client, manager, [{"product": flour.pk, "bags": 4}], preview=True)
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 4}], preview=True)
 
     assert plan["bags"] == 4 and "return_id" not in plan
     assert not GoodsReturn.objects.exists()
@@ -121,21 +154,43 @@ def test_debt_mode_takes_only_what_the_order_still_owes(manager, departments, bo
     assert [row["order_id"] for row in plan["orders"]] == [partly.pk]
 
 
-def test_cash_mode_refunds_paid_orders_from_the_till(manager, departments, boss):
+def test_cash_mode_refunds_paid_orders_from_the_till_at_close(manager, storekeeper, departments, boss):
     client = _client(departments[0])
     flour = _flour()
     paid = _shipped(client, [(flour, 10, "1000")])
     payment = record_staff_payment(paid, Decimal("10000"), boss, method="cash")
     _shipped(client, [(flour, 10, "1000")], shipped=timezone.now() - timedelta(days=1))  # в долге — не для кассы
 
-    plan = _return(client, manager, [{"product": flour.pk, "bags": 3}], settlement="cash")
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 3}], settlement="cash")
+    assert not PaymentRefund.objects.exists()  # касса отдаёт деньги только при закрытии
+    _accept(plan["return_id"], storekeeper)
 
     assert [row["order_id"] for row in plan["orders"]] == [paid.pk]
     refund = PaymentRefund.objects.get(payment=payment)
     assert (refund.amount, refund.method, refund.status) == (Decimal("3000.00"), "cash", "completed")
     assert refund.reason == f"Возврат товара №{plan['return_id']}"
+    # Деньги отдаёт тот, кто создал возврат с правом кассы; журнал называет кладовщика.
+    assert refund.requested_by == manager
+    assert EventLog.objects.get(event_type="goods_return", order=paid).user == storekeeper
     paid.refresh_from_db()
     assert paid.payment_status == "settled"  # 7 мешков = 7000, оплачено 10000 − 3000
+
+
+def test_cash_return_closes_after_the_client_moved_to_another_department(manager, storekeeper, departments, boss):
+    """Отдел проверяют у кладовщика при закрытии; создавший — только автор возврата денег."""
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 10, "1000")])
+    payment = record_staff_payment(order, Decimal("10000"), boss, method="cash")
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 2}], settlement="cash")
+    Client.objects.filter(pk=client.pk).update(department=departments[1])
+
+    closed = _accept(plan["return_id"], storekeeper)
+
+    assert closed.status == "full"
+    refund = PaymentRefund.objects.get(payment=payment)
+    assert (refund.amount, refund.requested_by) == (Decimal("2000.00"), manager)
+    assert OrderItem.objects.get(order=order).returned_quantity == 2
 
 
 def test_cash_mode_needs_payments_confirm(user_with_perms, departments):
@@ -174,16 +229,17 @@ def test_trash_and_unpriced_items_are_not_used(manager, departments):
     assert error.value.detail["code"] == "goods_return_exceeds"
 
 
-def test_return_puts_bags_on_the_chosen_warehouse_and_logs_each_order(manager, departments):
+def test_return_puts_bags_on_the_chosen_warehouse_and_logs_each_order(manager, storekeeper, departments):
     client = _client(departments[0])
     flour = _flour()
     order = _shipped(client, [(flour, 10, "1000")])
     second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
 
-    plan = _return(client, manager, [{"product": flour.pk, "bags": 4}], warehouse=second.pk)
+    plan = _return(client, manager, [{"product": flour.pk, "bags": 4}], warehouse=second.pk, storekeeper=storekeeper)
 
     assert StockItem.objects.get(product=flour, warehouse=second).bags == 4
-    assert StockMovement.objects.get(product=flour, warehouse=second).reason == "client_return"
+    movement = StockMovement.objects.get(product=flour, warehouse=second)
+    assert (movement.reason, movement.created_by) == ("client_return", storekeeper)
     event = EventLog.objects.get(event_type="goods_return", order=order)
     assert event.payload["goods_return_id"] == plan["return_id"]
     assert event.payload["bags"] == 4
@@ -200,7 +256,7 @@ def test_unknown_settlement_is_refused(manager, departments):
         _return(_client(departments[0]), manager, [{"product": _flour().pk, "bags": 1}], settlement="gift")
 
 
-def test_api_previews_and_records_a_return(auth_client, manager, departments):
+def test_api_previews_and_creates_a_return_waiting_for_the_storekeeper(auth_client, manager, departments):
     client = _client(departments[0])
     flour = _flour()
     _shipped(client, [(flour, 10, "1000")])
@@ -214,6 +270,8 @@ def test_api_previews_and_records_a_return(auth_client, manager, departments):
     assert preview.data["bags"] == 3 and "return_id" not in preview.data
     assert done.status_code == 200, done.data
     assert done.data["return_id"] == GoodsReturn.objects.get().pk
+    assert (done.data["status"], done.data["bags"], done.data["amounts"]) == ("pending", 3, {"KZT": "3000.00"})
+    assert OrderItem.objects.get().returned_quantity == 0
 
 
 def test_api_needs_orders_edit_and_boolean_preview(auth_client, user_with_perms, manager, departments):
@@ -419,6 +477,44 @@ def test_a_full_return_takes_the_bonus_bag_back_at_no_money(departments, manager
     assert sorted(order.items.values_list("is_bonus", "returned_quantity")) == [(False, 100), (True, 1)]
 
 
+def test_close_refuses_to_move_shown_paid_bags_to_the_bonus_after_the_debt_was_paid(
+    manager, storekeeper, departments, boss,
+):
+    """Менеджеру показали «долг −2 000 ₸»: клиент погасил долг — мешки не уходят в бонус без денег."""
+    client = _client(departments[0])
+    order, flour = _with_bonus(client, bags=10, bonus=2, price="1000")
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 2}])
+    goods_return = GoodsReturn.objects.get(pk=plan["return_id"])
+    assert plan["amounts"] == {"KZT": "2000.00"}
+    assert list(goods_return.items.values_list("bags", "paid_bags")) == [(2, 2)]
+    confirm_goods_return_item(goods_return, goods_return.items.get().pk, 2)
+    record_staff_payment(order, Decimal("10000"), boss, method="cash")  # долга больше нет
+
+    with pytest.raises(ValidationError) as error:
+        close_goods_return(goods_return, storekeeper)
+
+    assert error.value.detail["code"] == "goods_return_no_longer_fits"
+    assert f"за «{flour.plain_label}» в счёт долга засчитывается 0 из 2 мешков" in str(error.value.detail["detail"])
+    goods_return.refresh_from_db()
+    assert goods_return.status == "pending"
+    assert not goods_return.lines.exists()
+    assert sorted(order.items.values_list("is_bonus", "returned_quantity")) == [(False, 0), (True, 0)]
+    assert not StockMovement.objects.filter(reason="client_return").exists()
+
+
+def test_bonus_bags_shown_free_still_close_after_fewer_were_accepted(manager, storekeeper, departments):
+    client = _client(departments[0])
+    order, flour = _with_bonus(client, bags=10, bonus=2, price="1000")
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 12}])
+    assert GoodsReturn.objects.get(pk=plan["return_id"]).items.get().paid_bags == 10
+
+    closed = _accept(plan["return_id"], storekeeper, {flour.pk: 11})
+
+    assert closed.status == "partial"
+    assert sorted(order.items.values_list("is_bonus", "returned_quantity")) == [(False, 10), (True, 1)]
+    assert _debt(order) == Decimal("0")
+
+
 def test_a_partial_return_lands_on_paid_bags_first(departments, manager):
     client = _client(departments[0])
     order, flour = _with_bonus(client)
@@ -428,3 +524,250 @@ def test_a_partial_return_lands_on_paid_bags_first(departments, manager):
     order.refresh_from_db()
     assert order.total_amount == Decimal("297000.00")
     assert order.items.get(is_bonus=True).returned_quantity == 0
+
+
+# Приёмка кладовщиком: до закрытия ничего не меняется, проводятся только принятые мешки.
+
+
+def _debt(order):
+    return order_remaining_by_id(Order.objects.filter(pk=order.pk))[order.pk]
+
+
+def test_created_return_waits_and_changes_nothing(manager, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 10, "1000")])
+
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 4}])
+
+    goods_return = GoodsReturn.objects.get(pk=plan["return_id"])
+    assert (plan["status"], goods_return.status, goods_return.created_by) == ("pending", "pending", manager)
+    assert list(goods_return.items.values_list("product_id", "product_label_snapshot", "bags", "accepted_bags")) == [
+        (flour.pk, flour.plain_label, 4, None),
+    ]
+    assert not goods_return.lines.exists()
+    assert OrderItem.objects.get(order=order).returned_quantity == 0
+    assert _debt(order) == Decimal("10000")
+    assert not StockMovement.objects.filter(reason="client_return").exists()
+    assert not EventLog.objects.filter(event_type="goods_return").exists()
+    event = EventLog.objects.get(event_type="goods_return_status")
+    assert (event.user, event.order, event.payload["client_id"], event.payload["status"]) == (
+        manager, None, client.pk, "pending",
+    )
+
+
+def test_confirmed_items_change_nothing_until_close(manager, storekeeper, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 10, "1000")])
+    goods_return = GoodsReturn.objects.get(pk=_create(client, manager, [{"product": flour.pk, "bags": 4}])["return_id"])
+    item = goods_return.items.get()
+
+    confirm_goods_return_item(goods_return, item.pk, 4)
+    confirm_goods_return_item(goods_return, item.pk, 3)  # пересчитал — до закрытия можно поменять
+
+    item.refresh_from_db()
+    assert item.accepted_bags == 3 and item.checked_at is not None
+    assert OrderItem.objects.get(order=order).returned_quantity == 0
+    assert _debt(order) == Decimal("10000")
+    assert not StockMovement.objects.exists()
+
+
+def test_full_acceptance_closes_as_fully_returned(manager, storekeeper, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 10, "1000")])
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 4}])
+
+    closed = _accept(plan["return_id"], storekeeper)
+
+    assert (closed.status, closed.accepted_by) == ("full", storekeeper)
+    assert closed.accepted_at is not None
+    assert OrderItem.objects.get(order=order).returned_quantity == 4
+    assert _debt(order) == Decimal("6000")
+    assert StockItem.objects.get(product=flour).bags == 4
+    event = EventLog.objects.filter(event_type="goods_return_status").latest("id")
+    assert (event.user, event.payload["status"], event.payload["accepted_bags"]) == (storekeeper, "full", 4)
+    assert "принято 4 из 4 мешков — «Полностью возвращено»" in event.message
+
+
+def test_partial_acceptance_credits_only_accepted_bags(manager, storekeeper, departments):
+    client = _client(departments[0])
+    dikhan = _flour()
+    korol = _flour("Второй сорт KOROL 50кг", "Green")
+    order = _shipped(client, [(dikhan, 10, "1000"), (korol, 10, "500")])
+    plan = _create(client, manager, [{"product": dikhan.pk, "bags": 6}, {"product": korol.pk, "bags": 4}])
+
+    closed = _accept(plan["return_id"], storekeeper, {dikhan.pk: 5, korol.pk: 4})
+
+    assert closed.status == "partial"
+    assert closed.get_status_display() == "Частично возвращено"
+    assert dict(OrderItem.objects.filter(order=order).values_list("product_id", "returned_quantity")) == {
+        dikhan.pk: 5, korol.pk: 4,
+    }
+    assert _debt(order) == Decimal("8000")  # 15000 − 5×1000 − 4×500
+    assert dict(StockItem.objects.values_list("product_id", "bags")) == {dikhan.pk: 5, korol.pk: 4}
+    assert sum(closed.lines.values_list("bags", flat=True)) == 9
+
+
+def test_accepting_nothing_cancels_without_any_effect(manager, storekeeper, departments, boss):
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 10, "1000")])
+    payment = record_staff_payment(order, Decimal("10000"), boss, method="cash")
+    plan = _create(client, manager, [{"product": flour.pk, "bags": 4}], settlement="cash")
+
+    closed = _accept(plan["return_id"], storekeeper, {flour.pk: 0})
+
+    assert (closed.status, closed.accepted_by) == ("cancelled", storekeeper)
+    assert not closed.lines.exists()
+    assert OrderItem.objects.get(order=order).returned_quantity == 0
+    assert not PaymentRefund.objects.filter(payment=payment).exists()
+    assert not StockMovement.objects.filter(reason="client_return").exists()
+    assert not EventLog.objects.filter(event_type="goods_return").exists()
+
+
+def test_close_needs_every_flour_checked(manager, storekeeper, departments):
+    client = _client(departments[0])
+    dikhan = _flour()
+    korol = _flour("Второй сорт KOROL 50кг", "Green")
+    _shipped(client, [(dikhan, 10, "1000"), (korol, 10, "500")])
+    goods_return = GoodsReturn.objects.get(pk=_create(
+        client, manager, [{"product": dikhan.pk, "bags": 1}, {"product": korol.pk, "bags": 1}],
+    )["return_id"])
+    confirm_goods_return_item(goods_return, goods_return.items.get(product=dikhan).pk, 1)
+
+    with pytest.raises(ValidationError) as error:
+        close_goods_return(goods_return, storekeeper)
+
+    assert error.value.detail["code"] == "items_unchecked"
+    goods_return.refresh_from_db()
+    assert goods_return.status == "pending"
+    assert not OrderItem.objects.filter(returned_quantity__gt=0).exists()
+
+
+def test_closed_return_cannot_be_closed_or_confirmed_again(manager, storekeeper, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 10, "1000")])
+    plan = _return(client, manager, [{"product": flour.pk, "bags": 4}], storekeeper=storekeeper)
+    goods_return = GoodsReturn.objects.get(pk=plan["return_id"])
+
+    with pytest.raises(ValidationError) as again:
+        close_goods_return(goods_return, storekeeper)
+    with pytest.raises(ValidationError) as recount:
+        confirm_goods_return_item(goods_return, goods_return.items.get().pk, 1)
+    with pytest.raises(ValidationError) as cancel:
+        cancel_goods_return(goods_return, manager)
+
+    assert {again.value.detail["code"], recount.value.detail["code"], cancel.value.detail["code"]} == {
+        "goods_return_not_pending",
+    }
+    assert OrderItem.objects.get().returned_quantity == 4
+    assert StockItem.objects.get(product=flour).bags == 4
+
+
+@pytest.mark.parametrize("count", [5, -1, True, "3", None, 2.0])
+def test_accepted_count_is_whole_bags_up_to_requested(manager, departments, count):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 10, "1000")])
+    goods_return = GoodsReturn.objects.get(pk=_create(client, manager, [{"product": flour.pk, "bags": 4}])["return_id"])
+
+    with pytest.raises(ValidationError) as error:
+        confirm_goods_return_item(goods_return, goods_return.items.get().pk, count)
+
+    assert error.value.detail["code"] == "goods_return_bad_count"
+    assert goods_return.items.get().accepted_bags is None
+
+
+def test_unknown_item_is_not_found(manager, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 10, "1000")])
+    goods_return = GoodsReturn.objects.get(pk=_create(client, manager, [{"product": flour.pk, "bags": 4}])["return_id"])
+
+    with pytest.raises(NotFound):
+        confirm_goods_return_item(goods_return, goods_return.items.get().pk + 100, 1)
+
+
+def test_close_refuses_when_the_debt_was_paid_in_between(manager, storekeeper, departments, boss):
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 10, "1000")])
+    goods_return = GoodsReturn.objects.get(pk=_create(client, manager, [{"product": flour.pk, "bags": 4}])["return_id"])
+    confirm_goods_return_item(goods_return, goods_return.items.get().pk, 4)
+    record_staff_payment(order, Decimal("10000"), boss, method="cash")  # долга больше нет
+
+    with pytest.raises(ValidationError) as error:
+        close_goods_return(goods_return, storekeeper)
+
+    assert error.value.detail["code"] == "goods_return_no_longer_fits"
+    assert "Менеджер должен отменить его и создать новый" in str(error.value.detail["detail"])
+    goods_return.refresh_from_db()
+    assert goods_return.status == "pending"
+    assert OrderItem.objects.get().returned_quantity == 0
+    assert not StockMovement.objects.filter(reason="client_return").exists()
+
+
+def test_close_refuses_a_return_whose_flour_was_deleted(manager, storekeeper, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 10, "1000")])
+    goods_return = GoodsReturn.objects.get(pk=_create(client, manager, [{"product": flour.pk, "bags": 4}])["return_id"])
+    confirm_goods_return_item(goods_return, goods_return.items.get().pk, 4)
+    goods_return.items.update(product=None)  # товар удалён физически: связь обнулилась, снимок остался
+
+    with pytest.raises(ValidationError) as error:
+        close_goods_return(goods_return, storekeeper)
+
+    assert error.value.detail["code"] == "goods_return_no_longer_fits"
+    assert f"«{flour.plain_label}» удалена из каталога" in str(error.value.detail["detail"])
+
+
+def test_manager_cancels_a_pending_return(manager, storekeeper, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 10, "1000")])
+    goods_return = GoodsReturn.objects.get(pk=_create(client, manager, [{"product": flour.pk, "bags": 4}])["return_id"])
+
+    cancel_goods_return(goods_return, manager)
+
+    goods_return.refresh_from_db()
+    assert (goods_return.status, goods_return.accepted_by) == ("cancelled", manager)
+    with pytest.raises(ValidationError) as close:
+        close_goods_return(goods_return, storekeeper)
+    assert close.value.detail["code"] == "goods_return_not_pending"
+    assert OrderItem.objects.get().returned_quantity == 0
+    event = EventLog.objects.filter(event_type="goods_return_status").latest("id")
+    assert (event.user, event.payload["status"]) == (manager, "cancelled")
+
+
+def test_pending_returns_do_not_reserve_bags_and_the_late_one_no_longer_fits(manager, storekeeper, departments):
+    client = _client(departments[0])
+    flour = _flour()
+    _shipped(client, [(flour, 10, "1000")])
+    first = _create(client, manager, [{"product": flour.pk, "bags": 8}])
+    second = _create(client, manager, [{"product": flour.pk, "bags": 8}])
+    _accept(first["return_id"], storekeeper)
+
+    with pytest.raises(ValidationError) as error:
+        _accept(second["return_id"], storekeeper)
+
+    assert error.value.detail["code"] == "goods_return_no_longer_fits"
+    assert "Максимум 2 мешка" in str(error.value.detail["detail"])
+    assert OrderItem.objects.get().returned_quantity == 8
+
+
+def test_old_image_insert_without_status_counts_as_fully_returned(departments):
+    """Откат образа проводит возврат сразу и не знает колонки статуса: строка — «Полностью возвращено»."""
+    client = _client(departments[0])
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO orders_goodsreturn (client_id, settlement, warehouse_id, created_at)"
+            " VALUES (%s, 'debt', %s, now()) RETURNING id",
+            [client.pk, get_default_warehouse().pk],
+        )
+        [pk] = cursor.fetchone()
+
+    assert GoodsReturn.objects.get(pk=pk).status == "full"

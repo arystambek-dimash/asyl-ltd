@@ -41,7 +41,17 @@ from .apipay import (
     provider_error, reject_unissued_payment,
 )
 from .refunds import create_cash_refund
-from .goods_returns import goods_return_rows, goods_returns_list
+from .goods_returns import (
+    cancel_goods_return,
+    close_goods_return,
+    confirm_goods_return_item,
+    goods_return_rows,
+    goods_returns_list,
+    storekeeper_returns,
+    storekeeper_rows,
+    visible_goods_returns,
+    with_goods_return_relations,
+)
 from .invoices import build_payment_receipt_pdf
 from .debt import counts_as_debt, payment_status
 from .querysets import (
@@ -643,8 +653,10 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "fixate": "orders.edit",
         "department_summary": "orders.view",
         "list_summary": "orders.view",
-        # «Заказы → Возвраты»: видит тот, кому открыт список заказов.
+        # «Заказы → Возвраты»: видит тот, кому открыт список заказов;
+        # отменить возврат, который ждёт приёмки, — тот, кто его создаёт.
         "goods_returns": "orders.view",
+        "cancel_return": "orders.edit",
         "form_options": ("orders.create", "orders.edit"),
         # Календарь отгрузки открыт тем же, кому открыта очередь поста.
         "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
@@ -975,6 +987,13 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         page = self.paginate_queryset(returns)
         rows = goods_return_rows(page if page is not None else returns)
         return self.get_paginated_response(rows) if page is not None else Response(rows)
+
+    @action(detail=False, methods=["post"], url_path=r"returns/(?P<return_id>[0-9]+)/cancel")
+    def cancel_return(self, request, return_id=None):
+        """«Отменить» возврат, который ждёт приёмки; ответ — его строка списка «Возвраты»."""
+        goods_return = get_object_or_404(visible_goods_returns(request.user), pk=return_id)
+        cancel_goods_return(goods_return, request.user)
+        return Response(goods_return_rows(goods_returns_list(request.user, {}).filter(pk=goods_return.pk))[0])
 
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):
@@ -1340,3 +1359,39 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             StatusChangeRequest, pk=rid, order=self.get_object())
         req = reject_status_change(req, request.user)
         return Response(StatusChangeRequestSerializer(req).data)
+
+
+class StorekeeperViewSet(PermViewSetMixin, viewsets.GenericViewSet):
+    """Страница «Кладовщик»: возвраты на приёмку, подтверждение муки и закрытие возврата.
+
+    Денег здесь нет: строки — мука и мешки (orders/goods_returns.py). Область —
+    отдел клиента, как у грузчика; чужой возврат — 404. Ответ действия — строка
+    возврата: экран применяет её, а не перечитывает список.
+    """
+
+    pagination_class = OptInPageNumberPagination
+    required_perms = {
+        "returns": "storekeeper.view",
+        "confirm_item": "storekeeper.confirm",
+        "close": "storekeeper.confirm",
+    }
+
+    def get_queryset(self):
+        return visible_goods_returns(self.request.user)
+
+    def _row(self, goods_return):
+        returns = with_goods_return_relations(self.get_queryset().filter(pk=goods_return.pk))
+        return Response(storekeeper_rows(returns)[0])
+
+    def returns(self, request):
+        returns = storekeeper_returns(request.user, request.query_params)
+        page = self.paginate_queryset(returns)
+        rows = storekeeper_rows(page if page is not None else returns)
+        return self.get_paginated_response(rows) if page is not None else Response(rows)
+
+    def confirm_item(self, request, pk=None, item_id=None):
+        """Сколько мешков этой муки принято: ``{"accepted_bags": N}``."""
+        return self._row(confirm_goods_return_item(self.get_object(), item_id, request.data.get("accepted_bags")))
+
+    def close(self, request, pk=None):
+        return self._row(close_goods_return(self.get_object(), request.user))

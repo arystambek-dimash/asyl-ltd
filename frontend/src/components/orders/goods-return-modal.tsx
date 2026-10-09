@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { PackageCheck, Plus, Trash2 } from "lucide-react";
 import {
   ClientPicker,
   EMPTY_FORM_OPTIONS,
@@ -17,7 +17,6 @@ import { Segmented } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
-import { showSuccess } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { bagsLabel, formatCurrency, formatIsoDayMonth } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
@@ -25,7 +24,8 @@ import { useAuth } from "@/store/auth";
 type Settlement = "debt" | "cash";
 type Row = { id: number; product: string; bags: string };
 
-/** Раскладка возврата с сервера: заказ → мешки и сумма в валюте заказа (orders/goods_returns.py). */
+/** Раскладка возврата с сервера: заказ → мешки и сумма в валюте заказа (orders/goods_returns.py).
+ * У созданного возврата ещё и его номер. */
 interface GoodsReturnPlan {
   settlement: Settlement;
   bags: number;
@@ -49,7 +49,18 @@ interface ReturnableProduct {
   cash_bags: number;
 }
 
-/** «Возврат»: клиент привёз мешки — сервер раскладывает их по его отгруженным заказам. */
+/** Созданный возврат: номер, склад приёмки и что станет с деньгами после неё. */
+interface CreatedReturn {
+  id: number;
+  warehouse: string;
+  settlement: Settlement;
+}
+
+/**
+ * «Возврат»: клиент привёз мешки — сервер раскладывает их по его отгруженным
+ * заказам, менеджер создаёт возврат. Долг, касса и склад меняются, когда
+ * кладовщик примет мешки, и только за принятые.
+ */
 export function GoodsReturnModal({
   open,
   onClose,
@@ -59,19 +70,60 @@ export function GoodsReturnModal({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const [created, setCreated] = useState<CreatedReturn | null>(null);
+
+  // Созданный возврат уже в списке «Возвратов»: любое закрытие окна его перечитывает.
+  function finish() {
+    setCreated(null);
+    onDone();
+  }
+
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={created ? finish : onClose}
       eyebrow="Работа · Возврат"
       title="Возврат товара"
-      description="Клиент привёз мешки обратно — система сама разложит их по его отгруженным заказам."
-      className="max-w-5xl"
+      description={
+        created
+          ? undefined
+          : "Клиент привёз мешки обратно — система разложит их по его отгруженным заказам, кладовщик примет их на складе."
+      }
+      className={created ? "max-w-md" : "max-w-5xl"}
       mobileFullscreen
       dismissible={false}
     >
-      {open && <GoodsReturnForm onCancel={onClose} onDone={onDone} />}
+      {open &&
+        (created ? (
+          <GoodsReturnCreated created={created} onDone={finish} />
+        ) : (
+          <GoodsReturnForm onCancel={onClose} onCreated={setCreated} />
+        ))}
     </Modal>
+  );
+}
+
+/** Возврат создан и ждёт кладовщика: деньги и склад — после его приёмки. */
+function GoodsReturnCreated({ created, onDone }: { created: CreatedReturn; onDone: () => void }) {
+  return (
+    <div role="status" className="flex flex-col items-center gap-4 py-4 text-center">
+      <span className="flex size-14 items-center justify-center rounded-full bg-[var(--success)]/12 text-[var(--success)]">
+        <PackageCheck className="size-7" />
+      </span>
+      <div className="flex flex-col gap-1">
+        <div className="text-lg font-semibold">Возврат №{created.id} создан</div>
+        <p className="text-sm text-[var(--muted-foreground)]">
+          Кладовщик примет мешки на складе{created.warehouse ? ` «${created.warehouse}»` : ""}.
+        </p>
+        <p className="text-sm text-[var(--muted-foreground)]">
+          {created.settlement === "cash" ? "Касса отдаст деньги" : "Долг уменьшится"} после приёмки — только за принятые
+          мешки.
+        </p>
+      </div>
+      <Button className="w-full sm:w-auto" onClick={onDone}>
+        Готово
+      </Button>
+    </div>
   );
 }
 
@@ -90,7 +142,13 @@ function ReturnLimit({ product, settlement }: { product?: ReturnableProduct; set
   );
 }
 
-function GoodsReturnForm({ onCancel, onDone }: { onCancel: () => void; onDone: () => void }) {
+function GoodsReturnForm({
+  onCancel,
+  onCreated,
+}: {
+  onCancel: () => void;
+  onCreated: (created: CreatedReturn) => void;
+}) {
   const { me } = useAuth();
   const { data, loading, error: loadError, reload } = useApi<OrderFormOptions>("/orders/form-options/");
   const { clients, warehouses = [] } = data ?? EMPTY_FORM_OPTIONS;
@@ -104,7 +162,7 @@ function GoodsReturnForm({ onCancel, onDone }: { onCancel: () => void; onDone: (
   const [plan, setPlan] = useState<GoodsReturnPlan | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  // Второе нажатие, пока идёт запрос, не должно провести возврат дважды.
+  // Второе нажатие, пока идёт запрос, не должно создать возврат дважды.
   const inFlight = useRef(false);
   const canCash = can(me, "payments.confirm");
   const returnable = useApi<{ products: ReturnableProduct[] }>(client ? `/clients/${client}/goods-return/` : null);
@@ -157,8 +215,11 @@ function GoodsReturnForm({ onCancel, onDone }: { onCancel: () => void; onDone: (
         setPlan(result);
         return;
       }
-      showSuccess(`Возврат №${result.return_id}: ${bagsLabel(result.bags)}`);
-      onDone();
+      onCreated({
+        id: result.return_id!,
+        warehouse: warehouses.find((item) => String(item.id) === warehouse)?.name ?? "",
+        settlement,
+      });
     } catch (cause) {
       setError(apiError(cause));
     } finally {
@@ -283,12 +344,15 @@ function GoodsReturnForm({ onCancel, onDone }: { onCancel: () => void; onDone: (
               <span>Итого {bagsLabel(plan.bags)}</span>
               {/* Валюта — у каждого заказа своя: суммы разных валют не складываются. */}
               <span className="tabular-nums">
-                {plan.settlement === "cash" ? "Касса отдаёт: " : "Долг уменьшится на "}
+                {plan.settlement === "cash" ? "Касса отдаст после приёмки: " : "Долг уменьшится после приёмки на "}
                 {Object.entries(plan.amounts)
                   .map(([currency, amount]) => formatCurrency(amount, currency))
                   .join(" и ")}
               </span>
             </div>
+            <p className="text-xs text-slate-500">
+              Кладовщик проверит мешки на складе: если примет меньше, деньги — только за принятые.
+            </p>
           </section>
         )}
 
@@ -297,7 +361,7 @@ function GoodsReturnForm({ onCancel, onDone }: { onCancel: () => void; onDone: (
 
       <aside className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5">
         <div className="grid gap-1.5">
-          <Label htmlFor="return-warehouse">Склад, куда кладём мешки</Label>
+          <Label htmlFor="return-warehouse">Склад, где кладовщик примет мешки</Label>
           <Select
             id="return-warehouse"
             value={warehouse}
@@ -333,7 +397,7 @@ function GoodsReturnForm({ onCancel, onDone }: { onCancel: () => void; onDone: (
         <div className="flex flex-col gap-2 pt-2">
           {plan ? (
             <Button disabled={busy} onClick={() => void submit(false)}>
-              Подтвердить возврат
+              Создать возврат
             </Button>
           ) : (
             <Button disabled={busy || !ready} onClick={() => void submit(true)}>

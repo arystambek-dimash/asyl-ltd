@@ -1,4 +1,4 @@
-"""«Заказы → Возвраты»: GET /api/orders/returns/ — список проведённых возвратов товара."""
+"""«Заказы → Возвраты»: GET /api/orders/returns/ — возвраты товара: проведённые, ждут приёмки, отменённые."""
 
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
@@ -9,8 +9,9 @@ from django.utils import timezone
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.goods_returns import record_goods_return
-from apps.orders.models import GoodsReturn, GoodsReturnLine, Order, OrderItem
+from apps.eventlog.models import EventLog
+from apps.orders.goods_returns import close_goods_return, confirm_goods_return_item, record_goods_return
+from apps.orders.models import GoodsReturn, GoodsReturnItem, GoodsReturnLine, Order, OrderItem
 from apps.shipments.models import Shipment
 from apps.warehouse.services import get_default_warehouse
 
@@ -47,7 +48,7 @@ def _shipped(client, *, bags=100, price="3000", currency="KZT", department=None,
 def _return(client, lines, *, settlement="debt", user=None, at=None):
     """Проведённый возврат: ``lines`` — [(заказ, мешков)] по позиции заказа."""
     goods_return = GoodsReturn.objects.create(
-        client=client, settlement=settlement, warehouse=get_default_warehouse(), created_by=user,
+        client=client, settlement=settlement, warehouse=get_default_warehouse(), created_by=user, status="full",
     )
     for order, bags in lines:
         item = order.items.get()
@@ -94,6 +95,11 @@ def test_row_follows_the_contract_and_newest_comes_first(api_as, viewer, departm
         "settlement_label": "Из кассы",
         "warehouse_name": get_default_warehouse().name,
         "created_by_name": "A B",
+        "status": "full",
+        "status_label": "Полностью возвращено",
+        "accepted_by_name": None,
+        "accepted_at": None,
+        "items": [],
         "bags": 35,
         "amounts": {"KZT": "165000.00"},
         "lines": [
@@ -231,21 +237,108 @@ def test_requires_the_orders_view_permission(api_as, user_with_perms):
     assert api_as(outsider).get(URL).status_code == 403
 
 
-def test_recorded_return_appears_in_the_list(api_as, viewer, user_with_perms, departments):
+def _pending(client, user, bags=4, flour=None):
+    """Возврат, который менеджер создал и который ждёт кладовщика."""
+    flour = flour or _flour()
+    plan = record_goods_return(
+        client, user, settlement="debt", warehouse=None, lines=[{"product": flour.pk, "bags": bags}],
+    )
+    return GoodsReturn.objects.get(pk=plan["return_id"]), plan
+
+
+@pytest.fixture
+def returns_manager(user_with_perms, departments):
+    return user_with_perms("returns-manager", codes=["orders.view", "orders.edit"], department=departments[0])
+
+
+def test_return_is_listed_while_pending_and_after_the_storekeeper_closes_it(
+    api_as, viewer, returns_manager, user_with_perms, departments,
+):
     client = _client(departments[0], "Дан Агро")
     flour = _flour()
     order = _shipped(client, bags=40, price="3500", product=flour)
     Shipment.objects.create(order=order, shipped_at=timezone.now())
-    manager = user_with_perms("returns-manager", codes=["orders.edit"], department=departments[0])
+    goods_return, plan = _pending(client, returns_manager, bags=4, flour=flour)
 
-    plan = record_goods_return(
-        client, manager, settlement="debt", warehouse=None, lines=[{"product": flour.pk, "bags": 4}],
-    )
+    [pending] = _get(api_as, viewer)
+    assert (pending["id"], pending["status"], pending["status_label"]) == (goods_return.pk, "pending", "Ждёт приёмки")
+    assert (pending["bags"], pending["amounts"], pending["lines"]) == (0, {}, [])
+    item = goods_return.items.get()
+    assert pending["items"] == [
+        {"id": item.pk, "product_label": flour.plain_label, "bags": 4, "accepted_bags": None},
+    ]
+    assert (pending["accepted_by_name"], pending["accepted_at"]) == (None, None)
+
+    storekeeper = user_with_perms("returns-storekeeper", codes=["storekeeper.confirm"])
+    confirm_goods_return_item(goods_return, item.pk, 3)
+    close_goods_return(goods_return, storekeeper)
 
     [row] = _get(api_as, viewer)
-    assert row["id"] == plan["return_id"]
-    assert (row["bags"], row["amounts"], row["settlement"]) == (4, plan["amounts"], "debt")
-    assert [(line["order"], line["bags"]) for line in row["lines"]] == [(order.pk, 4)]
+    assert (row["status"], row["status_label"], row["accepted_by_name"]) == ("partial", "Частично возвращено", "A B")
+    assert row["accepted_at"] is not None
+    assert (row["bags"], row["amounts"], row["settlement"]) == (3, {"KZT": "10500.00"}, "debt")
+    assert [(line["order"], line["bags"]) for line in row["lines"]] == [(order.pk, 3)]
+    assert row["items"][0]["accepted_bags"] == 3
+    assert plan["amounts"] == {"KZT": "14000.00"}  # проверка менеджера — за 4 мешка, проведено за 3
+
+
+def test_pending_returns_follow_the_client_department(api_as, user_with_perms, departments):
+    mill, city = departments
+    mill_client = _client(mill, "Мельничный")
+    city_client = _client(city, "Городской")
+    _shipped(mill_client)
+    _shipped(city_client)
+    own, _ = _pending(mill_client, user_with_perms("mill-editor", codes=["orders.edit"], department=mill))
+    other, _ = _pending(city_client, user_with_perms("city-editor", codes=["orders.edit"], department=city))
+    pinned = user_with_perms("mill-returns", codes=["orders.view"], department=mill)
+    everyone = user_with_perms("all-returns", codes=["orders.view"])
+
+    assert _ids(_get(api_as, pinned)) == [own.pk]
+    assert _ids(_get(api_as, everyone, department="city")) == [other.pk]
+    assert _ids(_get(api_as, everyone, department="mill")) == [own.pk]
+    assert _get(api_as, everyone, department="__unassigned") == []
+
+
+def test_pending_return_is_found_by_client_but_not_by_order_number(api_as, viewer, returns_manager, departments):
+    client = _client(departments[0], "Береке")
+    order = _shipped(client)
+    goods_return, _ = _pending(client, returns_manager)
+
+    assert _ids(_get(api_as, viewer, search="Берек")) == [goods_return.pk]
+    assert _get(api_as, viewer, search=str(order.pk)) == []
+
+
+def test_closed_return_with_every_order_purged_stays_hidden(api_as, viewer, departments):
+    client = _client(departments[0])
+    order = _shipped(client)
+    goods_return = _return(client, [(order, 2)])
+    GoodsReturnLine.objects.filter(goods_return=goods_return).delete()  # окончательная очистка корзины
+
+    assert _get(api_as, viewer) == []
+
+
+def test_manager_cancels_a_pending_return_from_the_list(api_as, returns_manager, user_with_perms, departments):
+    client = _client(departments[0])
+    _shipped(client)
+    goods_return, _ = _pending(client, returns_manager)
+    url = f"{URL}{goods_return.pk}/cancel/"
+    viewer_only = user_with_perms("returns-viewer-only", codes=["orders.view"], department=departments[0])
+    stranger = user_with_perms("city-returns-editor", codes=["orders.view", "orders.edit"], department=departments[1])
+
+    assert api_as(viewer_only).post(url).status_code == 403
+    assert api_as(stranger).post(url).status_code == 404
+    response = api_as(returns_manager).post(url)
+
+    assert response.status_code == 200, response.data
+    assert (response.data["id"], response.data["status"], response.data["status_label"]) == (
+        goods_return.pk, "cancelled", "Отменён",
+    )
+    assert response.data["accepted_by_name"] == "A B"
+    again = api_as(returns_manager).post(url)
+    assert again.status_code == 400
+    assert again.data["code"] == "goods_return_not_pending"
+    assert EventLog.objects.filter(event_type="goods_return_status", payload__status="cancelled").count() == 1
+    assert _ids(_get(api_as, returns_manager)) == [goods_return.pk]  # отменённый виден в списке
 
 
 def test_query_count_does_not_grow_with_returns(count_queries, viewer, departments, make_user):
@@ -253,9 +346,21 @@ def test_query_count_does_not_grow_with_returns(count_queries, viewer, departmen
 
     def add_return(n):
         client = _client(mill if n % 2 else city, f"Клиент {n}")
-        tenge = _shipped(client, product=_flour(f"Мука {n} 50кг"))
+        flour = _flour(f"Мука {n} 50кг")
+        tenge = _shipped(client, product=flour)
         dollars = _shipped(client, currency="USD", department="", product=_flour(f"Мука {n}б 50кг"))
-        _return(client, [(tenge, 2), (dollars, 1)], user=make_user(f"author-{n}"))
+        author = make_user(f"author-{n}")
+        done = _return(client, [(tenge, 2), (dollars, 1)], user=author)
+        GoodsReturn.objects.filter(pk=done.pk).update(accepted_by=author, accepted_at=timezone.now())
+        GoodsReturnItem.objects.create(
+            goods_return=done, product=flour, product_label_snapshot="x", bags=3, paid_bags=3, accepted_bags=3,
+        )
+        pending = GoodsReturn.objects.create(
+            client=client, settlement="debt", warehouse=get_default_warehouse(), created_by=author,
+        )
+        GoodsReturnItem.objects.create(
+            goods_return=pending, product=flour, product_label_snapshot="x", bags=5, paid_bags=5,
+        )
 
     add_return(0)
     few = count_queries(viewer, f"{URL}?page=1")

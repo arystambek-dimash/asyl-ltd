@@ -138,23 +138,55 @@ interface GoodsReturnLine {
 }
 
 /**
- * Возврат товара во вкладке «Заказы → Возвраты» (`/orders/returns/`). Строки —
- * только живые (не из корзины) заказы, видимые сотруднику; bags и amounts — по ним.
+ * Статус возврата: менеджер создаёт его «Ждёт приёмки», кладовщик закрывает.
+ * Подпись — status_label с сервера (choices модели GoodsReturn).
  */
-export interface GoodsReturn {
+export type GoodsReturnStatus = "pending" | "full" | "partial" | "cancelled";
+
+/** Мука возврата, как её создал менеджер, и сколько мешков принял кладовщик (null — ещё не проверено). */
+export interface GoodsReturnItem {
+  id: number;
+  product_label: string;
+  bags: number;
+  accepted_bags: number | null;
+}
+
+/** Общее у возврата в «Заказах» и у кладовщика: кто, куда, статус приёмки и запрошенная мука. */
+interface GoodsReturnHead {
   id: number;
   created_at: string;
-  client: number;
   client_name: string;
-  /** debt — уменьшил долг, cash — касса отдала деньги. */
-  settlement: "debt" | "cash";
-  settlement_label: string;
   warehouse_name: string;
   created_by_name: string | null;
+  status: GoodsReturnStatus;
+  status_label: string;
+  accepted_by_name: string | null;
+  accepted_at: string | null;
+  items: GoodsReturnItem[];
+}
+
+/**
+ * Возврат товара во вкладке «Заказы → Возвраты» (`/orders/returns/`). Строки —
+ * только живые (не из корзины) заказы, видимые сотруднику; bags и amounts — по ним.
+ * Пока возврат не принят (и у отменённого) строк нет: долг и касса не менялись.
+ */
+export interface GoodsReturn extends GoodsReturnHead {
+  client: number;
+  /** debt — уменьшает долг, cash — касса отдаёт деньги (после приёмки). */
+  settlement: "debt" | "cash";
+  settlement_label: string;
   bags: number;
   /** Сумма по валютам заказов: ₸ и $ не складываются. */
   amounts: Record<string, string>;
   lines: GoodsReturnLine[];
+}
+
+/** Возврат на странице «Кладовщик» (`/storekeeper/returns/`): денег кладовщик не видит. */
+export interface StorekeeperReturn extends GoodsReturnHead {
+  /** Запрошено мешков всего. */
+  bags: number;
+  /** Принято всего; null — ни одна строка ещё не проверена. */
+  accepted_bags: number | null;
 }
 
 export interface ReportDay {

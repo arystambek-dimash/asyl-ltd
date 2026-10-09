@@ -18,6 +18,7 @@ describe("event types", () => {
   it("известный тип получает подпись, неизвестный — свой код", () => {
     expect(eventTypeMeta("order_backdated").label).toBe("Задним числом");
     expect(eventTypeMeta("shipment_sources_healed").label).toBe("Склады отгрузки выправлены");
+    expect(eventTypeMeta("goods_return_status").label).toBe("Статус возврата");
     expect(eventTypeMeta("some_new_event").label).toBe("some_new_event");
   });
 

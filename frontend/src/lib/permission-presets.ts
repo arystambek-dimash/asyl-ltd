@@ -78,7 +78,15 @@ export const PERMISSION_PRESETS: PermissionPreset[] = [
   {
     key: "storekeeper",
     label: "Кладовщик",
-    codes: [...EVERYDAY_CODES, "warehouse.view", "warehouse.adjust", "silos.view", "catalog.view"],
+    codes: [
+      ...EVERYDAY_CODES,
+      "warehouse.view",
+      "warehouse.adjust",
+      "silos.view",
+      "catalog.view",
+      "storekeeper.view",
+      "storekeeper.confirm",
+    ],
   },
   {
     key: "observer",

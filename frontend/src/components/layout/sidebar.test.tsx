@@ -92,6 +92,17 @@ describe("подсветка активного пункта", () => {
     expect(screen.getByRole("link", { name: "Грузчик" })).toHaveAttribute("href", "/loader");
   });
 
+  it("ставит «Кладовщик» сразу после «Грузчика» и показывает только с правом storekeeper.view", () => {
+    const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["loader.view", "storekeeper.view"] }} />);
+
+    const work = screen.getAllByRole("link").map((link) => link.textContent);
+    expect(work.indexOf("Кладовщик")).toBe(work.indexOf("Грузчик") + 1);
+    expect(screen.getByRole("link", { name: "Кладовщик" })).toHaveAttribute("href", "/storekeeper");
+
+    rerender(<Sidebar me={{ ...factoryUser, permissions: ["warehouse.view", "warehouse.adjust"] }} />);
+    expect(screen.queryByRole("link", { name: "Кладовщик" })).not.toBeInTheDocument();
+  });
+
   it("показывает общий журнал в управлении только с правом events.view", () => {
     const { rerender } = render(<Sidebar me={{ ...factoryUser, permissions: ["events.view"] }} />);
 
@@ -138,6 +149,7 @@ describe("homeFor", () => {
 
   it("без главной ведёт в первый видимый раздел меню", () => {
     expect(homeFor(makeMe({ permissions: ["tasks.own", "loader.view"] }))).toBe("/loader");
+    expect(homeFor(makeMe({ permissions: ["storekeeper.view", "storekeeper.confirm"] }))).toBe("/storekeeper");
     expect(homeFor(makeMe({ permissions: ["tasks.own"] }))).toBe("/tasks");
     expect(homeFor(makeMe({ permissions: ["payments.create", "orders.view"] }))).toBe("/orders");
   });

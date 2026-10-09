@@ -24,6 +24,8 @@ def test_known_codes_are_present():
         "loader.confirm",
         "loader.trucks",
         "loader.wagons",
+        "storekeeper.view",
+        "storekeeper.confirm",
         "clients.set_price",
         "clients.manage_access",
         "reports.export",

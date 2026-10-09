@@ -96,9 +96,14 @@ def settle_reserved_refund(
 
 @transaction.atomic
 def create_cash_refund(
-    payment: Payment, user, *, amount: object = None, reason: str = ""
+    payment: Payment, user, *, amount: object = None, reason: str = "", any_department=False
 ) -> PaymentRefund:
-    order = lock_live_order(payment.order_id, user)
+    """Касса отдаёт деньги по оплате от имени ``user``.
+
+    ``any_department`` — отдел клиента уже проверил вызывающий (закрытие
+    возврата товара кладовщиком), ``user`` только записывается автором.
+    """
+    order = lock_live_order(payment.order_id, user, any_department=any_department)
     payment = (
         Payment.objects.select_for_update()
         .get(pk=payment.pk)

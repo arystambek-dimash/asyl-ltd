@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { analyticsRange, apiUrl, bagsLabel, dateRangeError, formatCount, loadErrorText, toggledSet } from "./utils";
+import {
+  acceptedBagsLabel,
+  analyticsRange,
+  apiUrl,
+  bagsLabel,
+  dateRangeError,
+  formatCount,
+  loadErrorText,
+  toggledSet,
+} from "./utils";
 
 describe("apiUrl", () => {
   it("пропускает пустые значения и «all»", () => {
@@ -24,6 +33,15 @@ describe("dateRangeError", () => {
 describe("bagsLabel", () => {
   it("склоняет «мешок» по числу", () => {
     expect([1, 3, 5, 11, 21].map(bagsLabel)).toEqual(["1 мешок", "3 мешка", "5 мешков", "11 мешков", "21 мешок"]);
+  });
+});
+
+describe("acceptedBagsLabel", () => {
+  it("после «из» ставит родительный падеж", () => {
+    expect(acceptedBagsLabel(15, 16)).toBe("Принято 15 из 16 мешков");
+    expect(acceptedBagsLabel(0, 1)).toBe("Принято 0 из 1 мешка");
+    expect(acceptedBagsLabel(1, 2)).toBe("Принято 1 из 2 мешков");
+    expect(acceptedBagsLabel(20, 21)).toBe("Принято 20 из 21 мешка");
   });
 });
 

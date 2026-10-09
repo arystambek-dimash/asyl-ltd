@@ -7,7 +7,7 @@ from apps.bots.models import BotClientProfile
 from apps.catalog.models import Product, ProductAlias
 from apps.clients.models import Client
 from apps.common.migration_ops import db_on_delete
-from apps.orders.models import Order
+from apps.orders.models import GoodsReturn, GoodsReturnItem, Order
 from apps.shipments.models import Shipment, ShipmentSource, ShipmentWagon
 from apps.warehouse.models import Warehouse
 
@@ -23,6 +23,9 @@ NEW_FOREIGN_KEYS = [
     (ProductAlias, "created_by", "n"),
     (BotClientProfile, "client", "c"),
     (BotClientProfile, "created_by", "n"),
+    (GoodsReturnItem, "goods_return", "c"),
+    (GoodsReturnItem, "product", "n"),
+    (GoodsReturn, "accepted_by", "n"),
 ]
 
 

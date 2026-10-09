@@ -647,9 +647,9 @@ class ClientViewSet(
 
         GET — мука, которую клиент может вернуть, и сколько
         мешков поместится в счёт долга и из кассы. POST — раскладка
-        (``preview``) или проведение: всё делает
-        ``apps.orders.goods_returns.record_goods_return``; здесь проверяется
-        только форма признака предпросмотра.
+        (``preview``) или создание возврата, который ждёт приёмки кладовщиком:
+        всё делает ``apps.orders.goods_returns.record_goods_return``; здесь
+        проверяется только форма признака предпросмотра.
         """
         client = self.get_object()
         if request.method == "GET":

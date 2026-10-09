@@ -63,6 +63,8 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
       order_repeat: { label: "Повтор заказа", icon: CopyPlus, color: ring },
       // «Возврат»: мешки клиента разложены по его отгруженным заказам (orders/goods_returns.py).
       goods_return: { label: "Возврат товара", icon: RotateCcw, color: warning },
+      // Сам возврат: создан менеджером, закрыт кладовщиком или отменён до приёмки.
+      goods_return_status: { label: "Статус возврата", icon: PackageCheck, color: ring },
       order_backdated: { label: "Задним числом", icon: CalendarClock, color: warning },
       order: { label: "Корзина заказов", icon: Trash2, color: destructive },
       // Типы старых записей журнала: backend их больше не пишет

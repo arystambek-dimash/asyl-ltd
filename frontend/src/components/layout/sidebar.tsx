@@ -15,6 +15,7 @@ import {
   ListChecks,
   BarChart3,
   Package,
+  PackageCheck,
   Settings,
   X,
   Store,
@@ -64,6 +65,8 @@ const STAFF_SECTIONS: NavSection[] = [
       { href: "/monoblock", label: "Моноблок", icon: ScanLine, perm: "monoblock.view" },
       // Грузчик: очередь к отгрузке, одна кнопка «Отгружено» и печать накладной.
       { href: "/loader", label: "Грузчик", icon: Truck, perm: "loader.view" },
+      // Кладовщик: возвраты от менеджеров — проверка мешков по списку и закрытие возврата.
+      { href: "/storekeeper", label: "Кладовщик", icon: PackageCheck, perm: "storekeeper.view" },
       { href: "/warehouse", label: "Склады", icon: Boxes, perm: "warehouse.view" },
       // Силосы имеют отдельное право независимо от зернового процесса.
       { href: "/warehouse/silos", label: "Силосы", icon: Warehouse, perm: "silos.view" },

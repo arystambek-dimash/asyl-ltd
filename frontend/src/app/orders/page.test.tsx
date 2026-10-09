@@ -67,6 +67,11 @@ beforeEach(() => {
               settlement_label: "В счёт долга",
               warehouse_name: "Основной склад",
               created_by_name: "Иван Петров",
+              status: "full",
+              status_label: "Полностью возвращено",
+              accepted_by_name: "Айдос",
+              accepted_at: "2026-10-05T15:00:00+05:00",
+              items: [{ id: 1, product_label: "Мука 1 сорт", bags: 30, accepted_bags: 30 }],
               bags: 30,
               amounts: { KZT: "141000.00" },
               lines: [
