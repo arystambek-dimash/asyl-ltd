@@ -61,15 +61,15 @@ export const EVENT_TYPE_GROUPS: readonly EventTypeGroup[] = [
       order_edit: { label: "Правка заказа", icon: Pencil, color: ring },
       order_price_correction: { label: "Корректировка стоимости", icon: Pencil, color: warning },
       order_repeat: { label: "Повтор заказа", icon: CopyPlus, color: ring },
-      // «Возврат»: мешки клиента разложены по его отгруженным заказам (orders/goods_returns.py)
-      // или сняты с них, когда кладовщик вернул закрытый возврат на приёмку («Исправить»).
-      goods_return: { label: "Возврат товара", icon: RotateCcw, color: warning },
-      // Сам возврат: создан менеджером, закрыт или отменён, возвращён на приёмку — было/стало.
+      // Возврат товара (orders/goods_returns.py): создан менеджером, закрыт или отменён,
+      // возвращён на приёмку — было/стало.
       goods_return_status: { label: "Статус возврата", icon: PackageCheck, color: ring },
       order_backdated: { label: "Задним числом", icon: CalendarClock, color: warning },
       order: { label: "Корзина заказов", icon: Trash2, color: destructive },
       // Типы старых записей журнала: backend их больше не пишет
-      // (arrival — прежний код, order_department_cleanup — миграция orders 0036).
+      // (arrival — прежний код, order_department_cleanup — миграция orders 0036,
+      // goods_return — мешки и деньги возврата по заказам, пока возврат был связан с заказами).
+      goods_return: { label: "Возврат товара", icon: RotateCcw, color: warning },
       arrival: { label: "Прибытие", icon: Truck, color: ring },
       order_department_cleanup: { label: "Отдел заявки очищен", icon: Pencil, color: muted },
     },

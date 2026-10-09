@@ -7,59 +7,26 @@ import {
   SectionTitle,
   type OrderClientOption,
   type OrderFormOptions,
+  type OrderProductOption,
 } from "@/components/orders/order-form-parts";
+import { ProductPicker } from "@/components/orders/product-picker";
 import { Button } from "@/components/ui/button";
 import { DataGate, FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
-import { Segmented } from "@/components/ui/segmented";
 import { Select } from "@/components/ui/select";
 import { api, apiError } from "@/lib/api";
-import { can } from "@/lib/can";
+import type { GoodsReturn } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
-import { bagsLabel, formatCurrency, formatIsoDayMonth } from "@/lib/utils";
-import { useAuth } from "@/store/auth";
+import { bagsLabel } from "@/lib/utils";
 
-type Settlement = "debt" | "cash";
 type Row = { id: number; product: string; bags: string };
 
-/** Раскладка возврата с сервера: заказ → мешки и сумма в валюте заказа (orders/goods_returns.py).
- * У созданного возврата ещё и его номер. */
-interface GoodsReturnPlan {
-  settlement: Settlement;
-  bags: number;
-  /** Итог по валютам: разные валюты не складываются. */
-  amounts: Record<string, string>;
-  orders: {
-    order_id: number;
-    currency: string;
-    shipped_at: string;
-    amount: string;
-    lines: { label: string; bags: number; amount: string }[];
-  }[];
-  return_id?: number;
-}
-
-/** Мука, которую клиент может вернуть (GET /clients/{id}/goods-return/): сколько поместится в каждом режиме. */
-interface ReturnableProduct {
-  product: number;
-  label: string;
-  debt_bags: number;
-  cash_bags: number;
-}
-
-/** Созданный возврат: номер, склад приёмки и что станет с деньгами после неё. */
-interface CreatedReturn {
-  id: number;
-  warehouse: string;
-  settlement: Settlement;
-}
-
 /**
- * «Возврат»: клиент привёз мешки — сервер раскладывает их по его отгруженным
- * заказам, менеджер создаёт возврат. Долг, касса и склад меняются, когда
- * кладовщик примет мешки, и только за принятые.
+ * «Возврат»: клиент привёз мешки — менеджер выбирает клиента, любой товар
+ * каталога и сколько мешков, возврат создаётся «Ждёт приёмки». Кладовщик
+ * примет мешки, и принятые лягут на склад; долг и касса не меняются.
  */
 export function GoodsReturnModal({
   open,
@@ -70,7 +37,7 @@ export function GoodsReturnModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [created, setCreated] = useState<CreatedReturn | null>(null);
+  const [created, setCreated] = useState<GoodsReturn | null>(null);
 
   // Созданный возврат уже в списке «Возвратов»: любое закрытие окна его перечитывает.
   function finish() {
@@ -87,9 +54,9 @@ export function GoodsReturnModal({
       description={
         created
           ? undefined
-          : "Клиент привёз мешки обратно — система разложит их по его отгруженным заказам, кладовщик примет их на складе."
+          : "Клиент привёз мешки обратно — кладовщик примет их, и они лягут на склад. Долг и касса не меняются."
       }
-      className={created ? "max-w-md" : "max-w-5xl"}
+      className={created ? "max-w-md" : "max-w-4xl"}
       mobileFullscreen
       dismissible={false}
     >
@@ -103,8 +70,8 @@ export function GoodsReturnModal({
   );
 }
 
-/** Возврат создан и ждёт кладовщика: деньги и склад — после его приёмки. */
-function GoodsReturnCreated({ created, onDone }: { created: CreatedReturn; onDone: () => void }) {
+/** Возврат создан и ждёт кладовщика: склад пополнится, когда он примет мешки. */
+function GoodsReturnCreated({ created, onDone }: { created: GoodsReturn; onDone: () => void }) {
   return (
     <div role="status" className="flex flex-col items-center gap-4 py-4 text-center">
       <span className="flex size-14 items-center justify-center rounded-full bg-[var(--success)]/12 text-[var(--success)]">
@@ -113,11 +80,7 @@ function GoodsReturnCreated({ created, onDone }: { created: CreatedReturn; onDon
       <div className="flex flex-col gap-1">
         <div className="text-lg font-semibold">Возврат №{created.id} создан</div>
         <p className="text-sm text-[var(--muted-foreground)]">
-          Кладовщик примет мешки на складе{created.warehouse ? ` «${created.warehouse}»` : ""}.
-        </p>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          {created.settlement === "cash" ? "Касса отдаст деньги" : "Долг уменьшится"} после приёмки — только за принятые
-          мешки.
+          Ждёт приёмки у кладовщика — принятые мешки лягут на склад «{created.warehouse_name}».
         </p>
       </div>
       <Button className="w-full sm:w-auto" onClick={onDone}>
@@ -127,46 +90,30 @@ function GoodsReturnCreated({ created, onDone }: { created: CreatedReturn; onDon
   );
 }
 
-/** Сколько мешков этой муки поместится в выбранном режиме — подсказка под строкой. */
-function ReturnLimit({ product, settlement }: { product?: ReturnableProduct; settlement: Settlement }) {
-  if (!product) return null;
-  const bags = settlement === "debt" ? product.debt_bags : product.cash_bags;
-  return (
-    <p className={bags ? "text-xs text-slate-500" : "text-xs font-medium text-[var(--destructive)]"}>
-      {bags
-        ? `Можно вернуть до ${bagsLabel(bags)} ${settlement === "debt" ? "в счёт долга" : "из кассы"}`
-        : settlement === "debt"
-          ? "Нет заказов в долге с этой мукой — выберите «Деньги из кассы»"
-          : "Нет оплаченных заказов с этой мукой — выберите «Уменьшить долг»"}
-    </p>
-  );
+/** Почему «Создать возврат» ещё недоступна; пусто — можно создавать. */
+function missingText(client: string, rows: Row[]) {
+  if (!client) return "Выберите клиента";
+  const filled = rows.filter((row) => row.product || row.bags);
+  if (filled.length === 0) return "Выберите товар и сколько мешков";
+  if (filled.some((row) => !row.product)) return "Выберите товар в каждой строке";
+  if (filled.some((row) => !(Number(row.bags) > 0))) return "Укажите мешки в каждой строке";
+  return "";
 }
 
-function GoodsReturnForm({
-  onCancel,
-  onCreated,
-}: {
-  onCancel: () => void;
-  onCreated: (created: CreatedReturn) => void;
-}) {
-  const { me } = useAuth();
+function GoodsReturnForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (created: GoodsReturn) => void }) {
   const { data, loading, error: loadError, reload } = useApi<OrderFormOptions>("/orders/form-options/");
-  const { clients, warehouses = [] } = data ?? EMPTY_FORM_OPTIONS;
+  // Товары — весь действующий каталог: вернуть можно любой, не только купленный клиентом.
+  const { clients, products, warehouses = [] } = data ?? EMPTY_FORM_OPTIONS;
   const [client, setClient] = useState("");
   const [search, setSearch] = useState("");
   const [listOpen, setListOpen] = useState(true);
   const [warehouse, setWarehouse] = useState("");
-  const [settlement, setSettlement] = useState<Settlement>("debt");
   const nextRowId = useRef(1);
   const [rows, setRows] = useState<Row[]>([{ id: 0, product: "", bags: "" }]);
-  const [plan, setPlan] = useState<GoodsReturnPlan | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   // Второе нажатие, пока идёт запрос, не должно создать возврат дважды.
   const inFlight = useRef(false);
-  const canCash = can(me, "payments.confirm");
-  const returnable = useApi<{ products: ReturnableProduct[] }>(client ? `/clients/${client}/goods-return/` : null);
-  const products = returnable.data?.products ?? [];
 
   useEffect(() => {
     if (warehouse || warehouses.length === 0) return;
@@ -174,52 +121,48 @@ function GoodsReturnForm({
     setWarehouse(String(initial.id));
   }, [warehouse, warehouses]);
 
-  // Любая правка делает раскладку устаревшей: подтверждать можно только свежую.
-  function edited() {
-    setPlan(null);
-    setError("");
-  }
-
   function chooseClient(item: OrderClientOption) {
     setClient(String(item.id));
     setSearch("");
     setListOpen(false);
-    edited();
+    setError("");
   }
 
   function updateRow(id: number, patch: Partial<Row>) {
     setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
-    edited();
+    setError("");
   }
 
+  function removeRow(id: number) {
+    setRows((current) =>
+      current.length > 1
+        ? current.filter((row) => row.id !== id)
+        : [{ id: nextRowId.current++, product: "", bags: "" }],
+    );
+    setError("");
+  }
+
+  /** Остаток товара на выбранном складе — подсказка в списке, вернуть можно и товар без остатка. */
+  const stockAt = (product: OrderProductOption) => product.stock_by_warehouse[warehouse] ?? 0;
+
   // Пустая строка не мешает; начатая — должна быть дописана.
-  const filled = rows.filter((row) => row.product || row.bags);
-  const lines = filled
+  const lines = rows
     .filter((row) => row.product && Number(row.bags) > 0)
     .map((row) => ({ product: Number(row.product), bags: Number(row.bags) }));
-  const ready = Boolean(client) && lines.length > 0 && lines.length === filled.length;
+  const missing = missingText(client, rows);
+  const totalBags = lines.reduce((sum, line) => sum + line.bags, 0);
 
-  async function submit(preview: boolean) {
-    if (inFlight.current) return;
+  async function submit() {
+    if (inFlight.current || missing) return;
     inFlight.current = true;
     setBusy(true);
     setError("");
     try {
-      const { data: result } = await api.post<GoodsReturnPlan>(`/clients/${client}/goods-return/`, {
-        settlement,
+      const { data: row } = await api.post<GoodsReturn>(`/clients/${client}/goods-return/`, {
         warehouse: warehouse ? Number(warehouse) : null,
         lines,
-        preview,
       });
-      if (preview) {
-        setPlan(result);
-        return;
-      }
-      onCreated({
-        id: result.return_id!,
-        warehouse: warehouses.find((item) => String(item.id) === warehouse)?.name ?? "",
-        settlement,
-      });
+      onCreated(row);
     } catch (cause) {
       setError(apiError(cause));
     } finally {
@@ -231,7 +174,7 @@ function GoodsReturnForm({
   if (!data) return <DataGate loading={loading} error={loadError || undefined} onRetry={reload} />;
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_280px] lg:items-start">
       <div className="min-w-0 space-y-8">
         <section className="space-y-4">
           <SectionTitle step={1} title="Клиент" caption="Кто привёз мешки." />
@@ -247,114 +190,67 @@ function GoodsReturnForm({
         </section>
 
         <section className="space-y-4">
-          <SectionTitle step={2} title="Что вернули" caption="Мука и сколько мешков — цену берём из заказов." />
-          {client && returnable.data && products.length === 0 && (
-            <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              У клиента нет отгруженной муки, которую можно вернуть.
-            </p>
-          )}
-          <FormError message={returnable.error} />
-          {rows.map((row, index) => (
-            <div key={row.id} className="space-y-1">
-              <div className="grid grid-cols-[minmax(0,1fr)_110px_auto] items-end gap-2">
-                <div className="grid min-w-0 gap-1.5">
-                  <Label htmlFor={`return-product-${row.id}`}>Мука {index + 1}</Label>
-                  <Select
-                    id={`return-product-${row.id}`}
+          <SectionTitle step={2} title="Что вернули" caption="Любой товар и сколько мешков." />
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="hidden grid-cols-[minmax(0,1fr)_112px_36px] gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:grid">
+              <span>Товар</span>
+              <span>Мешков</span>
+              <span />
+            </div>
+            <div className="divide-y divide-slate-100">
+              {rows.map((row, index) => (
+                <div
+                  key={row.id}
+                  className="grid grid-cols-[minmax(0,1fr)_36px] gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_112px_36px] sm:items-center sm:gap-3"
+                >
+                  <ProductPicker
+                    products={products}
                     value={row.product}
-                    disabled={!client}
-                    onChange={(event) => updateRow(row.id, { product: event.target.value })}
-                    className="h-10 rounded-lg bg-white"
-                  >
-                    <option value="">{client ? "Выберите муку" : "Сначала выберите клиента"}</option>
-                    {products.map((product) => (
-                      <option key={product.product} value={product.product}>
-                        {product.label}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor={`return-bags-${row.id}`}>Мешков {index + 1}</Label>
+                    className="col-span-2 sm:col-span-1"
+                    ariaLabel={`Товар ${index + 1}`}
+                    bagsOf={stockAt}
+                    allowOutOfStock
+                    onChange={(product) => updateRow(row.id, { product })}
+                  />
                   <Input
-                    id={`return-bags-${row.id}`}
                     inputMode="numeric"
+                    placeholder="Мешков"
+                    aria-label={`Мешков ${index + 1}`}
                     value={row.bags}
                     onChange={(event) => updateRow(row.id, { bags: event.target.value.replace(/\D/g, "") })}
-                    className="h-10 text-right tabular-nums"
+                    className="h-10 rounded-lg text-right tabular-nums"
                   />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="justify-self-end text-slate-400 hover:text-red-600"
+                    aria-label={`Убрать строку ${index + 1}`}
+                    onClick={() => removeRow(row.id)}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
                 </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-10"
-                  aria-label={`Убрать строку ${index + 1}`}
-                  disabled={rows.length === 1}
-                  onClick={() => {
-                    setRows((current) => current.filter((item) => item.id !== row.id));
-                    edited();
-                  }}
-                >
-                  <Trash2 className="size-4" />
-                </Button>
-              </div>
-              <ReturnLimit
-                product={products.find((item) => String(item.product) === row.product)}
-                settlement={settlement}
-              />
+              ))}
             </div>
-          ))}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setRows((current) => [...current, { id: nextRowId.current++, product: "", bags: "" }]);
-              edited();
-            }}
-          >
-            <Plus className="size-4" /> Ещё мука
-          </Button>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/60 px-4 py-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="-ml-2"
+                onClick={() => setRows((current) => [...current, { id: nextRowId.current++, product: "", bags: "" }])}
+              >
+                <Plus className="size-4" /> Ещё товар
+              </Button>
+              {totalBags > 0 && (
+                <span className="text-xs text-slate-500">
+                  Итого <b className="font-semibold tabular-nums text-slate-900">{bagsLabel(totalBags)}</b>
+                </span>
+              )}
+            </div>
+          </div>
         </section>
-
-        {plan && (
-          <section
-            aria-label="Раскладка возврата"
-            className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4"
-          >
-            {plan.orders.map((order) => (
-              <div key={order.order_id} className="flex items-start justify-between gap-3 text-sm">
-                <div className="min-w-0">
-                  <div className="font-semibold">
-                    #{order.order_id} · отгружен {formatIsoDayMonth(order.shipped_at.slice(0, 10))}
-                  </div>
-                  {order.lines.map((line, index) => (
-                    <div key={index} className="text-slate-600">
-                      {line.label} — {bagsLabel(line.bags)}
-                    </div>
-                  ))}
-                </div>
-                <div className="shrink-0 font-semibold tabular-nums">
-                  {formatCurrency(order.amount, order.currency)}
-                </div>
-              </div>
-            ))}
-            <div className="flex flex-wrap justify-between gap-2 border-t border-slate-200 pt-3 font-bold">
-              <span>Итого {bagsLabel(plan.bags)}</span>
-              {/* Валюта — у каждого заказа своя: суммы разных валют не складываются. */}
-              <span className="tabular-nums">
-                {plan.settlement === "cash" ? "Касса отдаст после приёмки: " : "Долг уменьшится после приёмки на "}
-                {Object.entries(plan.amounts)
-                  .map(([currency, amount]) => formatCurrency(amount, currency))
-                  .join(" и ")}
-              </span>
-            </div>
-            <p className="text-xs text-slate-500">
-              Кладовщик проверит мешки на складе: если примет меньше, деньги — только за принятые.
-            </p>
-          </section>
-        )}
 
         <FormError message={error} />
       </div>
@@ -367,7 +263,7 @@ function GoodsReturnForm({
             value={warehouse}
             onChange={(event) => {
               setWarehouse(event.target.value);
-              edited();
+              setError("");
             }}
             className="h-10 rounded-lg bg-white"
           >
@@ -379,31 +275,11 @@ function GoodsReturnForm({
             ))}
           </Select>
         </div>
-        <div className="grid gap-1.5">
-          <Label>Деньги</Label>
-          <Segmented
-            ariaLabel="Деньги"
-            value={settlement}
-            options={[
-              { value: "debt", label: "Уменьшить долг" },
-              { value: "cash", label: "Деньги из кассы", disabled: !canCash },
-            ]}
-            onChange={(value) => {
-              setSettlement(value);
-              edited();
-            }}
-          />
-        </div>
         <div className="flex flex-col gap-2 pt-2">
-          {plan ? (
-            <Button disabled={busy} onClick={() => void submit(false)}>
-              Создать возврат
-            </Button>
-          ) : (
-            <Button disabled={busy || !ready} onClick={() => void submit(true)}>
-              Проверить
-            </Button>
-          )}
+          <Button disabled={busy || Boolean(missing)} onClick={() => void submit()}>
+            Создать возврат
+          </Button>
+          {missing && <p className="text-center text-xs text-slate-500">{missing}</p>}
           <Button variant="ghost" onClick={onCancel}>
             Отмена
           </Button>

@@ -528,7 +528,7 @@ function OrdersPageInner() {
   // Смена ключа пересоздаёт форму заказа с нуля (кнопка «Очистить всё»).
   const [orderFormResetKey, setOrderFormResetKey] = useState(0);
   const [statementOpen, setStatementOpen] = useState(false);
-  // «Возврат»: клиент привёз мешки — раскладываются по его отгруженным заказам.
+  // «Возврат»: клиент привёз мешки — заявка ждёт кладовщика, принятое ложится на склад.
   const [returnOpen, setReturnOpen] = useState(false);
   // Растёт после нового возврата: открытая вкладка «Возвраты» перечитывает список.
   const [returnsVersion, setReturnsVersion] = useState(0);
@@ -956,7 +956,7 @@ function OrdersPageInner() {
         open={returnOpen}
         onClose={() => setReturnOpen(false)}
         onDone={() => {
-          // Заказы не меняются, пока кладовщик не примет мешки: перечитываем только «Возвраты».
+          // Возврат с заказами не связан: перечитываем только «Возвраты».
           setReturnOpen(false);
           setReturnsVersion((version) => version + 1);
         }}

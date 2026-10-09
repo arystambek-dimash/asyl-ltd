@@ -45,6 +45,7 @@ from .goods_returns import (
     cancel_goods_return,
     close_goods_return,
     confirm_goods_return_item,
+    goods_return_row,
     goods_return_rows,
     goods_returns_list,
     reopen_goods_return,
@@ -994,7 +995,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         """«Отменить» возврат, который ждёт приёмки; ответ — его строка списка «Возвраты»."""
         goods_return = get_object_or_404(visible_goods_returns(request.user), pk=return_id)
         cancel_goods_return(goods_return, request.user)
-        return Response(goods_return_rows(goods_returns_list(request.user, {}).filter(pk=goods_return.pk))[0])
+        return Response(goods_return_row(request.user, goods_return))
 
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):
@@ -1398,6 +1399,7 @@ class StorekeeperViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         return self._row(confirm_goods_return_item(self.get_object(), item_id, request.data.get("accepted_bags")))
 
     def close(self, request, pk=None):
+        """«Закрыть возврат»: принятые мешки — на склад, деньги не меняются."""
         return self._row(close_goods_return(self.get_object(), request.user))
 
     def cancel(self, request, pk=None):
@@ -1405,5 +1407,5 @@ class StorekeeperViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         return self._row(cancel_goods_return(self.get_object(), request.user, by_storekeeper=True))
 
     def reopen(self, request, pk=None):
-        """«Исправить» закрытый возврат: всё откатывается, он снова ждёт приёмки с прежними числами."""
+        """«Исправить» закрытый возврат: мешки уходят со склада, он снова ждёт приёмки с прежними числами."""
         return self._row(reopen_goods_return(self.get_object(), request.user))

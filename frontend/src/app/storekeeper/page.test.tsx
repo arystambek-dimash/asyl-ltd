@@ -229,8 +229,7 @@ describe("Кладовщик", () => {
   it("отказ закрытия виден в окне и остаётся на экране после него", async () => {
     const user = userEvent.setup();
     pending = [checked(16, 4)];
-    const refusal =
-      "Возврат больше не помещается: клиент уже погасил долг. Пусть менеджер отменит его и создаст заново";
+    const refusal = "Возврат №21 уже не ждёт приёмки: «Отменён»";
     mocks.post.mockRejectedValueOnce(new Error(refusal));
     render(<StorekeeperPage />);
 
@@ -338,8 +337,10 @@ describe("Кладовщик", () => {
     await user.click(await screen.findByRole("button", { name: "Исправить возврат №21" }));
     const dialog = screen.getByRole("dialog", { name: "Исправить возврат №21?" });
     expect(dialog).toHaveTextContent(
-      "Мешки уйдут со склада «Мельница», долг и касса вернутся как были, возврат снова будет ждать приёмки с прежними числами.",
+      "Принятые мешки уйдут со склада «Мельница», возврат снова будет ждать приёмки с прежними числами.",
     );
+    // Новый возврат денег не трогал — и исправление их не касается.
+    expect(dialog).not.toHaveTextContent(/долг|касс/i);
     await user.click(within(dialog).getByRole("button", { name: "Вернуть на приёмку" }));
 
     expect(mocks.post).toHaveBeenCalledWith("/storekeeper/returns/21/reopen/", {});
@@ -393,8 +394,7 @@ describe("Кладовщик", () => {
   it("отказ «Исправить» остаётся в окне, история перечитывается", async () => {
     const user = userEvent.setup();
     closedRows = [checked(16, 4, { status: "full", status_label: "Полностью возвращено", can_reopen: true })];
-    const refusal =
-      "Возврат №21 нельзя вернуть на приёмку: заказ #5 в корзине — попросите менеджера восстановить его, потом нажмите «Исправить» снова";
+    const refusal = "Возврат по старым правилам (с деньгами) — исправить нельзя, обратитесь к руководителю";
     mocks.post.mockRejectedValueOnce(new Error(refusal));
     render(<StorekeeperPage />);
 
@@ -479,5 +479,21 @@ describe("Кладовщик", () => {
 
     expect(await screen.findByText("Отменён")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Исправить/ })).toBeNull();
+  });
+
+  it("возврат по старым правилам (с деньгами) не исправляется — «Исправить» только у нового", async () => {
+    const user = userEvent.setup();
+    const closed = { status: "full", status_label: "Полностью возвращено", accepted_by_name: "Айдос" } as const;
+    closedRows = [
+      checked(16, 4, { ...closed, id: 22, accepted_at: "2026-10-09T15:10:00+05:00", can_reopen: true }),
+      checked(16, 4, { ...closed, id: 21, accepted_at: "2026-10-08T15:10:00+05:00", can_reopen: false }),
+    ];
+    render(<StorekeeperPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "История" }));
+
+    expect(await screen.findByRole("button", { name: "Исправить возврат №22" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Исправить возврат №21" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /Исправить/ })).toHaveLength(1);
   });
 });

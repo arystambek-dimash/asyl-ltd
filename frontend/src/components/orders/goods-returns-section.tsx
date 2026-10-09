@@ -39,14 +39,22 @@ function bagsByOrder(lines: ReturnLine[]) {
   return [...orders.values()];
 }
 
-/** Мешки возврата по муке: одна мука из нескольких заказов — одной строкой. */
+/** Мешки старого возврата по муке: одна мука из нескольких заказов — одной строкой. */
 function bagsByProduct(lines: ReturnLine[]) {
   const products = new Map<string, number>();
   for (const line of lines) products.set(line.product_label, (products.get(line.product_label) ?? 0) + line.bags);
   return [...products.entries()].map(([label, bags]) => ({ label, bags }));
 }
 
-/** Отделы заказов возврата — без повторов. */
+/** Что принял кладовщик: старый возврат — что легло на заказы, новый — принятое по каждому товару. */
+function acceptedProducts(row: GoodsReturn) {
+  if (row.lines.length > 0) return bagsByProduct(row.lines);
+  return row.items
+    .filter((item) => item.accepted_bags)
+    .map((item) => ({ label: item.product_label, bags: item.accepted_bags ?? 0 }));
+}
+
+/** Отделы заказов старого возврата — без повторов; у нового заказов нет. */
 function returnDepartments(lines: ReturnLine[]) {
   const seen = new Map<string, string>();
   for (const line of lines) seen.set(line.order_department, line.order_department_name);
@@ -68,12 +76,12 @@ function ReturnDepartments({ row, departments }: { row: GoodsReturn; departments
   );
 }
 
-/** Принят ли возврат: только у принятого есть строки по заказам и деньги. */
+/** Принят ли возврат кладовщиком: полностью или частично. */
 const isAccepted = (row: GoodsReturn) => row.status === "full" || row.status === "partial";
 
 /**
- * Мука и мешки: у принятого — что легло на заказы, у частичного ещё и «принято
- * N из M»; пока не принят (и у отменённого) — что менеджер записал в возврат.
+ * Товар и мешки: у принятого — что принято, у частичного ещё и «принято N из
+ * M»; пока не принят (и у отменённого) — что менеджер записал в возврат.
  */
 function ReturnProducts({ row }: { row: GoodsReturn }) {
   if (!isAccepted(row)) {
@@ -87,7 +95,8 @@ function ReturnProducts({ row }: { row: GoodsReturn }) {
       </ul>
     );
   }
-  const products = bagsByProduct(row.lines);
+  const products = acceptedProducts(row);
+  const total = products.reduce((sum, product) => sum + product.bags, 0);
   const requested = row.items.reduce((sum, item) => sum + item.bags, 0);
   const accepted = row.items.reduce((sum, item) => sum + (item.accepted_bags ?? 0), 0);
   return (
@@ -103,14 +112,16 @@ function ReturnProducts({ row }: { row: GoodsReturn }) {
         </li>
       ) : (
         products.length > 1 && (
-          <li className="text-xs tabular-nums text-[var(--muted-foreground)]">Всего {bagsLabel(row.bags)}</li>
+          <li className="text-xs tabular-nums text-[var(--muted-foreground)]">Всего {bagsLabel(total)}</li>
         )
       )}
     </ul>
   );
 }
 
+/** Заказы старого возврата; новый с заказами не связан — «—». */
 function ReturnOrders({ row }: { row: GoodsReturn }) {
+  if (row.lines.length === 0) return <span className="text-[var(--muted-foreground)]">—</span>;
   return (
     <ul className="flex flex-wrap gap-x-3 gap-y-0.5 md:flex-col">
       {bagsByOrder(row.lines).map(({ order, bags }) => (
@@ -128,26 +139,19 @@ function ReturnOrders({ row }: { row: GoodsReturn }) {
 }
 
 /**
- * Что стало с деньгами: «В счёт долга» / «Из кассы» и сумма — ₸ и $ отдельными
- * равными итогами. До приёмки денег нет: «—», «после приёмки».
+ * Деньги старого возврата (с деньгами): «В счёт долга» / «Из кассы» и сумма —
+ * ₸ и $ отдельными равными итогами. Новый возврат денег не трогает.
  */
 function ReturnMoney({ row, className }: { row: GoodsReturn; className?: string }) {
   return (
     <div className={className}>
       <div className="text-xs text-[var(--muted-foreground)]">{row.settlement_label}</div>
-      {isAccepted(row) ? (
-        <CurrencyAmounts byCurrency={row.amounts} equal amountClassName="font-semibold tabular-nums" />
-      ) : (
-        <>
-          <div className="font-semibold">—</div>
-          {row.status === "pending" && <div className="text-xs text-[var(--muted-foreground)]">после приёмки</div>}
-        </>
-      )}
+      <CurrencyAmounts byCurrency={row.amounts} equal amountClassName="font-semibold tabular-nums" />
     </div>
   );
 }
 
-/** «Отменить» ждущего приёмки возврата: долг, касса и склад ещё не менялись. */
+/** «Отменить» ждущего приёмки возврата: склад ещё не менялся. */
 function CancelReturnButton({
   row,
   onCancel,
@@ -171,9 +175,11 @@ function CancelReturnButton({
 }
 
 /**
- * Вкладка «Возвраты» в «Заказах»: возвраты товара со статусом приёмки, новые
- * сверху. Строки, суммы и видимость по отделам считает сервер; заказы из
- * корзины в список не попадают. Ждущий приёмки возврат менеджер может отменить.
+ * Вкладка «Заказы → Возвраты»: возвраты товара со статусом приёмки, новые
+ * сверху. Возврат — товар и мешки клиента, принятое ложится на склад; старые
+ * возвраты (с деньгами по заказам) показаны как были. Видимость по отделам
+ * считает сервер; заказы из корзины в список не попадают. Ждущий приёмки
+ * возврат менеджер может отменить.
  *
  * `refreshKey` меняется после нового возврата — список перечитывается с теми же фильтрами.
  */
@@ -276,7 +282,9 @@ export function GoodsReturnsSection({
                   {row.created_by_name && <div className="truncate">{row.created_by_name}</div>}
                   <GoodsReturnAcceptedBy row={row} />
                 </div>
-                <ReturnMoney row={row} className="flex shrink-0 flex-col items-end text-right" />
+                {row.settlement_label && (
+                  <ReturnMoney row={row} className="flex shrink-0 flex-col items-end text-right" />
+                )}
               </div>
               {cancellable(row) && (
                 <div className="flex justify-end">
@@ -295,7 +303,7 @@ export function GoodsReturnsSection({
               <TR>
                 <TH>Дата</TH>
                 <TH>Клиент</TH>
-                <TH>Мука и мешки</TH>
+                <TH>Товар и мешки</TH>
                 <TH>Заказы</TH>
                 <TH className="text-right">Деньги</TH>
                 <TH>Склад</TH>
@@ -335,7 +343,11 @@ export function GoodsReturnsSection({
                       <ReturnOrders row={row} />
                     </TD>
                     <TD className="py-3 align-top">
-                      <ReturnMoney row={row} className="flex flex-col items-end text-right" />
+                      {row.settlement_label ? (
+                        <ReturnMoney row={row} className="flex flex-col items-end text-right" />
+                      ) : (
+                        <div className="text-right text-[var(--muted-foreground)]">—</div>
+                      )}
                     </TD>
                     <TD className="py-3 align-top text-[var(--muted-foreground)]">{row.warehouse_name}</TD>
                     <TD className="py-3 align-top text-[var(--muted-foreground)]">
@@ -359,7 +371,7 @@ export function GoodsReturnsSection({
       <ConfirmDialog
         {...cancel.dialog}
         title={`Отменить возврат №${cancel.item?.id ?? ""}?`}
-        description="Кладовщик не будет принимать эти мешки. Долг, касса и склад не менялись — возврат ещё не принят."
+        description="Кладовщик не будет принимать эти мешки. Склад не менялся — возврат ещё не принят."
         confirmLabel="Отменить возврат"
       />
     </section>

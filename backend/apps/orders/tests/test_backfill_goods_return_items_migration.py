@@ -51,17 +51,17 @@ def test_old_returns_become_fully_returned_with_their_flour(make_user):
     _line(old, second, korol, 2)
     _line(old, first, None, 1, label="Удалённая мука · Синий 50 кг")
     pending = GoodsReturn.objects.create(client=client, settlement="debt", warehouse=get_default_warehouse())
-    GoodsReturnItem.objects.create(
-        goods_return=pending, product=dikhan, product_label_snapshot="x", bags=5, paid_bags=5,
-    )
+    GoodsReturnItem.objects.create(goods_return=pending, product=dikhan, product_label_snapshot="x", bags=5)
 
     migration.backfill_goods_return_items(_historical_apps(), None)
     migration.backfill_goods_return_items(_historical_apps(), None)  # повтор ничего не задваивает
 
     old.refresh_from_db()
     assert (old.status, old.accepted_by, old.accepted_at) == ("full", author, created)
+    # paid_bags уже не в модели (0056) — колонку читает историческая модель.
+    items = _historical_apps().get_model("orders", "GoodsReturnItem").objects.filter(goods_return_id=old.pk)
     assert sorted(
-        old.items.values_list(
+        items.values_list(
             "product_id", "product_label_snapshot", "bags", "paid_bags", "accepted_bags", "checked_at",
         ),
         key=lambda row: row[2],

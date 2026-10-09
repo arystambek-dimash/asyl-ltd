@@ -184,7 +184,8 @@ class Order(models.Model):
     def total_amount(self) -> Decimal:
         # Единственный источник суммы — договорная цена, зафиксированная в заказе.
         # У товара общей цены нет; неподтверждённая позиция пока стоит 0.
-        # Возвращённые мешки («Возврат», orders/goods_returns.py) в сумму не входят.
+        # Мешки, возвращённые по старым правилам («Возврат» с деньгами,
+        # orders/goods_returns.py), в сумму не входят.
         return sum(
             (i.sold_quantity * (i.unit_price if i.unit_price is not None else Decimal("0"))
              for i in self.items.all()),
@@ -235,7 +236,8 @@ class OrderItem(models.Model):
     # Договорная цена за мешок, зафиксированная при подтверждении заказа.
     unit_price = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True)
-    # Мешки, которые клиент вернул («Возврат», orders/goods_returns.py): отгружено
+    # Мешки, которые клиент вернул по старым правилам («Возврат» с деньгами,
+    # orders/goods_returns.py; новые возвраты заказы не трогают): отгружено
     # остаётся ``quantity``, деньги считаются за :attr:`sold_quantity`.
     # db_default: откат релиза вставляет позиции без этой колонки.
     returned_quantity = models.PositiveIntegerField(default=0, db_default=0)
@@ -469,7 +471,8 @@ class PaymentRefund(models.Model):
     method = models.CharField(max_length=20)
     # pending | completed | failed | cancelled. В суммы оплаты (refunds.sync_refund_totals),
     # отчёты и выписки входят только pending и completed; cancelled — кассовый
-    # возврат «Возврата» товара, отменённый его исправлением: деньги снова в оплате.
+    # возврат старого «Возврата» товара (с деньгами), отменённый его исправлением:
+    # деньги снова в оплате. Новые такие не появляются.
     status = models.CharField(max_length=20, default="pending")
     reason = models.CharField(max_length=500)
     provider_refund = models.OneToOneField(
@@ -479,11 +482,6 @@ class PaymentRefund(models.Model):
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="requested_payment_refunds",
-    )
-    # «Возврат» товара, при закрытии которого касса отдала эти деньги
-    # (orders/goods_returns.py): его исправление отменяет ровно эти возвраты.
-    goods_return = models.ForeignKey(
-        "GoodsReturn", null=True, blank=True, on_delete=models.SET_NULL, related_name="refunds",
     )
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -590,17 +588,19 @@ class StatusChangeRequest(models.Model):
 
 
 class GoodsReturn(models.Model):
-    """«Возврат»: клиент привёз мешки, кладовщик их принимает, принятые раскладываются по заказам.
+    """«Возврат»: клиент привёз мешки, кладовщик их принимает — принятые приходят на склад.
 
     Менеджер создаёт возврат с мукой и мешками (:class:`GoodsReturnItem`) — он
-    «Ждёт приёмки», долг, касса и склад не меняются. Кладовщик подтверждает
-    каждую муку и закрывает возврат: только принятые мешки ложатся строками
-    :class:`GoodsReturnLine` на отгруженные заказы, позиция копит
-    ``OrderItem.returned_quantity``. Валюта — у каждого заказа своя.
-    ``settlement`` — что с деньгами: ``debt`` уменьшает долг, ``cash`` — касса
-    отдаёт деньги кассовыми возвратами оплат. Ошибку в закрытом возврате
-    кладовщик исправляет: закрытие откатывается, возврат снова «Ждёт приёмки».
+    «Ждёт приёмки». Кладовщик подтверждает каждую муку и закрывает возврат:
+    принятые мешки приходят на склад ``warehouse``. С заказами возврат не
+    связан, долг и касса не меняются. Ошибку в закрытом возврате кладовщик
+    исправляет: мешки уходят со склада, возврат снова «Ждёт приёмки».
     Сервисы — ``orders/goods_returns.py``.
+
+    ``settlement`` задан только у возвратов, закрытых по старым правилам:
+    принятые мешки легли строками :class:`GoodsReturnLine` на отгруженные
+    заказы (``OrderItem.returned_quantity``), ``debt`` уменьшил долг, ``cash`` —
+    касса отдала деньги. Они остаются в истории и не исправляются.
     """
 
     SETTLEMENTS = [("debt", "В счёт долга"), ("cash", "Из кассы")]
@@ -613,7 +613,8 @@ class GoodsReturn(models.Model):
     CLOSED_STATUSES = ("full", "partial", "cancelled")
 
     client = models.ForeignKey("clients.Client", on_delete=models.CASCADE, related_name="goods_returns")
-    settlement = models.CharField(max_length=10, choices=SETTLEMENTS)
+    # db_default «»: новый образ колонку не пишет, откат образа пишет «debt» или «cash».
+    settlement = models.CharField(max_length=10, choices=SETTLEMENTS, blank=True, default="", db_default="")
     warehouse = models.ForeignKey("warehouse.Warehouse", on_delete=models.PROTECT, related_name="goods_returns")
     # db_default «full»: откат релиза проводит возврат сразу, без приёмки, и
     # вставляет строку без этой колонки — такой возврат уже полностью проведён.
@@ -638,9 +639,7 @@ class GoodsReturnItem(models.Model):
     """Мука возврата: сколько мешков указал менеджер и сколько принял кладовщик.
 
     Одна строка на товар. ``accepted_bags`` — ``None``, пока кладовщик муку не
-    проверил; меньше ``bags`` — привезли не всё. ``paid_bags`` — сколько из
-    ``bags`` раскладка при создании положила на платные позиции (за деньги,
-    которые увидел менеджер); остальные — бонусные, без денег.
+    проверил; меньше ``bags`` — привезли не всё.
     """
 
     goods_return = models.ForeignKey(GoodsReturn, on_delete=models.CASCADE, related_name="items")
@@ -650,7 +649,6 @@ class GoodsReturnItem(models.Model):
     )
     product_label_snapshot = models.CharField(max_length=255)
     bags = models.PositiveIntegerField()
-    paid_bags = models.PositiveIntegerField()
     accepted_bags = models.PositiveIntegerField(null=True, blank=True)
     checked_at = models.DateTimeField(null=True, blank=True)
 
@@ -671,7 +669,10 @@ class GoodsReturnItem(models.Model):
 
 
 class GoodsReturnLine(models.Model):
-    """Сколько мешков возврата легло на позицию заказа и по какой цене."""
+    """Сколько мешков старого возврата (с деньгами) легло на позицию заказа и по какой цене.
+
+    Новые возвраты строк не пишут: история, которую показывает «Заказы → Возвраты».
+    """
 
     goods_return = models.ForeignKey(GoodsReturn, on_delete=models.CASCADE, related_name="lines")
     # CASCADE: окончательная очистка корзины удаляет позиции заказа — она не должна падать.

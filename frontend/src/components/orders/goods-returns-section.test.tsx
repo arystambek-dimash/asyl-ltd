@@ -39,14 +39,15 @@ const ACCEPTED = {
   accepted_at: "2026-10-06T10:00:00+05:00",
 } as const;
 
-/** Сервер отдаёт новые возвраты первыми — список показывает их в том же порядке. */
+/**
+ * Возвраты по старым правилам (с деньгами по заказам): в истории как были.
+ * Сервер отдаёт новые возвраты первыми — список показывает их в том же порядке.
+ */
 const RETURNS: GoodsReturn[] = [
   {
     id: 13,
     created_at: "2026-10-06T09:30:00+05:00",
-    client: 310,
     client_name: "ОсОО «Дан Агро Групп»",
-    settlement: "cash",
     settlement_label: "Из кассы",
     warehouse_name: "Основной склад",
     created_by_name: "Иван Петров",
@@ -55,7 +56,6 @@ const RETURNS: GoodsReturn[] = [
       { id: 1, product_label: "Мука 1 сорт", bags: 20, accepted_bags: 20 },
       { id: 2, product_label: "Мука 2 сорт", bags: 20, accepted_bags: 20 },
     ],
-    bags: 40,
     amounts: { KZT: "14000.00", USD: "60.00" },
     lines: [
       line({ order: 6060, product_label: "Мука 1 сорт", bags: 10, amount: "14000.00" }),
@@ -66,15 +66,12 @@ const RETURNS: GoodsReturn[] = [
   {
     id: 12,
     created_at: "2026-10-05T14:03:00+05:00",
-    client: 7,
     client_name: "Нуржан Сарыагаш",
-    settlement: "debt",
     settlement_label: "В счёт долга",
     warehouse_name: "Мельница",
     created_by_name: null,
     ...ACCEPTED,
     items: [{ id: 3, product_label: "Мука 1 сорт", bags: 30, accepted_bags: 30 }],
-    bags: 30,
     amounts: { KZT: "141000.00" },
     lines: [line({})],
   },
@@ -96,7 +93,7 @@ beforeEach(() => {
 
 const requested = () => mocks.get.mock.calls.map(([raw]) => new URL(String(raw), "http://localhost"));
 
-it("lists returns as the server orders them, with order links, money mode and both currencies", async () => {
+it("keeps legacy returns as they were: order links, money mode and both currencies", async () => {
   render(<GoodsReturnsSection departments={DEPARTMENTS} />);
 
   const table = await screen.findByRole("table");
@@ -191,14 +188,12 @@ it("reloads the list after a new return is recorded", async () => {
   expect(requested()[1].pathname).toBe("/orders/returns/");
 });
 
-/** Возврат, который менеджер создал, а кладовщик ещё не принял: строк по заказам и денег нет. */
+/** Возврат, который менеджер создал, а кладовщик ещё не принял: с заказами и деньгами не связан. */
 const PENDING: GoodsReturn = {
   id: 20,
   created_at: "2026-10-09T09:00:00+05:00",
-  client: 7,
   client_name: "Нуржан Сарыагаш",
-  settlement: "debt",
-  settlement_label: "В счёт долга",
+  settlement_label: null,
   warehouse_name: "Мельница",
   created_by_name: "Иван Петров",
   status: "pending",
@@ -209,12 +204,11 @@ const PENDING: GoodsReturn = {
     { id: 31, product_label: "Первый сорт DIKHAN 50кг", bags: 16, accepted_bags: null },
     { id: 32, product_label: "Второй сорт KOROL 50кг", bags: 4, accepted_bags: null },
   ],
-  bags: 0,
   amounts: {},
   lines: [],
 };
 
-it("shows the acceptance status: pending has no money yet, partial says how much was accepted", async () => {
+it("shows new returns by status: requested, then accepted per product — no orders, no money", async () => {
   results = [
     PENDING,
     {
@@ -224,10 +218,19 @@ it("shows the acceptance status: pending has no money yet, partial says how much
       status_label: "Частично возвращено",
       accepted_by_name: "Айдос",
       accepted_at: "2026-10-09T11:00:00+05:00",
-      items: [{ id: 33, product_label: "Мука 1 сорт", bags: 16, accepted_bags: 15 }],
-      bags: 15,
-      amounts: { KZT: "70500.00" },
-      lines: [line({ bags: 15, amount: "70500.00" })],
+      items: [
+        { id: 33, product_label: "Первый сорт DIKHAN 50кг", bags: 16, accepted_bags: 15 },
+        { id: 34, product_label: "Второй сорт KOROL 50кг", bags: 4, accepted_bags: 4 },
+      ],
+    },
+    {
+      ...PENDING,
+      id: 17,
+      status: "full",
+      status_label: "Полностью возвращено",
+      accepted_by_name: "Айдос",
+      accepted_at: "2026-10-09T10:00:00+05:00",
+      items: [{ id: 35, product_label: "Высший сорт OMAD 50кг", bags: 7, accepted_bags: 7 }],
     },
     { ...PENDING, id: 18, status: "cancelled", status_label: "Отменён" },
   ];
@@ -235,23 +238,63 @@ it("shows the acceptance status: pending has no money yet, partial says how much
 
   const table = await screen.findByRole("table");
   await within(table).findByText("Возврат №20");
-  const [, pending, partial, cancelled] = within(table).getAllByRole("row");
+  const [, pending, partial, full, cancelled] = within(table).getAllByRole("row");
 
   expect(within(pending).getByText("Ждёт приёмки")).toBeInTheDocument();
   expect(pending).toHaveTextContent("Первый сорт DIKHAN 50кг · 16 мешков");
   expect(pending).toHaveTextContent("Второй сорт KOROL 50кг · 4 мешка");
-  expect(pending).toHaveTextContent("после приёмки");
-  expect(pending.textContent).not.toMatch(/₸/);
-  expect(within(pending).queryByRole("link")).toBeNull();
+  expect(pending).not.toHaveTextContent("после приёмки");
 
   expect(within(partial).getByText("Частично возвращено")).toBeInTheDocument();
-  expect(partial).toHaveTextContent("Принято 15 из 16 мешков");
+  expect(partial).toHaveTextContent("Первый сорт DIKHAN 50кг · 15 мешков");
+  expect(partial).toHaveTextContent("Второй сорт KOROL 50кг · 4 мешка");
+  expect(partial).toHaveTextContent("Принято 19 из 20 мешков");
   expect(partial).toHaveTextContent("Принял Айдос");
-  expect(partial.textContent!.replace(/\s/g, " ")).toContain("70 500 ₸");
-  expect(within(partial).getByRole("link", { name: "#6055 · 15 меш." })).toBeInTheDocument();
+
+  expect(within(full).getByText("Полностью возвращено")).toBeInTheDocument();
+  expect(full).toHaveTextContent("Высший сорт OMAD 50кг · 7 мешков");
 
   expect(within(cancelled).getByText("Отменён")).toBeInTheDocument();
-  expect(cancelled).not.toHaveTextContent("после приёмки");
+
+  // Новый возврат не связан с заказами и деньгами: ни ссылок на заказы, ни сумм, ни способа расчёта.
+  for (const row of [pending, partial, full, cancelled]) {
+    expect(within(row).queryByRole("link")).toBeNull();
+    expect(row.textContent).not.toMatch(/₸|\$|В счёт долга|Из кассы/);
+  }
+});
+
+it("shows new and legacy returns side by side: money only on the legacy one", async () => {
+  results = [
+    {
+      ...PENDING,
+      id: 21,
+      status: "full",
+      status_label: "Полностью возвращено",
+      accepted_by_name: "Айдос",
+      accepted_at: "2026-10-09T10:00:00+05:00",
+      items: [{ id: 36, product_label: "Мука 1 сорт", bags: 5, accepted_bags: 5 }],
+    },
+    RETURNS[1],
+  ];
+  render(<GoodsReturnsSection departments={DEPARTMENTS} />);
+
+  const table = await screen.findByRole("table");
+  await within(table).findByText("Возврат №21");
+  const [, fresh, legacy] = within(table).getAllByRole("row");
+
+  expect(fresh).toHaveTextContent("Мука 1 сорт · 5 мешков");
+  expect(fresh.textContent).not.toMatch(/₸|В счёт долга/);
+  expect(within(fresh).queryByRole("link")).toBeNull();
+
+  expect(within(legacy).getByText("В счёт долга")).toBeInTheDocument();
+  expect(legacy.textContent!.replace(/\s/g, " ")).toContain("141 000 ₸");
+  expect(within(legacy).getByRole("link", { name: "#6055 · 30 меш." })).toBeInTheDocument();
+
+  // Телефон: у нового возврата блока денег нет, у старого — способ расчёта и сумма.
+  const card = (id: number) => screen.getByText(new RegExp(`^Возврат №${id} ·`)).closest("li")!;
+  const [freshCard, legacyCard] = [card(21), card(12)];
+  expect(freshCard.textContent).not.toMatch(/₸|В счёт долга/);
+  expect(legacyCard).toHaveTextContent("В счёт долга");
 });
 
 it("lets a manager with orders.edit cancel a pending return and applies the server row", async () => {
@@ -268,7 +311,8 @@ it("lets a manager with orders.edit cancel a pending return and applies the serv
   await user.click(within(table).getByRole("button", { name: "Отменить возврат №20" }));
 
   const dialog = screen.getByRole("dialog", { name: "Отменить возврат №20?" });
-  expect(dialog).toHaveTextContent("Долг, касса и склад не менялись");
+  expect(dialog).toHaveTextContent("Склад не менялся");
+  expect(dialog).not.toHaveTextContent(/долг|касс/i);
   await user.click(within(dialog).getByRole("button", { name: "Отменить возврат" }));
 
   expect(mocks.post).toHaveBeenCalledWith("/orders/returns/20/cancel/", {});

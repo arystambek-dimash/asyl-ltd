@@ -33,7 +33,7 @@ from apps.orders.debt import (
 )
 from apps.orders.backdate import payment_day
 from apps.orders.debt_payments import record_client_debt_payment
-from apps.orders.goods_returns import record_goods_return, returnable_products
+from apps.orders.goods_returns import create_goods_return, goods_return_row
 from apps.orders.models import Order
 from apps.orders.querysets import (
     filter_order_scope,
@@ -167,8 +167,7 @@ class ClientViewSet(
         "debt_detail": ("reports.view", "payments.create"),
         # «Внести оплату» по клиенту — то же право, что «Принять оплату» в заказе.
         "debt_payment": "payments.create",
-        # «Возврат» товара по клиенту (orders/goods_returns.py); «из кассы» сервис
-        # дополнительно проверяет payments.confirm.
+        # «Возврат» товара по клиенту (orders/goods_returns.py).
         "goods_return": "orders.edit",
         "history": "reports.view",
         "statement": "reports.export",
@@ -641,33 +640,20 @@ class ClientViewSet(
             day=payment_day(request.data.get("date")),
         ))
 
-    @action(detail=True, methods=["get", "post"], url_path="goods-return")
+    @action(detail=True, methods=["post"], url_path="goods-return")
     def goods_return(self, request, pk=None):
-        """«Возврат»: мешки клиента раскладываются по его отгруженным заказам.
+        """«Возврат»: заявка на возврат муки клиента — ждёт приёмки кладовщиком.
 
-        GET — мука, которую клиент может вернуть, и сколько
-        мешков поместится в счёт долга и из кассы. POST — раскладка
-        (``preview``) или создание возврата, который ждёт приёмки кладовщиком:
-        всё делает ``apps.orders.goods_returns.record_goods_return``; здесь
-        проверяется только форма признака предпросмотра.
+        Проверки и запись — ``apps.orders.goods_returns.create_goods_return``;
+        ответ — строка возврата из «Заказы → Возвраты».
         """
-        client = self.get_object()
-        if request.method == "GET":
-            return Response({"products": returnable_products(client)})
-        preview = request.data.get("preview", False)
-        if not isinstance(preview, bool):
-            raise ValidationError({
-                "detail": "Признак предпросмотра должен быть true или false",
-                "code": "bad_preview",
-            })
-        return Response(record_goods_return(
-            client,
+        goods_return = create_goods_return(
+            self.get_object(),
             request.user,
-            settlement=request.data.get("settlement"),
             warehouse=request.data.get("warehouse"),
             lines=request.data.get("lines"),
-            preview=preview,
-        ))
+        )
+        return Response(goods_return_row(request.user, goods_return), status=status.HTTP_201_CREATED)
 
 
 class StoreViewSet(PermViewSetMixin, viewsets.ModelViewSet):

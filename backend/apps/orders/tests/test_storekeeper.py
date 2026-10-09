@@ -1,4 +1,4 @@
-"""Страница «Кладовщик»: /api/storekeeper/returns/ — приёмка возвратов товара, без денег."""
+"""Страница «Кладовщик»: /api/storekeeper/returns/ — приёмка возвратов товара на склад, без денег."""
 
 from datetime import timedelta
 from decimal import Decimal
@@ -8,9 +8,8 @@ from django.utils import timezone
 
 from apps.catalog.models import Product
 from apps.clients.models import Client
-from apps.orders.goods_returns import record_goods_return
-from apps.orders.models import GoodsReturn, Order, OrderItem
-from apps.orders.services import record_staff_payment
+from apps.orders.goods_returns import create_goods_return
+from apps.orders.models import GoodsReturn, GoodsReturnItem, GoodsReturnLine, Order, OrderItem
 from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem
 from apps.warehouse.services import get_default_warehouse
@@ -51,11 +50,9 @@ def _shipped(client, items):
 
 def _pending(client, user, lines):
     """Возврат «Ждёт приёмки»: ``lines`` — [(товар, мешков)]."""
-    plan = record_goods_return(
-        client, user, settlement="debt", warehouse=None,
-        lines=[{"product": product.pk, "bags": bags} for product, bags in lines],
+    return create_goods_return(
+        client, user, warehouse=None, lines=[{"product": product.pk, "bags": bags} for product, bags in lines],
     )
-    return GoodsReturn.objects.get(pk=plan["return_id"])
 
 
 def _get(api, **params):
@@ -127,10 +124,8 @@ def test_storekeeper_accepts_lowers_and_closes_a_return_without_seeing_money(
     assert (closed.data["accepted_by_name"], closed.data["bags"], closed.data["accepted_bags"]) == ("A B", 16, 15)
     assert closed.data["can_reopen"] is True
     assert MONEY_KEYS.isdisjoint(closed.data) and MONEY_KEYS.isdisjoint(row)
-    assert dict(OrderItem.objects.filter(order=order).values_list("product_id", "returned_quantity")) == {
-        dikhan.pk: 10, korol.pk: 5,
-    }
     assert dict(StockItem.objects.values_list("product_id", "bags")) == {dikhan.pk: 10, korol.pk: 5}
+    assert set(OrderItem.objects.filter(order=order).values_list("returned_quantity", flat=True)) == {0}
     assert _get(api) == []
     assert [history["id"] for history in _get(api, state="closed")] == [goods_return.pk]
     again = _close(api, goods_return)
@@ -156,23 +151,6 @@ def test_count_outside_the_requested_bags_is_refused(api_as, storekeeper, manage
     assert (as_text.status_code, as_text.data["code"]) == (400, "goods_return_bad_count")
     other = _pending(client, manager, [(flour, 1)])
     assert _confirm(api, other, item, 1).status_code == 404  # мука чужого возврата
-
-
-def test_close_explains_when_the_debt_is_gone(api_as, storekeeper, manager, departments, boss):
-    client = _client(departments[0])
-    flour = _flour()
-    order = _shipped(client, [(flour, 10, "1000")])
-    goods_return = _pending(client, manager, [(flour, 4)])
-    api = api_as(storekeeper)
-    _confirm(api, goods_return, goods_return.items.get(), 4)
-    record_staff_payment(order, Decimal("10000"), boss, method="cash")
-
-    response = _close(api, goods_return)
-
-    assert response.status_code == 400
-    assert response.data["code"] == "goods_return_no_longer_fits"
-    assert "отменить" in response.data["detail"]
-    assert OrderItem.objects.get().returned_quantity == 0
 
 
 def test_pending_oldest_first_and_history_newest_closed_first(api_as, storekeeper, manager, departments):
@@ -256,7 +234,7 @@ def test_permissions_split_the_manager_and_the_storekeeper(api_as, user_with_per
     goods_return.refresh_from_db()
     assert goods_return.status == "full"
     keeper_api = api_as(storekeeper)
-    body = {"settlement": "debt", "lines": [{"product": flour.pk, "bags": 1}], "preview": True}
+    body = {"warehouse": None, "lines": [{"product": flour.pk, "bags": 1}]}
     assert keeper_api.post(f"/api/clients/{client.pk}/goods-return/", body, format="json").status_code == 403
     assert keeper_api.post(f"/api/orders/returns/{goods_return.pk}/cancel/").status_code == 403
     assert keeper_api.get("/api/orders/returns/").status_code == 403
@@ -300,7 +278,6 @@ def test_storekeeper_corrects_a_closed_return_and_closes_it_again(api_as, storek
     assert MONEY_KEYS.isdisjoint(reopened.data)
     assert [row["id"] for row in _get(api)] == [goods_return.pk]
     assert _get(api, state="closed") == []
-    assert OrderItem.objects.get(order=order).returned_quantity == 0
     assert StockItem.objects.get(product=flour).bags == 0
     twice = _reopen(api, goods_return)
     assert (twice.status_code, twice.data["code"]) == (400, "goods_return_not_closed")
@@ -312,8 +289,8 @@ def test_storekeeper_corrects_a_closed_return_and_closes_it_again(api_as, storek
     assert (closed.data["status"], closed.data["accepted_bags"], closed.data["accepted_by_name"]) == (
         "partial", 8, "A B",
     )
-    assert OrderItem.objects.get(order=order).returned_quantity == 8
     assert StockItem.objects.get(product=flour).bags == 8
+    assert OrderItem.objects.get(order=order).returned_quantity == 0  # заказы возврат не трогает
 
 
 def test_storekeeper_cancels_a_pending_return(api_as, storekeeper, manager, departments):
@@ -334,7 +311,7 @@ def test_storekeeper_cancels_a_pending_return(api_as, storekeeper, manager, depa
     assert [row["id"] for row in _get(api, state="closed")] == [goods_return.pk]
     again = _cancel(api, goods_return)
     assert (again.status_code, again.data["code"]) == (400, "goods_return_not_pending")
-    assert OrderItem.objects.get().returned_quantity == 0
+    assert not StockItem.objects.exists()
 
 
 def test_storekeeper_cannot_fix_a_return_the_manager_cancelled(api_as, storekeeper, manager, departments):
@@ -353,3 +330,34 @@ def test_storekeeper_cannot_fix_a_return_the_manager_cancelled(api_as, storekeep
     assert (refused.status_code, refused.data["code"]) == (400, "goods_return_cannot_reopen")
     goods_return.refresh_from_db()
     assert goods_return.status == "cancelled"
+
+
+def test_storekeeper_cannot_fix_a_legacy_return_with_money(api_as, storekeeper, departments):
+    """Возврат, закрытый по старым правилам (мешки легли на заказ, долг уменьшился): «Исправить» скрыто и закрыто."""
+    client = _client(departments[0])
+    flour = _flour()
+    order = _shipped(client, [(flour, 20, "3000")])
+    legacy = GoodsReturn.objects.create(
+        client=client, settlement="debt", warehouse=get_default_warehouse(), status="full",
+        accepted_at=timezone.now(), closed_by_storekeeper=True,
+    )
+    GoodsReturnItem.objects.create(
+        goods_return=legacy, product=flour, product_label_snapshot=flour.plain_label, bags=5, accepted_bags=5,
+    )
+    item = order.items.get()
+    GoodsReturnLine.objects.create(
+        goods_return=legacy, order_item=item, bags=5, unit_price=item.unit_price, amount=item.unit_price * 5,
+    )
+    OrderItem.objects.filter(pk=item.pk).update(returned_quantity=5)
+    api = api_as(storekeeper)
+
+    [row] = _get(api, state="closed")
+    refused = _reopen(api, legacy)
+
+    assert (row["id"], row["status"], row["can_reopen"]) == (legacy.pk, "full", False)
+    assert MONEY_KEYS.isdisjoint(row)
+    assert (refused.status_code, refused.data["code"]) == (400, "goods_return_legacy")
+    assert refused.data["detail"] == "Возврат по старым правилам (с деньгами) — исправить нельзя, обратитесь к руководителю"
+    legacy.refresh_from_db()
+    assert (legacy.status, legacy.lines.count()) == ("full", 1)
+    assert OrderItem.objects.get(pk=item.pk).returned_quantity == 5
