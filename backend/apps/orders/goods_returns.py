@@ -14,19 +14,25 @@ from collections import Counter, defaultdict
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import Exists, F, OuterRef, Prefetch
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.catalog.models import Product
 from apps.clients.services import lock_client_orders, lock_scoped_client
 from apps.common.money import as_money_strings, money_string, money_text, sum_by_currency
+from apps.common.query_params import filter_date_range, parse_date_range, parse_search_param
 from apps.common.text import plural_ru
 from apps.eventlog.services import log_event
+from apps.sales.access import scope_by_client_department
+from apps.sales.labels import department_label
+from apps.sales.models import Department
 from apps.warehouse.services import resolve_warehouse, return_stock
 
 from .debt import DEBT_STATUS, available_to_pay, oldest_debt_first, order_remaining
+from .labels import bonus_mark
 from .models import GoodsReturn, GoodsReturnLine, Order, OrderItem
+from .querysets import filter_order_scope, filter_order_search, order_department
 from .refunds import create_cash_refund
 from .services import sync_payment_status
 
@@ -98,25 +104,34 @@ def plan_goods_return(orders, lines, settlement: str) -> dict:
     ``orders`` — :func:`_candidates` (с ``items`` и ``payments``), ``lines`` —
     ``[(товар, мешков)]``. Позиция отдаёт не больше ``sold_quantity``, заказ —
     не больше ``floor(запас / цена)`` мешков; запас денег заказа общий для всех
-    строк. ``short`` — ``{товар: сколько поместилось}`` для не поместившихся.
+    строк. Бонусная позиция берёт остаток после платных — без денег и без
+    запаса. ``short`` — ``{товар: сколько поместилось}`` для не поместившихся.
     """
     room = {order.pk: _room(order, settlement) for order in orders}
     taken: dict[int, list] = defaultdict(list)
     short = {}
     for product, bags in lines:
         left = bags
-        for order in orders:
-            for item in order.items.all():
-                if not left:
-                    break
-                if item.product_id != product.pk or not item.unit_price or item.unit_price <= 0:
-                    continue
-                fit = min(left, item.sold_quantity, int(room[order.pk] // item.unit_price))
-                if fit <= 0:
-                    continue
-                taken[order.pk].append((item, fit))
-                room[order.pk] -= fit * item.unit_price
-                left -= fit
+        # Сначала платные строки — они уменьшают долг или возвращают деньги;
+        # бонусные (бесплатные) мешки принимают то, что не поместилось, без денег.
+        for bonus in (False, True):
+            for order in orders:
+                for item in order.items.all():
+                    if not left:
+                        break
+                    if item.product_id != product.pk or item.is_bonus != bonus:
+                        continue
+                    if bonus:
+                        fit = min(left, item.sold_quantity)
+                    elif item.unit_price and item.unit_price > 0:
+                        fit = min(left, item.sold_quantity, int(room[order.pk] // item.unit_price))
+                    else:
+                        continue
+                    if fit <= 0:
+                        continue
+                    taken[order.pk].append((item, fit))
+                    room[order.pk] -= fit * item.unit_price
+                    left -= fit
         if left:
             short[product] = bags - left
     slices = [
@@ -147,7 +162,7 @@ def returnable_products(client) -> list[dict]:
     shipped: dict[int, list] = {}
     for order in orders:
         for item in order.items.all():
-            if item.product_id and item.unit_price and item.sold_quantity > 0:
+            if item.product_id and (item.unit_price or item.is_bonus) and item.sold_quantity > 0:
                 shipped.setdefault(item.product_id, []).append(item)
     rows = []
     for items in shipped.values():
@@ -241,7 +256,7 @@ def _payload(plan: dict, *, settlement: str) -> dict:
                 "amount": money_string(share["amount"]),
                 "lines": [
                     {
-                        "label": item.product_plain_label,
+                        "label": bonus_mark(item.product_plain_label, item.is_bonus),
                         "bags": bags,
                         "amount": money_string(item.unit_price * bags),
                     }
@@ -289,3 +304,87 @@ def record_goods_return(
             client, user, plan, parsed, settlement=settlement, warehouse=warehouse,
         ).pk
     return payload
+
+
+# «Заказы → Возвраты»: список проведённых возвратов.
+_ORDER = "order_item__order__"
+
+
+def _visible_lines(user, params):
+    """Строки возвратов, заказы которых сотрудник видит в списке «Заказов».
+
+    Корзина = удалённое: путь ``order_item__order`` обходит ``LiveOrderManager``,
+    поэтому живой заказ — явным фильтром. Область отдела и ``?department=`` —
+    те же правила, что у списка заказов.
+    """
+    lines = GoodsReturnLine.objects.filter(**{f"{_ORDER}deleted_at__isnull": True})
+    lines = scope_by_client_department(lines, user, client_path=f"{_ORDER}client")
+    return filter_order_scope(lines, params, prefix=_ORDER)
+
+
+def goods_returns_list(user, params):
+    """Возвраты, у которых есть видимые строки, — новые сверху.
+
+    Период ``date_from``/``date_to`` — по дню проведения возврата. Поиск — как
+    в списке заказов (клиент, № заказа, номер машины) по заказам видимых строк;
+    «#6055» — тоже номер заказа. У каждого возврата в ``visible_lines`` —
+    только видимые строки, с отделом (``order_department``) и валютой заказа.
+    """
+    lines = _visible_lines(user, params)
+    listed = lines
+    search = parse_search_param(params.get("search")).removeprefix("#").strip()
+    if search:
+        listed = lines.filter(**{f"{_ORDER}in": filter_order_search(Order.objects.all(), search)})
+    returns = GoodsReturn.objects.filter(Exists(listed.filter(goods_return=OuterRef("pk"))))
+    returns = filter_date_range(returns, "created_at", *parse_date_range(params))
+    shown = (
+        lines.select_related("order_item__product")
+        .annotate(department_code=order_department(_ORDER), currency=F(f"{_ORDER}currency"))
+        .order_by(f"-{_ORDER}id", "id")
+    )
+    return (
+        returns.select_related("client__user", "warehouse", "created_by")
+        .prefetch_related(Prefetch("lines", queryset=shown, to_attr="visible_lines"))
+        .order_by("-created_at", "-id")
+    )
+
+
+def goods_return_rows(returns) -> list[dict]:
+    """Возвраты из :func:`goods_returns_list` в ответе API.
+
+    Мешки и деньги — только по видимым строкам; деньги — в валюте заказа
+    каждой строки, итог по валютам не складывается. Мука — без цвета.
+    """
+    departments = {row.code: row for row in Department.objects.all()}
+    rows = []
+    for goods_return in returns:
+        lines = goods_return.visible_lines
+        author = goods_return.created_by
+        rows.append({
+            "id": goods_return.pk,
+            "created_at": timezone.localtime(goods_return.created_at).isoformat(),
+            "client": goods_return.client_id,
+            "client_name": goods_return.client.name,
+            "settlement": goods_return.settlement,
+            "settlement_label": goods_return.get_settlement_display(),
+            "warehouse_name": goods_return.warehouse.name,
+            "created_by_name": (author.get_full_name() or author.username) if author else None,
+            "bags": sum(line.bags for line in lines),
+            "amounts": as_money_strings(sum_by_currency(lines, lambda line: line.amount)),
+            "lines": [
+                {
+                    "order": line.order_item.order_id,
+                    "order_department": line.department_code,
+                    "order_department_name": department_label(
+                        line.department_code, departments.get(line.department_code),
+                    )[0],
+                    "product_label": bonus_mark(line.order_item.product_plain_label, line.order_item.is_bonus),
+                    "bags": line.bags,
+                    "unit_price": money_string(line.unit_price),
+                    "amount": money_string(line.amount),
+                    "currency": line.currency,
+                }
+                for line in lines
+            ],
+        })
+    return rows

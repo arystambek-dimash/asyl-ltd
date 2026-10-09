@@ -11,6 +11,8 @@ interface CurrencyAmountsProps {
   empty?: ReactNode;
   className?: string;
   amountClassName?: string;
+  /** Все валюты одинаково заметны и без «+»: отдельные итоги рядом, а не «основная и добавка». */
+  equal?: boolean;
 }
 
 /**
@@ -27,6 +29,7 @@ export function CurrencyAmounts({
   empty = "—",
   className,
   amountClassName,
+  equal = false,
 }: CurrencyAmountsProps) {
   const rawEntries = Object.entries(byCurrency).map(([currency, value]) => [currency, finiteMoney(value)] as const);
   const nonZeroEntries = rawEntries.filter(([, amount]) => amount !== 0);
@@ -61,11 +64,11 @@ export function CurrencyAmounts({
             "whitespace-nowrap",
             // Две валюты — не одна сумма: вторую показываем мельче и
             // приглушённо, чтобы ₸ и $ не выглядели двумя большими итогами.
-            index > 0 && "text-xs font-normal text-[var(--muted-foreground)]",
+            index > 0 && !equal && "text-xs font-normal text-[var(--muted-foreground)]",
             amountClassName,
           )}
         >
-          {index > 0 && "+ "}
+          {index > 0 && !equal && "+ "}
           {formatCurrency(amount, currency)}
         </span>
       ))}

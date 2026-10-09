@@ -144,14 +144,12 @@ def _order_lines(order, codes: dict[int, str]) -> list[tuple[str, str, Decimal]]
             for wagon in wagons
         ]
     number = order.truck_number or NO_NUMBER
-    return [
-        (
-            codes.get(item.product_id) or item.product_label,
-            number,
-            item.quantity * Decimal(item.product_weight_kg or 0) / KG_PER_TON,
-        )
-        for item in order.items.all()
-    ]
+    # Платная и бонусная строки одного товара — один вагон: тонны складываются.
+    tons: dict[str, Decimal] = {}
+    for item in order.items.all():
+        code = codes.get(item.product_id) or item.product_label
+        tons[code] = tons.get(code, Decimal("0")) + item.quantity * Decimal(item.product_weight_kg or 0) / KG_PER_TON
+    return [(code, number, weight) for code, weight in tons.items()]
 
 
 def compose_rail_report(orders) -> ComposedReport:

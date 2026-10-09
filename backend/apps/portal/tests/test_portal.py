@@ -380,3 +380,18 @@ def test_portal_order_item_snapshot_matches_order_item_save(
     assert item.product_label_snapshot == str(product)
     assert item.product_cv_class_snapshot == product.cv_class
     assert item.product_weight_kg_snapshot == Decimal("50")
+
+
+def test_portal_client_cannot_grant_itself_a_bonus_bag(auth_client, client_user, own_client):
+    product = Product.objects.create(name="P", color="Red", weight_kg="50")
+    StockItem.objects.create(product=product, bags=500)
+    ClientPrice.objects.create(client=own_client, product=product, price="100.00")
+
+    response = auth_client(client_user).post("/api/portal/orders/", {
+        "items": [{"product": product.id, "quantity": 1, "is_bonus": True}],
+    }, format="json")
+
+    assert response.status_code == 201, response.data
+    item = OrderItem.objects.get()
+    assert not item.is_bonus
+    assert response.data["items"][0]["is_bonus"] is False

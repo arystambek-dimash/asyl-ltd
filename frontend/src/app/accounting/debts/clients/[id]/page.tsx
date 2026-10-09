@@ -16,6 +16,7 @@ import { useIsMobile } from "@/lib/use-media-query";
 import { withBack } from "@/lib/navigation";
 import { amountForCurrency, fieldByCurrency, primaryMoneyCurrency } from "@/lib/currency-map";
 import { cn, formatCurrency, formatDateTime, toggledSet } from "@/lib/utils";
+import { orderItemLabel } from "@/lib/orders";
 import { orderTransportText } from "@/lib/wagons";
 import { can } from "@/lib/can";
 import { PaymentStageBadge, paidByMethod, paymentNetAmount } from "@/components/payment-chain";
@@ -66,7 +67,7 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
     const price = Number(it.unit_price ?? 0);
     return {
       key: it.id ?? `${it.product}`,
-      label: it.product_label ?? `Товар #${it.product}`,
+      label: orderItemLabel(it),
       qty: it.quantity,
       price,
       total: price * it.quantity,

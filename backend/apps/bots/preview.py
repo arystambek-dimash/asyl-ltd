@@ -63,6 +63,9 @@ def report_preview(resolved: ResolvedReport, user, *, order=None) -> dict:
     report = resolved.report
     shipped = {wagon.number: wagon for wagon in resolved.wagons}
     prices = {item.product.pk: item.unit_price for item in resolved.items}
+    # У товара с бонусными мешками сумму вагона не назвать: бесплатные мешки
+    # не привязаны к вагону, итог товара считает их отдельно (ResolvedItem.amount).
+    with_free_bags = {item.product.pk for item in resolved.items if item.free_bags}
     wagons = []
     for line in report.wagons:
         product = resolved.products.get(line.code_key)
@@ -80,7 +83,11 @@ def report_preview(resolved: ResolvedReport, user, *, order=None) -> dict:
             "tons": decimal_string(line.tons),
             "bags": bags,
             "unit_price": _money(price),
-            "amount": _money(price * bags if price is not None and bags is not None else None),
+            "amount": _money(
+                price * bags
+                if price is not None and bags is not None and product.pk not in with_free_bags
+                else None
+            ),
         })
     items = [
         {

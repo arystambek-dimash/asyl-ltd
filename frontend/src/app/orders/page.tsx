@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -7,7 +7,6 @@ import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { SearchInput } from "@/components/ui/search-input";
 import { Modal } from "@/components/ui/modal";
 import { StatusBadge } from "@/components/status-badge";
@@ -16,8 +15,9 @@ import { EmptyRow, Table, THead, TBody, TR, TH, TD } from "@/components/ui/table
 import { StatCard } from "@/components/ui/stat-card";
 import { BADGE_TONE_COLOR } from "@/components/ui/badge";
 import { DepartmentBadge, DepartmentDot } from "@/components/ui/department-badge";
-import { FilterDropdown, FilterTrigger } from "@/components/ui/filter-dropdown";
+import { FilterDropdown } from "@/components/ui/filter-dropdown";
 import { SortableHeader, useSortState } from "@/components/ui/sortable-header";
+import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { ActionMenu } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
@@ -29,6 +29,8 @@ import { ArchiveDock } from "@/components/orders/archive-dock";
 import { useOrderArchiveActions } from "@/components/orders/use-order-archive-actions";
 import { DepartmentManager } from "@/components/orders/department-manager";
 import { OrderRequestsSection } from "@/components/orders/order-requests";
+import { GoodsReturnsSection } from "@/components/orders/goods-returns-section";
+import { DateRangeFilter, DepartmentFilter } from "@/components/orders/order-filters";
 import { useOrderRequests } from "@/components/orders/use-order-requests";
 import { departmentScope } from "@/components/cashier/scope";
 import { Tabs, type TabDef } from "@/components/ui/tabs";
@@ -40,16 +42,13 @@ import { LoadMore } from "@/components/ui/load-more";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { clientLabel, orderItemsSummary } from "@/lib/orders";
-import { otherCurrencyAmounts } from "@/lib/currency-map";
 import { cn, formatCurrency, formatDateTime, formatIsoDate } from "@/lib/utils";
 import { orderTransportText } from "@/lib/wagons";
-import { useDismiss } from "@/lib/use-dismiss";
 import { clearOrderDraft, loadOrderDraft } from "@/lib/order-draft";
 import {
   Archive,
   BarChart3,
   Building2,
-  CalendarDays,
   Check,
   ChevronLeft,
   CircleDollarSign,
@@ -69,97 +68,6 @@ const OrderForm = dynamic(() => import("@/components/order-form").then((m) => m.
 const GoodsReturnModal = dynamic(() =>
   import("@/components/orders/goods-return-modal").then((m) => m.GoodsReturnModal),
 );
-
-function DateRangeFilter({
-  dateFrom,
-  dateTo,
-  onDateFrom,
-  onDateTo,
-}: {
-  dateFrom: string;
-  dateTo: string;
-  onDateFrom: (value: string) => void;
-  onDateTo: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const active = Boolean(dateFrom || dateTo);
-  const value =
-    dateFrom && dateTo
-      ? `${formatIsoDate(dateFrom)} — ${formatIsoDate(dateTo)}`
-      : dateFrom
-        ? `с ${formatIsoDate(dateFrom)}`
-        : dateTo
-          ? `по ${formatIsoDate(dateTo)}`
-          : "Все";
-
-  useDismiss(ref, () => setOpen(false), open);
-
-  return (
-    <div ref={ref} className="relative shrink-0">
-      <FilterTrigger
-        label="Дата"
-        value={value}
-        icon={CalendarDays}
-        active={active}
-        open={open}
-        onClick={() => setOpen((current) => !current)}
-        aria-haspopup="dialog"
-      />
-
-      {open && (
-        <div
-          role="dialog"
-          aria-label="Фильтр по дате создания"
-          className="absolute left-0 z-40 mt-1 w-[min(300px,calc(100vw-2rem))] rounded-xl border bg-[var(--card)] p-3 shadow-xl sm:left-auto sm:right-0"
-        >
-          <div className="mb-3">
-            <div className="text-sm font-semibold">Дата создания</div>
-            <div className="text-xs text-[var(--muted-foreground)]">Обе даты входят в выбранный период.</div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs text-[var(--muted-foreground)]">
-              С
-              <Input
-                type="date"
-                value={dateFrom}
-                max={dateTo || undefined}
-                onChange={(event) => onDateFrom(event.target.value)}
-                className="mt-1 h-9 px-2.5 text-xs"
-              />
-            </label>
-            <label className="text-xs text-[var(--muted-foreground)]">
-              По
-              <Input
-                type="date"
-                value={dateTo}
-                min={dateFrom || undefined}
-                onChange={(event) => onDateTo(event.target.value)}
-                className="mt-1 h-9 px-2.5 text-xs"
-              />
-            </label>
-          </div>
-          <div className="mt-3 flex items-center justify-between border-t pt-3">
-            <button
-              type="button"
-              disabled={!active}
-              onClick={() => {
-                onDateFrom("");
-                onDateTo("");
-              }}
-              className="text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] disabled:opacity-40"
-            >
-              Сбросить
-            </button>
-            <Button type="button" size="sm" onClick={() => setOpen(false)}>
-              Готово
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ── Доли статусов в сумме: стековый бар + легенда ──────────────────────── */
 
@@ -222,14 +130,25 @@ function OrderListDepartmentBadge({ order }: { order: Order }) {
  * складывать ₸ и $ в один процент нельзя.
  */
 function PaymentBreakdown({ row }: { row: DepartmentSummary }) {
-  const currency = row.revenue_currency;
-  const revenue = Number(row.revenue ?? 0);
-  const paid = Number(row.paid ?? 0);
-  const debt = Number(row.debt ?? 0);
+  const main = row.revenue_currency;
   const settled = row.paid_orders + row.partial_orders + row.unpaid_orders;
-  if (!settled && revenue <= 0) return null;
-
-  const paidShare = revenue > 0 ? Math.min(100, Math.round((paid / revenue) * 100)) : 0;
+  // Каждая валюта — своей строкой с той же жирностью: ₸ и $ не складываются и не прячутся.
+  const currencies = [
+    ...new Set([
+      ...Object.keys(row.revenue_by_currency),
+      ...Object.keys(row.paid_by_currency),
+      ...Object.keys(row.debt_by_currency),
+    ]),
+  ]
+    .filter(
+      (code) =>
+        Number(row.revenue_by_currency[code] ?? 0) > 0 ||
+        Number(row.paid_by_currency[code] ?? 0) > 0 ||
+        Number(row.debt_by_currency[code] ?? 0) > 0,
+    )
+    .sort((a, b) => (a === main ? -1 : b === main ? 1 : a.localeCompare(b)));
+  if (!settled && !currencies.length) return null;
+  const debts = currencies.filter((code) => Number(row.debt_by_currency[code] ?? 0) > 0);
   const counters = [
     { label: "оплачено", value: row.paid_orders, tone: "bg-[var(--success)]" },
     { label: "частично", value: row.partial_orders, tone: "bg-[var(--warning)]" },
@@ -238,35 +157,38 @@ function PaymentBreakdown({ row }: { row: DepartmentSummary }) {
 
   return (
     <div className="mt-3 border-t pt-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Получено</span>
-        <span className="truncate text-xs font-bold tabular-nums">
-          {formatCurrency(row.paid, currency)}
-          {revenue > 0 && <span className="ml-1 font-medium text-[var(--muted-foreground)]">· {paidShare}%</span>}
-        </span>
-      </div>
-      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
-        <div className="h-full rounded-full bg-[var(--success)]" style={{ width: `${paidShare}%` }} />
-      </div>
+      <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">Получено</div>
+      {currencies.map((code) => {
+        const revenue = Number(row.revenue_by_currency[code] ?? 0);
+        const paid = Number(row.paid_by_currency[code] ?? 0);
+        // Доля — внутри своей валюты: процент от ₸-выручки и отдельно от $-выручки.
+        const share = revenue > 0 ? Math.min(100, Math.round((paid / revenue) * 100)) : 0;
+        return (
+          <div key={code} className="mt-1">
+            <div className="flex items-baseline justify-end gap-1 text-xs font-bold tabular-nums">
+              {formatCurrency(paid, code)}
+              {revenue > 0 && <span className="font-medium text-[var(--muted-foreground)]">· {share}%</span>}
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+              <div className="h-full rounded-full bg-[var(--success)]" style={{ width: `${share}%` }} />
+            </div>
+          </div>
+        );
+      })}
 
-      {debt > 0 && (
-        <div className="mt-2 flex items-baseline justify-between gap-2">
+      {debts.length > 0 && (
+        <div className="mt-2 flex items-start justify-between gap-2">
           <span className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
             Долг · {row.debt_orders} зак.
           </span>
-          <span className="truncate text-xs font-bold tabular-nums text-[var(--destructive)]">
-            {formatCurrency(row.debt, currency)}
-          </span>
+          <CurrencyAmounts
+            byCurrency={Object.fromEntries(debts.map((code) => [code, row.debt_by_currency[code]]))}
+            fallbackCurrency={main}
+            equal
+            amountClassName="text-xs font-bold tabular-nums text-[var(--destructive)]"
+          />
         </div>
       )}
-      {/* Долги во второй валюте — отдельной строкой, без сложения с основной. */}
-      {Object.entries(row.debt_by_currency)
-        .filter(([code, amount]) => code !== currency && Number(amount) > 0)
-        .map(([code, amount]) => (
-          <div key={code} className="mt-0.5 text-right text-[11px] tabular-nums text-[var(--muted-foreground)]">
-            {formatCurrency(amount, code)}
-          </div>
-        ))}
 
       {counters.length > 0 && (
         <div className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1">
@@ -317,7 +239,6 @@ function OrdersAnalytics({
   // валюта, остальные строкой в подписи.
   const mainCurrency = summary?.total_currency ?? "KZT";
   const mainTotal = Number(summary?.total_by_currency[mainCurrency] ?? 0);
-  const otherSums = summary ? otherCurrencyAmounts(summary.total_by_currency, mainCurrency) : [];
 
   return (
     <section className="flex flex-col">
@@ -404,21 +325,15 @@ function OrdersAnalytics({
                       <div className="text-[10px] uppercase tracking-wide text-[var(--muted-foreground)]">
                         Стоимость заказов
                       </div>
-                      <div className="mt-1 truncate text-sm font-bold tabular-nums">
-                        {formatCurrency(row.revenue, row.revenue_currency)}
-                      </div>
-                      {/* Вторая валюта отдельной строкой: раньше на её месте
-                          было слово «По валютам» и суммы не было видно вовсе. */}
-                      {Object.entries(row.revenue_by_currency)
-                        .filter(([currency]) => currency !== row.revenue_currency)
-                        .map(([currency, amount]) => (
-                          <div
-                            key={currency}
-                            className="truncate text-[11px] tabular-nums text-[var(--muted-foreground)]"
-                          >
-                            {formatCurrency(amount, currency)}
-                          </div>
-                        ))}
+                      {/* ₸ и $ — два отдельных итога одинаковым шрифтом, не «основная + добавка». */}
+                      <CurrencyAmounts
+                        byCurrency={row.revenue_by_currency}
+                        fallbackAmount={row.revenue}
+                        fallbackCurrency={row.revenue_currency}
+                        equal
+                        className="mt-1"
+                        amountClassName="text-sm font-bold tabular-nums"
+                      />
                     </div>
                   </div>
 
@@ -450,14 +365,22 @@ function OrdersAnalytics({
           <StatCard label="В процессе" value={summary ? String(summary.active) : "—"} icon={Clock3} />
           <StatCard
             label="Сумма"
-            value={summary ? formatCurrency(mainTotal, mainCurrency) : "—"}
+            value={
+              summary ? (
+                <CurrencyAmounts
+                  byCurrency={summary.total_by_currency}
+                  fallbackAmount={mainTotal}
+                  fallbackCurrency={mainCurrency}
+                  equal
+                  className="items-start"
+                />
+              ) : (
+                "—"
+              )
+            }
             icon={CircleDollarSign}
             accent
-            caption={
-              otherSums.length > 0
-                ? `ещё ${otherSums.map(([c, v]) => formatCurrency(v, c)).join(", ")} · без отменённых`
-                : "Без отменённых и отклонённых"
-            }
+            caption="Без отменённых и отклонённых"
             className="col-span-2 sm:col-span-1"
           >
             {summary && <StatusShareBar byGroup={summary.by_status_group} total={mainTotal} currency={mainCurrency} />}
@@ -536,9 +459,10 @@ function OrderTemplatePicker({
   );
 }
 
-type OrdersTab = "orders" | "requests";
+type OrdersTab = "orders" | "requests" | "returns";
 
-const tabFromQuery = (value: string | null): OrdersTab => (value === "requests" ? value : "orders");
+const tabFromQuery = (value: string | null): OrdersTab =>
+  value === "requests" || value === "returns" ? value : "orders";
 
 function OrdersPageInner() {
   const router = useRouter();
@@ -589,7 +513,8 @@ function OrdersPageInner() {
   // Заявки клиентов разбирает сотрудник с правом подтверждения; закреплённый за отделом видит свой отдел.
   const canReviewOrders = can(me, "orders.confirm");
   const { assigned } = departmentScope(me);
-  const activeTab: OrdersTab = canReviewOrders && tab === "requests" ? "requests" : "orders";
+  // «Заявки» — только тем, кто подтверждает; «Возвраты» видит каждый, кому открыты заказы.
+  const activeTab: OrdersTab = tab === "requests" && !canReviewOrders ? "orders" : tab;
   const requests = useOrderRequests(canReviewOrders && view === "orders", reload);
   function chooseTab(key: string) {
     const next = tabFromQuery(key);
@@ -605,6 +530,8 @@ function OrdersPageInner() {
   const [statementOpen, setStatementOpen] = useState(false);
   // «Возврат»: клиент привёз мешки — раскладываются по его отгруженным заказам.
   const [returnOpen, setReturnOpen] = useState(false);
+  // Растёт после нового возврата: открытая вкладка «Возвраты» перечитывает список.
+  const [returnsVersion, setReturnsVersion] = useState(0);
   const { data: trashPreview, reload: reloadTrashPreview } = useApi<{ count: number; results: Order[] }>(
     canEdit && view === "orders" ? "/orders/trash-preview/" : null,
   );
@@ -738,22 +665,23 @@ function OrdersPageInner() {
         />
       ) : (
         <>
-          {canReviewOrders && (
-            <Tabs
-              className="mb-4"
-              label="Заказы и заявки"
-              tabs={[
-                { key: "orders", label: "Все заказы" },
-                ...(canReviewOrders
-                  ? [{ key: "requests", label: "Заявки", count: requests.loading ? undefined : requests.count }]
-                  : []),
-              ]}
-              active={activeTab}
-              onChange={chooseTab}
-            />
-          )}
+          <Tabs
+            className="mb-4"
+            label="Заказы, заявки и возвраты"
+            tabs={[
+              { key: "orders", label: "Все заказы" },
+              ...(canReviewOrders
+                ? [{ key: "requests", label: "Заявки", count: requests.loading ? undefined : requests.count }]
+                : []),
+              { key: "returns", label: "Возвраты" },
+            ]}
+            active={activeTab}
+            onChange={chooseTab}
+          />
           {activeTab === "requests" ? (
             <OrderRequestsSection requests={requests} departments={departments ?? undefined} />
+          ) : activeTab === "returns" ? (
+            <GoodsReturnsSection departments={departments} refreshKey={returnsVersion} />
           ) : (
             <>
               <Modal
@@ -785,21 +713,7 @@ function OrdersPageInner() {
                 />
                 <div className="flex flex-wrap items-center gap-2">
                   <DateRangeFilter dateFrom={dateFrom} dateTo={dateTo} onDateFrom={setDateFrom} onDateTo={setDateTo} />
-                  {(departments?.length ?? 0) > 0 && !assigned && (
-                    <FilterDropdown
-                      label="Отдел"
-                      active={dept}
-                      onChange={setDept}
-                      options={[
-                        { key: "all", label: "Все" },
-                        { key: "__unassigned", label: "Нет отдела" },
-                        ...(departments ?? []).map((department) => ({
-                          key: department.code,
-                          label: department.name,
-                        })),
-                      ]}
-                    />
-                  )}
+                  <DepartmentFilter departments={departments} active={dept} onChange={setDept} />
                   <FilterDropdown label="Статус" options={pills} active={status} onChange={setStatus} />
                   <Button size="sm" variant="outline" onClick={() => setAnalyticsOpen(true)}>
                     <BarChart3 className="size-4" /> Аналитика
@@ -1044,6 +958,7 @@ function OrdersPageInner() {
         onDone={() => {
           setReturnOpen(false);
           reload();
+          setReturnsVersion((version) => version + 1);
         }}
       />
 

@@ -165,7 +165,7 @@ def build_waybill_pdf(order: Order) -> bytes:
         source_text = para_text(sources_text(parts[item.pk])).replace(" — ", " — ")
         source_line = f'<br/><font size="6.5">{source_text}</font>' if parts.get(item.pk) else ""
         rows.append([
-            Paragraph(str(index), center), Paragraph(para_text(item.product_label) + source_line, cell),
+            Paragraph(str(index), center), Paragraph(para_text(item.line_label) + source_line, cell),
             Paragraph(str(item.quantity), number), Paragraph(_kg(kg), number),
             Paragraph(_money(price), number), Paragraph(_money(per_kg), number),
             Paragraph(_money(line_total), number),

@@ -70,10 +70,12 @@ class ResolvedItem:
     # Цена прошлого отгруженного вагонного заказа клиента (сверка цены).
     reference_price: Decimal | None = None
     reference_order_id: int | None = None
+    # Бонусные мешки заказа («Отгрузить по отчёту»): едут в вагонах, но бесплатны.
+    free_bags: int = 0
 
     @property
     def amount(self) -> Decimal | None:
-        return None if self.unit_price is None else self.unit_price * self.bags
+        return None if self.unit_price is None else self.unit_price * max(self.bags - self.free_bags, 0)
 
 
 @dataclass(frozen=True)
@@ -637,8 +639,22 @@ def resolve_order_report(report: RailReport, order: Order) -> ResolvedReport:
         issues.append(ReportIssue(
             "order_not_waiting", f"Заказ №{order.pk} не ждёт отгрузки вагонами", order_id=order.pk))
     products, wagons, items = _resolve_goods(report, issues)
-    prices = {item.product_id: item.unit_price for item in order.items.all()}
-    items = [replace(item, unit_price=prices.get(item.product.pk)) for item in items]
+    # Цена товара — у платной строки; бонусные мешки того же товара в вагонах
+    # есть, но в сумму не входят. Товар только бонусом стоит 0, а не «без цены».
+    prices, free = {}, defaultdict(int)
+    for line in order.items.all():
+        if line.is_bonus:
+            free[line.product_id] += line.quantity
+        else:
+            prices[line.product_id] = line.unit_price
+    items = [
+        replace(
+            item,
+            unit_price=prices.get(item.product.pk, Decimal("0") if item.product.pk in free else None),
+            free_bags=free[item.product.pk],
+        )
+        for item in items
+    ]
     # Мешки сверяются, когда распознаны все вагоны: иначе расхождение ложное.
     if wagons and len(wagons) == len(report.wagons):
         mismatch = bags_mismatch(order, wagons, counted="в отчёте")

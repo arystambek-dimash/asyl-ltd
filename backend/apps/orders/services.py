@@ -929,14 +929,18 @@ def order_items_error(items, historical_ids=frozenset()) -> str | None:
     """Общая проверка позиций заказа для сотрудников и портала.
 
     Архивный товар в заказ не добавляют (остаётся только уже бывший в заказе —
-    ``historical_ids``), а один товар занимает одну строку.
+    ``historical_ids``), а один товар занимает одну строку — и ещё одну
+    бонусную. Бонус идёт только к покупке: хотя бы одна строка платная.
+    У портала ключа ``is_bonus`` нет — клиент бонус себе не назначает.
     """
     if any(not item["product"].is_active and item["product"].pk not in historical_ids
            for item in items):
         return "Архивный товар нельзя добавлять в заказ"
-    product_ids = [item["product"].pk for item in items]
-    if len(product_ids) != len(set(product_ids)):
+    lines = [(item["product"].pk, item.get("is_bonus", False)) for item in items]
+    if len(lines) != len(set(lines)):
         return "Объедините повторяющиеся товары в одну строку"
+    if items and all(is_bonus for _, is_bonus in lines):
+        return "Добавьте хотя бы одну платную позицию — бонус идёт только к покупке"
     return None
 
 
@@ -985,19 +989,19 @@ def _apply_confirmed_quantities(order: Order, quantities: dict) -> list[dict]:
         quantity = given.get(str(item.pk), item.quantity)
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
             raise ValidationError({
-                "detail": f"Укажите количество для «{item.product_label}» — от 1 мешка",
+                "detail": f"Укажите количество для «{item.line_label}» — от 1 мешка",
                 "code": "invalid_quantity",
             })
         if quantity > item.quantity:
             raise ValidationError({
-                "detail": f"«{item.product_label}»: в заявке {item.quantity} меш., больше подтвердить нельзя",
+                "detail": f"«{item.line_label}»: в заявке {item.quantity} меш., больше подтвердить нельзя",
                 "code": "quantity_exceeds_request",
             })
         if quantity == item.quantity:
             continue
         changes.append({
             "item_id": item.pk,
-            "product": item.product_label,
+            "product": item.line_label,
             "requested": item.quantity,
             "confirmed": quantity,
         })
@@ -1113,7 +1117,8 @@ def apply_item_prices(order: Order, prices: dict, user) -> None:
     Отдела 2 подтверждает бухгалтер на своём табло.
     """
     from apps.catalog.models import ClientPrice
-    items = list(order.items.select_related("product").all())
+    # Бонус бесплатен всегда: цена 0 стоит с создания, личный прайс он не трогает.
+    items = list(order.items.select_related("product").filter(is_bonus=False))
     for item in items:
         raw = prices.get(item.id, prices.get(str(item.id)))
         if raw is None and item.unit_price is not None and item.unit_price > 0:
@@ -1150,11 +1155,15 @@ def correct_order_prices(
     confirmed cash movements remain immutable accounting facts.
     """
     locked = lock_live_order(order, user)
-    items = list(
+    all_items = list(
         OrderItem.objects.select_for_update()
         .filter(order=locked)
         .order_by("id")
     )
+    # Бонусные мешки бесплатны при любой корректировке: сумма делится и цены
+    # ставятся только на платные позиции.
+    items = [item for item in all_items if not item.is_bonus]
+    bonus_ids = {item.id for item in all_items if item.is_bonus}
     if not items:
         raise ValidationError({
             "detail": "В заказе нет позиций для корректировки",
@@ -1204,6 +1213,11 @@ def correct_order_prices(
                     "detail": "Некорректная позиция заказа",
                     "code": "invalid_item",
                 }) from exc
+            if item_id in bonus_ids:
+                raise ValidationError({
+                    "detail": "Бонусная позиция бесплатна — цену у неё не меняют",
+                    "code": "bonus_item_price",
+                })
             supplied_ids.add(item_id)
             new_prices[item_id] = _positive_money(
                 raw_price,
@@ -1270,6 +1284,7 @@ def _edit_item_payload(item: OrderItem) -> dict:
     return {
         "product": item.product_id,
         "product_label": item.product_label,
+        "is_bonus": item.is_bonus,
         "quantity": item.quantity,
         "unit_price": (
             str(item.unit_price) if item.unit_price is not None else None
@@ -1316,10 +1331,19 @@ def _validate_payment_exposure(order: Order, new_total: Decimal) -> dict:
 
 
 def _create_items(order: Order, items_data: list, prices: dict | None) -> tuple[list[OrderItem], dict]:
-    """Создать позиции и разложить цены по товару ({product_id: цена}) на id позиций."""
-    created = [OrderItem.objects.create(order=order, **item) for item in items_data]
+    """Создать позиции и разложить цены по товару ({product_id: цена}) на id позиций.
+
+    Бонусная позиция сразу стоит 0 и цену товара не берёт: платная и бонусная
+    строки одного товара делят ключ в ``prices``.
+    """
+    created = [
+        OrderItem.objects.create(
+            order=order, **item, **({"unit_price": Decimal("0")} if item.get("is_bonus") else {}),
+        )
+        for item in items_data
+    ]
     prices = prices or {}
-    return created, {item.id: prices.get(str(item.product_id)) for item in created}
+    return created, {item.id: prices.get(str(item.product_id)) for item in created if not item.is_bonus}
 
 
 @transaction.atomic

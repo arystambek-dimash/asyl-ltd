@@ -41,6 +41,7 @@ from .apipay import (
     provider_error, reject_unissued_payment,
 )
 from .refunds import create_cash_refund
+from .goods_returns import goods_return_rows, goods_returns_list
 from .invoices import build_payment_receipt_pdf
 from .debt import counts_as_debt, payment_status
 from .querysets import (
@@ -642,6 +643,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         "fixate": "orders.edit",
         "department_summary": "orders.view",
         "list_summary": "orders.view",
+        # «Заказы → Возвраты»: видит тот, кому открыт список заказов.
+        "goods_returns": "orders.view",
         "form_options": ("orders.create", "orders.edit"),
         # Календарь отгрузки открыт тем же, кому открыта очередь поста.
         "shipping_calendar": ("orders.view", "monoblock.view", "loader.view"),
@@ -960,6 +963,18 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 group: amount for (code, group), amount in by_group.items() if code == currency
             }),
         })
+
+    @action(detail=False, methods=["get"], url_path="returns")
+    def goods_returns(self, request):
+        """«Заказы → Возвраты»: возвраты товара, новые сверху (orders/goods_returns.py).
+
+        Корзина, область отдела, ``?department=``, период и поиск — там же;
+        страницы — как у списка заказов.
+        """
+        returns = goods_returns_list(request.user, request.query_params)
+        page = self.paginate_queryset(returns)
+        rows = goods_return_rows(page if page is not None else returns)
+        return self.get_paginated_response(rows) if page is not None else Response(rows)
 
     @action(detail=False, methods=["get"], url_path="payments-queue")
     def payments_queue(self, request):

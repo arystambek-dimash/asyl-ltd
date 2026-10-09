@@ -459,7 +459,7 @@ def _items_sheet(wb, data: StatementData) -> None:
         Column("Заказ", 10, lambda row: row[0].id),
         Column("Дата", 19, lambda row: row[0].created_at, "date"),
         *_client_columns(lambda row: row[0].client),
-        Column("Товар", 40, lambda row: row[1].product_label),
+        Column("Товар", 40, lambda row: row[1].line_label),
         Column("Класс CV", 16, lambda row: row[1].product_cv_class or "—"),
         Column("Мешков", 12, lambda row: row[1].quantity, "number"),
         Column("Возврат", 12, lambda row: row[1].returned_quantity, "number"),

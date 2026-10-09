@@ -295,10 +295,93 @@ describe("OrderForm reference data resilience", () => {
     render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: /^Товар, позиция 1/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Бонусный мешок/ })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
     const body = patchMock.mock.calls[0][1] as Record<string, unknown>;
     expect(body).not.toHaveProperty("items");
     expect(body).not.toHaveProperty("prices");
+  });
+
+  describe("бонусный мешок", () => {
+    it("adds a free line for every hundred paid bags and sends it without a price", async () => {
+      const user = userEvent.setup();
+      render(
+        <OrderForm
+          template={orderTemplate({ items: [{ product: product.id, quantity: 250, unit_price: "17.50" }] })}
+          onCancel={vi.fn()}
+          onDone={vi.fn()}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: /Бонусный мешок/ }));
+
+      // Товар первой платной позиции, мешков — по одному на каждые 100 оплаченных.
+      expect(screen.getByRole("button", { name: /^Товар, позиция 2/ })).toHaveTextContent(/Мука/);
+      expect(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 2" })).toHaveValue(2);
+      expect(screen.queryByRole("spinbutton", { name: "Цена, позиция 2" })).not.toBeInTheDocument();
+      expect(screen.getByText("Бонус")).toBeInTheDocument();
+      expect(screen.getByText("бесплатно")).toBeInTheDocument();
+      expect(screen.getByText("1 на 100 оплаченных → 2 меш.")).toBeInTheDocument();
+      expect(screen.getAllByText(/252 меш\. \(в т\.ч\. 2 бонус\)/).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+      expect(postMock).toHaveBeenCalledWith(
+        "/orders/",
+        expect.objectContaining({
+          items: [
+            { product: product.id, quantity: 250 },
+            { product: product.id, quantity: 2, is_bonus: true },
+          ],
+          prices: { "2": "17.50" },
+        }),
+      );
+    });
+
+    it("needs at least one paid line", async () => {
+      const user = userEvent.setup();
+      render(<OrderForm template={orderTemplate()} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+      await user.click(screen.getByRole("button", { name: /Бонусный мешок/ }));
+      // Меньше сотни оплаченных — бонус всё равно добавляется, от одного мешка.
+      expect(screen.getByRole("spinbutton", { name: "Количество мешков, позиция 2" })).toHaveValue(1);
+      expect(screen.getByRole("button", { name: /Создать заказ/ })).toBeEnabled();
+
+      await user.click(screen.getByRole("button", { name: "Удалить позицию 1" }));
+      expect(screen.getByRole("button", { name: /Создать заказ/ })).toBeDisabled();
+    });
+
+    it("keeps a bonus line free when the order is edited", async () => {
+      const editing = orderTemplate({
+        id: 14,
+        client_name: client.name,
+        status: "confirmed",
+        transport_type: "truck",
+        truck_number: "",
+        items: [
+          { id: 1, product: product.id, quantity: 300, unit_price: "17.50" },
+          { id: 2, product: product.id, quantity: 3, unit_price: "0.00", is_bonus: true },
+        ],
+      });
+      mockApi({ [FORM_OPTIONS]: apiState(formOptions()), [KZT_PRICES]: apiState({ "2": "19.00" }) });
+
+      const user = userEvent.setup();
+      render(<OrderForm editing={editing} onCancel={vi.fn()} onDone={vi.fn()} />);
+
+      expect(screen.getByRole("spinbutton", { name: "Цена, позиция 1" })).toHaveValue(17.5);
+      expect(screen.queryByRole("spinbutton", { name: "Цена, позиция 2" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+
+      expect(patchMock).toHaveBeenCalledWith(
+        "/orders/14/",
+        expect.objectContaining({
+          items: [
+            { product: product.id, quantity: 300 },
+            { product: product.id, quantity: 3, is_bonus: true },
+          ],
+          prices: { "2": "17.50" },
+        }),
+      );
+    });
   });
 
   it("creates a wagon order with its complete number from a template", async () => {

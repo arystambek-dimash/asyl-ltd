@@ -40,6 +40,7 @@ import { OrderStatusSelect } from "@/components/order-status-select";
 import { useOrderStatusChange } from "@/components/orders/use-order-status-change";
 import { useOrderActions } from "@/components/orders/order-actions";
 import { OrderReviewDialogs } from "@/components/orders/order-review-dialogs";
+import { BonusBadge } from "@/components/orders/bonus-badge";
 import { ArrowLeft, CalendarDays, CircleHelp, CopyPlus, Printer, Truck, UserRound } from "lucide-react";
 import { eventTypeMeta } from "@/lib/event-types";
 import type { Client, EventLog, Order, Store } from "@/lib/types";
@@ -354,6 +355,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                           <TD>
                             <span className="font-medium">
                               {it.product_label || `Товар #${it.product}`}
+                              {it.is_bonus && <BonusBadge className="ml-1.5 align-middle" />}
                               {it.weight_kg && (
                                 <span className="block text-xs font-normal text-[var(--muted-foreground)]">
                                   {it.weight_kg} кг/мешок
@@ -370,9 +372,14 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                             ) : null}
                           </TD>
                           <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
-                            {price ? formatCurrency(it.unit_price!, order.currency) : "—"}
+                            {it.is_bonus ? "бесплатно" : price ? formatCurrency(it.unit_price!, order.currency) : "—"}
                           </TD>
-                          <TD className="text-right tabular-nums font-medium">
+                          <TD
+                            className={cn(
+                              "text-right tabular-nums font-medium",
+                              it.is_bonus && "font-normal text-[var(--muted-foreground)]",
+                            )}
+                          >
                             {it.unit_price == null ? "—" : formatCurrency(sum, order.currency)}
                           </TD>
                         </TR>

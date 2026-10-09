@@ -3,6 +3,9 @@ import type { PayNowDraft } from "@/components/orders/pay-now";
 import type { TruckKind } from "@/components/ui/transport-number-fields";
 import type { Order } from "@/lib/types";
 
+/** Позиция формы заказа. bonus — бесплатный мешок; в черновиках до бонуса поля нет — позиция платная. */
+export type OrderDraftRow = { id: number; product: string; quantity: string; price: string; bonus?: boolean };
+
 /**
  * Черновик формы «Новый заказ»: переживает случайное закрытие окна и перезагрузку.
  * Живёт в localStorage этого браузера, отдельно на каждого сотрудника.
@@ -23,7 +26,7 @@ export interface OrderDraft {
   trailer?: string;
   wagonNumber: string;
   arrival: string;
-  rows: { id: number; product: string; quantity: string; price: string }[];
+  rows: OrderDraftRow[];
   backdateOn: boolean;
   fixation: FixationDraft;
   /**

@@ -1,5 +1,6 @@
 "use client";
 import { ChevronRight } from "lucide-react";
+import { BonusBadge } from "@/components/orders/bonus-badge";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
 import { loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
@@ -32,7 +33,10 @@ export function LoaderItemList({ items, className }: { items: LoaderOrderItem[];
     <ul aria-label="Товары" className={cn("flex flex-col gap-2", className)}>
       {items.map((item, index) => (
         <li key={index} className="flex items-start gap-2.5">
-          <span className="min-w-0 flex-1 break-words text-base font-semibold leading-snug">{item.label}</span>
+          <span className="min-w-0 flex-1 break-words text-base font-semibold leading-snug">
+            {item.label}
+            {item.is_bonus && <BonusBadge className="ml-2 align-middle" />}
+          </span>
           <span className="shrink-0 text-lg font-black leading-tight tabular-nums text-[var(--loader-number)]">
             {bagsLabel(item.quantity)}
           </span>

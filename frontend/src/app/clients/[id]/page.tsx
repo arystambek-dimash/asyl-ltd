@@ -21,7 +21,8 @@ import { onlyDigits } from "@/lib/phone";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { fieldByCurrency, finiteMoney } from "@/lib/currency-map";
-import type { ClientHistory } from "@/lib/types";
+import { bonusLabel } from "@/lib/orders";
+import type { ClientHistory, ClientHistorySale } from "@/lib/types";
 import { formatCurrency, formatDateTime, sumMoneyByCurrency, toLocalIsoDate } from "@/lib/utils";
 import { StatementExportModal } from "@/components/statement-export-modal";
 import { ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
@@ -122,8 +123,8 @@ function FilterSelect({
   );
 }
 
-function itemsText(items: { label: string; qty: number }[]): string {
-  return items.map((i) => `${i.label} × ${i.qty}`).join(", ");
+function itemsText(items: ClientHistorySale["items"]): string {
+  return items.map((i) => `${bonusLabel(i.label, i.is_bonus)} × ${i.qty}`).join(", ");
 }
 
 function EmptyRow({ colSpan, filtered, onReset }: { colSpan: number; filtered: boolean; onReset: () => void }) {

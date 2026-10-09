@@ -31,22 +31,28 @@ export function OrderPriceCorrectionModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  // Бонусные позиции бесплатны: цену не правят, общая сумма делится только на оплаченные мешки.
+  const paidItems = order ? order.items.filter((item) => !item.is_bonus) : [];
+
   useEffect(() => {
     if (!order) return;
     setMode("total");
     setTotalAmount(order.total_amount);
     setPrices(
       Object.fromEntries(
-        order.items.filter((item) => item.id != null).map((item) => [String(item.id), item.unit_price ?? ""]),
+        order.items
+          .filter((item) => item.id != null && !item.is_bonus)
+          .map((item) => [String(item.id), item.unit_price ?? ""]),
       ),
     );
     setBusy(false);
     setError("");
   }, [order]);
 
-  const bags = order ? orderedBagCount(order) : 0;
+  const bags = orderedBagCount({ items: paidItems });
+  const bonusBags = order ? orderedBagCount(order) - bags : 0;
   const dividedPrice = bags > 0 && Number(totalAmount) > 0 ? Number(totalAmount) / bags : 0;
-  const perItemTotal = order ? requestEstimate(order.items, { prices }).amount : null;
+  const perItemTotal = requestEstimate(paidItems, { prices }).amount;
   const symbol = currencySymbol(order?.currency ?? "KZT");
 
   async function submit(event: React.FormEvent) {
@@ -60,7 +66,7 @@ export function OrderPriceCorrectionModal({
           ? { total_amount: totalAmount }
           : {
               prices: Object.fromEntries(
-                order.items
+                paidItems
                   .filter((item) => item.id != null)
                   .map((item) => [String(item.id), prices[String(item.id)] ?? ""]),
               ),
@@ -98,7 +104,12 @@ export function OrderPriceCorrectionModal({
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
                 Мешков
               </div>
-              <div className="mt-1 text-sm font-bold tabular-nums">{bags}</div>
+              <div className="mt-1 text-sm font-bold tabular-nums">
+                {bags}
+                {bonusBags > 0 && (
+                  <span className="font-normal text-[var(--muted-foreground)]"> + {bonusBags} бонус</span>
+                )}
+              </div>
             </div>
             <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
               <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700">Оплачено</div>
@@ -168,14 +179,15 @@ export function OrderPriceCorrectionModal({
                     {bags > 0 ? `${formatCurrency(dividedPrice, order.currency)} за мешок` : "В заказе нет мешков"}
                   </div>
                   <div className="text-xs text-blue-700">
-                    {formatCurrency(totalAmount || "0", order.currency)} ÷ {bags} мешков
+                    {formatCurrency(totalAmount || "0", order.currency)} ÷ {bags}{" "}
+                    {bonusBags > 0 ? "оплаченных мешков" : "мешков"}
                   </div>
                 </div>
               </div>
             </section>
           ) : (
             <section className="space-y-3">
-              {order.items.map((item, index) => (
+              {paidItems.map((item, index) => (
                 <div
                   key={item.id ?? index}
                   className="grid gap-3 rounded-2xl border bg-[var(--card)] p-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-center"

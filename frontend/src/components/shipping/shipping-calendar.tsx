@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { SearchInput } from "@/components/ui/search-input";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { MONTH_NAMES_OF, WEEKDAY_NAMES, monthGrid, monthOf, monthTitle, shiftMonth } from "@/lib/calendar-month";
-import { orderedBagCount } from "@/lib/orders";
+import { orderItemLabel, orderedBagCount } from "@/lib/orders";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import type { Order } from "@/lib/types";
@@ -225,9 +225,7 @@ export function ShippingCalendar({
                     </span>
                   )}
                 </div>
-                <div className="truncate text-sm">
-                  {order.items.map((item) => item.product_label ?? `Товар #${item.product}`).join(" · ")}
-                </div>
+                <div className="truncate text-sm">{order.items.map((item) => orderItemLabel(item)).join(" · ")}</div>
                 <div className="flex items-center justify-between gap-2 text-xs text-[var(--muted-foreground)]">
                   <span className="truncate">
                     №{order.id} · {order.client_name}

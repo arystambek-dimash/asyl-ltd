@@ -114,7 +114,8 @@ def client_history(client) -> dict:
             # итог по списку на странице складывает только такие строки.
             "is_financial": is_financial(o.status),
             "settlement_intent": o.settlement_intent,
-            "items": [{"label": i.product_label, "qty": i.quantity} for i in items],
+            # Подпись — товар без пометки: по ней фильтр «Товар» карточки клиента.
+            "items": [{"label": i.product_label, "qty": i.quantity, "is_bonus": i.is_bonus} for i in items],
             "bags": o.ordered_bags,
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),

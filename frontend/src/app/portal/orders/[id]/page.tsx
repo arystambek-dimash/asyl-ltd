@@ -9,6 +9,7 @@ import { TransportNumberFields } from "@/components/ui/transport-number-fields";
 import { WagonList } from "@/components/ui/wagon-list";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { StatusBadge } from "@/components/status-badge";
+import { BonusBadge } from "@/components/orders/bonus-badge";
 import { OrderPaymentBadge } from "@/components/payments/order-payment-badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/table";
 import { DataGate } from "@/components/ui/data-state";
@@ -138,7 +139,10 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
               <TBody>
                 {order.items.map((it) => (
                   <TR key={it.id}>
-                    <TD>{it.product_label}</TD>
+                    <TD>
+                      {it.product_label}
+                      {it.is_bonus && <BonusBadge className="ml-1.5 align-middle" />}
+                    </TD>
                     <TD>
                       {it.quantity}
                       {it.returned_quantity ? (

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CalendarClock, Check, Info, Plus, RefreshCw, Trash2, Truck } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Gift, Info, Plus, RefreshCw, Trash2, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,6 +26,7 @@ import {
   type OrderFormOptions,
   type OrderProductOption,
 } from "@/components/orders/order-form-parts";
+import { BonusBadge } from "@/components/orders/bonus-badge";
 import { OptionToggle } from "@/components/orders/option-toggle";
 import { ProductPicker } from "@/components/orders/product-picker";
 import { PayNowFields, payAfterCreate, usePayNow } from "@/components/orders/pay-now";
@@ -44,10 +45,9 @@ import {
   orderDraftHasContent,
   saveOrderDraft,
   type OrderDraft,
+  type OrderDraftRow,
 } from "@/lib/order-draft";
 import type { Order, Warehouse } from "@/lib/types";
-
-type Row = { id: number; product: string; quantity: string; price: string };
 
 // Газель и фура — только в интерфейсе: в заказ обе уходят как «truck».
 const TRANSPORT_OPTIONS: { value: TruckKind | "train"; label: string }[] = [
@@ -55,6 +55,9 @@ const TRANSPORT_OPTIONS: { value: TruckKind | "train"; label: string }[] = [
   { value: "fura", label: "Фура" },
   { value: "train", label: "Вагон" },
 ];
+
+const ADD_ROW_BUTTON =
+  "inline-flex items-center gap-1.5 text-sm font-semibold text-slate-700 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50";
 
 function productIsAssignedToWarehouse(product: OrderProductOption, warehouse: string) {
   if (!warehouse) return true;
@@ -67,12 +70,21 @@ function productBagsAtWarehouse(product: OrderProductOption, warehouse: string) 
 }
 
 /** Позиции с товаром, которого нет на складе, очищаются — склад их не отгрузит. */
-function dropRowsOutsideWarehouse(rows: Row[], products: OrderProductOption[], warehouse: string): Row[] {
+function dropRowsOutsideWarehouse(
+  rows: OrderDraftRow[],
+  products: OrderProductOption[],
+  warehouse: string,
+): OrderDraftRow[] {
   return rows.map((row) => {
     const selected = products.find((item) => String(item.id) === row.product);
     if (!selected || productIsAssignedToWarehouse(selected, warehouse)) return row;
-    return { ...row, product: "", price: "" };
+    return { ...row, product: "", price: row.bonus ? "0" : "" };
   });
+}
+
+/** «303 меш. (в т.ч. 3 бонус)» — бонусные мешки грузятся, поэтому входят в итог. */
+function bagsSummary(bags: number, bonusBags: number) {
+  return bonusBags ? `${bags} меш. (в т.ч. ${bonusBags} бонус)` : `${bags} меш.`;
 }
 
 export function OrderForm({
@@ -132,7 +144,7 @@ export function OrderForm({
   const [arrival, setArrival] = useState(
     draft?.arrival ?? editing?.arrival_date ?? (template ? todayLocalIsoDate() : ""),
   );
-  const [rows, setRows] = useState<Row[]>(
+  const [rows, setRows] = useState<OrderDraftRow[]>(
     draft?.rows.length
       ? draft.rows
       : source
@@ -140,7 +152,7 @@ export function OrderForm({
             id: index,
             product: String(item.product ?? ""),
             quantity: String(item.quantity),
-            price: item.unit_price ?? "",
+            ...(item.is_bonus ? { price: "0", bonus: true } : { price: item.unit_price ?? "" }),
           }))
         : [{ id: 0, product: "", quantity: "", price: "" }],
   );
@@ -203,8 +215,11 @@ export function OrderForm({
       keepDraftPrices.current = false;
       return;
     }
+    // Бонусная позиция бесплатна — прайс её не трогает.
     setRows((current) =>
-      current.map((row) => (row.product ? { ...row, price: loadedClientPrices[row.product] ?? "" } : row)),
+      current.map((row) =>
+        row.product && !row.bonus ? { ...row, price: loadedClientPrices[row.product] ?? "" } : row,
+      ),
     );
   }, [editing, loadedClientPrices]);
 
@@ -231,10 +246,16 @@ export function OrderForm({
   const warehouseProducts = products.filter((item) => productIsAssignedToWarehouse(item, warehouse));
   const validRows = rows.filter((row) => row.product && Number(row.quantity) > 0);
   // Та же оценка, что у заявки: без цены у позиции сумма «Не рассчитана», а не «0 ₸».
-  const estimate = requestEstimate(validRows.map((row) => ({ quantity: row.quantity, unit_price: row.price })));
+  const estimate = requestEstimate(
+    validRows.map((row) => ({ quantity: row.quantity, unit_price: row.price, is_bonus: row.bonus })),
+  );
   const allPriced = estimate.amount !== null;
   const totalLabel = formatEstimate(estimate.amount, currency);
-  const selectedBags = estimate.bags;
+  const bonusBags = validRows.reduce((total, row) => total + (row.bonus ? Number(row.quantity) : 0), 0);
+  const paidBags = estimate.bags - bonusBags;
+  // Один бонусный мешок на каждые 100 оплаченных — подсказка, а не правило: решает заявитель.
+  const bonusDue = Math.floor(paidBags / 100);
+  const bagsText = bagsSummary(estimate.bags, bonusBags);
   // Исторический заказ склад не списывает — товар без остатка тоже можно выбрать.
   const allowOutOfStock = shippedCorrection || backdating;
   const fixationError = backdating ? fixationDraftError(fixation, { currency }) : "";
@@ -308,12 +329,26 @@ export function OrderForm({
     setError("");
   }
 
-  function updateRow(index: number, patch: Partial<Row>) {
+  function updateRow(index: number, patch: Partial<OrderDraftRow>) {
     setRows((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
   }
 
   function addRow() {
     setRows((current) => [...current, { id: nextRowId.current++, product: "", quantity: "", price: "" }]);
+  }
+
+  /** Бонус по умолчанию — товар первой платной позиции, мешков — сколько положено за оплаченные. */
+  function addBonusRow() {
+    setRows((current) => [
+      ...current,
+      {
+        id: nextRowId.current++,
+        product: current.find((row) => !row.bonus)?.product ?? "",
+        quantity: String(Math.max(1, bonusDue)),
+        price: "0",
+        bonus: true,
+      },
+    ]);
   }
 
   /** Незаполненная форма: кнопка создания неактивна. */
@@ -323,6 +358,9 @@ export function OrderForm({
     if (!effectiveDept) return "Выберите отдел продаж.";
     if (warehouseOptions.length > 0 && !warehouse) return "Выберите склад отгрузки.";
     if (!compositionLocked && !validRows.length) return "Добавьте хотя бы одну позицию.";
+    if (!compositionLocked && validRows.every((row) => row.bonus)) {
+      return "Добавьте хотя бы одну платную позицию — бонус идёт только к покупке.";
+    }
     if (!compositionLocked && !allPriced) return "Укажите цену для каждой позиции.";
     if (shippedCorrection && editReason.trim().length < 5) {
       return "Укажите причину изменения отгруженного заказа — минимум 5 символов.";
@@ -354,8 +392,10 @@ export function OrderForm({
       const items = validRows.map((row) => ({
         product: Number(row.product),
         quantity: Number(row.quantity),
+        ...(row.bonus ? { is_bonus: true } : {}),
       }));
-      const prices = Object.fromEntries(validRows.map((row) => [row.product, row.price]));
+      // Цены — только платных позиций: бонус бесплатен, бэкенд его цену не принимает.
+      const prices = Object.fromEntries(validRows.filter((row) => !row.bonus).map((row) => [row.product, row.price]));
       const body = {
         store: store ? Number(store) : null,
         ...(warehouse ? { warehouse: Number(warehouse) } : {}),
@@ -570,7 +610,7 @@ export function OrderForm({
                       editing && currentProduct && !warehouseProducts.some((item) => item.id === currentProduct.id)
                         ? [currentProduct, ...warehouseProducts]
                         : warehouseProducts;
-                    const lineTotal = Number(row.price || 0) * Number(row.quantity || 0);
+                    const lineTotal = row.bonus ? 0 : Number(row.price || 0) * Number(row.quantity || 0);
                     return (
                       <div
                         key={row.id}
@@ -584,7 +624,9 @@ export function OrderForm({
                           disabled={compositionLocked}
                           bagsOf={(product) => productBagsAtWarehouse(product, warehouse)}
                           allowOutOfStock={allowOutOfStock}
-                          onChange={(product) => updateRow(index, { product, price: clientPrices[product] ?? "" })}
+                          onChange={(product) =>
+                            updateRow(index, row.bonus ? { product } : { product, price: clientPrices[product] ?? "" })
+                          }
                         />
                         <Input
                           type="number"
@@ -597,20 +639,28 @@ export function OrderForm({
                           disabled={compositionLocked}
                           onChange={(event) => updateRow(index, { quantity: event.target.value })}
                         />
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          inputMode="decimal"
-                          className="h-10 rounded-lg"
-                          aria-label={`Цена, позиция ${index + 1}`}
-                          placeholder={`Цена, ${currencySymbol(currency)}`}
-                          value={row.price}
-                          disabled={compositionLocked}
-                          onChange={(event) => updateRow(index, { price: event.target.value })}
-                        />
+                        {row.bonus ? (
+                          <div className="flex h-10 items-center">
+                            <BonusBadge />
+                          </div>
+                        ) : (
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            inputMode="decimal"
+                            className="h-10 rounded-lg"
+                            aria-label={`Цена, позиция ${index + 1}`}
+                            placeholder={`Цена, ${currencySymbol(currency)}`}
+                            value={row.price}
+                            disabled={compositionLocked}
+                            onChange={(event) => updateRow(index, { price: event.target.value })}
+                          />
+                        )}
                         <div className="col-span-2 self-center text-sm font-semibold tabular-nums text-slate-900 sm:col-span-1 sm:text-right">
-                          {lineTotal > 0 ? (
+                          {row.bonus ? (
+                            <span className="font-medium text-slate-500">бесплатно</span>
+                          ) : lineTotal > 0 ? (
                             formatCurrency(String(lineTotal), currency)
                           ) : (
                             <span className="text-slate-300">—</span>
@@ -634,21 +684,26 @@ export function OrderForm({
                         >
                           <Trash2 className="size-4" />
                         </Button>
+                        {row.bonus && (
+                          <p className="col-span-3 -mt-1 text-xs text-slate-500 sm:col-span-5">
+                            1 на 100 оплаченных → {bonusDue} меш.
+                          </p>
+                        )}
                       </div>
                     );
                   })}
                 </div>
-                <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/60 px-4 py-2.5">
-                  <button
-                    type="button"
-                    disabled={compositionLocked}
-                    onClick={addRow}
-                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-700 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Plus className="size-4" /> Добавить позицию
-                  </button>
+                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-slate-100 bg-slate-50/60 px-4 py-2.5">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <button type="button" disabled={compositionLocked} onClick={addRow} className={ADD_ROW_BUTTON}>
+                      <Plus className="size-4" /> Добавить позицию
+                    </button>
+                    <button type="button" disabled={compositionLocked} onClick={addBonusRow} className={ADD_ROW_BUTTON}>
+                      <Gift className="size-4" /> Бонусный мешок
+                    </button>
+                  </div>
                   <span className="text-xs text-slate-500">
-                    {selectedBags} меш. · <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b>
+                    {bagsText} · <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b>
                   </span>
                 </div>
               </div>
@@ -817,7 +872,7 @@ export function OrderForm({
               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Итог</div>
               <div className="mt-1 text-2xl font-bold tabular-nums text-slate-900">{totalLabel}</div>
               <div className="text-xs text-slate-500">
-                {validRows.length} {validRows.length === 1 ? "позиция" : "позиций"} · {selectedBags} меш.
+                {validRows.length} {validRows.length === 1 ? "позиция" : "позиций"} · {bagsText}
               </div>
               <dl className="mt-3 space-y-1.5 border-t border-slate-200 pt-3 text-xs">
                 {orderSummaryRows.map((row) => (
@@ -836,7 +891,7 @@ export function OrderForm({
 
       <div className="sticky -bottom-5 z-10 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
         <span className="mr-auto text-sm text-slate-500 lg:hidden">
-          <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b> · {selectedBags} меш.
+          <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b> · {bagsText}
         </span>
         <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
           Отмена

@@ -4,6 +4,7 @@ import {
   clientLabel,
   formatEstimate,
   hasUnpricedItems,
+  orderItemLabel,
   orderItemsSummary,
   requestEstimate,
 } from "./orders";
@@ -41,6 +42,17 @@ describe("requestEstimate", () => {
     expect(requestEstimate([])).toEqual({ bags: 0, amount: 0 });
   });
 
+  it("counts bonus bags but no money for them", () => {
+    const lines = [
+      { id: 1, quantity: 300, unit_price: "100.00" },
+      { id: 2, quantity: 3, unit_price: "0.00", is_bonus: true },
+    ];
+    expect(requestEstimate(lines)).toEqual({ bags: 303, amount: 30000 });
+    // Окно подтверждения не шлёт цену бонуса — без неё сумма всё равно считается.
+    expect(requestEstimate(lines, { prices: { "1": "120" } })).toEqual({ bags: 303, amount: 36000 });
+    expect(requestEstimate([{ quantity: "2", unit_price: "", is_bonus: true }])).toEqual({ bags: 2, amount: 0 });
+  });
+
   it("sums money in tiyns so the total does not drift by fractions", () => {
     // Во float 0.1 * 3 + 0.2 * 3 = 0.9000000000000001.
     const lines = [
@@ -57,9 +69,16 @@ it("formats an estimate or says it is not calculated", () => {
   expect(formatEstimate(1200, "USD", { approx: true })).toBe(`≈ ${formatCurrency(1200, "USD")}`);
 });
 
-it("flags an order total with unpriced lines", () => {
+it("flags an order total with unpriced paid lines", () => {
   expect(hasUnpricedItems([{ unit_price: "1" }, { unit_price: null }])).toBe(true);
   expect(hasUnpricedItems([{ unit_price: "1" }])).toBe(false);
+  expect(hasUnpricedItems([{ unit_price: "1" }, { unit_price: null, is_bonus: true }])).toBe(false);
+});
+
+it("marks a bonus line in its label", () => {
+  expect(orderItemLabel({ product: 2, product_label: "Мука 50 кг" })).toBe("Мука 50 кг");
+  expect(orderItemLabel({ product: 2, product_label: "Мука 50 кг", is_bonus: true })).toBe("Мука 50 кг (бонус)");
+  expect(orderItemLabel({ product: 2 })).toBe("Товар #2");
 });
 
 describe("clientLabel", () => {
@@ -70,11 +89,14 @@ describe("clientLabel", () => {
 });
 
 describe("orderItemsSummary", () => {
-  const line = (product_label: string | undefined, quantity: number) =>
-    ({ product_label, quantity }) as unknown as Parameters<typeof orderItemsSummary>[0]["items"][number];
+  const line = (product_label: string | undefined, quantity: number, is_bonus = false) =>
+    ({ product: 7, product_label, quantity, is_bonus }) as Parameters<typeof orderItemsSummary>[0]["items"][number];
 
   it("shows the first two lines and counts the rest", () => {
-    expect(orderItemsSummary({ items: [line("Мука", 10), line(undefined, 5)] })).toBe("Мука × 10, Товар × 5");
+    expect(orderItemsSummary({ items: [line("Мука", 10), line(undefined, 5)] })).toBe("Мука × 10, Товар #7 × 5");
+    expect(orderItemsSummary({ items: [line("Мука", 300), line("Мука", 3, true)] })).toBe(
+      "Мука × 300, Мука (бонус) × 3",
+    );
     expect(orderItemsSummary({ items: [line("Мука", 10), line("Отруби", 5), line("Сечка", 1), line("Жмых", 2)] })).toBe(
       "Мука × 10, Отруби × 5 и ещё 2",
     );

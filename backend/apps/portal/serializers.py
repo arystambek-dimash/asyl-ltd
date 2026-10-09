@@ -59,10 +59,12 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
     )
     # «Возврат»: сколько мешков клиент вернул; сумма заказа — за остаток.
     returned_quantity = serializers.IntegerField(read_only=True)
+    # Бонус клиент видит, но назначает его только сотрудник.
+    is_bonus = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "product_label", "quantity", "returned_quantity"]
+        fields = ["id", "product", "product_label", "quantity", "returned_quantity", "is_bonus"]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }

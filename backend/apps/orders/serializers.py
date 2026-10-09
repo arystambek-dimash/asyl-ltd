@@ -63,6 +63,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "unit_price",
             "client_price",
             "weight_kg",
+            "is_bonus",
         ]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},

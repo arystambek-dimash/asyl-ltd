@@ -8,13 +8,14 @@ const mocks = vi.hoisted(() => ({
   replace: vi.fn(),
   push: vi.fn(),
   me: { permissions: ["orders.view"] } as Record<string, unknown>,
+  searchParams: new URLSearchParams(),
 }));
 vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me, loading: false }) }));
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("@/components/require-perm", () => import("@/test-utils/require-perm"));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mocks.push, replace: mocks.replace }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => mocks.searchParams,
 }));
 vi.mock("@/lib/api", () => ({
   api: { get: (...args: unknown[]) => mocks.get(...args) },
@@ -24,6 +25,7 @@ vi.mock("@/lib/api", () => ({
 
 beforeEach(() => {
   mocks.me = { permissions: ["orders.view"] };
+  mocks.searchParams = new URLSearchParams();
   mocks.replace.mockReset();
   mocks.push.mockReset();
   mocks.get.mockReset();
@@ -45,6 +47,40 @@ beforeEach(() => {
               paid_total: "0",
               items: [],
               created_at: "2026-09-17T08:00:00Z",
+            },
+          ],
+          count: 1,
+          next: null,
+        },
+      };
+    }
+    if (url.pathname === "/orders/returns/") {
+      return {
+        data: {
+          results: [
+            {
+              id: 12,
+              created_at: "2026-10-05T14:03:00+05:00",
+              client: 310,
+              client_name: "Клиент возврата",
+              settlement: "debt",
+              settlement_label: "В счёт долга",
+              warehouse_name: "Основной склад",
+              created_by_name: "Иван Петров",
+              bags: 30,
+              amounts: { KZT: "141000.00" },
+              lines: [
+                {
+                  order: 6055,
+                  order_department: "",
+                  order_department_name: "",
+                  product_label: "Мука 1 сорт",
+                  bags: 30,
+                  unit_price: "4700.00",
+                  amount: "141000.00",
+                  currency: "KZT",
+                },
+              ],
             },
           ],
           count: 1,
@@ -187,12 +223,80 @@ it("gives staff who confirm orders a «Заявки» tab and keeps a department
   expect(screen.queryByPlaceholderText("Поиск по клиенту, номеру или #ID")).not.toBeInTheDocument();
 });
 
-it("shows no tabs to staff who edit orders but do not review requests", async () => {
+it("shows tenge and dollars of a department side by side: value, received with its own share, and debt", async () => {
+  const user = userEvent.setup();
+  mocks.me = { permissions: ["orders.view"] };
+  const baseGet = mocks.get.getMockImplementation()!;
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/orders/department-summary/") {
+      return {
+        data: [
+          {
+            id: 1,
+            code: "main",
+            name: "Мельница",
+            color: "#123456",
+            is_active: true,
+            orders: 5,
+            active: 0,
+            shipped: 5,
+            revenue: "1000",
+            revenue_currency: "KZT",
+            revenue_by_currency: { KZT: "1000", USD: "200" },
+            debt: "600",
+            debt_by_currency: { KZT: "600", USD: "150" },
+            paid: "400",
+            paid_by_currency: { KZT: "400", USD: "50" },
+            paid_orders: 1,
+            partial_orders: 2,
+            unpaid_orders: 2,
+            debt_orders: 4,
+          },
+        ],
+      };
+    }
+    return baseGet(raw);
+  });
+  render(<OrdersPage />);
+
+  await user.click(await screen.findByRole("button", { name: /Аналитика/ }));
+  const card = within(await screen.findByRole("dialog", { name: "Аналитика заказов" })).getByRole("button", {
+    name: /Мельница/,
+  });
+
+  const text = (await within(card).findByText(/^1\s000 ₸$/)).closest("button")!.textContent!.replace(/\s/g, " ");
+  expect(text).toContain("200 $");
+  // «Получено» — по каждой валюте со своей долей: 40% от ₸, 25% от $.
+  expect(text).toContain("400 ₸· 40%");
+  expect(text).toContain("50 $· 25%");
+  expect(text).toContain("600 ₸");
+  expect(text).toContain("150 $");
+  expect(text).not.toContain("+ ");
+});
+
+it("gives staff who do not review requests only «Все заказы» and «Возвраты»", async () => {
+  const user = userEvent.setup();
   mocks.me = { permissions: ["orders.view", "orders.edit"] };
   render(<OrdersPage />);
 
   expect(await screen.findByPlaceholderText("Поиск по клиенту, номеру или #ID")).toBeInTheDocument();
-  expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Все заказы", "Возвраты"]);
+  expect(mocks.get.mock.calls.some(([raw]) => String(raw).startsWith("/orders/returns/"))).toBe(false);
+
+  await user.click(screen.getByRole("tab", { name: "Возвраты" }));
+  expect(mocks.replace).toHaveBeenCalledWith("/orders?tab=returns", { scroll: false });
+  expect((await screen.findAllByText("Клиент возврата")).length).toBeGreaterThan(0);
+  expect(screen.queryByPlaceholderText("Поиск по клиенту, номеру или #ID")).not.toBeInTheDocument();
+});
+
+it("opens «Возвраты» straight from ?tab=returns", async () => {
+  mocks.searchParams = new URLSearchParams("tab=returns");
+  render(<OrdersPage />);
+
+  expect(await screen.findByRole("tab", { name: "Возвраты" })).toHaveAttribute("aria-selected", "true");
+  expect((await screen.findAllByRole("link", { name: "#6055 · 30 меш." })).length).toBeGreaterThan(0);
+  expect(screen.getAllByText("В счёт долга").length).toBeGreaterThan(0);
 });
 
 it("shows a prepayment badge before shipment and «Не оплачен» only after it", async () => {
@@ -312,7 +416,8 @@ it("takes «Общая» totals of the whole selection from the server, not from
   expect(await within(analytics).findByText("70")).toBeInTheDocument();
   expect(within(analytics).getByText("12")).toBeInTheDocument();
   expect(within(analytics).getByText(/7\s000 ₸/)).toBeInTheDocument();
-  expect(within(analytics).getByText(/ещё 5 \$/)).toBeInTheDocument();
+  // Обе валюты — отдельными равными итогами, а не «ещё 5 $» мелкой подписью.
+  expect(within(analytics).getByText(/^5\s\$$/)).toBeInTheDocument();
   const [summaryUrl] = urls("/orders/list-summary/");
   // Итоги — по тем же фильтрам и поиску, что и список, без страниц и сортировки.
   expect(summaryUrl?.searchParams.get("search")).toBe("934");

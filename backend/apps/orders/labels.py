@@ -35,6 +35,14 @@ REFUND_METHOD_LABELS = {"apipay": "ApiPay", "apipay_qr": "ApiPay"}
 
 TRANSPORT_LABELS = {"truck": "Трак", "train": "Вагон"}
 
+# Пометка бесплатной позиции заказа (OrderItem.is_bonus) в документах и чатах.
+BONUS_ITEM_LABEL = "бонус"
+
+
+def bonus_mark(label: str, is_bonus: bool) -> str:
+    """«Мука 1с (бонус)» у бонусной позиции, иначе подпись как есть."""
+    return f"{label} ({BONUS_ITEM_LABEL})" if is_bonus else label
+
 # Order.payment_method — это выбор клиента по заказу, а не способ конкретной
 # оплаты: у него есть собственные значения «не выбран» и «смешанная».
 ORDER_PAYMENT_METHOD_LABELS = {

@@ -125,6 +125,38 @@ export interface OrderListSummary {
   by_status_group: Record<string, string>;
 }
 
+/** Мешки возврата, легшие на позицию одного заказа; сумма — в валюте заказа. */
+interface GoodsReturnLine {
+  order: number;
+  order_department: string;
+  order_department_name: string;
+  product_label: string;
+  bags: number;
+  unit_price: string;
+  amount: string;
+  currency: string;
+}
+
+/**
+ * Возврат товара во вкладке «Заказы → Возвраты» (`/orders/returns/`). Строки —
+ * только живые (не из корзины) заказы, видимые сотруднику; bags и amounts — по ним.
+ */
+export interface GoodsReturn {
+  id: number;
+  created_at: string;
+  client: number;
+  client_name: string;
+  /** debt — уменьшил долг, cash — касса отдала деньги. */
+  settlement: "debt" | "cash";
+  settlement_label: string;
+  warehouse_name: string;
+  created_by_name: string | null;
+  bags: number;
+  /** Сумма по валютам заказов: ₸ и $ не складываются. */
+  amounts: Record<string, string>;
+  lines: GoodsReturnLine[];
+}
+
 export interface ReportDay {
   date: string;
   orders: number;
@@ -288,6 +320,8 @@ interface OrderItem {
   quantity: number;
   /** Сколько мешков клиент вернул («Возврат»); деньги — за quantity − returned_quantity. */
   returned_quantity?: number;
+  /** Бонусный мешок («каждый сотый — в подарок»): грузится как обычный, цена 0 — в сумму и долг не входит. */
+  is_bonus?: boolean;
   unit_price?: string | null;
   client_price?: string | null;
   weight_kg?: string | null;
@@ -516,7 +550,8 @@ export interface ClientHistorySale {
   /** Входит в «Сумму продаж» (правило бэка): заявки, отказы и отмены — нет. */
   is_financial: boolean;
   settlement_intent: string;
-  items: { label: string; qty: number }[];
+  /** label — товар без пометки (ключ фильтра «Товар»); бонусный мешок — is_bonus. */
+  items: { label: string; qty: number; is_bonus?: boolean }[];
   bags: number;
   amount: string;
   paid: string;

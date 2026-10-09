@@ -223,6 +223,8 @@ function DebtsSection({
                           byCurrency={row.debt_by_currency}
                           fallbackAmount={row.debt_total}
                           fallbackCurrency={row.debt_currency}
+                          equal
+                          className="items-start"
                         />
                       </TD>
                       <TD className="tabular-nums">{row.orders_count}</TD>

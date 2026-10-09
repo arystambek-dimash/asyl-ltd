@@ -413,7 +413,7 @@ def _items(story, styles, data: StatementData) -> None:
         Column("Заказ", 16, lambda row: row[0].id),
         Column("Дата", (28, None), lambda row: row[0].created_at, "date"),
         Column("Клиент", (None, 50), lambda row: row[0].client.name),
-        Column("Товар", (70, 54), lambda row: row[1].product_label),
+        Column("Товар", (70, 54), lambda row: row[1].line_label),
         Column("Мешков", (22, 20), lambda row: row[1].quantity, "number"),
         Column("Возврат", (20, 20), lambda row: row[1].returned_quantity, "number"),
         Column("Цена", (30, 28), lambda row: row[1].unit_price, "money"),

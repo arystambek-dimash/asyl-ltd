@@ -99,6 +99,7 @@ export function DebtsScreen({ model }: { model: CashierModel }) {
                           byCurrency={row.debt_by_currency}
                           fallbackAmount={row.debt_total}
                           fallbackCurrency={row.debt_currency}
+                          equal
                         />
                       </div>
                       <ChevronRight className="size-4 shrink-0 text-[var(--muted-foreground)]" />

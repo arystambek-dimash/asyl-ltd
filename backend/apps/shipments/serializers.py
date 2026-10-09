@@ -17,6 +17,8 @@ class LoaderOrderItemSerializer(serializers.Serializer):
     # Мука и фасовка, без цвета мешка.
     label = serializers.CharField(source="product_plain_label")
     quantity = serializers.IntegerField()
+    # Бонусные мешки грузятся как все — грузчик видит только пометку.
+    is_bonus = serializers.BooleanField()
 
 
 class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, serializers.Serializer):

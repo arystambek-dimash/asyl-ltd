@@ -391,3 +391,40 @@ def test_client_sees_the_return_in_the_portal(auth_client, client_user, manager,
     assert (data["items"][0]["quantity"], data["items"][0]["returned_quantity"]) == (10, 10)
     assert Decimal(data["total_amount"]) == Decimal("0")
     assert not Order.objects.prefetch_related("items", "payments").get(pk=order.pk).is_debt
+
+
+def _with_bonus(client, bags=100, bonus=1, price="3000"):
+    flour = _flour()
+    order = _shipped(client, [(flour, bags, price)])
+    OrderItem.objects.create(order=order, product=flour, quantity=bonus, is_bonus=True, unit_price=0)
+    return order, flour
+
+
+def test_a_full_return_takes_the_bonus_bag_back_at_no_money(departments, manager):
+    from apps.orders.goods_returns import returnable_products
+
+    client = _client(departments[0])
+    order, flour = _with_bonus(client)
+
+    assert [row["debt_bags"] for row in returnable_products(client)] == [101]
+    result = _return(client, manager, [{"product": flour.pk, "bags": 101}])
+
+    assert result["bags"] == 101
+    assert result["amounts"] == {"KZT": "300000.00"}
+    assert [line["label"] for line in result["orders"][0]["lines"]] == [
+        flour.plain_label, f"{flour.plain_label} (бонус)",
+    ]
+    order.refresh_from_db()
+    assert order.total_amount == 0
+    assert sorted(order.items.values_list("is_bonus", "returned_quantity")) == [(False, 100), (True, 1)]
+
+
+def test_a_partial_return_lands_on_paid_bags_first(departments, manager):
+    client = _client(departments[0])
+    order, flour = _with_bonus(client)
+
+    _return(client, manager, [{"product": flour.pk, "bags": 1}])
+
+    order.refresh_from_db()
+    assert order.total_amount == Decimal("297000.00")
+    assert order.items.get(is_bonus=True).returned_quantity == 0

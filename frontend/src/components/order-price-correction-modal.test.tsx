@@ -72,4 +72,34 @@ describe("OrderPriceCorrectionModal", () => {
       prices: { "101": "30", "102": "40" },
     });
   });
+
+  it("leaves a free bonus line out of the correction", async () => {
+    postMock.mockResolvedValue({ data: {} });
+    const user = userEvent.setup();
+    const withBonus = {
+      ...order,
+      items: [
+        ...order.items,
+        { id: 103, product: 1, product_label: "Мука 50 кг", quantity: 5, unit_price: "0.00", is_bonus: true },
+      ],
+    } as Order;
+    render(<OrderPriceCorrectionModal order={withBonus} onClose={vi.fn()} onDone={vi.fn()} />);
+
+    // Общая сумма делится только на 50 оплаченных мешков, бонусные 5 — отдельно.
+    const total = screen.getByLabelText("Новая общая сумма заказа");
+    await user.clear(total);
+    await user.type(total, "1000");
+    expect(screen.getByText(/^20.*за мешок$/)).toBeInTheDocument();
+    expect(screen.getByText("+ 5 бонус")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "По позициям" }));
+    expect(screen.getAllByLabelText(/^Новая цена за мешок/)).toHaveLength(2);
+    // 10 × 20 + 20 × 30: бонус в новый итог не входит и цены не требует.
+    expect(screen.getByText("Новый итог").nextElementSibling).toHaveTextContent(/^800 ₸$/);
+    await user.click(screen.getByRole("button", { name: "Сохранить корректировку" }));
+
+    expect(postMock).toHaveBeenCalledWith("/orders/17/correct-price/", {
+      prices: { "101": "10.00", "102": "20.00" },
+    });
+  });
 });

@@ -133,6 +133,54 @@ describe("WarehousePage multi-warehouse inventory", () => {
     expect(useApiMock).toHaveBeenCalledWith("/stock/?warehouse=2");
   });
 
+  it("lists products by brand, grade and pack size, without bag colours, and filters by brand", async () => {
+    resetNavigation("/warehouse?warehouse=2");
+    const stock = (id: number, name: string, weight: string, bags: number, color = "Синий"): StockItem => ({
+      ...assignedStock,
+      id,
+      warehouse: 2,
+      product: id,
+      product_label: `${name} · ${color} ${Number(weight)} кг`,
+      grade: name,
+      color_label: color,
+      packaging: `${Number(weight)} кг`,
+      weight_kg: weight,
+      bags,
+    });
+    routeApi({
+      stock2: [
+        stock(1, "Первый сорт DIKHAN BABA NAN 25КГ", "25.00", 900),
+        stock(2, "Высший сорт KOROL 50кг", "50.00", 5),
+        stock(3, "Высший сорт DIKHAN BABA NAN 50кг", "50.00", 1200, "Красный"),
+        stock(4, "Высший сорт DIKHAN BABA NAN 50кг", "50.00", 300, "Зелёный"),
+      ],
+    });
+    const user = userEvent.setup();
+    render(<WarehousePage />);
+
+    const table = within(screen.getByRole("table"));
+    const rows = () =>
+      table
+        .getAllByRole("row")
+        .slice(1)
+        .map((row) => row.textContent?.replace(/\s/g, " "));
+    expect(rows()).toEqual([
+      // Цвет — только у двух одинаковых DIKHAN высший 50 кг, иначе их не различить.
+      "DIKHAN BABA NAN · КрасныйВысший сорт50 кг1 200 меш.60 т",
+      "DIKHAN BABA NAN · ЗелёныйВысший сорт50 кг300 меш.15 т",
+      "DIKHAN BABA NANПервый сорт25 кг900 меш.22,5 т",
+      "KOROLВысший сорт50 кгМало5 меш.0,25 т",
+    ]);
+    expect(table.queryByText(/Синий/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /^KOROL/ }));
+    expect(rows()).toEqual(["KOROLВысший сорт50 кгМало5 меш.0,25 т"]);
+
+    await user.click(screen.getByRole("radio", { name: /^Все марки/ }));
+    await user.click(screen.getByRole("radio", { name: /^25 кг/ }));
+    expect(rows()).toEqual(["DIKHAN BABA NANПервый сорт25 кг900 меш.22,5 т"]);
+  });
+
   it("allows a product stored elsewhere to be added to the selected warehouse", async () => {
     resetNavigation("/warehouse?warehouse=2");
     const user = userEvent.setup();

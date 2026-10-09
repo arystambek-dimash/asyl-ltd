@@ -256,3 +256,33 @@ it("shows the total as not calculated while a price is missing", async () => {
   await user.clear(screen.getByRole("spinbutton", { name: "Цена: Отруби" }));
   expect(screen.getByText("Итого: 14 меш. · Не рассчитана")).toBeInTheDocument();
 });
+
+it("confirms a bonus line without a price and warns by the product's total bags", async () => {
+  const user = userEvent.setup();
+  const confirm = vi.fn();
+  stock({
+    items: { "1": { on_hand: 10, awaiting_shipment: 0 }, "3": { on_hand: 10, awaiting_shipment: 0 } },
+  });
+  renderConfirmation(
+    {
+      ...request,
+      items: [
+        { id: 1, product: 1, product_label: "Мука 1с", quantity: 10, unit_price: "100" },
+        { id: 3, product: 1, product_label: "Мука 1с", quantity: 1, unit_price: "0.00", is_bonus: true },
+      ],
+    },
+    confirm,
+  );
+
+  expect(screen.getByText("Бонус")).toBeInTheDocument();
+  expect(screen.getByText("бесплатно")).toBeInTheDocument();
+  expect(screen.getAllByRole("spinbutton", { name: /^Цена:/ })).toHaveLength(1);
+  expect(screen.getByRole("spinbutton", { name: "Количество: Мука 1с (бонус)" })).toHaveValue(1);
+  expect(screen.getByText(`Итого: 11 меш. · ${money(1000)}`)).toBeInTheDocument();
+  // 10 платных + 1 бонусный одной муки при свободных 10 — не хватит обеим строкам.
+  expect(await screen.findAllByText("Свободно 10 меш. — может не хватить")).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Отдать сколько есть" })).toHaveLength(1);
+
+  await user.click(screen.getByRole("button", { name: "Подтвердить заказ" }));
+  expect(confirm).toHaveBeenCalledWith({ department: "main", prices: { "1": "100" } });
+});

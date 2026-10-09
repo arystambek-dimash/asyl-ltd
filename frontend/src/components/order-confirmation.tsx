@@ -1,10 +1,11 @@
 "use client";
 import { useId, useState } from "react";
+import { BonusBadge } from "@/components/orders/bonus-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { TransportNumberFields } from "@/components/ui/transport-number-fields";
-import { formatEstimate, requestEstimate } from "@/lib/orders";
+import { formatEstimate, orderItemLabel, requestEstimate } from "@/lib/orders";
 import { transportChanges, transportNumberError, transportPairOf, type TransportPair } from "@/lib/plates";
 import type { Department, Order } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
@@ -14,6 +15,7 @@ import { useAuth } from "@/store/auth";
 
 export interface OrderConfirmationData {
   department: string;
+  /** Цены платных позиций по id позиции; бонусных тут нет — они бесплатны. */
   prices: Record<string, string>;
   /** Только урезанные позиции: {id позиции: мешков}. */
   quantities?: Record<string, number>;
@@ -60,7 +62,9 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
   const [askAssign, setAskAssign] = useState(false);
   const [prices, setPrices] = useState<Record<string, string>>(() =>
     Object.fromEntries(
-      order.items.map((item) => [String(item.id), String(item.unit_price ?? item.client_price ?? "")]),
+      order.items
+        .filter((item) => !item.is_bonus)
+        .map((item) => [String(item.id), String(item.unit_price ?? item.client_price ?? "")]),
     ),
   );
   const [quantities, setQuantities] = useState<Record<string, string>>(() =>
@@ -105,9 +109,15 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
     departments.some((row) => row.code === department && row.is_active !== false) &&
     order.items.every((item) => {
       const value = Number(prices[String(item.id)]);
-      return Number.isFinite(value) && value > 0 && quantityValid(item);
+      return (item.is_bonus || (Number.isFinite(value) && value > 0)) && quantityValid(item);
     }) &&
     numbersValid;
+
+  // Платная и бонусная позиции одного товара берут мешки из одного остатка.
+  const productBags = (product: number | null) =>
+    order.items
+      .filter((item) => item.product === product && quantityValid(item))
+      .reduce((total, item) => total + Number(quantities[String(item.id)]), 0);
 
   function payload(): OrderConfirmationData {
     return {
@@ -177,18 +187,21 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
         const line = requestEstimate([item], { prices, quantities });
         const stock = context?.items?.[key];
         const free = stock ? Math.max(0, stock.on_hand - stock.awaiting_shipment) : null;
-        const short = free !== null && quantityValid(item) && Number(quantities[key]) > free;
+        const short = free !== null && quantityValid(item) && productBags(item.product) > free;
         return (
           <div key={item.id} className="grid gap-2 border-t pt-3">
             <div className="flex items-baseline justify-between gap-3 text-sm">
-              <span className="min-w-0 font-medium">{label}</span>
+              <span className="flex min-w-0 flex-wrap items-center gap-1.5 font-medium">
+                {label}
+                {item.is_bonus && <BonusBadge />}
+              </span>
               <span className="shrink-0 text-xs text-[var(--muted-foreground)]">Запрошено {item.quantity} меш.</span>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-[110px_150px_1fr] sm:items-end">
               <label className="grid gap-1 text-xs">
                 Количество, меш.
                 <Input
-                  aria-label={`Количество: ${item.product_label || item.product}`}
+                  aria-label={`Количество: ${orderItemLabel(item)}`}
                   type="number"
                   inputMode="numeric"
                   step="1"
@@ -202,22 +215,32 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
                   className={PHONE_INPUT_TEXT}
                 />
               </label>
-              <label className="grid gap-1 text-xs">
-                Цена за мешок
-                <Input
-                  aria-label={`Цена: ${item.product_label || item.product}`}
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  required
-                  disabled={busy}
-                  value={prices[key] ?? ""}
-                  onChange={(event) => setPrices((current) => ({ ...current, [key]: event.target.value }))}
-                  className={PHONE_INPUT_TEXT}
-                />
-              </label>
+              {item.is_bonus ? (
+                <span aria-hidden className="hidden sm:block" />
+              ) : (
+                <label className="grid gap-1 text-xs">
+                  Цена за мешок
+                  <Input
+                    aria-label={`Цена: ${item.product_label || item.product}`}
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    disabled={busy}
+                    value={prices[key] ?? ""}
+                    onChange={(event) => setPrices((current) => ({ ...current, [key]: event.target.value }))}
+                    className={PHONE_INPUT_TEXT}
+                  />
+                </label>
+              )}
               <span className="col-span-2 text-right text-sm font-medium tabular-nums sm:col-span-1">
-                {line.amount === null ? "—" : formatCurrency(line.amount, order.currency)}
+                {item.is_bonus ? (
+                  <span className="text-[var(--muted-foreground)]">бесплатно</span>
+                ) : line.amount === null ? (
+                  "—"
+                ) : (
+                  formatCurrency(line.amount, order.currency)
+                )}
               </span>
             </div>
             {stock && (
@@ -225,21 +248,23 @@ function ConfirmationForm({ order, departments, busy, error = "", onConfirm }: O
                 <span className="text-xs text-[var(--muted-foreground)]">
                   На складе {stock.on_hand} · ждут отгрузки {stock.awaiting_shipment}
                 </span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  // Ноль мешков не подтверждают: позицию без остатка отклоняют заявкой.
-                  disabled={busy || stock.on_hand <= 0}
-                  onClick={() =>
-                    setQuantities((current) => ({
-                      ...current,
-                      [key]: String(Math.min(Number(item.quantity), stock.on_hand)),
-                    }))
-                  }
-                >
-                  Отдать сколько есть
-                </Button>
+                {!item.is_bonus && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    // Ноль мешков не подтверждают: позицию без остатка отклоняют заявкой.
+                    disabled={busy || stock.on_hand <= 0}
+                    onClick={() =>
+                      setQuantities((current) => ({
+                        ...current,
+                        [key]: String(Math.min(Number(item.quantity), stock.on_hand)),
+                      }))
+                    }
+                  >
+                    Отдать сколько есть
+                  </Button>
+                )}
               </div>
             )}
             {short && (

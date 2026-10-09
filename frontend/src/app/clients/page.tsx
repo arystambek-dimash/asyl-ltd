@@ -745,10 +745,13 @@ function ClientsPageInner() {
                   <div>
                     <div className="text-[11px] text-[var(--muted-foreground)]">Задолженность</div>
                     <div className="font-medium tabular-nums text-[var(--destructive)]">
+                      {/* Долг в ₸ и в $ — два отдельных долга: обе суммы одинаково заметны. */}
                       <CurrencyAmounts
                         byCurrency={c.debt_by_currency}
                         fallbackAmount={c.debt_total}
                         fallbackCurrency={c.debt_currency ?? c.currency}
+                        equal
+                        className="items-start"
                       />
                     </div>
                   </div>
@@ -824,6 +827,8 @@ function ClientsPageInner() {
                             byCurrency={c.debt_by_currency}
                             fallbackAmount={c.debt_total}
                             fallbackCurrency={c.debt_currency ?? c.currency}
+                            equal
+                            className="items-start"
                           />
                         </span>
                       </TD>

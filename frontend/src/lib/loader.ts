@@ -9,6 +9,8 @@ import { formatMoney, formatTons } from "@/lib/utils";
 export interface LoaderOrderItem {
   label: string;
   quantity: number;
+  /** Бонусный мешок заказа; в «Аналитике дня» поля нет. */
+  is_bonus?: boolean;
 }
 
 /** Заказ на экране грузчика (GET /loader/queue/ и /loader/history/): денег грузчик не видит. */

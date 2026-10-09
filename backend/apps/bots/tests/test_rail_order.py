@@ -207,3 +207,20 @@ def test_rights_of_the_report_sheet(user_with_perms, conductor, wagon_loader):
     assert (can_remember_products(wagon_loader), can_remember_clients(wagon_loader)) == (False, False)
     assert (can_conduct(None), can_ship_by_report(None), can_remember_products(None)) == (False, False, False)
 
+
+
+def test_order_report_does_not_charge_the_bonus_bags(client, product, user_with_perms):
+    """Бонусные мешки едут в вагонах, но в сумме предпросмотра их нет — она равна сумме заказа."""
+    from apps.bots.preview import report_preview
+    from apps.orders.models import OrderItem
+
+    order = manual_train_order(client, product, bags=OWNER_BAGS - 100)
+    OrderItem.objects.create(order=order, product=product, quantity=100, is_bonus=True, unit_price=0)
+
+    resolved = resolve_order_report(parse_rail_report(OWNER_REPORT), order)
+    preview = report_preview(resolved, user_with_perms("viewer", codes=["orders.view"]), order=order)
+
+    assert resolved.ok
+    assert preview["totals"]["amount"] == "120028.00" == str(order.total_amount)
+    # Бесплатные мешки не привязаны к вагону — сумму вагона не называем.
+    assert {wagon["amount"] for wagon in preview["wagons"]} == {None}

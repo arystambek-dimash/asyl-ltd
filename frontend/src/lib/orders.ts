@@ -17,18 +17,28 @@ export function orderedBagCount(order: Pick<Order, "items">): number {
   return order.items.reduce((total, item) => total + Number(item.quantity), 0);
 }
 
+/** Бонусный мешок помечен «(бонус)», как в документах бэкенда (`OrderItem.line_label`). */
+export function bonusLabel(label: string, isBonus?: boolean): string {
+  return isBonus ? `${label} (бонус)` : label;
+}
+
+/** Подпись позиции строкой. */
+export function orderItemLabel(item: Pick<OrderLine, "product" | "product_label" | "is_bonus">): string {
+  return bonusLabel(item.product_label || `Товар #${item.product}`, item.is_bonus);
+}
+
 /** «Мука × 10, Отруби × 5 и ещё 2» — первые две позиции заказа одной строкой. */
 export function orderItemsSummary(order: Pick<Order, "items">): string {
   const shown = order.items
     .slice(0, 2)
-    .map((item) => `${item.product_label ?? "Товар"} × ${item.quantity}`)
+    .map((item) => `${orderItemLabel(item)} × ${item.quantity}`)
     .join(", ");
   return order.items.length > 2 ? `${shown} и ещё ${order.items.length - 2}` : shown;
 }
 
-/** У позиции нет договорной цены — сумма заказа ещё не рассчитана. */
-export function hasUnpricedItems(items: Pick<OrderLine, "unit_price">[]): boolean {
-  return items.some((item) => item.unit_price == null);
+/** У платной позиции нет договорной цены — сумма заказа ещё не рассчитана. */
+export function hasUnpricedItems(items: Pick<OrderLine, "unit_price" | "is_bonus">[]): boolean {
+  return items.some((item) => !item.is_bonus && item.unit_price == null);
 }
 
 interface RequestEstimate {
@@ -42,12 +52,14 @@ type EstimateLine = {
   quantity: number | string;
   unit_price?: string | null;
   client_price?: string | null;
+  is_bonus?: boolean;
 };
 
 /**
  * Мешки и сумма заявки до подтверждения. Цена позиции — правка в окне
  * подтверждения (`overrides.prices`, ключ — id позиции), иначе зафиксированная
  * цена, иначе личный прайс клиента. Количество — правка или запрошенное.
+ * Бонусная позиция добавляет мешки, но не деньги: цены у неё нет и не нужно.
  */
 export function requestEstimate(
   items: EstimateLine[],
@@ -63,6 +75,7 @@ export function requestEstimate(
       overrides.prices && key in overrides.prices ? overrides.prices[key] : (item.unit_price ?? item.client_price);
     const price = Number(raw);
     bags += quantity;
+    if (item.is_bonus) continue;
     cents = cents === null || !raw || !(price > 0) ? null : cents + Math.round(moneyCents(price) * quantity);
   }
   return { bags, amount: cents === null ? null : cents / 100 };

@@ -153,9 +153,9 @@ def applied_reply(order: Order, *, show_amounts: bool) -> str:
     bags = sum(item.quantity for item in items)
     tons = sum((wagon.weight_kg for wagon in wagons), Decimal("0")) / KG_PER_TON
     if len(items) == 1:
-        goods = f" {items[0].product_label}"
+        goods = f" {items[0].line_label}"
     else:
-        goods = ": " + ", ".join(f"{item.product_label} — {group_digits(item.quantity)}" for item in items)
+        goods = ": " + ", ".join(f"{item.line_label} — {group_digits(item.quantity)}" for item in items)
     parts = [f"заказ №{order.pk}", order.client.display_name]
     if order.rail_station:
         parts.append(f"ст. {order.rail_station}")

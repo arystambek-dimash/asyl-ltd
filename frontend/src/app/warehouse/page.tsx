@@ -19,8 +19,18 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { api, apiError } from "@/lib/api";
-import { formatMoney, formatTons } from "@/lib/utils";
-import { cn } from "@/lib/utils";
+import { cn, formatMoney, formatTons } from "@/lib/utils";
+import {
+  brandKey,
+  compareProductParts,
+  productBrands,
+  productParts,
+  productSearch,
+  productTitle,
+  productWeights,
+  twinKey,
+  twinKeys,
+} from "@/lib/product-parts";
 import {
   AlertTriangle,
   ArrowDown,
@@ -38,6 +48,7 @@ import {
   X,
 } from "lucide-react";
 import type { StockItem, Product, Warehouse } from "@/lib/types";
+import { FilterChips, ProductName } from "@/components/catalog/product-name";
 import {
   EMPTY_PRODUCT_DRAFT,
   ProductFields,
@@ -97,8 +108,9 @@ function WarehousePageInner() {
 
   // фильтры
   const [search, setSearch] = useState("");
-  const [grade, setGrade] = useState("");
-  const [packaging, setPackaging] = useState("");
+  // Ключ марки (`brandKey`) и фасовка в кг; "" — все.
+  const [brand, setBrand] = useState("");
+  const [weight, setWeight] = useState("");
 
   // Верхняя кнопка добавляет товар, карандаш изменяет конкретную строку.
   const [open, setOpen] = useState(false);
@@ -121,8 +133,8 @@ function WarehousePageInner() {
 
   useEffect(() => {
     setSearch("");
-    setGrade("");
-    setPackaging("");
+    setBrand("");
+    setWeight("");
     setOpen(false);
   }, [selectedWarehouseId]);
 
@@ -139,32 +151,52 @@ function WarehousePageInner() {
     () => activeWarehouses.filter((item) => item.id !== selectedWarehouseId),
     [activeWarehouses, selectedWarehouseId],
   );
-  const grades = useMemo(() => Array.from(new Set(items.map((s) => s.grade))).filter(Boolean), [items]);
-  const packagings = useMemo(() => Array.from(new Set(items.map((s) => s.packaging))).filter(Boolean), [items]);
   const bagsByProduct = useMemo(() => new Map(items.map((s) => [String(s.product), s.bags])), [items]);
 
-  const normalizedSearch = search.trim().toLowerCase();
-  const filtered = items.filter(
-    (s) =>
-      (!normalizedSearch ||
-        [s.product_label, s.grade, s.color_label, s.packaging].some((value) =>
-          value.toLowerCase().includes(normalizedSearch),
-        )) &&
-      (!grade || s.grade === grade) &&
-      (!packaging || s.packaging === packaging),
+  // Товар по частям — марка, сорт, фасовка. Цвет мешка только у двойников:
+  // без него два товара с одинаковым названием не различить.
+  const entries = useMemo(() => {
+    const rows = items.map((item) => ({ item, parts: productParts(item.grade || item.product_label, item.weight_kg) }));
+    const twins = twinKeys(rows.map(({ parts }) => parts));
+    return rows.map((row) => ({ ...row, color: twins.has(twinKey(row.parts)) ? row.item.color_label : undefined }));
+  }, [items]);
+  const brands = useMemo(() => productBrands(entries.map(({ parts }) => parts)), [entries]);
+  const weights = useMemo(() => productWeights(entries.map(({ parts }) => parts)), [entries]);
+
+  const matches = productSearch(search);
+  const filtered = entries.filter(
+    ({ item, parts }) =>
+      (!brand || brandKey(parts.brand) === brand) &&
+      (!weight || String(parts.weight) === weight) &&
+      matches([item.grade, productTitle(parts)]),
   );
 
-  const { sortKey, sortDir, toggleSort } = useSortState("product_label", "asc");
+  const { sortKey, sortDir, toggleSort } = useSortState("product", "asc");
   const sorted = [...filtered].sort((a, b) => {
-    let cmp: number;
-    if (sortKey === "bags") cmp = a.bags - b.bags;
-    else cmp = String(a.product_label).localeCompare(String(b.product_label), "ru");
+    const cmp = sortKey === "bags" ? a.item.bags - b.item.bags : compareProductParts(a.parts, b.parts, brands);
     return sortDir === "asc" ? cmp : -cmp;
   });
 
-  const totalBags = filtered.reduce((sum, s) => sum + s.bags, 0);
-  const totalKg = filtered.reduce((sum, s) => sum + stockKg(s), 0);
-  const attentionCount = filtered.filter((s) => stockTone(s.bags).tone !== "success").length;
+  const totalBags = filtered.reduce((sum, { item }) => sum + item.bags, 0);
+  const totalKg = filtered.reduce((sum, { item }) => sum + stockKg(item), 0);
+  const attentionCount = filtered.filter(({ item }) => stockTone(item.bags).tone !== "success").length;
+
+  // Товары каталога для приёмки: та же подпись без цвета, в порядке марок.
+  const productOptions = (() => {
+    const rows = availableProducts.map((item) => ({
+      item,
+      parts: productParts(item.name || item.label, item.weight_kg),
+    }));
+    const twins = twinKeys(rows.map(({ parts }) => parts));
+    const order = productBrands(rows.map(({ parts }) => parts));
+    return rows
+      .sort((a, b) => compareProductParts(a.parts, b.parts, order))
+      .map(({ item, parts }) => ({
+        id: item.id,
+        title: productTitle(parts, twins.has(twinKey(parts)) ? item.color_label : undefined),
+      }));
+  })();
+  const adjustedEntry = entries.find(({ item }) => String(item.product) === product);
 
   // Каждое открытие окна начинает с чистой формы: закрытие состояние не сбрасывает.
   function openDialog(intent: "add" | "adjust", productId?: number) {
@@ -243,12 +275,12 @@ function WarehousePageInner() {
     }
   }
 
-  const hasFilters = Boolean(search || grade || packaging);
+  const hasFilters = Boolean(search || brand || weight);
 
   function resetFilters() {
     setSearch("");
-    setGrade("");
-    setPackaging("");
+    setBrand("");
+    setWeight("");
   }
 
   const addButton =
@@ -413,78 +445,43 @@ function WarehousePageInner() {
               )}
             </div>
 
-            <div className="grid gap-3 lg:grid-cols-[minmax(260px,1.5fr)_minmax(170px,0.75fr)_minmax(170px,0.75fr)]">
-              <label className="grid gap-1.5">
-                <span className="text-xs font-medium text-[var(--muted-foreground)]">Поиск</span>
-                <SearchInput
-                  placeholder="Название, цвет или фасовка"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onClear={() => setSearch("")}
-                />
-              </label>
-              <label className="grid gap-1.5">
-                <span className="text-xs font-medium text-[var(--muted-foreground)]">Сорт</span>
-                <Select value={grade} onChange={(e) => setGrade(e.target.value)}>
-                  <option value="">Все сорта</option>
-                  {grades.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-              <label className="grid gap-1.5">
-                <span className="text-xs font-medium text-[var(--muted-foreground)]">Фасовка</span>
-                <Select value={packaging} onChange={(e) => setPackaging(e.target.value)}>
-                  <option value="">Все фасовки</option>
-                  {packagings.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </Select>
-              </label>
+            <div className="flex flex-col gap-3">
+              <SearchInput
+                aria-label="Поиск товара"
+                placeholder="Марка, сорт или фасовка: korol, первый 25"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onClear={() => setSearch("")}
+                wrapperClassName="lg:max-w-md"
+              />
+              <FilterChips
+                label="Марка"
+                allLabel="Все марки"
+                options={brands}
+                total={entries.length}
+                value={brand}
+                onChange={setBrand}
+              />
+              <FilterChips
+                label="Фасовка"
+                allLabel="Все фасовки"
+                options={weights}
+                total={entries.length}
+                value={weight}
+                onChange={setWeight}
+              />
             </div>
           </div>
 
           {/* Мобильные карточки */}
           <div className="flex flex-col divide-y md:hidden">
-            {sorted.map((s) => {
-              const st = stockTone(s.bags);
-              const kg = stockKg(s);
-              return (
-                <div key={s.id} className="flex flex-col gap-4 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="font-semibold">{s.grade}</div>
-                      <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                        {s.color_label} · {s.packaging}
-                      </div>
-                      <div className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-[var(--primary)]">
-                        <Building2 className="size-3" /> {s.warehouse_name}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Badge tone={st.tone} dot>
-                        {st.label}
-                      </Badge>
-                      {canAdjust && <EditStockButton onClick={() => openDialog("adjust", s.product)} />}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 rounded-lg bg-[var(--muted)]/45 p-3 text-sm">
-                    <div>
-                      <div className="text-xs text-[var(--muted-foreground)]">Остаток</div>
-                      <div className="mt-0.5 font-semibold tabular-nums">{formatMoney(s.bags)} меш.</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-[var(--muted-foreground)]">Расчётный вес</div>
-                      <div className="mt-0.5 font-medium tabular-nums">{formatTons(kg)} т</div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            {sorted.map(({ item: s, parts, color }) => (
+              <div key={s.id} className="flex items-center gap-3 px-4 py-3">
+                <ProductName parts={parts} color={color} />
+                <StockAmount item={s} />
+                {canAdjust && <EditStockButton onClick={() => openDialog("adjust", s.product)} />}
+              </div>
+            ))}
             {filtered.length === 0 && (
               <EmptyStockState
                 hasFilters={hasFilters}
@@ -501,12 +498,11 @@ function WarehousePageInner() {
               <TR>
                 <SortableHeader
                   label="Товар"
-                  sortKey="product_label"
+                  sortKey="product"
                   activeKey={sortKey}
                   dir={sortDir}
                   onClick={toggleSort}
                 />
-                <TH>Фасовка</TH>
                 <SortableHeader
                   label="Остаток"
                   sortKey="bags"
@@ -516,32 +512,31 @@ function WarehousePageInner() {
                   align="right"
                 />
                 <TH className="text-right">Расчётный вес</TH>
-                <TH>Статус</TH>
                 {canAdjust && <TH className="text-right">Действие</TH>}
               </TR>
             </THead>
             <TBody>
-              {sorted.map((s) => {
+              {sorted.map(({ item: s, parts, color }) => {
                 const st = stockTone(s.bags);
-                const kg = stockKg(s);
                 return (
                   <TR key={s.id}>
                     <TD>
-                      <div className="font-medium">{s.grade}</div>
-                      <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{s.color_label}</div>
-                      <div className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-[var(--primary)]">
-                        <Building2 className="size-3" /> {s.warehouse_name}
-                      </div>
+                      <ProductName parts={parts} color={color} className="max-w-md" />
                     </TD>
-                    <TD>{s.packaging}</TD>
-                    <TD className="text-right tabular-nums font-semibold">
-                      {formatMoney(s.bags)} <span className="font-normal text-[var(--muted-foreground)]">меш.</span>
+                    <TD className="text-right">
+                      <span className="inline-flex items-center justify-end gap-2">
+                        {st.tone !== "success" && (
+                          <Badge tone={st.tone} dot>
+                            {st.label}
+                          </Badge>
+                        )}
+                        <span className="font-semibold tabular-nums">
+                          {formatMoney(s.bags)} <span className="font-normal text-[var(--muted-foreground)]">меш.</span>
+                        </span>
+                      </span>
                     </TD>
-                    <TD className="text-right tabular-nums text-[var(--muted-foreground)]">{formatTons(kg)} т</TD>
-                    <TD>
-                      <Badge tone={st.tone} dot>
-                        {st.label}
-                      </Badge>
+                    <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
+                      {formatTons(stockKg(s))} т
                     </TD>
                     {canAdjust && (
                       <TD className="text-right">
@@ -553,7 +548,7 @@ function WarehousePageInner() {
               })}
               {filtered.length === 0 && (
                 <TR>
-                  <TD colSpan={canAdjust ? 6 : 5} className="p-0">
+                  <TD colSpan={canAdjust ? 4 : 3} className="p-0">
                     <EmptyStockState
                       hasFilters={hasFilters}
                       canAdjust={canAdjust}
@@ -583,8 +578,8 @@ function WarehousePageInner() {
         <form onSubmit={submitAdjust} className="flex flex-col gap-4">
           <Field label="Товар" htmlFor={dialogIntent === "add" ? "stock-product" : undefined}>
             {dialogIntent === "adjust" ? (
-              <div className="flex min-h-10 items-center rounded-md border bg-[var(--muted)]/45 px-3.5 py-2 text-sm font-medium">
-                {items.find((item) => String(item.product) === product)?.product_label}
+              <div className="flex min-h-10 items-center rounded-md border bg-[var(--muted)]/45 px-3.5 py-2">
+                {adjustedEntry && <ProductName parts={adjustedEntry.parts} color={adjustedEntry.color} />}
               </div>
             ) : (
               <Select
@@ -605,9 +600,9 @@ function WarehousePageInner() {
                       ? "Все товары каталога уже на этом складе"
                       : "Выберите товар"}
                 </option>
-                {availableProducts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
+                {productOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.title}
                   </option>
                 ))}
                 {canCreateProduct && <option value={NEW_PRODUCT}>+ Новый товар…</option>}
@@ -962,6 +957,27 @@ function WarehouseManagerModal({
         </form>
       </div>
     </Modal>
+  );
+}
+
+/** Остаток строки на телефоне: мешки крупно, под ними вес — или «Мало»/«Нет». */
+function StockAmount({ item }: { item: StockItem }) {
+  const st = stockTone(item.bags);
+  return (
+    <div className="shrink-0 text-right">
+      <div className="text-base font-semibold tabular-nums">
+        {formatMoney(item.bags)} <span className="text-xs font-normal text-[var(--muted-foreground)]">меш.</span>
+      </div>
+      <div className="mt-0.5 text-xs tabular-nums text-[var(--muted-foreground)]">
+        {st.tone === "success" ? (
+          `${formatTons(stockKg(item))} т`
+        ) : (
+          <Badge tone={st.tone} dot>
+            {st.label}
+          </Badge>
+        )}
+      </div>
+    </div>
   );
 }
 

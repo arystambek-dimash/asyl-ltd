@@ -8,6 +8,7 @@ from django.db.models.functions import Coalesce
 from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY
 
 from .debt import DEBT_STATUS, counts_as_debt
+from .labels import bonus_mark
 from .statuses import CAMERA_BINDING_STATUSES
 
 
@@ -238,6 +239,20 @@ class OrderItem(models.Model):
     # остаётся ``quantity``, деньги считаются за :attr:`sold_quantity`.
     # db_default: откат релиза вставляет позиции без этой колонки.
     returned_quantity = models.PositiveIntegerField(default=0, db_default=0)
+    # Бонусный мешок («каждый сотый — в подарок»): уходит со склада и в машину
+    # как обычный, но стоит 0 — в сумму, долг и выручку не входит.
+    # db_default: откат релиза вставляет позиции без этой колонки.
+    is_bonus = models.BooleanField(default=False, db_default=False)
+
+    class Meta:
+        constraints = [
+            # Бонус всегда бесплатный. NULL — «цена ещё не назначена», а не 0:
+            # без isnull=False проверка пропустила бы бонус без цены.
+            models.CheckConstraint(
+                name="orderitem_bonus_is_free",
+                condition=Q(is_bonus=False) | Q(unit_price__isnull=False, unit_price=0),
+            ),
+        ]
 
     @property
     def sold_quantity(self) -> int:
@@ -249,6 +264,11 @@ class OrderItem(models.Model):
         if self.product_label_snapshot:
             return self.product_label_snapshot
         return str(self.product) if self.product_id else "Удалённый товар"
+
+    @property
+    def line_label(self):
+        """Подпись строки в документах: бонус помечен, иначе «0 ₸» за мешок непонятен."""
+        return bonus_mark(self.product_label, self.is_bonus)
 
     @property
     def product_plain_label(self):
