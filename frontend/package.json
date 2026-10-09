@@ -19,11 +19,11 @@
   },
   "dependencies": {
     "@sentry/nextjs": "10.69.0",
-    "axios": "1.18.1",
+    "axios": "1.20.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "0.474.0",
-    "next": "15.5.25",
+    "next": "15.5.27",
     "qrcode.react": "4.2.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
@@ -41,7 +41,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "eslint": "^9.39.5",
-    "eslint-config-next": "15.5.25",
+    "eslint-config-next": "15.5.27",
     "jsdom": "^29.1.1",
     "postcss": "8.5.28",
     "prettier": "3.9.6",
@@ -52,10 +52,14 @@
   "overrides": {
     "vite": "8.1.5",
     "postcss": "8.5.28",
-    "sharp": "0.35.4",
-    "brace-expansion": "5.0.9",
-    "fast-uri": "3.1.6",
-    "undici": "7.29.0",
-    "js-yaml": "4.3.2"
+    "sharp": "0.35.5",
+    "brace-expansion": "5.0.12",
+    "fast-uri": "3.1.8",
+    "undici": "7.29.1",
+    "js-yaml": "4.3.2",
+    "source-map-js": "1.2.2",
+    "@next/eslint-plugin-next": {
+      "fast-glob": "npm:tinyglobby@0.2.17"
+    }
   }
 }
