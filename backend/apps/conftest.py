@@ -359,19 +359,18 @@ def count_queries(api_as):
 
 @pytest.fixture
 def apipay_department(db):
-    """Основной отдел ``main`` (код по умолчанию у Order) с ключом ApiPay.
+    """Основной отдел ``main`` (код по умолчанию у Order) с подключением ApiPay.
 
-    Общего ключа в настройках больше нет: каждый тест, который выставляет
-    счёт или принимает вебхук, работает через ключ и секрет этого отдела.
+    Общего ключа в настройках нет: каждый тест, который выставляет счёт или
+    принимает вебхук, работает через ключ и секрет подключения этого отдела.
     """
+    from apps.orders.tests.apipay_fakes import connect_apipay
     from apps.sales.models import Department
 
     department, _ = Department.objects.get_or_create(
         code="main", defaults={"name": "Мельница", "is_default": True}
     )
-    department.set_apipay_api_key("server-only-key")
-    department.set_apipay_webhook_secret("webhook-secret")
-    department.save()
+    connect_apipay(department, "server-only-key", "webhook-secret")
     return department
 
 

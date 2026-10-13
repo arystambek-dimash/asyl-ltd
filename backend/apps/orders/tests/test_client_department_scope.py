@@ -23,6 +23,7 @@ from apps.orders.models import (
     StatusChangeRequest,
 )
 from apps.orders.refunds import create_cash_refund
+from apps.orders.tests.apipay_fakes import connect_apipay
 from apps.sales.models import Department
 from apps.warehouse.models import StockItem
 
@@ -35,9 +36,8 @@ def ownership_scope(user_with_perms):
         code="ownership-a",
         name="Владельцы A",
     )
-    # Провайдерские пути берут ключ ApiPay из отдела заказа.
-    first_department.set_apipay_api_key("ownership-a-key")
-    first_department.save()
+    # Провайдерские пути берут ключ ApiPay из подключения отдела заказа.
+    connect_apipay(first_department, "ownership-a-key")
     second_department = Department.objects.create(
         code="ownership-b",
         name="Владельцы B",

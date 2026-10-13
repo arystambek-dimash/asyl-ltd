@@ -26,7 +26,7 @@ from .apipay import (
 )
 from .models import ApiPayInvoice, ApiPayQrRefund, ApiPayWebhookEvent
 from .qr_refunds import apply_qr_refund_snapshot, auto_execute_qr_refund
-from apps.sales.models import Department
+from apps.sales.models import ApiPayAccount, Department
 
 logger = logging.getLogger(__name__)
 
@@ -71,28 +71,33 @@ class WebhookPayloadError(ValueError):
         super().__init__(code)
 
 
-def _departments_with_secret():
-    return Department.objects.exclude(
-        apipay_webhook_secret_encrypted=""
+def _accounts_with_secret():
+    return ApiPayAccount.objects.exclude(
+        webhook_secret_encrypted=""
     ).order_by("created_at", "id")
 
 
-def _department_for_signature(
+def _account_for_signature(
     raw_body: bytes, signature: str
-) -> Department | None:
-    """Отдел, чьим секретом подписано событие; None — не подошёл ни один.
+) -> ApiPayAccount | None:
+    """Подключение, чьим секретом подписано событие; None — не подошло ни одно.
 
-    Адрес вебхука один на всех, а секрет у каждого ключа ApiPay свой:
-    совпавший секрет и есть маппинг события на отдел.
+    Адрес вебхука один на всех, а секрет у каждого кабинета ApiPay свой:
+    совпавший секрет и есть маппинг события на подключение.
     """
-    for department in _departments_with_secret():
-        if verify_signature(raw_body, signature, department.apipay_webhook_secret):
-            return department
+    for account in _accounts_with_secret():
+        if verify_signature(raw_body, signature, account.webhook_secret):
+            return account
     return None
 
 
-def _same_department(invoice_record: ApiPayInvoice, department: Department) -> bool:
-    return invoice_department_code(invoice_record) == department.code
+def _account_serves_invoice(
+    invoice_record: ApiPayInvoice, account_id: int
+) -> bool:
+    """Счёт выставлен отделом, который принимает оплату через это подключение."""
+    return Department.objects.filter(
+        code=invoice_department_code(invoice_record), apipay_account_id=account_id
+    ).exists()
 
 
 def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
@@ -291,11 +296,11 @@ def _replay_one_webhook(event_id: int) -> str:
             # This is the expected create-response/webhook race, not an error.
             _defer_locked_event(event, "waiting_for_invoice")
             return "waiting_for_invoice"
-        if event.department_id is not None and not _same_department(
-            invoice_record, event.department
+        if event.apipay_account_id is not None and not _account_serves_invoice(
+            invoice_record, event.apipay_account_id
         ):
-            # Счёт нашёлся позже, но принадлежит другому отделу: событие
-            # подписано чужим секретом и деньги по нему не применяются.
+            # Счёт нашёлся позже, но принадлежит отделу другого подключения:
+            # событие подписано чужим секретом и деньги по нему не применяются.
             return _defer_locked_event(
                 event, "invoice_department_mismatch", invoice=invoice_record
             )
@@ -325,7 +330,9 @@ def _replay_qr_refund_event(event: ApiPayWebhookEvent) -> str:
     if session is None:
         _defer_locked_event(event, "waiting_for_qr_refund")
         return "waiting_for_invoice"
-    if event.department_id is not None and not _same_department(session.invoice, event.department):
+    if event.apipay_account_id is not None and not _account_serves_invoice(
+        session.invoice, event.apipay_account_id
+    ):
         return _defer_locked_event(event, "qr_refund_department_mismatch")
     try:
         needs_execute = apply_qr_refund_snapshot(session.pk, qr_payload, source="webhook")
@@ -410,11 +417,11 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
     if len(raw_body) > MAX_WEBHOOK_BODY_BYTES:
         return JsonResponse({"error": "payload_too_large"}, status=413)
 
-    if not _departments_with_secret().exists():
+    if not _accounts_with_secret().exists():
         return JsonResponse({"error": "webhook_not_configured"}, status=503)
     signature = request.headers.get("X-Webhook-Signature", "")
-    department = _department_for_signature(raw_body, signature)
-    if department is None:
+    account = _account_for_signature(raw_body, signature)
+    if account is None:
         return JsonResponse({"error": "invalid_signature"}, status=401)
 
     try:
@@ -456,14 +463,14 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
             invoice_record = ApiPayInvoice.objects.filter(
                 invoice_id=provider_invoice_id
             ).first()
-        if invoice_record is not None and not _same_department(
-            invoice_record, department
+        if invoice_record is not None and not _account_serves_invoice(
+            invoice_record, account.pk
         ):
-            # Подпись отдела A по счёту отдела B: чужой ключ не может двигать
-            # деньги этого счёта. Сверка ключом отдела B приведёт его в порядок.
+            # Подпись кабинета A по счёту отдела кабинета B: чужой ключ не
+            # может двигать деньги этого счёта. Сверка ключом B приведёт его в порядок.
             logger.warning(
-                "ApiPay webhook signed by department=%s for invoice=%s of another department",
-                department.code,
+                "ApiPay webhook signed by account=%s for invoice=%s of another account",
+                account.pk,
                 provider_invoice_id,
             )
             return JsonResponse(
@@ -477,7 +484,7 @@ def apipay_webhook(request: HttpRequest) -> JsonResponse:
                     event=event_name,
                     provider_invoice_id=provider_invoice_id,
                     invoice=invoice_record,
-                    department=department,
+                    apipay_account=account,
                     payload=payload,
                 )
         except IntegrityError:

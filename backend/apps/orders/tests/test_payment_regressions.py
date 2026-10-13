@@ -920,3 +920,61 @@ def test_concurrent_create_invoice_calls_provider_once_and_preserves_qr(
     assert invoice.invoice_id == 716
     assert invoice.qr_token_url == "https://qr.kaspi.kz/concurrent"
     assert invoice.qr_image_url == "https://api.apipay.kz/qr/concurrent.png"
+
+
+@patch("apps.orders.apipay.api_request")
+def test_kaspi_session_refusal_releases_payment_at_once(
+    api_request_mock, auth_client, accountant,
+):
+    """503 kaspi_session_invalid — ApiPay отказал до счёта: оплата не висит 30 минут."""
+    order = shipped_order()
+    api_request_mock.side_effect = ApiPayAPIError(
+        503,
+        "kaspi_session_invalid",
+        "Kaspi session is invalid or expired. Please contact support.",
+        {"error": "kaspi_session_invalid"},
+    )
+
+    response = auth_client(accountant).post(
+        f"/api/orders/{order.id}/payments/",
+        {"method": "invoice", "amount": "30.00", "phone_number": "87762838451"},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "kaspi_session_invalid"
+    assert "переподключите кассира" in str(response.data["detail"])
+    invoice = ApiPayInvoice.objects.get(payment__order=order)
+    assert invoice.status == "error"
+    assert set(order.payments.values_list("status", flat=True)) == {"rejected"}
+
+
+def test_reject_unconfirmed_issue_explains_the_wait(auth_client, accountant):
+    """Неясный исход выдачи (таймаут): отклонить нельзя, но причина понятна."""
+    order = shipped_order()
+    payment = Payment.objects.create(
+        order=order,
+        amount="1.00",
+        method="invoice",
+        status="requested",
+        recorded_by=accountant,
+    )
+    ApiPayInvoice.objects.create(
+        payment=payment,
+        idempotency_key=f"asyl-payment-{payment.id}-v1",
+        channel="phone",
+        phone_number="87762838451",
+        status="creating",
+        error_code="apipay_unavailable",
+    )
+
+    with patch("apps.orders.apipay.api_request") as api_request_mock:
+        response = auth_client(accountant).post(
+            f"/api/orders/{order.id}/payments/{payment.id}/reject/"
+        )
+
+    assert response.status_code == 400
+    assert response.data["code"] == "invoice_issue_pending"
+    api_request_mock.assert_not_called()
+    payment.refresh_from_db()
+    assert payment.status == "requested"

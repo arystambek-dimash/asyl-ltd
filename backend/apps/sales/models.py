@@ -13,22 +13,42 @@ class Department(models.Model):
     is_active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
-    # У каждого отдела свой аккаунт Kaspi: ключ ApiPay и секрет вебхука
-    # хранятся только зашифрованными, общего ключа в окружении больше нет.
-    # db_default: таблица общая с историческими миграциями clients, и старые
-    # состояния модели вставляют строки без этих колонок.
-    apipay_api_key_encrypted = models.TextField(
-        blank=True, default="", db_default=""
+    # Kaspi отдела — одно из подключений ApiPay; одно подключение может
+    # обслуживать несколько отделов. Без подключения счета и QR не выдаются.
+    apipay_account = models.ForeignKey(
+        "sales.ApiPayAccount", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="departments",
     )
-    apipay_webhook_secret_encrypted = models.TextField(
-        blank=True, default="", db_default=""
-    )
-    apipay_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         # Историческое имя таблицы сохраняется намеренно: перенос между
         # Django-app не должен трогать production-данные и существующие FK.
         db_table = "clients_department"
+        ordering = ["created_at", "id"]
+
+    @property
+    def apipay_configured(self) -> bool:
+        account = self.apipay_account
+        return bool(account and account.api_key)
+
+    def __str__(self):
+        return self.name
+
+
+class ApiPayAccount(models.Model):
+    """Подключение Kaspi через ApiPay: ключ и секрет вебхука одного кабинета.
+
+    Хранятся только зашифрованными. Отделы выбирают подключение, поэтому один
+    кабинет ApiPay может принимать оплату сразу за несколько отделов.
+    """
+
+    name = models.CharField(max_length=100)
+    api_key_encrypted = models.TextField(blank=True, default="")
+    webhook_secret_encrypted = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
         ordering = ["created_at", "id"]
 
     @staticmethod
@@ -41,27 +61,20 @@ class Department(models.Model):
             return ""
 
     @property
-    def apipay_api_key(self) -> str:
-        return self._reveal(self.apipay_api_key_encrypted)
+    def api_key(self) -> str:
+        return self._reveal(self.api_key_encrypted)
 
     @property
-    def apipay_webhook_secret(self) -> str:
-        return self._reveal(self.apipay_webhook_secret_encrypted)
+    def webhook_secret(self) -> str:
+        return self._reveal(self.webhook_secret_encrypted)
 
-    @property
-    def apipay_configured(self) -> bool:
-        return bool(self.apipay_api_key)
+    def set_api_key(self, value: str) -> None:
+        self.api_key_encrypted = encrypt_secret((value or "").strip())
+        self.updated_at = timezone.now()
 
-    def set_apipay_api_key(self, value: str) -> None:
-        """Пустое значение отключает Kaspi: без ключа секрет вебхука не нужен."""
-        self.apipay_api_key_encrypted = encrypt_secret((value or "").strip())
-        if not self.apipay_api_key_encrypted:
-            self.apipay_webhook_secret_encrypted = ""
-        self.apipay_updated_at = timezone.now()
-
-    def set_apipay_webhook_secret(self, value: str) -> None:
-        self.apipay_webhook_secret_encrypted = encrypt_secret((value or "").strip())
-        self.apipay_updated_at = timezone.now()
+    def set_webhook_secret(self, value: str) -> None:
+        self.webhook_secret_encrypted = encrypt_secret((value or "").strip())
+        self.updated_at = timezone.now()
 
     def __str__(self):
         return self.name

@@ -63,6 +63,7 @@
 | Склад и остатки | `warehouse/services.py` | — |
 | С какого склада ушли мешки | `shipments/sources.py` | `components/loader/shipment-sources-sheet.tsx` |
 | Оплата долга клиента | `orders/debt_payments.py` | `components/payments/client-debt-payment-modal.tsx` |
+| Подключения Kaspi (ApiPay) отделов | `sales/apipay_accounts.py`, `sales.ApiPayAccount`; запросы и вебхуки — `orders/apipay.py`, `orders/webhooks.py` | `components/orders/apipay-accounts.tsx`, `apipay-account-form.tsx` |
 | Возвраты товара | `orders/goods_returns.py` | `components/storekeeper/*` |
 | Импорт акта сверки 1С | `client_acts/` (`parser.py`, `services.py`) | `lib/client-acts.ts`, `components/clients/client-act-import-modal.tsx` |
 | Задним числом / фиксация | `orders/backdate.py`, `orders/fixation.py` | — |

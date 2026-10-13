@@ -231,6 +231,21 @@ def _reject_payment_with_provider(
             "detail": "Платёж уже оплачен и будет подтверждён автоматически.",
             "code": "payment_already_paid",
         })
+    if (
+        invoice is not None
+        and invoice.invoice_id is None
+        and invoice.status == "creating"
+    ):
+        # Ответ на выдачу потерян: счёт мог появиться у Kaspi, отменять нечего.
+        # Сверка найдёт его или сама отклонит оплату после безопасного ожидания.
+        raise ValidationError({
+            "detail": (
+                "Kaspi ещё не подтвердил, выставлен ли счёт. Статус проверяется "
+                "автоматически: если счёта нет, оплата отклонится сама "
+                "в течение 30 минут."
+            ),
+            "code": "invoice_issue_pending",
+        })
     if invoice is not None and invoice.status not in CLOSED_INVOICE_STATUSES:
         if invoice.channel == "qr":
             raise ValidationError({

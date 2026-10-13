@@ -78,14 +78,20 @@ def provider_error(exc, *, for_client=False):
     Кассиру сообщение называет отдел, где не подключён Kaspi; клиенту портала
     внутренности настройки не показываем. Прочие исключения — как есть.
     """
+    unavailable = "Счёт на оплату временно недоступен."
     if isinstance(exc, ApiPayConfigurationError):
-        unavailable = "Счёт на оплату временно недоступен."
         return ValidationError({
             "detail": unavailable if for_client else (str(exc) or unavailable),
             "code": "payment_provider_not_configured",
         })
     if isinstance(exc, ApiPayAPIError):
-        return ValidationError({"detail": exc.message, "code": exc.error_code})
+        refusal = INVOICE_REFUSALS.get(exc.error_code)
+        if refusal and for_client:
+            refusal = unavailable
+        return ValidationError({
+            "detail": refusal or exc.message,
+            "code": exc.error_code,
+        })
     return exc
 
 
@@ -97,6 +103,19 @@ CLOSED_INVOICE_STATUSES = frozenset({"cancelled", "expired", "error", "supersede
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_ERROR_RESPONSE_BYTES = 64 * 1024
 INVOICE_RECOVERY_NOT_FOUND_GRACE = timedelta(minutes=30)
+# Отказы ApiPay до выдачи счёта, которые приходят как HTTP 503 (по документации
+# ApiPay): счёт не создан, и повтор не поможет, пока не устранят причину. В
+# отличие от таймаута и прочих 5xx резерв оплаты освобождается сразу; текст —
+# что чинить кассиру.
+INVOICE_REFUSALS = {
+    "kaspi_session_invalid": (
+        "Сессия кассира Kaspi в ApiPay истекла — переподключите кассира "
+        "в кабинете apipay.kz и выставьте счёт заново."
+    ),
+    "invoices_disabled": (
+        "Kaspi временно не принимает счета. Повторите позже."
+    ),
+}
 PROVIDER_INVOICE_STATUSES = frozenset({
     "processing",
     "pending",
@@ -208,12 +227,19 @@ def normalize_phone(value: str) -> str:
 
 
 def credentials_for_department_code(code: str) -> ApiPayCredentials:
-    """Ключ отдела по коду заказа; активность не проверяется: старые счета
-    отключённого отдела сверяются его же ключом."""
-    department = Department.objects.filter(code=code).first() if code else None
+    """Ключ подключения ApiPay отдела по коду заказа; активность не
+    проверяется: старые счета отключённого отдела сверяются его же ключом."""
+    department = (
+        Department.objects.select_related("apipay_account")
+        .filter(code=code)
+        .first()
+        if code
+        else None
+    )
     if department is None:
         raise ApiPayConfigurationError("У заказа не указан отдел продаж")
-    api_key = department.apipay_api_key
+    account = department.apipay_account
+    api_key = account.api_key if account else ""
     if not api_key:
         raise ApiPayConfigurationError(
             f"В отделе «{department.name}» не подключён Kaspi (ApiPay)"
@@ -655,8 +681,9 @@ def _save_invoice_issue_error(
 
     A timeout/5xx is ambiguous: ApiPay may have created the invoice before the
     response was lost. Keep the Payment reservation and ``creating`` record so
-    the monitor can retry the exact same idempotency key. Only definitive 4xx
-    failures release the reservation.
+    the monitor can retry the exact same idempotency key. Only definitive
+    failures (4xx and the documented 503 ``INVOICE_REFUSALS``) release the
+    reservation.
     """
     order_id = Payment.objects.values_list("order_id", flat=True).get(
         pk=payment_id
@@ -669,7 +696,10 @@ def _save_invoice_issue_error(
             return record
         if record.status not in MONEY_RECEIVED_INVOICE_STATUSES:
             is_ambiguous = (
-                exc.status_code >= 500 if ambiguous is None else ambiguous
+                exc.status_code >= 500
+                and exc.error_code not in INVOICE_REFUSALS
+                if ambiguous is None
+                else ambiguous
             )
             record.status = "creating" if is_ambiguous else "error"
             record.error_code = exc.error_code

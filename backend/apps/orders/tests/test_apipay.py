@@ -25,8 +25,8 @@ from apps.orders.models import (
     OrderItem,
     Payment,
 )
-from apps.sales.models import Department
-from apps.orders.tests.apipay_fakes import ProviderResponse, signed_webhook
+from apps.sales.models import ApiPayAccount, Department
+from apps.orders.tests.apipay_fakes import ProviderResponse, connect_apipay, signed_webhook
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
 
@@ -699,8 +699,7 @@ def test_cumulative_refund_above_gross_is_retained_and_preserves_totals(api_clie
 def test_each_department_uses_its_own_key(urlopen, settings):
     settings.APIPAY_BASE_URL = "https://api.apipay.kz/api/v1"
     city = Department.objects.create(code="city", name="Нью-Сити")
-    city.set_apipay_api_key("city-key")
-    city.save()
+    connect_apipay(city, "city-key")
 
     urlopen.return_value = ProviderResponse({"id": 42, "status": "processing"})
     create_invoice(_payment(), user=None)
@@ -765,17 +764,36 @@ def test_webhook_maps_signature_to_department(api_client, apipay_department):
 
     assert response.status_code == 200, response.content
     event = ApiPayWebhookEvent.objects.get()
-    assert event.department_id == apipay_department.pk
+    assert event.apipay_account_id == apipay_department.apipay_account_id
     assert event.invoice_id == invoice.pk
     invoice.refresh_from_db()
     assert invoice.status == "paid"
 
 
+@patch("apps.orders.apipay.urllib.request.urlopen")
+def test_departments_sharing_one_account_use_its_key_and_webhook(
+    urlopen, api_client, apipay_department,
+):
+    """Один кабинет ApiPay на два отдела: ключ и вебхук общие."""
+    Department.objects.create(
+        code="city", name="Нью-Сити", apipay_account=apipay_department.apipay_account
+    )
+    payment = _payment()
+    Order.all_objects.filter(pk=payment.order_id).update(department="city")
+    urlopen.return_value = ProviderResponse({"id": 42, "status": "pending"})
+
+    create_invoice(payment, user=None)
+    response = signed_webhook(api_client, _paid_payload())
+
+    assert urlopen.call_args.args[0].headers["X-api-key"] == "server-only-key"
+    assert response.status_code == 200, response.content
+    invoice = ApiPayInvoice.objects.get(payment=payment)
+    assert invoice.status == "paid"
+
+
 def test_webhook_signed_by_other_department_is_rejected(api_client):
     city = Department.objects.create(code="city", name="Нью-Сити")
-    city.set_apipay_api_key("city-key")
-    city.set_apipay_webhook_secret("city-hook")
-    city.save()
+    connect_apipay(city, "city-key", "city-hook")
     invoice = _pending_invoice()  # заказ в отделе main
 
     response = signed_webhook(api_client, _paid_payload(), secret="city-hook")
@@ -791,15 +809,13 @@ def test_webhook_for_unknown_invoice_keeps_department_and_refuses_foreign_mappin
     api_client, apipay_department
 ):
     city = Department.objects.create(code="city", name="Нью-Сити")
-    city.set_apipay_api_key("city-key")
-    city.set_apipay_webhook_secret("city-hook")
-    city.save()
+    connect_apipay(city, "city-key", "city-hook")
 
     # Событие пришло раньше, чем счёт сохранился локально.
     response = signed_webhook(api_client, _paid_payload(77), secret="city-hook")
     assert response.status_code == 200
     event = ApiPayWebhookEvent.objects.get()
-    assert event.department_id == city.pk
+    assert event.apipay_account_id == city.apipay_account_id
     assert event.processed_at is None
 
     # Счёт 77 оказался у отдела main: событие отдела city к нему не применяется.
@@ -816,7 +832,7 @@ def test_webhook_for_unknown_invoice_keeps_department_and_refuses_foreign_mappin
 
 
 def test_webhook_without_any_secret_is_not_configured(api_client):
-    Department.objects.update(apipay_webhook_secret_encrypted="")
+    ApiPayAccount.objects.update(webhook_secret_encrypted="")
     response = api_client.post(
         "/api/webhooks/apipay/",
         data=b'{"event":"webhook.test"}',

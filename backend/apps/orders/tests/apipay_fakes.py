@@ -9,6 +9,18 @@ from django.utils import timezone
 from apps.catalog.models import Product
 from apps.clients.models import Client
 from apps.orders.models import ApiPayInvoice, Order, OrderItem, Payment
+from apps.sales.models import ApiPayAccount
+
+
+def connect_apipay(department, api_key, webhook_secret="", *, name=None):
+    """Отдельное подключение ApiPay для отдела: свой ключ и секрет вебхука."""
+    account = ApiPayAccount(name=name or department.name)
+    account.set_api_key(api_key)
+    account.set_webhook_secret(webhook_secret)
+    account.save()
+    department.apipay_account = account
+    department.save(update_fields=["apipay_account"])
+    return account
 
 
 class ProviderResponse:

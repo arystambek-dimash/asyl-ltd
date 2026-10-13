@@ -18,8 +18,6 @@ const SENSITIVE_KEYS = new Set([
   "ai_service_api_key",
   "apikey",
   "api_key",
-  "apipay_api_key",
-  "apipay_webhook_secret",
   "authorization",
   "auth",
   "camera_pass",

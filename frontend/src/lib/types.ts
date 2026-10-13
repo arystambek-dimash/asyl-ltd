@@ -78,12 +78,21 @@ export interface Department {
   is_default: boolean;
   order_count: number;
   created_at: string;
-  /** Ключ ApiPay задан у отдела; сам ключ API не отдаёт. */
+  /** У отдела выбрано подключение ApiPay с ключом; сам ключ API не отдаёт. */
   apipay_configured: boolean;
-  apipay_webhook_configured: boolean;
-  /** «••••ab12» — последние символы ключа, только суперюзеру. */
-  apipay_key_hint?: string;
-  apipay_updated_at: string | null;
+  apipay_account: number | null;
+  apipay_account_name: string;
+}
+/** Подключение Kaspi через ApiPay: один кабинет может обслуживать несколько отделов. Только суперюзеру. */
+export interface ApiPayAccount {
+  id: number;
+  name: string;
+  /** «••••ab12» — последние символы ключа. */
+  key_hint: string;
+  webhook_configured: boolean;
+  updated_at: string;
+  /** ID отделов, которые принимают оплату через это подключение. */
+  departments: number[];
 }
 export interface DepartmentSummary {
   id: number;

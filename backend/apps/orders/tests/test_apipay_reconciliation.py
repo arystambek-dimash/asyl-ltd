@@ -28,6 +28,7 @@ from apps.orders.reconciliation_runner import (
     run_apipay_reconciliation_iteration,
 )
 from apps.orders.refund_reconciliation import RefundReconciliationStats
+from apps.orders.tests.apipay_fakes import connect_apipay
 from apps.sales.models import Department
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("apipay_department")]
@@ -714,8 +715,7 @@ def test_monitor_budget_and_backoff_helpers_enforce_hard_caps():
 @patch("apps.orders.reconciliation.check_invoice_statuses")
 def test_reconciliation_batches_per_department(check_statuses):
     city = Department.objects.create(code="city", name="Нью-Сити")
-    city.set_apipay_api_key("city-key")
-    city.save()
+    connect_apipay(city, "city-key")
     _invoice(901)
     second = _invoice(902)
     Order.all_objects.filter(pk=second.payment.order_id).update(department="city")
