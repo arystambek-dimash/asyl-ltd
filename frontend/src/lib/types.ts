@@ -454,7 +454,15 @@ export interface DashboardOperationalSummary {
     date: string;
     bags: number;
     orders: number;
+    truck_bags: number;
+    train_bags: number;
   }[];
+}
+
+/** GET /stock/by-product/ — остаток по товарам, сложенный по всем складам. */
+export interface StockByProduct {
+  total_bags: number;
+  products: { product: number; name: string; weight_kg: string; color_label: string; bags: number }[];
 }
 
 /** Client-portal projection: prices are deliberately hidden until confirmation. */

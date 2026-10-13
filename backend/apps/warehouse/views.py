@@ -14,6 +14,7 @@ from .serializers import (
 from .services import (
     adjust_stock,
     resolve_warehouse,
+    stock_by_product,
     transfer_stock,
 )
 
@@ -45,6 +46,7 @@ class StockViewSet(
     serializer_class = StockItemSerializer
     required_perms = {
         "list": "warehouse.view",
+        "by_product": "warehouse.view",
         "adjust": "warehouse.adjust",
         "transfer": "warehouse.adjust",
     }
@@ -58,6 +60,11 @@ class StockViewSet(
             warehouse = resolve_warehouse(raw_warehouse, require_active=False)
             queryset = queryset.filter(warehouse=warehouse)
         return queryset
+
+    @action(detail=False, methods=["get"], url_path="by-product")
+    def by_product(self, request):
+        """«Главная»: остаток по товарам, сложенный по складам."""
+        return Response(stock_by_product())
 
     @action(detail=False, methods=["post"])
     def adjust(self, request):

@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import re
 from django.core.paginator import Paginator
-from django.db.models import Count, Exists, F, Max, OuterRef, Q, Sum
+from django.db.models import Count, Exists, F, OuterRef, Q, Sum
 from django.utils import timezone
 from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import HasPerm, PermAPIViewMixin, PermViewSetMixin
@@ -26,7 +26,6 @@ from apps.common.query_params import filter_date_range, parse_date_range, parse_
 from apps.sales.access import assigned_department_id, scope_by_client_department
 from apps.sales.labels import UNASSIGNED_CODE, UNASSIGNED_COLOR, UNASSIGNED_NAME
 from apps.sales.models import Department
-from apps.eventlog.models import EventLog
 from apps.shipments.services import rollback_shipment
 from apps.shipments.serializers import LoadSerializer
 from django.db import transaction
@@ -74,6 +73,7 @@ from .querysets import (
 )
 from .labels import payment_method_label, payment_status_label
 from .reports import summary_report
+from .dashboard import attention_counts, loading_queue, shipped_by_day
 from .references import build_order_form_options
 from .statuses import (
     REVIEWABLE_STATUSES, is_financial, is_in_progress, public_status_key, statuses_in_group,
@@ -777,62 +777,17 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         url_path="dashboard-operational",
     )
     def dashboard_operational(self, request):
-        """Small, authoritative dashboard projection instead of order history."""
+        """Сводка «Главной»: очередь погрузки, что решить и отгрузки по дням."""
         qs = self.get_queryset()
         date_from, date_to = parse_date_range(request.query_params)
-
-        queue = qs.filter(status__in=("arrived", "loading")).order_by("id")
-        # A rolled-back and re-shipped order can have several snapshots; the
-        # current one is the last written (max id). Its created_at may be
-        # backdated (fixation, moved shipment), so pick it before the dates.
-        latest_ids = (
-            EventLog.objects.filter(order__in=qs.filter(status="shipped"), event_type="shipment")
-            .values("order_id")
-            .annotate(last=Max("id"))
-            .values("last")
-        )
-        shipment_events = filter_date_range(
-            EventLog.objects.filter(pk__in=latest_ids).only("id", "order_id", "payload", "created_at"),
-            "created_at",
-            date_from,
-            date_to,
-        )
-        latest_by_order = {event.order_id: event for event in shipment_events}
-
-        days: dict[str, dict[str, int]] = defaultdict(
-            lambda: {"bags": 0, "orders": 0}
-        )
-        for event in latest_by_order.values():
-            raw_bags = event.payload.get("bags_loaded", 0)
-            try:
-                bags = int(raw_bags)
-            except (TypeError, ValueError):
-                bags = 0
-            day = timezone.localtime(event.created_at).date().isoformat()
-            days[day]["bags"] += max(0, bags)
-            days[day]["orders"] += 1
-
-        pending_payments = 0
-        if request.user.has_perm_code("payments.confirm"):
-            # Ссылка ведёт в «Кассу» — число то же, что в её очереди.
-            pending_payments = cashier_queue_payments(request.user).count()
-
         return Response({
             "queue": OrderSerializer(
-                queue,
+                loading_queue(qs),
                 many=True,
                 context={"request": request},
             ).data,
-            "attention": {
-                "pending_payments": pending_payments,
-                "awaiting_review": qs.filter(
-                    status__in=statuses_in_group("pending")
-                ).count(),
-            },
-            "days": [
-                {"date": date, **values}
-                for date, values in sorted(days.items())
-            ],
+            "attention": attention_counts(qs, request.user),
+            "days": shipped_by_day(qs, date_from, date_to),
         })
 
     @action(detail=True, methods=["post"], url_path="correct-price")

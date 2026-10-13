@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  adaptDashboardDebt,
-  adaptOperationalShipments,
-  adaptReportSummary,
-  dashboardReportRange,
-} from "@/lib/dashboard-analytics";
-import type { ReportDay, ReportSummary } from "@/lib/types";
-import { makeReportDay } from "@/test-utils/factories";
+import { adaptDashboardDebt, todayIncome, todayShipments } from "@/lib/dashboard-analytics";
+import type { ReportSummary } from "@/lib/types";
 
-function reportSummary(days: ReportDay[]): ReportSummary {
+function reportSummary(): ReportSummary {
   return {
     departments: [],
     from: "2026-07-28",
@@ -52,18 +46,9 @@ function reportSummary(days: ReportDay[]): ReportSummary {
       overdue_clients: 0,
     },
     clients: [],
-    days,
+    days: [],
   };
 }
-
-describe("dashboardReportRange", () => {
-  it("builds an inclusive local-calendar range across month boundaries", () => {
-    expect(dashboardReportRange("2026-03-01", 3)).toEqual({
-      from: "2026-02-27",
-      to: "2026-03-01",
-    });
-  });
-});
 
 describe("adaptDashboardDebt", () => {
   it("uses the report aggregate and keeps overdue currency independent", () => {
@@ -101,99 +86,44 @@ describe("adaptDashboardDebt", () => {
   });
 });
 
-describe("adaptReportSummary", () => {
-  it("maps the canonical report to fixed chart slots and keeps currencies separate", () => {
-    const report = reportSummary([
-      makeReportDay({
-        date: "2026-07-30",
-        orders: 2,
-        bags: 12,
-        revenue: "999999.00",
-        received: "888888.00",
-        payments: 1,
-        revenue_by_currency: { KZT: "1200.00", USD: "300.00" },
-        received_by_currency: { KZT: "250.00", USD: "10.00" },
-      }),
-      makeReportDay({
-        date: "2026-07-28",
-        orders: 1,
-        bags: 4,
-        revenue: "100.00",
-        received: "50.00",
-        revenue_by_currency: { USD: "100.00" },
-        received_by_currency: { USD: "50.00" },
-      }),
-    ]);
-    report.shipped.revenue_by_currency = { KZT: "1200.00", USD: "400.00" };
-    report.income.by_currency = { KZT: "250.00", USD: "60.00" };
+describe("todayShipments", () => {
+  it("takes today and yesterday from server days and splits trucks and wagons", () => {
+    const days = [
+      { date: "2026-10-12", bags: 2134, orders: 11, truck_bags: 2134, train_bags: 0 },
+      { date: "2026-10-13", bags: 897, orders: 9, truck_bags: 620, train_bags: 277 },
+    ];
 
-    const metrics = adaptReportSummary(report, "2026-07-30", 3);
-
-    expect(metrics.shippedByDay).toEqual([
-      { label: "28", bags: 4, orders: 1 },
-      { label: "29", bags: 0, orders: 0 },
-      { label: "30", bags: 12, orders: 2 },
-    ]);
-    expect(metrics.spark).toEqual([
-      { label: "28", revenue: 0, received: 0 },
-      { label: "29", revenue: 0, received: 0 },
-      { label: "30", revenue: 1200, received: 250 },
-    ]);
-    expect(metrics).toMatchObject({
-      moneyCurrency: "KZT",
-      shippedToday: 12,
-      shippedYesterday: 0,
-      shippedTodayOrders: 2,
-      periodRevenue: 1200,
-      periodReceived: 250,
-      receivedToday: 250,
-      receivedTodayCount: 1,
+    expect(todayShipments(days, "2026-10-13", "2026-10-12")).toEqual({
+      shippedToday: 897,
+      shippedTodayOrders: 9,
+      truckBagsToday: 620,
+      trainBagsToday: 277,
+      shippedYesterday: 2134,
     });
   });
 
-  it("uses the report currency instead of silently zeroing a USD-only report", () => {
-    const report = reportSummary([
-      makeReportDay({
-        date: "2026-07-30",
-        revenue: "200.00",
-        received: "75.00",
-        revenue_by_currency: { USD: "200.00" },
-        received_by_currency: { USD: "75.00" },
-      }),
-    ]);
-    report.income.currency = "USD";
-    report.shipped.currency = "USD";
-    report.shipped.revenue_by_currency = { USD: "200.00" };
-    report.income.by_currency = { USD: "75.00" };
-
-    expect(adaptReportSummary(report, "2026-07-30", 1)).toMatchObject({
-      moneyCurrency: "USD",
-      spark: [{ label: "30", revenue: 200, received: 75 }],
-      periodRevenue: 200,
-      periodReceived: 75,
-      receivedToday: 75,
+  it("shows zeros for a day the server did not return", () => {
+    expect(todayShipments([], "2026-10-13", "2026-10-12")).toEqual({
+      shippedToday: 0,
+      shippedTodayOrders: 0,
+      truckBagsToday: 0,
+      trainBagsToday: 0,
+      shippedYesterday: 0,
     });
   });
 });
 
-describe("adaptOperationalShipments", () => {
-  it("restores empty calendar slots around authoritative server totals", () => {
-    const days = [
-      { date: "2026-07-29", bags: 5, orders: 1 },
-      { date: "2026-07-30", bags: 12, orders: 2 },
-    ];
+describe("todayIncome", () => {
+  it("reads the one-day report in the currency the server chose", () => {
+    const report = reportSummary();
+    report.income.currency = "USD";
+    report.income.by_currency = { USD: "75.00", KZT: "1000.00" };
+    report.income.payments = 3;
 
-    const metrics = adaptOperationalShipments(days, "2026-07-30", 3);
+    expect(todayIncome(report)).toEqual({ receivedToday: 75, receivedTodayCount: 3, moneyCurrency: "USD" });
+  });
 
-    expect(metrics.shippedByDay).toEqual([
-      { label: "28", bags: 0, orders: 0 },
-      { label: "29", bags: 5, orders: 1 },
-      { label: "30", bags: 12, orders: 2 },
-    ]);
-    expect(metrics).toMatchObject({
-      shippedToday: 12,
-      shippedYesterday: 5,
-      shippedTodayOrders: 2,
-    });
+  it("shows zero tenge while the report has not loaded", () => {
+    expect(todayIncome(null)).toEqual({ receivedToday: 0, receivedTodayCount: 0, moneyCurrency: "KZT" });
   });
 });

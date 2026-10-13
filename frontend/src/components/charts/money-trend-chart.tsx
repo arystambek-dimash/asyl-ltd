@@ -8,7 +8,7 @@ import { formatCurrency } from "@/lib/utils";
 export const TREND_GRID_PROPS = { strokeDasharray: "3 7", vertical: false, stroke: "var(--border)" } as const;
 
 /** Ось дней: подпись точки из `label`, на длинном периоде — каждая четвёртая. */
-export function trendXAxisProps(points: number) {
+function trendXAxisProps(points: number) {
   return {
     dataKey: "label",
     tickLine: false,

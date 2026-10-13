@@ -61,6 +61,7 @@
 | Номер вагона | `common/wagon_numbers.py` | `ui/wagon-number-input.tsx`, `lib/wagons.ts` |
 | Нетто вагона | `Wagon.computed_net_kg` | — |
 | Склад и остатки | `warehouse/services.py` | — |
+| Сводка «Главной» и режим ТВ | `orders/dashboard.py`, `warehouse/services.stock_by_product` | `lib/use-dashboard-metrics.ts`, `lib/dashboard-analytics.ts`, `components/dashboard/*` |
 | С какого склада ушли мешки | `shipments/sources.py` | `components/loader/shipment-sources-sheet.tsx` |
 | Оплата долга клиента | `orders/debt_payments.py` | `components/payments/client-debt-payment-modal.tsx` |
 | Подключения Kaspi (ApiPay) отделов | `sales/apipay_accounts.py`, `sales.ApiPayAccount`; запросы и вебхуки — `orders/apipay.py`, `orders/webhooks.py` | `components/orders/apipay-accounts.tsx`, `apipay-account-form.tsx` |

@@ -27,9 +27,6 @@
   --sidebar-foreground: #37352f;
   --sidebar-accent: #efeeec;
   --sidebar-accent-foreground: #37352f;
-  --analytics-hero: #0c1c50;
-  --analytics-hero-foreground: #ffffff;
-  --analytics-hero-accent: #dce5ff;
   /* Экран грузчика читают на улице под солнцем: цифры коричнево-красные, рамки тёмные.
      Цвет рамки там задан с `!`: `* { border-color }` ниже вне слоёв и перебивает утилиты. */
   --loader-number: #8b1a10;

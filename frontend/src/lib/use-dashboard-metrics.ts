@@ -4,143 +4,98 @@ import { useApi } from "@/lib/use-api";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { useLocalDay } from "@/lib/use-local-day";
-import {
-  adaptDashboardDebt,
-  adaptOperationalShipments,
-  adaptReportSummary,
-  dashboardReportRange,
-} from "@/lib/dashboard-analytics";
-import type { DashboardOperationalSummary, ReportSummary, StockItem } from "@/lib/types";
+import { useVisiblePolling } from "@/lib/use-visible-polling";
+import { adaptDashboardDebt, todayIncome, todayShipments } from "@/lib/dashboard-analytics";
+import { productParts, productTitle, twinKey, twinKeys } from "@/lib/product-parts";
+import { shiftIsoDate } from "@/lib/utils";
+import type { DashboardOperationalSummary, ReportSummary, StockByProduct } from "@/lib/types";
 
 export type DashboardAttentionKey = "overdue" | "payments" | "orders" | "stock";
 type DashboardAttentionItem = { key: DashboardAttentionKey; count: number };
 
-/** Все данные «Командного центра». Вызывать один раз на странице. */
-export function useDashboardMetrics(periodDays = 14) {
-  const currentDay = useLocalDay();
-  // Главная открывается сразу после входа, а права у всех разные: у менеджера
-  // нет склада, у оператора — финансов, у загрузчика — почти ничего.
-  // Запрашиваем только разрешённое — иначе первый экран смены встречал
-  // человека колонкой 403-ошибок.
+/** Главную держат открытой на ТВ: данные обновляются сами, без кликов. */
+const DASHBOARD_POLL_MS = 30_000;
+
+/** Сводка дня для «Главной» и режима ТВ. Вызывать один раз на странице. */
+export function useDashboardMetrics() {
+  const today = useLocalDay();
+  const yesterday = shiftIsoDate(today, -1);
+  // Права у всех разные: у менеджера нет склада, у оператора — финансов.
+  // Запрашиваем только разрешённое — иначе экран встречал бы колонкой 403.
   const { me } = useAuth();
   const canOrders = can(me, "orders.view");
   const canStock = can(me, "warehouse.view");
   const canFinance = can(me, "reports.view");
   const canPayments = can(me, "payments.confirm");
-  const reportRange = useMemo(() => dashboardReportRange(currentDay, periodDays), [currentDay, periodDays]);
-  const operationalUrl = canOrders
-    ? `/orders/dashboard-operational/?date_from=${reportRange.from}&date_to=${reportRange.to}`
-    : null;
   const {
     data: operational,
     error: operationalErr,
     reload: reloadOperational,
-  } = useApi<DashboardOperationalSummary>(operationalUrl);
-  const { data: stock, error: stockErr, reload: reloadStock } = useApi<StockItem[]>(canStock ? "/stock/" : null);
+  } = useApi<DashboardOperationalSummary>(
+    canOrders ? `/orders/dashboard-operational/?date_from=${yesterday}&date_to=${today}` : null,
+  );
+  const {
+    data: stock,
+    error: stockErr,
+    reload: reloadStock,
+  } = useApi<StockByProduct>(canStock ? "/stock/by-product/" : null);
   const {
     data: report,
     error: reportErr,
     reload: reloadReport,
-  } = useApi<ReportSummary>(
-    canFinance ? `/reports/summary/?date_from=${reportRange.from}&date_to=${reportRange.to}` : null,
-  );
+  } = useApi<ReportSummary>(canFinance ? `/reports/summary/?date_from=${today}&date_to=${today}` : null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-  // Пока сводка и заказы не пришли, все счётчики равны нулю — и «требует
-  // внимания» показывал бы зелёное «ничего срочного» на пустых данных.
-  // Управляющий уходил бы со спокойным экраном за секунду до красного.
+  // Пока ответы не пришли, все счётчики равны нулю — и «Нужно решить» показал
+  // бы «нечего решать» на пустых данных.
   const loading = (canOrders && operational == null) || (canStock && stock == null) || (canFinance && report == null);
 
-  // Ошибка видна всегда; если данные уже есть, дашборд помечается устаревшим (stale).
+  // Ошибка видна всегда; если данные уже есть, сводка помечается устаревшей.
   const loadError = (canOrders && operationalErr) || (canStock && stockErr) || (canFinance && reportErr) || "";
-  const stale = Boolean(loadError) && !loading;
 
   useEffect(() => {
     if (loading || loadError) return;
     if (!canOrders && !canStock && !canFinance) return;
     setLastUpdatedAt(new Date());
   }, [canFinance, canOrders, canStock, loadError, loading, operational, report, stock]);
-  const reload = () => {
-    reloadOperational();
-    reloadStock();
-    reloadReport();
-  };
+  const reload = () => Promise.all([reloadOperational(), reloadStock(), reloadReport()]);
+  useVisiblePolling(reload, DASHBOARD_POLL_MS, canOrders || canStock || canFinance);
 
-  const queue = useMemo(() => operational?.queue ?? [], [operational?.queue]);
-  const totalBags = (stock ?? []).reduce((s, i) => s + i.bags, 0);
+  const stockRows = useMemo(() => {
+    // Подпись — как на «Складе»: марка, сорт, фасовка; цвет — только у двойников.
+    const rows = (stock?.products ?? []).map((row) => ({ ...row, parts: productParts(row.name, row.weight_kg) }));
+    const twins = twinKeys(rows.map(({ parts }) => parts));
+    return rows.map(({ product, bags, parts, color_label }) => ({
+      product,
+      bags,
+      title: productTitle(parts, twins.has(twinKey(parts)) ? color_label : undefined),
+    }));
+  }, [stock?.products]);
+  const negativeStock = stockRows.filter((row) => row.bags < 0).length;
+  const debt = useMemo(() => adaptDashboardDebt(report?.debt_now), [report?.debt_now]);
 
-  const operationalShipments = useMemo(
-    () => adaptOperationalShipments(operational?.days ?? [], currentDay, periodDays),
-    [currentDay, operational?.days, periodDays],
-  );
-  const reportMetrics = useMemo(
-    () => (report ? adaptReportSummary(report, currentDay, periodDays) : null),
-    [currentDay, periodDays, report],
-  );
-  const shipmentMetrics = reportMetrics ?? operationalShipments;
-  const spark =
-    reportMetrics?.spark ?? operationalShipments.shippedByDay.map(({ label }) => ({ label, revenue: 0, received: 0 }));
-  const periodRevenue = reportMetrics?.periodRevenue ?? 0;
-  const periodReceived = reportMetrics?.periodReceived ?? 0;
-  const receivedToday = reportMetrics?.receivedToday ?? 0;
-  const receivedTodayCount = reportMetrics?.receivedTodayCount ?? 0;
-  const moneyCurrency = reportMetrics?.moneyCurrency ?? "KZT";
-
-  // Позиции склада по продуктам. Минусовые остатки — ошибка учёта: молчать
-  // о них нельзя, поэтому отдаём отдельным списком.
-  const { negativeStock, stockPositionCount } = useMemo(() => {
-    const byProduct: Record<string, number> = {};
-    (stock ?? []).forEach((i) => {
-      byProduct[i.product_label] = (byProduct[i.product_label] ?? 0) + i.bags;
-    });
-    const rows = Object.entries(byProduct).map(([name, bags]) => ({ name, bags }));
-    return {
-      negativeStock: rows.filter((row) => row.bags < 0).sort((a, b) => a.bags - b.bags),
-      stockPositionCount: rows.length,
-    };
-  }, [stock]);
-
-  // Долги: общая сумма и отдельно просроченное.
-  // Просрочка важнее общей суммы, но её основная валюта может отличаться от
-  // валюты всей дебиторки. Сводки выбирают валюту независимо и не показывают
-  // ложный ноль, когда обычный долг в KZT, а просрочка — в USD.
-  const { debtTotal, debtCurrency, overdueTotal, overdueCurrency, overdueClients } = useMemo(
-    () => adaptDashboardDebt(report?.debt_now),
-    [report?.debt_now],
-  );
-
-  // Что требует действия прямо сейчас — один список для шапки и блока «Нужно
-  // решить». Проверять права здесь не нужно: чужие разделы не запрашиваются,
-  // а оплаты на подтверждение бэкенд без payments.confirm отдаёт нулём.
-  const attentionRows: DashboardAttentionItem[] = [
-    { key: "overdue", count: overdueClients },
-    { key: "payments", count: operational?.attention.pending_payments ?? 0 },
-    { key: "orders", count: operational?.attention.awaiting_review ?? 0 },
-    { key: "stock", count: negativeStock.length },
-  ];
-  const attention = attentionRows.filter((item) => item.count > 0);
-  const attentionCount = attention.reduce((sum, item) => sum + item.count, 0);
+  // Что требует действия — один список для числа в шапке и блока «Нужно решить».
+  // Права здесь не проверяются: чужие разделы не запрашиваются, а оплаты на
+  // подтверждение бэкенд без payments.confirm отдаёт нулём.
+  const attention: DashboardAttentionItem[] = (
+    [
+      { key: "overdue", count: debt.overdueClients },
+      { key: "payments", count: operational?.attention.pending_payments ?? 0 },
+      { key: "orders", count: operational?.attention.awaiting_review ?? 0 },
+      { key: "stock", count: negativeStock },
+    ] satisfies DashboardAttentionItem[]
+  ).filter((item) => item.count > 0);
 
   return {
-    queue,
-    totalBags,
-    ...shipmentMetrics,
-    spark,
-    periodRevenue,
-    periodReceived,
-    receivedToday,
-    receivedTodayCount,
-    moneyCurrency,
-    stockPositionCount,
-    negativeStock,
-    debtTotal,
-    debtCurrency,
-    overdueTotal,
-    overdueCurrency,
-    overdueClients,
+    today,
+    queue: operational?.queue ?? [],
+    ...todayShipments(operational?.days ?? [], today, yesterday),
+    ...todayIncome(report),
+    ...debt,
+    stockTotal: stock?.total_bags ?? 0,
+    stockRows,
     attention,
-    attentionCount,
+    attentionCount: attention.reduce((sum, item) => sum + item.count, 0),
     loading,
-    stale,
     lastUpdatedAt,
     loadError,
     reload,

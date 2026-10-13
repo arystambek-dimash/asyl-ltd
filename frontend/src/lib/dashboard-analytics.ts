@@ -1,36 +1,22 @@
 import type { DashboardOperationalSummary, ReportSummary } from "@/lib/types";
 import { amountForCurrency, finiteMoney, otherCurrencyAmounts } from "@/lib/currency-map";
-import { reportChartSeries } from "@/lib/report-analytics";
-import { shiftIsoDate } from "@/lib/utils";
 
 const DEFAULT_DASHBOARD_CURRENCY = "KZT";
 
-interface DashboardShipmentPoint {
-  label: string;
-  bags: number;
-  orders: number;
-}
+type OperationalDay = DashboardOperationalSummary["days"][number];
 
-interface DashboardMoneyPoint {
-  label: string;
-  revenue: number;
-  received: number;
-}
-
-interface DashboardShipmentMetrics {
-  shippedByDay: DashboardShipmentPoint[];
+interface DashboardShipments {
   shippedToday: number;
-  shippedYesterday: number;
   shippedTodayOrders: number;
+  truckBagsToday: number;
+  trainBagsToday: number;
+  shippedYesterday: number;
 }
 
-interface DashboardReportMetrics extends DashboardShipmentMetrics {
-  spark: DashboardMoneyPoint[];
-  moneyCurrency: string;
-  periodRevenue: number;
-  periodReceived: number;
+interface DashboardIncome {
   receivedToday: number;
   receivedTodayCount: number;
+  moneyCurrency: string;
 }
 
 interface DashboardDebtMetrics {
@@ -60,91 +46,28 @@ export function adaptDashboardDebt(debt: ReportSummary["debt_now"] | undefined):
   };
 }
 
-function normalizedPeriodDays(periodDays: number): number {
-  return Math.max(1, Math.trunc(periodDays) || 1);
-}
-
-export function dashboardReportRange(currentDay: string, periodDays: number): { from: string; to: string } {
-  return { from: shiftIsoDate(currentDay, 1 - normalizedPeriodDays(periodDays)), to: currentDay };
-}
-
-function periodSlots<T>(currentDay: string, periodDays: number, create: (label: string) => T): Map<string, T> {
-  const { from } = dashboardReportRange(currentDay, periodDays);
-  const slots = new Map<string, T>();
-
-  for (let index = 0; index < normalizedPeriodDays(periodDays); index += 1) {
-    const day = shiftIsoDate(from, index);
-    slots.set(day, create(day.slice(8, 10)));
-  }
-
-  return slots;
-}
-
-function shipmentMetrics(points: DashboardShipmentPoint[]): DashboardShipmentMetrics {
-  const today = points.at(-1);
-  const yesterday = points.at(-2);
+/**
+ * Сегодня и вчера из отгрузок по дням, которые посчитал сервер (откаты и
+ * повторные отгрузки он уже учёл). День без отгрузок в ответе отсутствует — нули.
+ */
+export function todayShipments(days: readonly OperationalDay[], today: string, yesterday: string): DashboardShipments {
+  const current = days.find((day) => day.date === today);
+  const previous = days.find((day) => day.date === yesterday);
   return {
-    shippedByDay: points,
-    shippedToday: today?.bags ?? 0,
-    shippedYesterday: yesterday?.bags ?? 0,
-    shippedTodayOrders: today?.orders ?? 0,
+    shippedToday: finiteMoney(current?.bags ?? 0),
+    shippedTodayOrders: finiteMoney(current?.orders ?? 0),
+    truckBagsToday: finiteMoney(current?.truck_bags ?? 0),
+    trainBagsToday: finiteMoney(current?.train_bags ?? 0),
+    shippedYesterday: finiteMoney(previous?.bags ?? 0),
   };
 }
 
-/**
- * Convert the server-owned accounting report into the fixed dashboard series.
- * Empty dates are restored here only for chart continuity; business totals and
- * recognition dates stay owned by the backend report.
- */
-export function adaptReportSummary(
-  report: ReportSummary,
-  currentDay: string,
-  periodDays: number,
-): DashboardReportMetrics {
-  // One chart must never overlay values measured in different currencies.
-  // The report's primary income currency is the most useful operator view;
-  // revenue is projected into that same currency via the server breakdown.
-  const moneyCurrency = report.income.currency || report.shipped.currency || DEFAULT_DASHBOARD_CURRENCY;
-  const moneySlots = periodSlots(currentDay, periodDays, (label) => ({ label, revenue: 0, received: 0 }));
-
-  // Денежную серию строит тот же адаптер, что и график отчётов; здесь только слоты календаря.
-  for (const point of reportChartSeries(report.days, moneyCurrency)) {
-    const money = moneySlots.get(point.date);
-    if (!money) continue;
-    money.revenue = point.revenue;
-    money.received = point.received;
-  }
-
-  const today = report.days.find((day) => day.date === currentDay);
+/** Поступления за сегодня: отчёт запрошен ровно за сегодняшний день, валюту выбрал сервер. */
+export function todayIncome(report: ReportSummary | null | undefined): DashboardIncome {
+  const moneyCurrency = report?.income.currency || DEFAULT_DASHBOARD_CURRENCY;
   return {
-    ...adaptOperationalShipments(report.days, currentDay, periodDays),
-    spark: [...moneySlots.values()],
+    receivedToday: amountForCurrency(report?.income.by_currency ?? {}, moneyCurrency),
+    receivedTodayCount: report?.income.payments ?? 0,
     moneyCurrency,
-    // Итоги периода — серверные: отчёт запрошен за те же даты, что и слоты графика.
-    periodRevenue: amountForCurrency(report.shipped.revenue_by_currency, moneyCurrency),
-    periodReceived: amountForCurrency(report.income.by_currency, moneyCurrency),
-    receivedToday: today ? amountForCurrency(today.received_by_currency, moneyCurrency) : 0,
-    receivedTodayCount: today?.payments ?? 0,
   };
-}
-
-/**
- * Operators without reports.view still get a continuous operational chart.
- * The backend has already reconciled rollbacks and repeated shipments; this
- * adapter only restores empty calendar dates for the chart.
- */
-export function adaptOperationalShipments(
-  days: readonly DashboardOperationalSummary["days"][number][],
-  currentDay: string,
-  periodDays: number,
-): DashboardShipmentMetrics {
-  const slots = periodSlots(currentDay, periodDays, (label) => ({ label, bags: 0, orders: 0 }));
-  for (const day of days) {
-    const slot = slots.get(day.date);
-    if (!slot) continue;
-    slot.bags = finiteMoney(day.bags);
-    slot.orders = finiteMoney(day.orders);
-  }
-
-  return shipmentMetrics([...slots.values()]);
 }

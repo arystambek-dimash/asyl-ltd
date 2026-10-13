@@ -235,6 +235,13 @@ def test_dashboard_operational_returns_authoritative_data(
         order=shipped,
         payload={"bags_loaded": 12},
     )
+    by_rail = _order(client, "shipped", timezone.now(), transport_type="train")
+    EventLog.objects.create(
+        event_type="shipment",
+        message="Отгружено",
+        order=by_rail,
+        payload={"bags_loaded": 1300},
+    )
     today = timezone.localdate().isoformat()
 
     response = auth_client(operator).get(
@@ -247,8 +254,9 @@ def test_dashboard_operational_returns_authoritative_data(
         "pending_payments": 0,
         "awaiting_review": 1,
     }
+    # Фуры и вагоны отдельно: на ТВ «Главной» видно, куда ушли мешки.
     assert response.data["days"] == [
-        {"date": today, "bags": 12, "orders": 1}
+        {"date": today, "bags": 1312, "orders": 2, "truck_bags": 12, "train_bags": 1300}
     ]
 
 
