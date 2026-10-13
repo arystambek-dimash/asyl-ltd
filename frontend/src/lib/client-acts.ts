@@ -19,14 +19,26 @@ export interface ActPreview {
   default_start: string;
   sales: { count: number; total: string };
   payments: { count: number; total: string };
+  /** Из кредита — не деньги (возвраты товара, встречные поставки): «Зачёт по акту сверки». */
+  offsets: { count: number; total: string };
   /** Документы, уже перенесённые раньше (этим или другим актом). */
   imported: number;
   /** Документы до даты «Импортировать с»: их уже ведёт CRM. */
   before_start: number;
   /** Сальдо на начало в долг клиента, которое станет заказом; `null` — нет. */
   opening_order: string | null;
-  /** Свои записи CRM в валюте акта за его период. */
-  crm: { orders: number; orders_total: string; payments: number; payments_total: string; last_day: string | null };
+  /** Деньги актов, которые прерванный перенос ещё не разнёс по заказам: «Довести перенос». */
+  pending: string;
+  /** Свои записи CRM в валюте акта за его период: отгрузки, оплаты и возвраты кассы. */
+  crm: {
+    orders: number;
+    orders_total: string;
+    payments: number;
+    payments_total: string;
+    refunds: number;
+    refunds_total: string;
+    last_day: string | null;
+  };
   /** Сальдо клиента в CRM после импорта, со знаком как у акта. */
   balance_after: string;
   /** Почему импорт невозможен; пусто — можно. */

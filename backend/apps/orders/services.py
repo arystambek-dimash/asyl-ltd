@@ -189,16 +189,21 @@ def assert_payment_method_allowed(currency: str, method: str) -> None:
         })
 
 
-def _validate_payment_open(order: Order, *, method: str | None, by_client=False, day=None) -> None:
+def _validate_payment_open(
+    order: Order, *, method: str | None, by_client=False, day=None, check_store_window=True,
+) -> None:
     """Приём новой оплаты: статус заказа и окно оплаты магазина.
 
     Окно оплаты магазина — график погашения долга, поэтому оно действует только
     на отгруженный заказ: предоплату магазин вносит в любой день. ``day`` — день
     оплаты, принятой прошлым днём: окно проверяется на него, а не на сегодня.
+    ``check_store_window=False`` — оплата из акта сверки 1С: это уже случившаяся
+    история, график магазина её не ограничивает.
     """
     assert_payment_status_open(order, method=method, by_client=by_client)
     if (
-        order.status == "shipped"
+        check_store_window
+        and order.status == "shipped"
         and order.store
         and not is_payment_window_open(order.store, day or timezone.localdate())
     ):
@@ -298,16 +303,19 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
 
 @transaction.atomic
 def add_payment(order: Order, amount, user, method="cash", stage="received",
-                note="", day=None, allow_overpayment=False) -> Payment:
+                note="", day=None, allow_overpayment=False, check_store_window=True) -> Payment:
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера).
 
     ``day`` — оплата прошлым днём: окно оплаты магазина проверяется на него.
     ``allow_overpayment`` — деньги уже пришли сверх остатка (итог акта сверки в
     пользу клиента, :mod:`apps.client_acts`): излишек ложится переплатой заказа
-    и виден в кассе «К возврату».
+    и виден в кассе «К возврату». ``check_store_window`` — как у
+    :func:`_validate_payment_open`.
     """
     order = _locked_payment_order(order, user)
-    _validate_payment_open(order, method=payment_open_method(method, stage), day=day)
+    _validate_payment_open(
+        order, method=payment_open_method(method, stage), day=day, check_store_window=check_store_window,
+    )
     assert_payment_method_allowed(order.currency, method)
     if stage not in ("requested", "received"):
         raise ValidationError({"detail": "Недопустимый шаг оплаты", "code": "bad_stage"})
@@ -316,7 +324,7 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
         detail="Сумма оплаты должна быть положительным денежным значением",
         code="invalid_amount",
     )
-    if method not in Payment.CASHIER_METHODS:
+    if method not in Payment.RECORDED_METHODS:
         raise ValidationError(
             {"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     available = available_to_pay(order)
@@ -637,6 +645,7 @@ def record_staff_payment(
     note="",
     paid_at=None,
     allow_overpayment=False,
+    check_store_window=True,
 ) -> Payment:
     """Record money from the CRM and settle funds already received by staff.
 
@@ -644,7 +653,7 @@ def record_staff_payment(
     после обычной записи оплата и все её события (приём, подтверждение,
     «Статус оплаты») переносятся на этот момент. Только для денег, которые
     закрываются сразу (``Payment.SETTLED_ON_RECORD``), не для счёта.
-    ``allow_overpayment`` — как у :func:`add_payment`.
+    ``allow_overpayment`` и ``check_store_window`` — как у :func:`add_payment`.
 
     The CRM endpoint itself is protected by ``payments.create`` and cannot be
     called by portal users.  Consequently the source boundary, rather than a
@@ -679,6 +688,7 @@ def record_staff_payment(
         stage="requested" if method == "invoice" else "received",
         note=note,
         allow_overpayment=allow_overpayment,
+        check_store_window=check_store_window,
     )
     if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
         # Подтверждение перечитывает этот же экземпляр после блокировки.

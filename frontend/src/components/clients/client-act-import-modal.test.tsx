@@ -26,10 +26,20 @@ const basePreview: ActPreview = {
   default_start: "2026-01-01",
   sales: { count: 171, total: "2100245.00" },
   payments: { count: 6, total: "2105920.00" },
+  offsets: { count: 0, total: "0.00" },
+  pending: "0.00",
   imported: 0,
   before_start: 0,
   opening_order: null,
-  crm: { orders: 0, orders_total: "0.00", payments: 0, payments_total: "0.00", last_day: null },
+  crm: {
+    orders: 0,
+    orders_total: "0.00",
+    payments: 0,
+    payments_total: "0.00",
+    refunds: 0,
+    refunds_total: "0.00",
+    last_day: null,
+  },
   balance_after: "-5675.00",
   problems: [],
 };
@@ -62,7 +72,7 @@ async function openWithFile() {
   render(<ClientActImportModal clientId={42} open onClose={onClose} onImported={onImported} />);
   await user.upload(screen.getByLabelText("Файл акта сверки"), actFile());
   const dialog = screen.getByRole("dialog");
-  await within(dialog).findByText("Реализации → заказы");
+  await within(dialog).findByText("Дебет → заказы");
   return { user, dialog, onImported, onClose };
 }
 
@@ -105,11 +115,21 @@ it("при пересечении с CRM предлагает дату нача�
     ...basePreview,
     start: "2026-06-16",
     default_start: "2026-06-16",
-    crm: { orders: 2, orders_total: "300.00", payments: 1, payments_total: "50.00", last_day: "2026-06-15" },
+    crm: {
+      orders: 2,
+      orders_total: "300.00",
+      payments: 1,
+      payments_total: "50.00",
+      refunds: 1,
+      refunds_total: "120.00",
+      last_day: "2026-06-15",
+    },
   };
   const { dialog } = await openWithFile();
 
-  expect(dialog).toHaveTextContent("уже есть 2 заказа на 300 $ и 1 оплата на 50 $ (последняя запись 15.06.2026)");
+  expect(dialog).toHaveTextContent(
+    "уже есть 2 заказа на 300 $ и 1 оплата на 50 $, возвратов кассы 1 на 120 $ (последняя запись 15.06.2026)",
+  );
   const date = within(dialog).getByLabelText("Переносить с");
   expect(date).toHaveValue("2026-06-16");
   fireEvent.change(date, { target: { value: "2026-03-01" } });
@@ -140,4 +160,55 @@ it("всё уже перенесено — переносить нечего", a
   expect(dialog).toHaveTextContent("Все документы акта уже в CRM");
   expect(dialog).toHaveTextContent("Уже перенесено раньше177 документов");
   expect(within(dialog).getByRole("button", { name: "Перенести" })).toBeDisabled();
+});
+
+it("показывает зачёт по акту отдельной строкой и долг клиента словами", async () => {
+  preview = {
+    ...basePreview,
+    act: { ...basePreview.act, number: "00000000517", currency: "KZT", closing: "324880.00" },
+    sales: { count: 26, total: "1837250.00" },
+    payments: { count: 27, total: "1512370.00" },
+    offsets: { count: 26, total: "1212370.00" },
+    balance_after: "324880.00",
+  };
+  const { dialog } = await openWithFile();
+
+  expect(dialog).toHaveTextContent("Кредит → оплаты27 · 1 512 370 ₸");
+  expect(dialog).toHaveTextContent("из них зачёт по акту (возвраты и др.)26 · 1 212 370 ₸");
+  expect(dialog).toHaveTextContent("клиент должен 324 880 ₸");
+});
+
+it("нулевое сальдо — полностью оплачено", async () => {
+  preview = { ...basePreview, act: { ...basePreview.act, closing: "0.00" }, balance_after: "0.00" };
+  const { dialog } = await openWithFile();
+
+  expect(within(dialog).getAllByText("полностью оплачено")).toHaveLength(2);
+});
+
+it("прерванный перенос можно довести: денег ещё не разнесено", async () => {
+  preview = {
+    ...basePreview,
+    sales: { count: 0, total: "0.00" },
+    payments: { count: 0, total: "0.00" },
+    imported: 177,
+    pending: "40.00",
+  };
+  chunks = [{ processed: 0, payments: 4, remaining: 0, finished: true, overpaid: "0.00" }];
+  const { user, dialog, onImported } = await openWithFile();
+
+  expect(dialog).toHaveTextContent("осталось разнести по заказам 40 $");
+  await user.click(within(dialog).getByRole("button", { name: "Довести перенос" }));
+
+  await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+});
+
+it("не крутится вечно, если сервер не продвигает перенос", async () => {
+  const stuck = { processed: 0, payments: 0, remaining: 3, finished: false, overpaid: null };
+  chunks = [stuck, stuck, stuck];
+  const { user, dialog, onImported } = await openWithFile();
+
+  await user.click(within(dialog).getByRole("button", { name: "Перенести 177 документов" }));
+
+  expect(await within(dialog).findByText(/Перенос не продвигается/)).toBeInTheDocument();
+  expect(onImported).not.toHaveBeenCalled();
 });

@@ -316,8 +316,8 @@ export interface ReportSummary {
 export type PortalPaymentMethod = "pending" | "invoice" | "kaspi" | "cash" | "debt";
 /** Order.payment_method: выбор клиента по заказу, «mixed» — несколько способов сразу. */
 type OrderPaymentMethod = PortalPaymentMethod | "mixed";
-/** Способ конкретной оплаты (Payment.method): касса, банковский перевод из акта сверки + легаси «card». */
-type PaymentMethod = "cash" | "kaspi" | "remote" | "bank" | "invoice" | "card";
+/** Способ конкретной оплаты (Payment.method): касса, банковский перевод и зачёт из акта сверки + легаси «card». */
+type PaymentMethod = "cash" | "kaspi" | "remote" | "bank" | "offset" | "invoice" | "card";
 
 export interface Client {
   id: number;

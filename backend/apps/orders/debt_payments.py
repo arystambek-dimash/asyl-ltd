@@ -50,7 +50,7 @@ def _skipped(order, reason: str) -> dict:
     return {"order": order, "reason": reason, "detail": _SKIP_DETAILS[reason]}
 
 
-def plan_debt_payment(orders, amount: Decimal | None, *, today, paid_on=None) -> dict:
+def plan_debt_payment(orders, amount: Decimal | None, *, today, paid_on=None, check_store_window=True) -> dict:
     """Распределить сумму по долговым заказам клиента — без записи.
 
     ``orders`` — долговые заказы клиента одной валюты, уже отсортированные
@@ -62,6 +62,8 @@ def plan_debt_payment(orders, amount: Decimal | None, *, today, paid_on=None) ->
     Доля заказа не больше свободного остатка
     (:func:`debt.available_to_pay`). ``amount=None`` — план на весь свободный
     остаток (кнопка «Весь долг»). Сумму проверяет вызывающий.
+    ``check_store_window=False`` — деньги из акта сверки 1С: история, график
+    магазина её не ограничивает.
     """
     payable = []
     skipped = []
@@ -70,7 +72,7 @@ def plan_debt_payment(orders, amount: Decimal | None, *, today, paid_on=None) ->
             skipped.append(_skipped(order, "after_payment_day"))
             continue
         # Долговой заказ всегда отгружен, а окно магазина — график погашения долга.
-        if order.store_id is not None and not is_payment_window_open(order.store, today):
+        if check_store_window and order.store_id is not None and not is_payment_window_open(order.store, today):
             skipped.append(_skipped(order, "payment_window_closed"))
             continue
         cap = available_to_pay(order)

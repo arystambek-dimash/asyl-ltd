@@ -81,10 +81,11 @@ def is_payment_method_allowed(currency: str, method: str | None) -> bool:
     """Допускает ли валюта заказа деньги этим способом.
 
     Kaspi (свой терминал, QR, счёт на телефон) и удалённая оплата — только в
-    тенге: долларовый заказ принимается наличными или банковским переводом.
-    ``method=None`` — запрос денег (QR, счёт), как в :func:`is_payment_open`.
+    тенге: долларовый заказ закрывается наличными, банковским переводом или
+    зачётом по акту сверки. ``method=None`` — запрос денег (QR, счёт), как в
+    :func:`is_payment_open`.
     """
-    return currency == "KZT" or method in ("cash", "bank")
+    return currency == "KZT" or method in ("cash", "bank", "offset")
 
 
 def payment_open_method(method: str, stage: str) -> str | None:

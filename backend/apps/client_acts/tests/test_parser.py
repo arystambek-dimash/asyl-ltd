@@ -96,18 +96,43 @@ def test_closing_balance_mismatch_is_refused():
     assert "Сальдо на конец" in message
 
 
-def test_unknown_document_with_amount_is_refused_with_its_line():
-    message = _error(act_xlsx([
-        sale("10.06.2026", 100),
-        ("11.06.2026", "Возврат товаров от покупателя 00000000003 от 11.06.2026", None, 40),
-    ]))
+def test_only_the_columns_decide_debit_is_an_order_credit_is_paid():
+    """Правило владельца: вид документа не важен — дебет отпущено, кредит закрыто клиентом."""
+    act = parse_act(act_xlsx(
+        [
+            sale("23.04.2026", 633400, "360"),
+            ("31.05.2026", "Поступление ТМЗ и услуг 00000000342 от 31.05.2026", None, 20000),
+            bank("11.06.2026", 300000, "332"),
+            ("07.08.2026", "Возврат ТМЗ от покупателя 00000000004 от 07.08.2026", None, 26890),
+            ("08.08.2026", "Возврат денежных средств покупателю 7 от 08.08.2026", 5000, None),
+        ],
+        currency="KZT",
+    ))
+
+    assert [(row.kind, row.method, row.amount) for row in act.rows] == [
+        ("sale", None, Decimal("633400")),
+        ("payment", "offset", Decimal("20000")),
+        ("payment", "bank", Decimal("300000")),
+        ("payment", "offset", Decimal("26890")),
+        ("sale", None, Decimal("5000")),
+    ]
+    assert act.closing == Decimal("291510")
+
+
+def test_row_with_both_debit_and_credit_is_two_documents():
+    act = parse_act(act_xlsx([("10.06.2026", "Корректировка долга 3 от 10.06.2026", 100, 40)]))
+
+    assert [(row.kind, row.document, row.amount, row.method) for row in act.rows] == [
+        ("sale", "Корректировка долга 3 от 10.06.2026", Decimal("100"), None),
+        ("payment", "Корректировка долга 3 от 10.06.2026 · кредит", Decimal("40"), "offset"),
+    ]
+
+
+def test_negative_amount_is_refused_with_its_line():
+    message = _error(act_xlsx([sale("10.06.2026", 100), ("11.06.2026", "Сторно 4 от 11.06.2026", None, -40)]))
+
     assert "строка 12" in message
-    assert "Возврат товаров от покупателя" in message
-
-
-def test_sale_on_the_credit_side_is_refused():
-    message = _error(act_xlsx([("10.06.2026", "Реализация ТМЗ и услуг 5 от 10.06.2026", None, 100)]))
-    assert "строка 10" in message
+    assert "отрицательная сумма" in message
 
 
 def test_row_with_amount_and_bad_date_is_refused():

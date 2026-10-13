@@ -23,12 +23,12 @@ type ClientActImportProps = {
 
 const DOCUMENT_FORMS: [string, string, string] = ["документ", "документа", "документов"];
 
-/** Сальдо словами: плюс — клиент должен нам, минус — мы клиенту. */
+/** Сальдо словами (дебет − кредит): плюс — клиент должен нам, минус — мы клиенту деньгами или товаром. */
 function balanceText(value: string, currency: string): string {
   const amount = finiteMoney(value);
   if (amount > 0) return `клиент должен ${formatCurrency(amount, currency)}`;
   if (amount < 0) return `мы должны клиенту ${formatCurrency(-amount, currency)}`;
-  return formatCurrency(0, currency);
+  return "полностью оплачено";
 }
 
 function Warning({ children }: { children: ReactNode }) {
@@ -88,8 +88,12 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
   }, [clientId, file, start, refresh]);
 
   const total = preview ? preview.sales.count + preview.payments.count + (preview.opening_order ? 1 : 0) : 0;
-  const overlap = preview ? preview.crm.orders + preview.crm.payments > 0 : false;
-  const canImport = Boolean(file && preview && !checking && !importing && total > 0 && preview.problems.length === 0);
+  const overlap = preview ? preview.crm.orders + preview.crm.payments + preview.crm.refunds > 0 : false;
+  // Прерванный перенос: документы уже в CRM, но деньги актов ещё не разнесены по заказам.
+  const pending = preview ? finiteMoney(preview.pending) : 0;
+  const canImport = Boolean(
+    file && preview && !checking && !importing && (total > 0 || pending > 0) && preview.problems.length === 0,
+  );
 
   function pick(next: File) {
     setFile(next);
@@ -106,12 +110,21 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
     setImporting(true);
     setImportError("");
     let payments = 0;
+    // Сервер не двигается (ни строк, ни оплат) — не крутимся вечно, а говорим об этом.
+    let idle = 0;
     setProgress({ done: 0, total, payments });
     try {
       for (;;) {
         const chunk = await importClientActChunk(clientId, file, act.start);
         payments += chunk.payments;
         setProgress({ done: total - chunk.remaining, total, payments });
+        idle = !chunk.finished && chunk.processed === 0 && chunk.payments === 0 ? idle + 1 : 0;
+        if (idle >= 3) {
+          setImportError("Перенос не продвигается — обновите страницу и откройте импорт ещё раз");
+          setProgress(null);
+          setRefresh((n) => n + 1);
+          return;
+        }
         if (chunk.finished) {
           const overpaid = finiteMoney(chunk.overpaid ?? 0);
           onImported(
@@ -140,7 +153,7 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
       className="max-w-lg"
       eyebrow="Клиент"
       title="Импорт акта сверки"
-      description="Excel-файл «Акт сверки» из 1С: реализации станут отгруженными заказами, поступления — оплатами долга. Склад не меняется, уже перенесённые документы пропускаются."
+      description="Excel-файл «Акт сверки» из 1С: дебет (что Асыл отпустил) станет отгруженными заказами, кредит (что клиент закрыл) — оплатами долга. Склад не меняется, уже перенесённые документы пропускаются."
       footer={
         <>
           <Button variant="outline" disabled={importing} onClick={onClose}>
@@ -151,7 +164,9 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
               ? "Переносим…"
               : total > 0
                 ? `Перенести ${total} ${pluralRu(total, DOCUMENT_FORMS)}`
-                : "Перенести"}
+                : pending > 0
+                  ? "Довести перенос"
+                  : "Перенести"}
           </Button>
         </>
       }
@@ -204,6 +219,8 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
               {formatCurrency(preview.crm.orders_total, preview.act.currency)} и {preview.crm.payments}{" "}
               {pluralRu(preview.crm.payments, ["оплата", "оплаты", "оплат"])} на{" "}
               {formatCurrency(preview.crm.payments_total, preview.act.currency)}
+              {preview.crm.refunds > 0 &&
+                `, возвратов кассы ${preview.crm.refunds} на ${formatCurrency(preview.crm.refunds_total, preview.act.currency)}`}
               {preview.crm.last_day && ` (последняя запись ${formatIsoDate(preview.crm.last_day)})`}. Чтобы не задвоить,
               документы раньше даты ниже не переносятся.
             </p>
@@ -253,12 +270,17 @@ function ActSummary({ preview, total, stale }: { preview: ActPreview; total: num
         {act.counterparty && <div className="text-[var(--muted-foreground)]">{act.counterparty}</div>}
       </div>
       <div className="rounded-lg border px-3 text-sm">
-        <InfoRow label="Реализации → заказы">
+        <InfoRow label="Дебет → заказы">
           {preview.sales.count} · {formatCurrency(preview.sales.total, currency)}
         </InfoRow>
-        <InfoRow label="Поступления → оплаты">
+        <InfoRow label="Кредит → оплаты">
           {preview.payments.count} · {formatCurrency(preview.payments.total, currency)}
         </InfoRow>
+        {preview.offsets.count > 0 && (
+          <InfoRow label="из них зачёт по акту (возвраты и др.)">
+            {preview.offsets.count} · {formatCurrency(preview.offsets.total, currency)}
+          </InfoRow>
+        )}
         {preview.opening_order && (
           <InfoRow label="Сальдо на начало → заказ">{formatCurrency(preview.opening_order, currency)}</InfoRow>
         )}
@@ -277,7 +299,13 @@ function ActSummary({ preview, total, stale }: { preview: ActPreview; total: num
           <span className={cn(differs && "text-[var(--warning)]")}>{balanceText(preview.balance_after, currency)}</span>
         </InfoRow>
       </div>
-      {total === 0 && preview.problems.length === 0 && (
+      {total === 0 && preview.problems.length === 0 && finiteMoney(preview.pending) > 0 && (
+        <p className="text-sm text-[var(--muted-foreground)]">
+          Перенос не закончен: документы уже в CRM, осталось разнести по заказам{" "}
+          {formatCurrency(preview.pending, currency)}.
+        </p>
+      )}
+      {total === 0 && preview.problems.length === 0 && finiteMoney(preview.pending) <= 0 && (
         <p className="text-sm text-[var(--muted-foreground)]">Все документы акта уже в CRM — переносить нечего.</p>
       )}
       {differs && total > 0 && (

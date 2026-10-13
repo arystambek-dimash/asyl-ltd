@@ -2,14 +2,16 @@
 
 Акт — две половины: «По данным <мы>, USD» слева и «По данным <контрагент>,
 USD» справа. Читаем только свою (левую): строки «Дата | Документ | Дебет |
-Кредит» между «Сальдо на начало» и «Обороты за период». Дебет — реализация
-(клиент должен нам), кредит — поступление денег. Строки без сумм (счета-фактуры)
-пропускаются.
+Кредит» между «Сальдо на начало» и «Обороты за период». Правило владельца
+(13.10.2026) — только числа: дебет — сколько Асыл отпустил клиенту (заказ),
+кредит — сколько клиент закрыл (оплата). Вид документа решает лишь способ
+оплаты: платёжное поручение — банк, ПКО — наличные, остальное (возврат товара,
+встречная поставка, корректировка) — «зачёт по акту». Строки без сумм
+(счета-фактуры) пропускаются.
 
-Разбор строгий: колонки ищутся по заголовкам, суммы строк обязаны сойтись с
-«Обороты за период», а сальдо начала с оборотами — с «Сальдо на конец». Любое
-расхождение или документ незнакомого вида — отказ со списком строк: молча
-записать возврат товара оплатой хуже, чем не загрузить акт.
+Разбор строгий к раскладке: колонки ищутся по заголовкам, суммы строк обязаны
+сойтись с «Обороты за период», а сальдо начала с оборотами — с «Сальдо на
+конец». Любое расхождение — отказ со списком строк.
 """
 
 import re
@@ -35,25 +37,28 @@ _COLUMNS = ("Дата", "Документ", "Дебет", "Кредит")
 # Документ без хвоста «, Накладная/Чек № вх. …»: до первой даты «от ДД.ММ.ГГГГ».
 _DOCUMENT_KEY = re.compile(r"^.*?\bот \d{2}\.\d{2}\.\d{4}")
 
-# Вид документа по началу текста: (шаблон, сторона суммы, вид, способ оплаты).
-_DOCUMENT_KINDS = (
-    (re.compile(r"^Реализация\b"), "debit", "sale", None),
-    (re.compile(r"^Платежное поручение \(?входящее\)?"), "credit", "payment", "bank"),
-    (re.compile(r"^Поступление (на расчетный счет|безналичных)"), "credit", "payment", "bank"),
-    (re.compile(r"^Приходный кассовый ордер\b"), "credit", "payment", "cash"),
+# Способ оплаты кредита по началу текста документа: деньги — их способом.
+_MONEY_DOCUMENTS = (
+    (re.compile(r"^Платежное поручение\b"), "bank"),
+    (re.compile(r"^Поступление (на расчетный счет|безналичных)"), "bank"),
+    (re.compile(r"^Приходный кассовый ордер\b"), "cash"),
 )
+# Кредит, который не деньги: возврат товара, встречная поставка, корректировка.
+OFFSET_METHOD = "offset"
+# Строка с суммой и в дебете, и в кредите — два документа реестра.
+_CREDIT_SUFFIX = " · кредит"
 
 
 @dataclass(frozen=True)
 class ActRow:
-    """Документ акта с суммой: реализация (``sale``) или поступление денег (``payment``)."""
+    """Документ акта с суммой: дебет — заказ (``sale``), кредит — оплата (``payment``)."""
 
     line: int
     day: date
     kind: str
     document: str
     amount: Decimal
-    # Способ оплаты CRM для поступления: ``bank`` или ``cash``.
+    # Способ оплаты CRM для кредита: ``bank``, ``cash`` или ``offset``.
     method: str | None
 
 
@@ -177,13 +182,12 @@ def _columns(rows, start: int, bounds: tuple[int, int]) -> tuple[int, dict[str, 
     _refuse("Не найдена строка заголовков «Дата | Документ | Дебет | Кредит»")
 
 
-def _classify(document: str, debit: Decimal, credit: Decimal) -> tuple[str, str | None] | None:
-    side = "debit" if debit and not credit else "credit" if credit and not debit else None
+def _credit_method(document: str) -> str:
     plain = _plain(document)
-    for pattern, kind_side, kind, method in _DOCUMENT_KINDS:
+    for pattern, method in _MONEY_DOCUMENTS:
         if pattern.match(plain):
-            return (kind, method) if side == kind_side else None
-    return None
+            return method
+    return OFFSET_METHOD
 
 
 def _document_key(document: str) -> str:
@@ -240,18 +244,25 @@ def parse_act(content: bytes) -> ParsedAct:
             except ValueError:
                 problems.append(f"строка {line}: дата «{label}» не читается")
                 continue
-            kind = _classify(document, debit, credit)
-            if kind is None or debit < 0 or credit < 0:
-                problems.append(f"строка {line}: «{document or 'без названия'}» — такой документ не переносится")
+            if not document:
+                problems.append(f"строка {line}: сумма без названия документа")
+                continue
+            if debit < 0 or credit < 0:
+                problems.append(f"строка {line}: «{document}» — отрицательная сумма")
                 continue
             key = _document_key(document)
-            if key in lines_by_document:
-                problems.append(f"строка {line}: «{key}» уже есть в строке {lines_by_document[key]}")
-                continue
-            lines_by_document[key] = line
-            movements.append(ActRow(
-                line=line, day=day, kind=kind[0], document=key, amount=debit or credit, method=kind[1],
-            ))
+            sides = [("sale", key, debit, None)] if debit else []
+            if credit:
+                credit_key = f"{key[:255 - len(_CREDIT_SUFFIX)]}{_CREDIT_SUFFIX}" if debit else key
+                sides.append(("payment", credit_key, credit, _credit_method(document)))
+            for kind, document_key, amount, method in sides:
+                if document_key in lines_by_document:
+                    problems.append(f"строка {line}: «{document_key}» уже есть в строке {lines_by_document[document_key]}")
+                    continue
+                lines_by_document[document_key] = line
+                movements.append(ActRow(
+                    line=line, day=day, kind=kind, document=document_key, amount=amount, method=method,
+                ))
     if problems:
         _refuse(f"Акт не загружен: {_problems_text(problems)}")
     if turnover is None or closing is None:
