@@ -106,10 +106,15 @@ def _require_transport(order, kind):
         )
 
 
-def estimated_load_kg(order) -> Decimal:
-    """Расчётный вес груза по мешкам: Σ(кол-во × вес фасовки)."""
+def estimated_load_kg(order, *, goods_only: bool = False) -> Decimal:
+    """Расчётный вес груза по мешкам: Σ(кол-во × вес фасовки).
+
+    ``goods_only`` — только товар, без строк акта сверки 1С
+    (:attr:`OrderItem.is_act_line`): для карточки заказа, не для аналитики.
+    """
     return sum(
-        (i.quantity * i.product_weight_kg for i in order.items.all()), Decimal(0)
+        (i.quantity * i.product_weight_kg for i in order.items.all() if not (goods_only and i.is_act_line)),
+        Decimal(0),
     )
 
 

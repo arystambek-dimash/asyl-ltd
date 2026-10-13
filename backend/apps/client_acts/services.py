@@ -489,6 +489,8 @@ def _import_sale(client, act: ParsedAct, user, *, kind: str, document: str, day:
         prices={str(product.pk): amount},
         backdate={"date": day, "status": "shipped"},
     )
+    # Позиция — документ 1С, а не мешки: подпись без цвета и фасовки.
+    order.items.update(product_label_snapshot=product.name, act_document=document)
     ClientActDocument.objects.create(
         client=client, currency=act.currency, kind=kind, document=document, day=day, amount=amount,
         act_number=act.number, order=order, imported_by=user,

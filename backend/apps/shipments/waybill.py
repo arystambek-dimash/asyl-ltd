@@ -152,14 +152,22 @@ def build_waybill_pdf(order: Order) -> bytes:
     _, sources = shipment_sources(order, items)
     parts = line_sources(sources, items)
     for index, item in enumerate(items, 1):
-        weight = Decimal(item.product_weight_kg or 0)
-        kg = weight * item.quantity
         price = item.unit_price
         line_total = price * item.quantity if price is not None else None
+        total_amount += line_total or Decimal("0")
+        if item.is_act_line:
+            # Строка акта сверки 1С — сумма документа, а не мешки: без веса и цены за мешок.
+            rows.append([
+                Paragraph(str(index), center), Paragraph(para_text(item.line_label), cell),
+                Paragraph("—", number), Paragraph("—", number), Paragraph("—", number), Paragraph("—", number),
+                Paragraph(_money(line_total), number),
+            ])
+            continue
+        weight = Decimal(item.product_weight_kg or 0)
+        kg = weight * item.quantity
         per_kg = (price / weight).quantize(Decimal("0.01")) if price is not None and weight else None
         total_bags += item.quantity
         total_kg += kg
-        total_amount += line_total or Decimal("0")
         # Неразрывный пробел вокруг тире: перенос строки допустим только после
         # запятой между складами, а не между складом и его мешками.
         source_text = para_text(sources_text(parts[item.pk])).replace(" — ", " — ")

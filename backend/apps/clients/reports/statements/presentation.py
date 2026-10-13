@@ -71,8 +71,11 @@ def operation_display(operation: StatementOperation) -> OperationDisplay:
         return OperationDisplay(
             "Продажа / отгрузка",
             ", ".join(
-                f"{item.line_label} × {item.quantity}"
-                + (f" (возврат {item.returned_quantity})" if item.returned_quantity else "")
+                # Строка акта сверки — документ 1С, а не мешки: без «× 1».
+                item.line_label if item.is_act_line else (
+                    f"{item.line_label} × {item.quantity}"
+                    + (f" (возврат {item.returned_quantity})" if item.returned_quantity else "")
+                )
                 for item in order.items.all()
             ),
             public_status_label(order.status),

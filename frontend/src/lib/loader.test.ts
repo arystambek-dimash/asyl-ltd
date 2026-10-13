@@ -4,6 +4,7 @@ import {
   dispatchSourcesPayload,
   hasTruckReport,
   historyReportUrl,
+  isActOnlyLoad,
   loadWeight,
   readStoredLoaderTransport,
   readStoredOverdueDays,
@@ -47,9 +48,17 @@ describe("history reports", () => {
   });
 
   it("only a shipped truck has a report to copy; wagons are reported by the bot", () => {
-    expect(hasTruckReport({ transport_type: "truck", status: "shipped" })).toBe(true);
-    expect(hasTruckReport({ transport_type: "truck", status: "confirmed" })).toBe(false);
-    expect(hasTruckReport({ transport_type: "train", status: "shipped" })).toBe(false);
+    const flour = [{ label: "Мука", quantity: 10 }];
+    expect(hasTruckReport({ transport_type: "truck", status: "shipped", items: flour })).toBe(true);
+    expect(hasTruckReport({ transport_type: "truck", status: "confirmed", items: flour })).toBe(false);
+    expect(hasTruckReport({ transport_type: "train", status: "shipped", items: flour })).toBe(false);
+  });
+
+  it("an order made only of reconciliation act lines is no truck load", () => {
+    const act = [{ label: "Реализация по акту сверки (1С)", quantity: 1, act_document: "Реализация ТМЗ 527" }];
+    expect(isActOnlyLoad({ items: act })).toBe(true);
+    expect(isActOnlyLoad({ items: [...act, { label: "Мука", quantity: 10 }] })).toBe(false);
+    expect(hasTruckReport({ transport_type: "truck", status: "shipped", items: act })).toBe(false);
   });
 
   it("the truck report text is composed by the server", async () => {

@@ -5,6 +5,7 @@ import {
   formatEstimate,
   hasUnpricedItems,
   orderItemLabel,
+  orderItemLine,
   orderItemsSummary,
   requestEstimate,
 } from "./orders";
@@ -79,6 +80,19 @@ it("marks a bonus line in its label", () => {
   expect(orderItemLabel({ product: 2, product_label: "Мука 50 кг" })).toBe("Мука 50 кг");
   expect(orderItemLabel({ product: 2, product_label: "Мука 50 кг", is_bonus: true })).toBe("Мука 50 кг (бонус)");
   expect(orderItemLabel({ product: 2 })).toBe("Товар #2");
+});
+
+it("shows a reconciliation act line as its 1C document, without bags", () => {
+  const act = {
+    product: 9,
+    product_label: "Реализация по акту сверки (1С)",
+    act_document: "Реализация ТМЗ и услуг 527 от 10.06.2026",
+    quantity: 1,
+  };
+
+  expect(orderItemLabel(act)).toBe("Реализация по акту сверки (1С): Реализация ТМЗ и услуг 527 от 10.06.2026");
+  expect(orderItemLine(act)).toBe("Реализация по акту сверки (1С): Реализация ТМЗ и услуг 527 от 10.06.2026");
+  expect(orderItemLine({ product: 2, product_label: "Мука", quantity: 10 })).toBe("Мука × 10");
 });
 
 describe("clientLabel", () => {

@@ -181,6 +181,13 @@ class Order(models.Model):
         return sum(item.quantity for item in self.items.all())
 
     @property
+    def goods_bags(self) -> int:
+        """Мешки товара для карточек и выписок: строка акта сверки — документ 1С,
+        а не мешки (:attr:`OrderItem.is_act_line`). Отгрузки и аналитика
+        считают :attr:`ordered_bags`."""
+        return sum(item.quantity for item in self.items.all() if not item.is_act_line)
+
+    @property
     def total_amount(self) -> Decimal:
         # Единственный источник суммы — договорная цена, зафиксированная в заказе.
         # У товара общей цены нет; неподтверждённая позиция пока стоит 0.
@@ -245,6 +252,10 @@ class OrderItem(models.Model):
     # как обычный, но стоит 0 — в сумму, долг и выручку не входит.
     # db_default: откат релиза вставляет позиции без этой колонки.
     is_bonus = models.BooleanField(default=False, db_default=False)
+    # Документ 1С, если позиция — строка акта сверки (apps.client_acts): в акте
+    # только сумма, товара и мешков нет — позицию показывают документом, без
+    # цвета, фасовки и количества. db_default: откат релиза вставляет без колонки.
+    act_document = models.CharField(max_length=255, blank=True, default="", db_default="")
 
     class Meta:
         constraints = [
@@ -268,14 +279,25 @@ class OrderItem(models.Model):
         return str(self.product) if self.product_id else "Удалённый товар"
 
     @property
+    def is_act_line(self) -> bool:
+        """Строка акта сверки 1С: сумма документа без товара в мешках — без количества, фасовки и цвета."""
+        return bool(self.act_document)
+
+    @property
     def line_label(self):
-        """Подпись строки в документах: бонус помечен, иначе «0 ₸» за мешок непонятен."""
+        """Подпись строки в документах: бонус помечен, иначе «0 ₸» за мешок непонятен;
+        строка акта сверки — с документом 1С вместо мешков."""
+        if self.act_document:
+            return f"{self.product_label}: {self.act_document}"
         return bonus_mark(self.product_label, self.is_bonus)
 
     @property
     def product_plain_label(self):
-        """Подпись без цвета (``Product.plain_label``); у удалённого товара — снимок как есть."""
-        return self.product.plain_label if self.product_id else self.product_label
+        """Подпись без цвета (``Product.plain_label``); у удалённого товара и строки
+        акта сверки — снимок как есть."""
+        if self.is_act_line or not self.product_id:
+            return self.product_label
+        return self.product.plain_label
 
     @property
     def product_weight_kg(self):

@@ -3,7 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { BonusBadge } from "@/components/orders/bonus-badge";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
-import { loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
+import { isActOnlyLoad, loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
 import { bagsLabel, bagsWord, cn, formatTime } from "@/lib/utils";
 
 /** Крупно «70 мешков», под ним вес (у вагона — тонны) — главное, что грузчик держит в голове. */
@@ -36,10 +36,16 @@ export function LoaderItemList({ items, className }: { items: LoaderOrderItem[];
           <span className="min-w-0 flex-1 break-words text-base font-semibold leading-snug">
             {item.label}
             {item.is_bonus && <BonusBadge className="ml-2 align-middle" />}
+            {/* Строка акта сверки — документ 1С, а не мешки: грузить нечего. */}
+            {item.act_document && (
+              <span className="block text-sm font-normal text-[var(--muted-foreground)]">{item.act_document}</span>
+            )}
           </span>
-          <span className="shrink-0 text-lg font-black leading-tight tabular-nums text-[var(--loader-number)]">
-            {bagsLabel(item.quantity)}
-          </span>
+          {!item.act_document && (
+            <span className="shrink-0 text-lg font-black leading-tight tabular-nums text-[var(--loader-number)]">
+              {bagsLabel(item.quantity)}
+            </span>
+          )}
         </li>
       ))}
     </ul>
@@ -72,9 +78,12 @@ export function LoaderOrderCard({
         <OrderTransportBadge order={order} />
       </div>
       <LoaderItemList items={order.items} className="mt-3" />
-      <div className="mt-3 border-t-2 border-[var(--loader-border)]/50! pt-2.5 text-sm font-bold tabular-nums text-[var(--loader-number)]">
-        Итого {bagsLabel(order.bags)} · {loadWeight(order)}
-      </div>
+      {/* Заказ целиком из акта сверки 1С — документы, а не груз: итога в мешках нет. */}
+      {!isActOnlyLoad(order) && (
+        <div className="mt-3 border-t-2 border-[var(--loader-border)]/50! pt-2.5 text-sm font-bold tabular-nums text-[var(--loader-number)]">
+          Итого {bagsLabel(order.bags)} · {loadWeight(order)}
+        </div>
+      )}
       {/* Номера вагонов отгрузки по отчёту; заголовок «12 вагонов» — в табличке сверху. */}
       <WagonList wagons={order.wagons} headline={false} className="mt-2.5" />
     </>

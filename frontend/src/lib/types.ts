@@ -370,7 +370,10 @@ interface OrderItem {
   is_bonus?: boolean;
   unit_price?: string | null;
   client_price?: string | null;
+  /** Фасовка, кг; у строки акта сверки — null. */
   weight_kg?: string | null;
+  /** Документ 1С, если позиция — строка акта сверки: сумма без мешков, фасовки и цвета. */
+  act_document?: string;
 }
 interface StatusChangeRequest {
   id: number;
@@ -598,7 +601,7 @@ export interface ClientHistorySale {
   is_financial: boolean;
   settlement_intent: string;
   /** label — товар без пометки (ключ фильтра «Товар»); бонусный мешок — is_bonus. */
-  items: { label: string; qty: number; is_bonus?: boolean }[];
+  items: { label: string; qty: number; is_bonus?: boolean; act_document?: string }[];
   bags: number;
   amount: string;
   paid: string;

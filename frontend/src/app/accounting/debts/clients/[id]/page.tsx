@@ -71,6 +71,8 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
       qty: it.quantity,
       price,
       total: price * it.quantity,
+      // Строка акта сверки — документ 1С: без количества и цены за единицу.
+      act: Boolean(it.act_document),
     };
   });
   const total = Number(order.total_amount);
@@ -84,9 +86,11 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
             <li key={l.key} className="flex items-start justify-between gap-3 py-2 text-sm">
               <div>
                 <div className="font-medium">{l.label}</div>
-                <div className="text-xs tabular-nums text-[var(--muted-foreground)]">
-                  {l.qty} × {formatCurrency(l.price, order.currency)}
-                </div>
+                {!l.act && (
+                  <div className="text-xs tabular-nums text-[var(--muted-foreground)]">
+                    {l.qty} × {formatCurrency(l.price, order.currency)}
+                  </div>
+                )}
               </div>
               <div className="font-medium tabular-nums">{formatCurrency(l.total, order.currency)}</div>
             </li>
@@ -106,8 +110,8 @@ function InvoiceTable({ order, layout = "full" }: { order: Order; layout?: "full
             {lines.map((l) => (
               <TR key={l.key}>
                 <TD className="font-medium">{l.label}</TD>
-                <TD className="text-right tabular-nums">{l.qty}</TD>
-                <TD className="text-right tabular-nums">{formatCurrency(l.price, order.currency)}</TD>
+                <TD className="text-right tabular-nums">{l.act ? "—" : l.qty}</TD>
+                <TD className="text-right tabular-nums">{l.act ? "—" : formatCurrency(l.price, order.currency)}</TD>
                 <TD className="text-right tabular-nums font-medium">{formatCurrency(l.total, order.currency)}</TD>
               </TR>
             ))}

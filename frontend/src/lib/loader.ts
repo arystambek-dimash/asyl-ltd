@@ -11,6 +11,8 @@ export interface LoaderOrderItem {
   quantity: number;
   /** Бонусный мешок заказа; в «Аналитике дня» поля нет. */
   is_bonus?: boolean;
+  /** Строка акта сверки 1С: документ, а не мешки — количество не показываем. */
+  act_document?: string;
 }
 
 /** Заказ на экране грузчика (GET /loader/queue/ и /loader/history/): денег грузчик не видит. */
@@ -115,8 +117,13 @@ export function historyReportUrl(path: "wagon-report/compose" | "truck-report", 
 }
 
 /** «Скопировать отчёт» — у отгруженной фуры; вагоны отчитываются ботом («Отправить отчёт»). */
-export function hasTruckReport(order: Pick<LoaderOrder, "transport_type" | "status">): boolean {
-  return order.transport_type === "truck" && order.status === "shipped";
+/** Заказ целиком из акта сверки 1С: документы, а не груз — без итога в мешках и отчёта об отгрузке. */
+export function isActOnlyLoad(order: Pick<LoaderOrder, "items">): boolean {
+  return order.items.length > 0 && order.items.every((item) => Boolean(item.act_document));
+}
+
+export function hasTruckReport(order: Pick<LoaderOrder, "transport_type" | "status" | "items">): boolean {
+  return order.transport_type === "truck" && order.status === "shipped" && !isActOnlyLoad(order);
 }
 
 /** «Скопировать отчёт» у фур: текст для чата отгрузок; составляет его сервер (GET /loader/truck-report/). */

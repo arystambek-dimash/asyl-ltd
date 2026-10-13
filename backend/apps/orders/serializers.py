@@ -64,13 +64,16 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "client_price",
             "weight_kg",
             "is_bonus",
+            "act_document",
         ]
+        read_only_fields = ["act_document"]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }
 
     def get_weight_kg(self, obj):
-        return str(obj.product_weight_kg)
+        # У строки акта сверки фасовки нет — это документ 1С, а не мешки.
+        return None if obj.is_act_line else str(obj.product_weight_kg)
 
     def get_client_price(self, obj):
         if obj.unit_price is not None:

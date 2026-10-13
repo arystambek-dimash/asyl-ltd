@@ -19,6 +19,8 @@ class LoaderOrderItemSerializer(serializers.Serializer):
     quantity = serializers.IntegerField()
     # Бонусные мешки грузятся как все — грузчик видит только пометку.
     is_bonus = serializers.BooleanField()
+    # Строка акта сверки 1С: документ, а не мешки — без количества.
+    act_document = serializers.CharField()
 
 
 class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, serializers.Serializer):
@@ -71,11 +73,12 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
         request = self.context.get("request")
         return request is not None and not can_set_truck_number(order, request.user)
 
+    # Карточка заказа: строки акта сверки — документы 1С, а не мешки.
     def get_bags(self, order):
-        return order.ordered_bags
+        return order.goods_bags
 
     def get_total_kg(self, order):
-        return money_string(estimated_load_kg(order))
+        return money_string(estimated_load_kg(order, goods_only=True))
 
     def get_shipped_at(self, order):
         shipment = getattr(order, "shipment", None)

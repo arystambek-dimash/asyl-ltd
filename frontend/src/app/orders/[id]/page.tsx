@@ -20,7 +20,7 @@ import { useAuth } from "@/store/auth";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
 import { safeBackPath } from "@/lib/navigation";
-import { UNPRICED_TOTAL, hasUnpricedItems, isChangedRequestError } from "@/lib/orders";
+import { UNPRICED_TOTAL, hasUnpricedItems, isActOnlyOrder, isChangedRequestError } from "@/lib/orders";
 import { remainingOf } from "@/lib/debt-orders";
 import { cn, formatCurrency, formatDateTime, formatIsoDate, formatMoney } from "@/lib/utils";
 import { orderTransportLabel } from "@/lib/wagons";
@@ -165,7 +165,8 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
   const unpriced = hasUnpricedItems(order.items);
   const remaining = remainingOf(order);
 
-  const hasRecordedWeight = order.weigh_in_kg != null;
+  // Заказ из акта сверки 1С — документ, а не груз: веса машины и груза у него нет.
+  const hasRecordedWeight = order.weigh_in_kg != null && !isActOnlyOrder(order);
 
   const isNew = order.status === "draft" || order.status === "pending";
   const canReview = isManager && isNew;
@@ -356,15 +357,16 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                             <span className="font-medium">
                               {it.product_label || `Товар #${it.product}`}
                               {it.is_bonus && <BonusBadge className="ml-1.5 align-middle" />}
-                              {it.weight_kg && (
+                              {/* Строка акта сверки — документ 1С вместо фасовки: мешков в ней нет. */}
+                              {(it.act_document || it.weight_kg) && (
                                 <span className="block text-xs font-normal text-[var(--muted-foreground)]">
-                                  {it.weight_kg} кг/мешок
+                                  {it.act_document || `${it.weight_kg} кг/мешок`}
                                 </span>
                               )}
                             </span>
                           </TD>
                           <TD className="text-right tabular-nums">
-                            {it.quantity}
+                            {it.act_document ? "—" : it.quantity}
                             {it.returned_quantity ? (
                               <span className="block text-xs font-medium text-[var(--destructive)]">
                                 возврат {it.returned_quantity}
@@ -372,7 +374,11 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
                             ) : null}
                           </TD>
                           <TD className="text-right tabular-nums text-[var(--muted-foreground)]">
-                            {it.is_bonus ? "бесплатно" : price ? formatCurrency(it.unit_price!, order.currency) : "—"}
+                            {it.is_bonus
+                              ? "бесплатно"
+                              : price && !it.act_document
+                                ? formatCurrency(it.unit_price!, order.currency)
+                                : "—"}
                           </TD>
                           <TD
                             className={cn(

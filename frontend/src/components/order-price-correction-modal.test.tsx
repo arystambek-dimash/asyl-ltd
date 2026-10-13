@@ -102,4 +102,33 @@ describe("OrderPriceCorrectionModal", () => {
       prices: { "101": "10.00", "102": "20.00" },
     });
   });
+
+  it("shows a reconciliation act line as its document, not as a bag, and still corrects it", async () => {
+    postMock.mockResolvedValue({ data: {} });
+    const user = userEvent.setup();
+    const act = {
+      ...order,
+      items: [
+        {
+          id: 201,
+          product: 9,
+          product_label: "Реализация по акту сверки (1С)",
+          act_document: "Реализация ТМЗ и услуг 527 от 10.06.2026",
+          quantity: 1,
+          unit_price: "6625.00",
+        },
+      ],
+      total_amount: "6625.00",
+    } as Order;
+    render(<OrderPriceCorrectionModal order={act} onClose={vi.fn()} onDone={vi.fn()} />);
+
+    expect(screen.getByText("Сумма документа 1С по акту сверки")).toBeInTheDocument();
+    expect(screen.queryByText(/за мешок/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "По позициям" }));
+    expect(
+      screen.getByText("Реализация по акту сверки (1С): Реализация ТМЗ и услуг 527 от 10.06.2026"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/мешков/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Новая сумма документа, Реализация по акту сверки (1С)")).toBeInTheDocument();
+  });
 });

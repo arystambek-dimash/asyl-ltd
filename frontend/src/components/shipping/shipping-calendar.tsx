@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { SearchInput } from "@/components/ui/search-input";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { MONTH_NAMES_OF, WEEKDAY_NAMES, monthGrid, monthOf, monthTitle, shiftMonth } from "@/lib/calendar-month";
-import { orderItemLabel, orderedBagCount } from "@/lib/orders";
+import { goodsBagCount, isActOnlyOrder, orderItemLabel } from "@/lib/orders";
 import { useApi } from "@/lib/use-api";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import type { Order } from "@/lib/types";
@@ -212,8 +212,15 @@ export function ShippingCalendar({
                   <StatusBadge status={order.status} dot />
                 </div>
                 <div className="flex flex-wrap items-baseline gap-x-2">
-                  <span className="text-xl font-bold tabular-nums">{orderedBagCount(order)}</span>
-                  <span className="text-sm text-[var(--muted-foreground)]">{bagsWord(orderedBagCount(order))}</span>
+                  {isActOnlyOrder(order) ? (
+                    // Заказ из акта сверки 1С — документ, а не мешки.
+                    <span className="text-sm font-medium text-[var(--muted-foreground)]">по акту сверки 1С</span>
+                  ) : (
+                    <>
+                      <span className="text-xl font-bold tabular-nums">{goodsBagCount(order)}</span>
+                      <span className="text-sm text-[var(--muted-foreground)]">{bagsWord(goodsBagCount(order))}</span>
+                    </>
+                  )}
                   {order.status === "shipped" && order.shipped_at && (
                     <span className="ml-auto inline-flex items-center gap-1 text-xs text-[var(--success)]">
                       <PackageCheck className="size-3.5" /> {formatTime(order.shipped_at)}

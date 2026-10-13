@@ -116,8 +116,12 @@ def client_history(client) -> dict:
             "is_financial": is_financial(o.status),
             "settlement_intent": o.settlement_intent,
             # Подпись — товар без пометки: по ней фильтр «Товар» карточки клиента.
-            "items": [{"label": i.product_label, "qty": i.quantity, "is_bonus": i.is_bonus} for i in items],
-            "bags": o.ordered_bags,
+            "items": [
+                {"label": i.product_label, "qty": i.quantity, "is_bonus": i.is_bonus, "act_document": i.act_document}
+                for i in items
+            ],
+            # Строки акта сверки — документы 1С, а не мешки.
+            "bags": o.goods_bags,
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),
             "currency": o.currency,
@@ -149,7 +153,7 @@ def client_history(client) -> dict:
         return {
             "id": o.id,
             "date": o.created_at.isoformat(),
-            "bags": o.ordered_bags,
+            "bags": o.goods_bags,
             "amount": _d(o.total_amount),
             "paid": _d(o.paid_total),
             "remaining": _d(order_remaining(o)),

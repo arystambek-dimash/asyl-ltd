@@ -17,22 +17,39 @@ export function orderedBagCount(order: Pick<Order, "items">): number {
   return order.items.reduce((total, item) => total + Number(item.quantity), 0);
 }
 
+/** Мешки товара для показа в карточке: строка акта сверки — документ 1С, а не мешки (`Order.goods_bags`). */
+export function goodsBagCount(order: Pick<Order, "items">): number {
+  return order.items.reduce((total, item) => total + (item.act_document ? 0 : Number(item.quantity)), 0);
+}
+
+/** Заказ целиком из акта сверки 1С: ни мешков, ни веса груза у него нет. */
+export function isActOnlyOrder(order: Pick<Order, "items">): boolean {
+  return order.items.length > 0 && order.items.every((item) => Boolean(item.act_document));
+}
+
 /** Бонусный мешок помечен «(бонус)», как в документах бэкенда (`OrderItem.line_label`). */
 export function bonusLabel(label: string, isBonus?: boolean): string {
   return isBonus ? `${label} (бонус)` : label;
 }
 
-/** Подпись позиции строкой. */
-export function orderItemLabel(item: Pick<OrderLine, "product" | "product_label" | "is_bonus">): string {
+/** Подпись позиции строкой; строка акта сверки — с документом 1С (`OrderItem.line_label`). */
+export function orderItemLabel(
+  item: Pick<OrderLine, "product" | "product_label" | "is_bonus" | "act_document">,
+): string {
+  if (item.act_document) return `${item.product_label}: ${item.act_document}`;
   return bonusLabel(item.product_label || `Товар #${item.product}`, item.is_bonus);
+}
+
+/** Позиция с количеством: «Мука × 10»; строка акта сверки — документ, а не мешки, без «× 1». */
+export function orderItemLine(
+  item: Pick<OrderLine, "product" | "product_label" | "is_bonus" | "act_document" | "quantity">,
+): string {
+  return item.act_document ? orderItemLabel(item) : `${orderItemLabel(item)} × ${item.quantity}`;
 }
 
 /** «Мука × 10, Отруби × 5 и ещё 2» — первые две позиции заказа одной строкой. */
 export function orderItemsSummary(order: Pick<Order, "items">): string {
-  const shown = order.items
-    .slice(0, 2)
-    .map((item) => `${orderItemLabel(item)} × ${item.quantity}`)
-    .join(", ");
+  const shown = order.items.slice(0, 2).map(orderItemLine).join(", ");
   return order.items.length > 2 ? `${shown} и ещё ${order.items.length - 2}` : shown;
 }
 

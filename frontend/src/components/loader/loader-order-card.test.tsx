@@ -24,6 +24,24 @@ const before = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node
 const itemRows = () => within(screen.getByRole("list", { name: "Товары" })).getAllByRole("listitem");
 
 describe("карточка заказа у грузчика", () => {
+  it("строку акта сверки показывает документом 1С, без мешков", () => {
+    const act = makeLoaderOrder(5, {
+      items: [
+        makeLoaderItem({
+          label: "Реализация по акту сверки (1С)",
+          quantity: 1,
+          act_document: "Реализация ТМЗ и услуг 527 от 10.06.2026",
+        }),
+      ],
+    });
+    render(<LoaderOrderCard order={act} onOpen={vi.fn()} />);
+
+    const [row] = itemRows();
+    expect(row).toHaveTextContent("Реализация по акту сверки (1С)Реализация ТМЗ и услуг 527 от 10.06.2026");
+    expect(row).not.toHaveTextContent(/мешк/);
+    expect(screen.queryByText(/Итого/)).not.toBeInTheDocument();
+  });
+
   it("первым — клиент, под ним номер заказа и транспорт", () => {
     render(<LoaderOrderCard order={twoFlours} onOpen={vi.fn()} />);
 

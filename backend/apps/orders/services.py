@@ -1544,9 +1544,21 @@ def replace_items(
 
     old_total = order.total_amount
     old_payload = [_edit_item_payload(item) for item in old_items]
+    # Строка акта сверки — документ 1С (OrderItem.act_document): правка заказа
+    # пересоздаёт позиции, и пометка переходит к новой строке того же товара —
+    # иначе строка снова стала бы «мешком» с цветом и фасовкой.
+    act_lines = {
+        item.product_id: (item.act_document, item.product_label_snapshot)
+        for item in old_items
+        if item.is_act_line
+    }
 
     OrderItem.objects.filter(order=order).delete()
     created, prices_by_item = _create_items(order, items_data, prices)
+    for item in created:
+        if item.product_id in act_lines and not item.is_bonus:
+            item.act_document, item.product_label_snapshot = act_lines[item.product_id]
+            item.save(update_fields=["act_document", "product_label_snapshot"])
     if (any(v is not None for v in prices_by_item.values())
             or order.status in ITEMS_REQUIRE_PRICES_STATUSES):
         apply_item_prices(order, prices_by_item, user)

@@ -60,7 +60,8 @@ def _client_line(order, names: dict[tuple[int, str], str]) -> str:
 def _product_lines(items, codes: dict[int, str]) -> list[str]:
     """«Д1с(50кг)- 22,5 тн» на товар: строки одного товара и фасовки складываются."""
     tons: dict[tuple[str, Decimal], Decimal] = {}
-    for item in sorted(items, key=lambda item: item.pk):
+    # Строка акта сверки 1С — документ, а не мешки: в тоннах её нет.
+    for item in sorted((item for item in items if not item.is_act_line), key=lambda item: item.pk):
         pack = Decimal(item.product_weight_kg or 0)
         key = (codes.get(item.product_id) or item.product_label, pack)
         tons[key] = tons.get(key, Decimal(0)) + item.quantity * pack / KG_PER_TON
@@ -81,8 +82,12 @@ def compose_truck_report(orders) -> ComposedReport:
     ``select_related``, позиции и строки источников
     (:func:`apps.shipments.sources.sources_prefetch`) — предзагрузкой.
     """
+    # Заказ только из строк акта сверки 1С — документы, а не груз: в отчёте его нет.
     shipped = sorted(
-        (order for order in orders if _is_shipped_truck_order(order)),
+        (
+            order for order in orders
+            if _is_shipped_truck_order(order) and any(not item.is_act_line for item in order.items.all())
+        ),
         key=lambda order: (order.shipment.shipped_at, order.pk),
     )
     if not shipped:

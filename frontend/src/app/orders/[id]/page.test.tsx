@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { makePayment, makeQrRefund } from "@/test-utils/factories";
 import { currentUrl, resetNavigation } from "@/test-utils/next-navigation";
 import { renderRoutePage } from "@/test-utils/route-page";
+import { formatCurrency } from "@/lib/utils";
 import OrderDetailPage from "./page";
 
 const mocks = vi.hoisted(() => ({
@@ -340,4 +341,37 @@ it("does not archive the order from its card while the truck is loading", async 
   await user.click(screen.getByRole("button", { name: "Действия" }));
   expect(screen.getByRole("menuitem", { name: /В архив/ })).toBeDisabled();
   expect(screen.getByText("Сначала завершите или верните текущую погрузку")).toBeInTheDocument();
+});
+
+it("shows a reconciliation act line as its 1C document with no bags or weight", async () => {
+  mocks.order = {
+    ...confirmedOrder,
+    status: "shipped",
+    items: [
+      {
+        id: 1,
+        product: 9,
+        product_label: "Реализация по акту сверки (1С)",
+        act_document: "Реализация ТМЗ и услуг 527 от 10.06.2026",
+        quantity: 1,
+        unit_price: "6625",
+        weight_kg: null,
+      },
+    ],
+  };
+  await renderPage();
+
+  const row = (await screen.findByText("Реализация ТМЗ и услуг 527 от 10.06.2026")).closest("tr")!;
+  expect(row).toHaveTextContent("Реализация по акту сверки (1С)");
+  expect(row).not.toHaveTextContent("кг/мешок");
+  expect(
+    within(row)
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent),
+  ).toEqual([
+    "Реализация по акту сверки (1С)Реализация ТМЗ и услуг 527 от 10.06.2026",
+    "—",
+    "—",
+    formatCurrency(6625, "KZT"),
+  ]);
 });

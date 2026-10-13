@@ -126,8 +126,11 @@ function FilterSelect({
   );
 }
 
+/** «Мука × 10, …»; строка акта сверки — документ 1С, а не мешки: без «× 1». */
 function itemsText(items: ClientHistorySale["items"]): string {
-  return items.map((i) => `${bonusLabel(i.label, i.is_bonus)} × ${i.qty}`).join(", ");
+  return items
+    .map((i) => (i.act_document ? `${i.label}: ${i.act_document}` : `${bonusLabel(i.label, i.is_bonus)} × ${i.qty}`))
+    .join(", ");
 }
 
 function EmptyRow({ colSpan, filtered, onReset }: { colSpan: number; filtered: boolean; onReset: () => void }) {

@@ -64,7 +64,8 @@ class PortalOrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        fields = ["id", "product", "product_label", "quantity", "returned_quantity", "is_bonus"]
+        fields = ["id", "product", "product_label", "quantity", "returned_quantity", "is_bonus", "act_document"]
+        read_only_fields = ["act_document"]
         extra_kwargs = {
             "product": {"required": True, "allow_null": False},
         }

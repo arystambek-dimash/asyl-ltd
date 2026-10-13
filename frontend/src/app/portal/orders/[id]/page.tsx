@@ -142,9 +142,13 @@ export default function PortalOrderDetail({ params }: { params: Promise<{ id: st
                     <TD>
                       {it.product_label}
                       {it.is_bonus && <BonusBadge className="ml-1.5 align-middle" />}
+                      {/* Строка акта сверки — документ 1С вместо мешков. */}
+                      {it.act_document && (
+                        <span className="block text-xs text-[var(--muted-foreground)]">{it.act_document}</span>
+                      )}
                     </TD>
                     <TD>
-                      {it.quantity}
+                      {it.act_document ? "—" : it.quantity}
                       {it.returned_quantity ? (
                         <span className="block text-xs font-medium text-[var(--destructive)]">
                           возврат {it.returned_quantity}

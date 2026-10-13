@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Calculator, ListChecks, PackageCheck } from "lucide-react";
 import { api, apiError } from "@/lib/api";
-import { formatEstimate, orderedBagCount, requestEstimate } from "@/lib/orders";
+import { formatEstimate, goodsBagCount, orderItemLabel, orderedBagCount, requestEstimate } from "@/lib/orders";
 import { currencySymbol, formatCurrency } from "@/lib/utils";
 import type { Order } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,9 @@ export function OrderPriceCorrectionModal({
 
   const bags = orderedBagCount({ items: paidItems });
   const bonusBags = order ? orderedBagCount(order) - bags : 0;
+  // Строка акта сверки — документ 1С, а не мешки: в «Мешков» и «за мешок» её нет.
+  const hasActLines = paidItems.some((item) => item.act_document);
+  const goodsBags = goodsBagCount({ items: paidItems });
   const dividedPrice = bags > 0 && Number(totalAmount) > 0 ? Number(totalAmount) / bags : 0;
   const perItemTotal = requestEstimate(paidItems, { prices }).amount;
   const symbol = currencySymbol(order?.currency ?? "KZT");
@@ -105,7 +108,7 @@ export function OrderPriceCorrectionModal({
                 Мешков
               </div>
               <div className="mt-1 text-sm font-bold tabular-nums">
-                {bags}
+                {hasActLines && goodsBags === 0 ? "—" : goodsBags}
                 {bonusBags > 0 && (
                   <span className="font-normal text-[var(--muted-foreground)]"> + {bonusBags} бонус</span>
                 )}
@@ -174,15 +177,19 @@ export function OrderPriceCorrectionModal({
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white">
                   <PackageCheck className="size-4" />
                 </span>
-                <div>
-                  <div className="font-semibold">
-                    {bags > 0 ? `${formatCurrency(dividedPrice, order.currency)} за мешок` : "В заказе нет мешков"}
+                {hasActLines ? (
+                  <div className="font-semibold">Сумма документа 1С по акту сверки</div>
+                ) : (
+                  <div>
+                    <div className="font-semibold">
+                      {bags > 0 ? `${formatCurrency(dividedPrice, order.currency)} за мешок` : "В заказе нет мешков"}
+                    </div>
+                    <div className="text-xs text-blue-700">
+                      {formatCurrency(totalAmount || "0", order.currency)} ÷ {bags}{" "}
+                      {bonusBags > 0 ? "оплаченных мешков" : "мешков"}
+                    </div>
                   </div>
-                  <div className="text-xs text-blue-700">
-                    {formatCurrency(totalAmount || "0", order.currency)} ÷ {bags}{" "}
-                    {bonusBags > 0 ? "оплаченных мешков" : "мешков"}
-                  </div>
-                </div>
+                )}
               </div>
             </section>
           ) : (
@@ -193,8 +200,12 @@ export function OrderPriceCorrectionModal({
                   className="grid gap-3 rounded-2xl border bg-[var(--card)] p-3 sm:grid-cols-[minmax(0,1fr)_180px] sm:items-center"
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold">{item.product_label || `Позиция ${index + 1}`}</div>
-                    <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{item.quantity} мешков</div>
+                    <div className="truncate text-sm font-semibold">
+                      {item.product_label ? orderItemLabel(item) : `Позиция ${index + 1}`}
+                    </div>
+                    {!item.act_document && (
+                      <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{item.quantity} мешков</div>
+                    )}
                   </div>
                   <div className="relative">
                     <Input
@@ -203,7 +214,7 @@ export function OrderPriceCorrectionModal({
                       max="9999999999.99"
                       step="0.01"
                       inputMode="decimal"
-                      aria-label={`Новая цена за мешок, ${item.product_label || `позиция ${index + 1}`}`}
+                      aria-label={`${item.act_document ? "Новая сумма документа" : "Новая цена за мешок"}, ${item.product_label || `позиция ${index + 1}`}`}
                       value={item.id == null ? "" : (prices[String(item.id)] ?? "")}
                       onChange={(event) => {
                         if (item.id == null) return;
