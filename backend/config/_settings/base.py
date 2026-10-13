@@ -150,6 +150,7 @@ INSTALLED_APPS = [
     "apps.grain",
     "apps.bots",
     "apps.client_acts",
+    "apps.assistant",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -425,6 +426,12 @@ VEHICLE_PLATE_WEBHOOK_MAX_BODY_BYTES = _bounded_int_env(
 )
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 WEIGHING_AI_ENABLED = env_flag(os.environ.get("WEIGHING_AI_ENABLED", "1"))
+# ИИ-ассистент по данным системы (страница «ИИ-ассистент», apps/assistant).
+# Выбор по `manage.py assistant_eval` (13.10.2026): gpt-5.4-mini с low — 12/12 верно,
+# медиана 4,5 с; gpt-5-mini с medium — 11/12 и 10,8 с. Пустое усилие — без reasoning.
+ASSISTANT_AI_MODEL = os.environ.get("ASSISTANT_AI_MODEL", "gpt-5.4-mini").strip()
+ASSISTANT_AI_REASONING_EFFORT = os.environ.get("ASSISTANT_AI_REASONING_EFFORT", "low").strip()
+ASSISTANT_MAX_DAILY_QUESTIONS = _bounded_int_env("ASSISTANT_MAX_DAILY_QUESTIONS", 100, 1, 5000)
 WEIGHING_AI_MODEL = os.environ.get("WEIGHING_AI_MODEL", "gpt-5-mini").strip()
 # Wagon OCR can be tuned without changing the weighbridge or truck fallback.
 # Empty/unset keeps the existing shared-model behavior.

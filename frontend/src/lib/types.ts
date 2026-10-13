@@ -218,7 +218,7 @@ export interface ReportDay {
   received_by_currency: Record<string, string>;
 }
 
-export interface ReportClientOrder {
+interface ReportClientOrder {
   id: number;
   date: string;
   bags: number;
@@ -614,7 +614,7 @@ export interface ClientHistoryPayment {
   provider: boolean;
   refunded_amount: string;
 }
-export interface ClientHistoryDebt {
+interface ClientHistoryDebt {
   id: number;
   date: string;
   bags: number;
@@ -627,7 +627,7 @@ export interface ClientHistoryDebt {
  * Итоги клиента за всё время: выручка и оплачено — по финансовым заказам, долг — остаток отгруженных,
  * переплата — сколько мы должны клиенту («К возврату» кассы).
  */
-export type ClientSummaryMoney = { revenue: string; paid: string; debt: string; overpaid: string };
+type ClientSummaryMoney = { revenue: string; paid: string; debt: string; overpaid: string };
 /** Ответ GET /clients/{id}/history/ — карточка клиента. */
 export interface ClientHistory {
   client: { id: number; name: string; phone: string; country: string };
@@ -640,7 +640,7 @@ export interface ClientHistory {
   payments: ClientHistoryPayment[];
   debts: ClientHistoryDebt[];
 }
-export interface AiCountingSnapshot {
+interface AiCountingSnapshot {
   total?: number;
   weight?: number;
   status?: string;
@@ -771,7 +771,7 @@ export interface CameraContinuousReadiness {
   status: "synced" | "pending";
   detail: string;
 }
-export interface AnalyticsSyncState {
+interface AnalyticsSyncState {
   status: "synced" | "pending" | "catching_up" | "error" | "stale" | "unsupported";
   available: boolean;
   caught_up_at?: string | null;
@@ -819,7 +819,7 @@ export interface WagonNumberCameraSettings {
   source: "main";
   updated_at: string | null;
 }
-export interface WagonArchMotion {
+interface WagonArchMotion {
   state: "moving" | "still" | "unknown";
   still_seconds: number;
   direction: string;
@@ -834,7 +834,7 @@ interface WagonArchCollector {
   motion: string | null;
   heartbeat_at: number | null;
 }
-export type WagonArchStopStatus = "open" | "closed" | "attention" | "superseded";
+type WagonArchStopStatus = "open" | "closed" | "attention" | "superseded";
 interface WagonArchLastStop {
   id: number;
   stop_id: string;
@@ -847,7 +847,7 @@ interface WagonArchLastStop {
   blocked_reason: string;
   blocked_detail: string;
 }
-export interface WagonArchRuntime {
+interface WagonArchRuntime {
   enabled: boolean;
   camera: string;
   collector: WagonArchCollector | null;
@@ -1031,7 +1031,7 @@ export interface AlwaysOnProductMapping {
   product: number | null;
   product_label: string | null;
 }
-export interface AlwaysOnStockPosting {
+interface AlwaysOnStockPosting {
   id: number;
   /** `shift` — приход смены в 19:00, `manual_color` — цвет указан вручную позже. */
   kind?: "shift" | "manual_color";
@@ -1069,7 +1069,7 @@ export interface AlwaysOnProductionProduct {
   /** Every warehouse with a stock card. */
   warehouse_ids: number[];
 }
-export interface AlwaysOnStockPreview {
+interface AlwaysOnStockPreview {
   color: string;
   detected_bags: number;
   /** Мешки без цвета от камеры, которым CRM определила этот цвет. */
@@ -1336,7 +1336,7 @@ export interface GrainOrientationPurgeResult {
   remaining: number;
 }
 
-export interface GrainAllocation {
+interface GrainAllocation {
   id: number;
   silo: number;
   silo_name: string;

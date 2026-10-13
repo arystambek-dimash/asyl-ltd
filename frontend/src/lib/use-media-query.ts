@@ -30,3 +30,8 @@ function useMediaQuery(query: string): boolean {
 export function useIsMobile(): boolean {
   return useMediaQuery(MOBILE_MEDIA_QUERY);
 }
+
+/** Человек попросил систему не анимировать интерфейс. */
+export function usePrefersReducedMotion(): boolean {
+  return useMediaQuery("(prefers-reduced-motion: reduce)");
+}

@@ -28,6 +28,9 @@ const nextConfig: NextConfig = {
   },
   // URL Django заканчиваются на «/»: без этого dev-сервер отвечал бы 308 на /api/x/ → /api/x до прокси.
   skipTrailingSlashRedirect: isDev,
+  // Dev-прокси по умолчанию рвёт ответ через 30 с, а ИИ-ассистент отвечает потоком дольше
+  // (в проде этот маршрут держит nginx: location /api/assistant/ask/).
+  experimental: { proxyTimeout: 200_000 },
   async rewrites() {
     if (!isDev) return [];
     return [

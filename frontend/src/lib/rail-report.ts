@@ -14,7 +14,7 @@ export interface RailIssue {
   order_id: number | null;
 }
 
-export interface RailPreviewWagon {
+interface RailPreviewWagon {
   position: number;
   line: number;
   number: string;

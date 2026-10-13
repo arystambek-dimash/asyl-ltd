@@ -14,3 +14,5 @@ gunicorn>=23.0,<24.0
 sentry-sdk[django]>=2.68,<3.0
 # Fernet-шифрование ключей ApiPay, хранимых у отделов.
 cryptography>=43,<47
+# Разбор и проверка SQL ИИ-ассистента (apps/assistant/sql_guard.py).
+sqlglot>=30.22,<31

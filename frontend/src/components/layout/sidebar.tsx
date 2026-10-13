@@ -24,6 +24,7 @@ import {
   Warehouse,
   Wheat,
   Bot,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { canAny, TASKS_ENTRY_PERMS, type Perm } from "@/lib/can";
@@ -53,6 +54,8 @@ const STAFF_SECTIONS: NavSection[] = [
     items: [
       { href: "/dashboard", label: "Главная", icon: LayoutDashboard, perm: "dashboard.view" },
       { href: "/reports", label: "Отчёты", icon: BarChart3, perm: "reports.view" },
+      // Вопросы к базе словами: ИИ читает все данные, ничего не меняет.
+      { href: "/assistant", label: "ИИ-ассистент", icon: Sparkles, perm: "assistant.view" },
     ],
   },
   {

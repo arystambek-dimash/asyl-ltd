@@ -13,7 +13,7 @@ export type BotMessageStatus =
 export type BotMessageKind = "message" | "edited" | "deleted";
 
 /** Итог разбора, записанный ботом: без денег (их показывает предпросмотр по правам). */
-export interface BotMessageParsed {
+interface BotMessageParsed {
   client_name?: string;
   client?: { name: string } | null;
   station?: string;

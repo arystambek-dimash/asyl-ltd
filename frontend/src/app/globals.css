@@ -163,3 +163,112 @@ body {
     0 1px 0 0 rgba(0, 0, 0, 0.4),
     0 1px 3px 0 rgba(0, 0, 0, 0.5);
 }
+
+/* ИИ-ассистент за работой: бегущий по рамке свет, сканирующий SQL, карта данных,
+   которая собирается по мере того, как ассистент открывает таблицы. */
+@keyframes assistant-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes assistant-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes assistant-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes assistant-node {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes assistant-ping {
+  from {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+.assistant-working {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 16px;
+  padding: 1px;
+  background: var(--border);
+}
+
+.assistant-working::before {
+  content: "";
+  position: absolute;
+  inset: -150%;
+  z-index: -1;
+  background: conic-gradient(from 0deg, transparent 0 68%, var(--ring) 84%, transparent 100%);
+  animation: assistant-orbit 2.6s linear infinite;
+}
+
+.assistant-scan {
+  position: relative;
+  overflow: hidden;
+}
+
+.assistant-scan::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ring) 16%, transparent), transparent);
+  animation: assistant-scan 1.3s ease-in-out infinite;
+}
+
+.assistant-edge {
+  stroke-dasharray: 600;
+  stroke-dashoffset: 600;
+  animation: assistant-draw 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.assistant-node {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: assistant-node 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.assistant-ping {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: assistant-ping 1.2s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-working::before,
+  .assistant-scan::after,
+  .assistant-ping {
+    animation: none;
+  }
+  .assistant-edge {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+  .assistant-node {
+    animation: none;
+  }
+}

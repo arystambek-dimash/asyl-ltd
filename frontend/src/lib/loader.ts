@@ -43,7 +43,7 @@ export interface LoaderOrder {
   report_deliveries: WagonReportDelivery[];
 }
 
-export interface WaybillSigner {
+interface WaybillSigner {
   role: string;
   name: string;
 }

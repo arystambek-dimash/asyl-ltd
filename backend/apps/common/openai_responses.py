@@ -1,9 +1,10 @@
 """Клиент OpenAI Responses API со строгим JSON-ответом (``json_schema``).
 
 Один транспорт для всех ИИ-проверок: черновик отчёта Telegram-бота, сверка
-фото весов вывоза, номер транспорта отгрузки. Промпты, схемы и проверка
-содержимого ответа остаются у вызывающих; здесь — POST ``/v1/responses``,
-лимит размера ответа и разбор единственного ``output_text`` ассистента.
+фото весов вывоза, номер транспорта отгрузки, ИИ-ассистент по данным. Промпты,
+схемы и проверка содержимого ответа остаются у вызывающих; здесь — POST
+``/v1/responses``, лимит размера ответа, проверка завершённости и разбор
+единственного ``output_text`` ассистента.
 
 Любой сбой — :class:`OpenAIResponseError` с безопасным кодом: тело ответа
 провайдера, картинки и ключ в него не попадают.
@@ -14,6 +15,7 @@ from __future__ import annotations
 import http.client
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from django.conf import settings
@@ -51,8 +53,8 @@ def _http_error(status: int) -> OpenAIResponseError:
     return OpenAIResponseError("openai_request_rejected")
 
 
-def _post(body: dict[str, Any], max_response_bytes: int) -> object:
-    connection = http.client.HTTPSConnection(HOST, timeout=TIMEOUT_SECONDS)
+def _post(body: dict[str, Any], max_response_bytes: int, timeout: float) -> object:
+    connection = http.client.HTTPSConnection(HOST, timeout=timeout)
     try:
         connection.request(
             "POST",
@@ -80,16 +82,46 @@ def _post(body: dict[str, Any], max_response_bytes: int) -> object:
         raise OpenAIResponseError("openai_invalid_response") from exc
 
 
-def request_json(
-    body: dict[str, Any], *, max_response_bytes: int = MAX_RESPONSE_BYTES
-) -> tuple[Any, str]:
-    """Отправить запрос и вернуть (JSON из ответа модели, id ответа).
+@dataclass(frozen=True)
+class Completed:
+    """Завершённый ответ: элементы ``output``, id и расход токенов."""
 
-    Ответ принимается только завершённым (``status == "completed"``) и ровно
-    с одним ``output_text`` у сообщения ассистента; отказ модели — код
-    ``openai_refused``.
+    outputs: list[dict[str, Any]]
+    response_id: str
+    usage: dict[str, int] = field(default_factory=dict)
+
+
+def _count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _usage(payload: dict[str, Any]) -> dict[str, int]:
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    inputs = usage.get("input_tokens_details")
+    outputs = usage.get("output_tokens_details")
+    return {
+        "input_tokens": _count(usage.get("input_tokens")),
+        "cached_tokens": _count(inputs.get("cached_tokens")) if isinstance(inputs, dict) else 0,
+        "output_tokens": _count(usage.get("output_tokens")),
+        "reasoning_tokens": _count(outputs.get("reasoning_tokens")) if isinstance(outputs, dict) else 0,
+    }
+
+
+def request_completed(
+    body: dict[str, Any],
+    *,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+    timeout: float = TIMEOUT_SECONDS,
+) -> Completed:
+    """Отправить запрос и вернуть завершённый ответ (:class:`Completed`).
+
+    Ответ принимается только завершённым (``status == "completed"``); отказ
+    модели — код ``openai_refused``. Вызовы инструментов (``function_call``)
+    разбирает вызывающий.
     """
-    payload = _post(body, max_response_bytes)
+    payload = _post(body, max_response_bytes, timeout)
     if not isinstance(payload, dict):
         raise OpenAIResponseError("openai_invalid_response")
     response_id = safe_response_id(payload.get("id"))
@@ -104,6 +136,11 @@ def request_json(
     outputs = payload.get("output")
     if not isinstance(outputs, list) or any(not isinstance(item, dict) for item in outputs):
         raise OpenAIResponseError("openai_invalid_response", response_id=response_id)
+    return Completed(outputs=outputs, response_id=response_id, usage=_usage(payload))
+
+
+def output_texts(outputs: list[dict[str, Any]], *, response_id: str = "") -> list[object]:
+    """Все ``output_text`` сообщений ассистента; отказ модели — ``openai_refused``."""
     texts: list[object] = []
     for output in outputs:
         if output.get("type") != "message" or output.get("role") != "assistant":
@@ -114,9 +151,27 @@ def request_json(
         if any(part.get("type") == "refusal" for part in parts):
             raise OpenAIResponseError("openai_refused", response_id=response_id)
         texts.extend(part.get("text") for part in parts if part.get("type") == "output_text")
+    return texts
+
+
+def parse_single_json(texts: list[object], *, response_id: str = "") -> Any:
+    """JSON из единственного ``output_text``; иначе ``openai_invalid_response``."""
     if len(texts) != 1 or not isinstance(texts[0], str):
         raise OpenAIResponseError("openai_invalid_response", response_id=response_id)
     try:
-        return json.loads(texts[0]), response_id
+        return json.loads(texts[0])
     except (ValueError, TypeError) as exc:
         raise OpenAIResponseError("openai_invalid_response", response_id=response_id) from exc
+
+
+def request_json(
+    body: dict[str, Any], *, max_response_bytes: int = MAX_RESPONSE_BYTES
+) -> tuple[Any, str]:
+    """Отправить запрос и вернуть (JSON из ответа модели, id ответа).
+
+    Ответ принимается только завершённым и ровно с одним ``output_text`` у
+    сообщения ассистента; отказ модели — код ``openai_refused``.
+    """
+    completed = request_completed(body, max_response_bytes=max_response_bytes)
+    texts = output_texts(completed.outputs, response_id=completed.response_id)
+    return parse_single_json(texts, response_id=completed.response_id), completed.response_id

@@ -26,7 +26,7 @@ export function withQuantity(lines: CartLine[], product: number, quantity: numbe
   return lines.map((line, i) => (i === index ? { ...line, quantity: next } : line));
 }
 
-export interface PricedCartRow {
+interface PricedCartRow {
   line: CartLine;
   /** null — товара больше нет в каталоге клиента (закончился или снят с продажи). */
   product: PortalProduct | null;
