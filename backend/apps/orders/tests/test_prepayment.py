@@ -193,9 +193,9 @@ def test_store_payment_window_applies_after_shipment(boss, product):
     ("status", "is_open", "methods", "request_open"),
     [
         ("pending", False, [], False),
-        ("confirmed", True, ["cash", "kaspi", "remote"], False),
-        ("loaded", True, ["cash", "kaspi", "remote"], False),
-        ("shipped", True, ["cash", "kaspi", "remote", "invoice"], True),
+        ("confirmed", True, ["cash", "kaspi", "remote", "bank"], False),
+        ("loaded", True, ["cash", "kaspi", "remote", "bank"], False),
+        ("shipped", True, ["cash", "kaspi", "remote", "bank", "invoice"], True),
         ("cancelled", False, [], False),
     ],
 )
@@ -213,12 +213,13 @@ def test_order_api_reports_payment_window(auth_client, accountant, product, stat
 
 
 @pytest.mark.parametrize("status", ["confirmed", "shipped"])
-def test_usd_order_api_opens_only_cash(auth_client, accountant, product, status):
+def test_usd_order_api_opens_only_cash_and_bank(auth_client, accountant, product, status):
     order = _order(product, status=status, currency="USD")
 
     data = auth_client(accountant).get(f"/api/orders/{order.id}/").data
 
-    assert data["payment_open_methods"] == ["cash"]
+    # Банковский перевод — поступление по акту сверки 1С, в долларах тоже.
+    assert data["payment_open_methods"] == ["cash", "bank"]
     assert data["payment_request_open"] is False
 
 

@@ -6,6 +6,7 @@ PAYMENT_METHOD_LABELS = {
     "kaspi": "QR",
     "cash": "Наличные",
     "remote": "Удалённая оплата",
+    "bank": "Банковский перевод",
     "debt": "Долг",
     "card": "Карта",
 }

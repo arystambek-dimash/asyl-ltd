@@ -25,6 +25,8 @@ import { bonusLabel } from "@/lib/orders";
 import type { ClientHistory, ClientHistorySale } from "@/lib/types";
 import { formatCurrency, formatDateTime, sumMoneyByCurrency, toLocalIsoDate } from "@/lib/utils";
 import { StatementExportModal } from "@/components/statement-export-modal";
+import { ClientActImportModal } from "@/components/clients/client-act-import-modal";
+import { showToast } from "@/lib/toast";
 import { ORDER_STATUS_LABELS, orderStatusGroup } from "@/lib/constants";
 import {
   AlertCircle,
@@ -37,6 +39,7 @@ import {
   Wallet,
   X,
   FileSpreadsheet,
+  FileUp,
 } from "lucide-react";
 
 const SETTLEMENT_LABELS: Record<string, string> = { debt: "В долг", instant: "Сразу" };
@@ -167,6 +170,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const { id } = use(params);
   const { me } = useAuth();
   const canExport = can(me, "reports.export");
+  // Импорт акта создаёт подтверждённые заказы и оплаты — права как у сервера (client_acts).
+  const canImportAct = can(me, "orders.edit") && can(me, "orders.confirm") && can(me, "payments.create");
   const canViewOrders = can(me, "orders.view");
   const { data, loading, error, reload } = useApi<ClientHistory>(`/clients/${id}/history/`);
 
@@ -174,6 +179,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const { sortKey, sortDir, toggleSort } = useSortState("date", "desc", "desc");
   const [statementOpen, setStatementOpen] = useState(false);
+  const [actImportOpen, setActImportOpen] = useState(false);
 
   if (!data) {
     return (
@@ -187,6 +193,10 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const summaryCurrency = summary.currency;
   const summaryByCurrency = summary.by_currency;
   const hasDebt = Object.values(summaryByCurrency).some((row) => finiteMoney(row.debt) > 0);
+  // Переплата клиента («К возврату» кассы) — по каждой валюте, где она есть.
+  const owedToClient = Object.entries(fieldByCurrency(summaryByCurrency, "overpaid")).filter(
+    ([, amount]) => finiteMoney(amount) > 0,
+  );
   const initials =
     client.name
       .trim()
@@ -292,8 +302,8 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
 
   return (
     <AppShell title="Клиент" section="Работа">
-      {/* Компактная шапка профиля без большой пустой карточки. */}
-      <div className="mb-5 flex items-center gap-3 border-b pb-4">
+      {/* Компактная шапка профиля без большой пустой карточки; на телефоне кнопки — строкой ниже. */}
+      <div className="mb-5 flex flex-wrap items-center gap-3 border-b pb-4">
         <Link
           href="/clients"
           aria-label="К клиентам"
@@ -304,7 +314,7 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
         <div className="flex size-10 shrink-0 items-center justify-center rounded-full border bg-[var(--muted)] text-sm font-medium text-[var(--muted-foreground)]">
           {initials}
         </div>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-48 flex-1">
           <h2 className="truncate text-xl font-semibold leading-tight tracking-tight">{client.name}</h2>
           <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--muted-foreground)]">
             {client.phone && (
@@ -319,16 +329,24 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
             )}
           </div>
         </div>
-        {canExport && (
-          <Button
-            variant="outline"
-            className="shrink-0"
-            onClick={() => {
-              setStatementOpen(true);
-            }}
-          >
-            <FileSpreadsheet className="size-4 text-emerald-600" /> Excel-выписка
-          </Button>
+        {(canImportAct || canExport) && (
+          <div className="flex min-w-0 flex-wrap gap-2">
+            {canImportAct && (
+              <Button variant="outline" onClick={() => setActImportOpen(true)}>
+                <FileUp className="size-4" /> Импорт акта сверки
+              </Button>
+            )}
+            {canExport && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setStatementOpen(true);
+                }}
+              >
+                <FileSpreadsheet className="size-4 text-emerald-600" /> Excel-выписка
+              </Button>
+            )}
+          </div>
         )}
       </div>
 
@@ -380,6 +398,11 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                     byCurrency={fieldByCurrency(summaryByCurrency, "debt")}
                     primary={summaryCurrency}
                   />
+                  {owedToClient.map(([currency, amount]) => (
+                    <span key={currency} className="text-xs font-medium text-[var(--warning)]">
+                      Мы должны клиенту {formatCurrency(amount, currency)}
+                    </span>
+                  ))}
                 </StatCard>
               </div>
             </div>
@@ -719,6 +742,16 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
           )}
         </CardContent>
       </Card>
+
+      <ClientActImportModal
+        clientId={client.id}
+        open={actImportOpen}
+        onClose={() => setActImportOpen(false)}
+        onImported={(notice) => {
+          showToast(notice, "success");
+          reload();
+        }}
+      />
 
       <StatementExportModal
         open={statementOpen}

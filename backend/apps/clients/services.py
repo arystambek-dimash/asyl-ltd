@@ -14,6 +14,7 @@ from apps.orders.debt import (
     DEBT_STATUS,
     debt_orders,
     financial_orders,
+    order_overpaid,
     order_remaining,
     payment_counts_as_paid,
 )
@@ -159,14 +160,21 @@ def client_history(client) -> dict:
     revenue = sum_by_currency(financial, lambda o: o.total_amount)
     paid = sum_by_currency(financial, lambda o: o.paid_total)
     debt = sum_by_currency(debts, order_remaining)
+    # Переплата — сколько мы должны клиенту («К возврату» кассы).
+    overpaid = {
+        currency: amount
+        for currency, amount in sum_by_currency(orders, order_overpaid).items()
+        if amount > 0
+    }
     main = primary_currency(debt or revenue, fallback=client.currency)
     by_currency = {
         currency: {
             "revenue": _d(revenue.get(currency, Decimal("0"))),
             "paid": _d(paid.get(currency, Decimal("0"))),
             "debt": _d(debt.get(currency, Decimal("0"))),
+            "overpaid": _d(overpaid.get(currency, Decimal("0"))),
         }
-        for currency in sorted({*revenue, *paid, *debt} or {main})
+        for currency in sorted({*revenue, *paid, *debt, *overpaid} or {main})
     }
 
     return {
@@ -180,6 +188,7 @@ def client_history(client) -> dict:
             "revenue": _d(revenue.get(main, Decimal("0"))),
             "paid": _d(paid.get(main, Decimal("0"))),
             "debt": _d(debt.get(main, Decimal("0"))),
+            "overpaid": _d(overpaid.get(main, Decimal("0"))),
             "orders_count": len(financial),
             "by_currency": by_currency,
         },

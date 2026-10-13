@@ -307,8 +307,8 @@ export interface ReportSummary {
 export type PortalPaymentMethod = "pending" | "invoice" | "kaspi" | "cash" | "debt";
 /** Order.payment_method: выбор клиента по заказу, «mixed» — несколько способов сразу. */
 type OrderPaymentMethod = PortalPaymentMethod | "mixed";
-/** Способ конкретной оплаты (Payment.method): касса + легаси «card». */
-type PaymentMethod = "cash" | "kaspi" | "remote" | "invoice" | "card";
+/** Способ конкретной оплаты (Payment.method): касса, банковский перевод из акта сверки + легаси «card». */
+type PaymentMethod = "cash" | "kaspi" | "remote" | "bank" | "invoice" | "card";
 
 export interface Client {
   id: number;
@@ -623,8 +623,11 @@ export interface ClientHistoryDebt {
   remaining: string;
   currency: string;
 }
-/** Итоги клиента за всё время: выручка и оплачено — по финансовым заказам, долг — остаток отгруженных. */
-export type ClientSummaryMoney = { revenue: string; paid: string; debt: string };
+/**
+ * Итоги клиента за всё время: выручка и оплачено — по финансовым заказам, долг — остаток отгруженных,
+ * переплата — сколько мы должны клиенту («К возврату» кассы).
+ */
+export type ClientSummaryMoney = { revenue: string; paid: string; debt: string; overpaid: string };
 /** Ответ GET /clients/{id}/history/ — карточка клиента. */
 export interface ClientHistory {
   client: { id: number; name: string; phone: string; country: string };

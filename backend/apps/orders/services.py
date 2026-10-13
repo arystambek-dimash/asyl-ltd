@@ -298,10 +298,13 @@ def _set_payment_stage(payment: Payment, status: str, user) -> Payment:
 
 @transaction.atomic
 def add_payment(order: Order, amount, user, method="cash", stage="received",
-                note="", day=None) -> Payment:
+                note="", day=None, allow_overpayment=False) -> Payment:
     """Начало цепочки оплаты: «запрошена» (счёт выставлен) или «принята» (деньги у менеджера).
 
     ``day`` — оплата прошлым днём: окно оплаты магазина проверяется на него.
+    ``allow_overpayment`` — деньги уже пришли сверх остатка (итог акта сверки в
+    пользу клиента, :mod:`apps.client_acts`): излишек ложится переплатой заказа
+    и виден в кассе «К возврату».
     """
     order = _locked_payment_order(order, user)
     _validate_payment_open(order, method=payment_open_method(method, stage), day=day)
@@ -317,7 +320,7 @@ def add_payment(order: Order, amount, user, method="cash", stage="received",
         raise ValidationError(
             {"detail": "Недопустимый способ оплаты", "code": "bad_method"})
     available = available_to_pay(order)
-    if amount > available:
+    if amount > available and not allow_overpayment:
         raise ValidationError({
             "detail": f"Доступно к оплате: {available} {order.currency}",
             "code": "payment_exceeds_remaining",
@@ -591,8 +594,13 @@ def receive_payment(payment: Payment, user, *, any_department=False) -> Payment:
 
 
 @transaction.atomic
-def accountant_confirm_payment(payment: Payment, user, *, any_department=False) -> Payment:
-    """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу."""
+def accountant_confirm_payment(
+    payment: Payment, user, *, any_department=False, allow_overpayment=False,
+) -> Payment:
+    """Бухгалтер (касса) сверил и подтвердил оплату — деньги учтены сразу.
+
+    ``allow_overpayment`` — как у :func:`add_payment`.
+    """
     original = payment
     payment, order = _locked_payment_with_order(payment, user, any_department=any_department)
     provider = getattr(payment, "apipay_invoice", None)
@@ -606,7 +614,7 @@ def accountant_confirm_payment(payment: Payment, user, *, any_department=False) 
         })
     # Строка заказа уже заблокирована: все изменения оплат берут её первой.
     available = order_remaining(order)
-    if payment.amount > available:
+    if payment.amount > available and not allow_overpayment:
         raise ValidationError({
             "detail": (
                 "Подтверждение создаст переплату. "
@@ -628,6 +636,7 @@ def record_staff_payment(
     method="cash",
     note="",
     paid_at=None,
+    allow_overpayment=False,
 ) -> Payment:
     """Record money from the CRM and settle funds already received by staff.
 
@@ -635,6 +644,7 @@ def record_staff_payment(
     после обычной записи оплата и все её события (приём, подтверждение,
     «Статус оплаты») переносятся на этот момент. Только для денег, которые
     закрываются сразу (``Payment.SETTLED_ON_RECORD``), не для счёта.
+    ``allow_overpayment`` — как у :func:`add_payment`.
 
     The CRM endpoint itself is protected by ``payments.create`` and cannot be
     called by portal users.  Consequently the source boundary, rather than a
@@ -668,10 +678,11 @@ def record_staff_payment(
         # Invoices are the inverse: issuing one never proves that the client paid.
         stage="requested" if method == "invoice" else "received",
         note=note,
+        allow_overpayment=allow_overpayment,
     )
     if payment.status == "received" and payment.method in Payment.SETTLED_ON_RECORD:
         # Подтверждение перечитывает этот же экземпляр после блокировки.
-        accountant_confirm_payment(payment, user)
+        accountant_confirm_payment(payment, user, allow_overpayment=allow_overpayment)
     if paid_at is not None:
         Payment.objects.filter(pk=payment.pk).update(paid_at=paid_at, received_at=paid_at, confirmed_at=paid_at)
         # Касса и сводки по дням читают события оплат по created_at: приём и

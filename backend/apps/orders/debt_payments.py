@@ -115,7 +115,7 @@ def _shipped_at(order) -> str | None:
     return timezone.localtime(shipped_at).isoformat() if shipped_at else None
 
 
-def _debt_candidates(client_pk: int, currency: str) -> list:
+def debt_candidates(client_pk: int, currency: str) -> list:
     """Долговые заказы клиента в валюте, от старого к новому. Корзины нет: ``Order.objects``."""
     orders = (
         Order.objects.filter(client_id=client_pk, status=DEBT_STATUS, currency=currency)
@@ -235,7 +235,7 @@ def record_client_debt_payment(
         assert_payment_method_allowed(currency, method)
         lock_client_orders(client.pk)
         client = lock_scoped_client(client.pk, user)
-    orders = _debt_candidates(client.pk, currency)
+    orders = debt_candidates(client.pk, currency)
     if not orders:
         raise ValidationError({"detail": f"У клиента нет долга в {currency}", "code": "no_debt"})
     plan = plan_debt_payment(orders, amount, today=day or timezone.localdate(), paid_on=day)

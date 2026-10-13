@@ -1,0 +1,290 @@
+"use client";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { FileSpreadsheet } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/data-state";
+import { InfoRow } from "@/components/ui/info-row";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Modal } from "@/components/ui/modal";
+import { ProgressBar } from "@/components/ui/progress-bar";
+import { apiError } from "@/lib/api";
+import { importClientActChunk, previewClientAct, type ActPreview } from "@/lib/client-acts";
+import { finiteMoney } from "@/lib/currency-map";
+import { cn, formatCurrency, formatIsoDate, pluralRu } from "@/lib/utils";
+
+type ClientActImportProps = {
+  clientId: number;
+  open: boolean;
+  onClose: () => void;
+  /** Акт перенесён: текст уведомления для страницы. Окно после этого закрывается через `onClose`. */
+  onImported: (notice: string) => void;
+};
+
+const DOCUMENT_FORMS: [string, string, string] = ["документ", "документа", "документов"];
+
+/** Сальдо словами: плюс — клиент должен нам, минус — мы клиенту. */
+function balanceText(value: string, currency: string): string {
+  const amount = finiteMoney(value);
+  if (amount > 0) return `клиент должен ${formatCurrency(amount, currency)}`;
+  if (amount < 0) return `мы должны клиенту ${formatCurrency(-amount, currency)}`;
+  return formatCurrency(0, currency);
+}
+
+function Warning({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-md border border-[var(--warning)]/30 bg-[var(--warning)]/10 px-3 py-2 text-sm">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * «Импорт акта сверки» из 1С. Файл сначала уходит на предпросмотр (ничего не
+ * пишется): сервер проверяет раскладку и итоги акта, считает новые документы и
+ * пересечение с записями CRM. «Перенести» шлёт тот же файл порциями, пока сервер
+ * не ответит `finished`; уже перенесённые документы он пропускает, поэтому
+ * обрыв посередине продолжается тем же действием.
+ */
+export function ClientActImportModal({ open, ...props }: ClientActImportProps) {
+  // Каждое открытие — с чистого листа: файл и предпросмотр не переживают закрытие.
+  if (!open) return null;
+  return <ClientActImportDialog {...props} />;
+}
+
+function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientActImportProps, "open">) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  // «Импортировать с»: `undefined` — дата, которую предложит сервер.
+  const [start, setStart] = useState<string | undefined>(undefined);
+  const [preview, setPreview] = useState<ActPreview | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  // Отказ переноса держится до следующей попытки: пересчёт предпросмотра его не стирает.
+  const [importError, setImportError] = useState("");
+  const [progress, setProgress] = useState<{ done: number; total: number; payments: number } | null>(null);
+  const [importing, setImporting] = useState(false);
+  // После обрыва переноса предпросмотр пересчитывается: часть документов уже в CRM.
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    if (!file) return;
+    const controller = new AbortController();
+    setChecking(true);
+    previewClientAct(clientId, file, start, controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setPreview(data);
+        setPreviewError("");
+        setChecking(false);
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setPreview(null);
+        setPreviewError(apiError(cause) || "Не удалось проверить акт");
+        setChecking(false);
+      });
+    return () => controller.abort();
+  }, [clientId, file, start, refresh]);
+
+  const total = preview ? preview.sales.count + preview.payments.count + (preview.opening_order ? 1 : 0) : 0;
+  const overlap = preview ? preview.crm.orders + preview.crm.payments > 0 : false;
+  const canImport = Boolean(file && preview && !checking && !importing && total > 0 && preview.problems.length === 0);
+
+  function pick(next: File) {
+    setFile(next);
+    setStart(undefined);
+    setPreview(null);
+    setProgress(null);
+    setPreviewError("");
+    setImportError("");
+  }
+
+  async function runImport() {
+    if (!file || !preview || !canImport) return;
+    const act = preview;
+    setImporting(true);
+    setImportError("");
+    let payments = 0;
+    setProgress({ done: 0, total, payments });
+    try {
+      for (;;) {
+        const chunk = await importClientActChunk(clientId, file, act.start);
+        payments += chunk.payments;
+        setProgress({ done: total - chunk.remaining, total, payments });
+        if (chunk.finished) {
+          const overpaid = finiteMoney(chunk.overpaid ?? 0);
+          onImported(
+            `Акт № ${act.act.number} перенесён: ${total} ${pluralRu(total, DOCUMENT_FORMS)}` +
+              (overpaid > 0 ? `; мы должны клиенту ${formatCurrency(overpaid, act.act.currency)}` : ""),
+          );
+          onClose();
+          return;
+        }
+      }
+    } catch (cause) {
+      // Ошибка остаётся в окне: страница под оверлеем её не покажет.
+      setImportError(apiError(cause) || "Перенос прервался — нажмите ещё раз: перенесённое не задвоится");
+      setProgress(null);
+      setRefresh((n) => n + 1);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={() => !importing && onClose()}
+      dismissible={!importing}
+      className="max-w-lg"
+      eyebrow="Клиент"
+      title="Импорт акта сверки"
+      description="Excel-файл «Акт сверки» из 1С: реализации станут отгруженными заказами, поступления — оплатами долга. Склад не меняется, уже перенесённые документы пропускаются."
+      footer={
+        <>
+          <Button variant="outline" disabled={importing} onClick={onClose}>
+            Отмена
+          </Button>
+          <Button disabled={!canImport} onClick={() => void runImport()}>
+            {importing
+              ? "Переносим…"
+              : total > 0
+                ? `Перенести ${total} ${pluralRu(total, DOCUMENT_FORMS)}`
+                : "Перенести"}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
+          <FileSpreadsheet className="size-5 shrink-0 text-emerald-600" />
+          <span className={cn("min-w-0 flex-1 truncate text-sm", !file && "text-[var(--muted-foreground)]")}>
+            {file ? file.name : "Файл не выбран"}
+          </span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="sr-only"
+            aria-label="Файл акта сверки"
+            disabled={importing}
+            onChange={(event) => {
+              const picked = event.target.files?.[0];
+              if (picked) pick(picked);
+              event.target.value = "";
+            }}
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={importing}
+            onClick={() => inputRef.current?.click()}
+          >
+            {file ? "Заменить" : "Выбрать .xlsx"}
+          </Button>
+        </div>
+
+        {checking && !preview && <p className="text-sm text-[var(--muted-foreground)]">Проверяем акт…</p>}
+
+        {preview && <ActSummary preview={preview} total={total} stale={checking} />}
+
+        {preview && !preview.name_matches && (
+          <Warning>
+            В акте контрагент «{preview.act.counterparty}» — проверьте, что это карточка того же клиента.
+          </Warning>
+        )}
+
+        {preview && overlap && (
+          <Warning>
+            <p>
+              В CRM за период акта уже есть {preview.crm.orders}{" "}
+              {pluralRu(preview.crm.orders, ["заказ", "заказа", "заказов"])} на{" "}
+              {formatCurrency(preview.crm.orders_total, preview.act.currency)} и {preview.crm.payments}{" "}
+              {pluralRu(preview.crm.payments, ["оплата", "оплаты", "оплат"])} на{" "}
+              {formatCurrency(preview.crm.payments_total, preview.act.currency)}
+              {preview.crm.last_day && ` (последняя запись ${formatIsoDate(preview.crm.last_day)})`}. Чтобы не задвоить,
+              документы раньше даты ниже не переносятся.
+            </p>
+            <div className="mt-2 grid gap-1.5">
+              <Label htmlFor="client-act-start">Переносить с</Label>
+              <Input
+                id="client-act-start"
+                type="date"
+                value={start ?? preview.start}
+                min={preview.act.period_start}
+                disabled={importing}
+                onChange={(event) => setStart(event.target.value || undefined)}
+              />
+            </div>
+          </Warning>
+        )}
+
+        {preview?.problems.map((problem) => (
+          <FormError key={problem} message={problem} />
+        ))}
+
+        {progress && (
+          <div className="grid gap-1.5" aria-live="polite">
+            <ProgressBar pct={progress.total ? (progress.done / progress.total) * 100 : 0} />
+            <p className="text-xs text-[var(--muted-foreground)]">
+              Перенесено {progress.done} из {progress.total} · разнесено оплат: {progress.payments}. Не закрывайте окно.
+            </p>
+          </div>
+        )}
+
+        <FormError message={importError || previewError} />
+      </div>
+    </Modal>
+  );
+}
+
+function ActSummary({ preview, total, stale }: { preview: ActPreview; total: number; stale: boolean }) {
+  const { act } = preview;
+  const currency = act.currency;
+  const differs = finiteMoney(preview.balance_after) !== finiteMoney(act.closing);
+  return (
+    <section aria-label="Акт" className={cn("grid gap-3", stale && "opacity-60")}>
+      <div className="text-sm">
+        <div className="font-medium">
+          Акт № {act.number || "—"} · {formatIsoDate(act.period_start)} – {formatIsoDate(act.period_end)} · {currency}
+        </div>
+        {act.counterparty && <div className="text-[var(--muted-foreground)]">{act.counterparty}</div>}
+      </div>
+      <div className="rounded-lg border px-3 text-sm">
+        <InfoRow label="Реализации → заказы">
+          {preview.sales.count} · {formatCurrency(preview.sales.total, currency)}
+        </InfoRow>
+        <InfoRow label="Поступления → оплаты">
+          {preview.payments.count} · {formatCurrency(preview.payments.total, currency)}
+        </InfoRow>
+        {preview.opening_order && (
+          <InfoRow label="Сальдо на начало → заказ">{formatCurrency(preview.opening_order, currency)}</InfoRow>
+        )}
+        {preview.imported > 0 && (
+          <InfoRow label="Уже перенесено раньше">
+            {preview.imported} {pluralRu(preview.imported, DOCUMENT_FORMS)}
+          </InfoRow>
+        )}
+        {preview.before_start > 0 && (
+          <InfoRow label="Раньше даты начала">
+            {preview.before_start} {pluralRu(preview.before_start, DOCUMENT_FORMS)} — пропуск
+          </InfoRow>
+        )}
+        <InfoRow label="Сальдо по акту">{balanceText(act.closing, currency)}</InfoRow>
+        <InfoRow label="В CRM после переноса">
+          <span className={cn(differs && "text-[var(--warning)]")}>{balanceText(preview.balance_after, currency)}</span>
+        </InfoRow>
+      </div>
+      {total === 0 && preview.problems.length === 0 && (
+        <p className="text-sm text-[var(--muted-foreground)]">Все документы акта уже в CRM — переносить нечего.</p>
+      )}
+      {differs && total > 0 && (
+        <p className="text-xs text-[var(--muted-foreground)]">
+          Сальдо CRM не совпадёт с актом: у клиента есть записи, которых нет в акте, или акт начат не с начала.
+        </p>
+      )}
+    </section>
+  );
+}

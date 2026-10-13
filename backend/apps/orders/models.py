@@ -305,10 +305,11 @@ class OrderItem(models.Model):
 
 
 class Payment(models.Model):
-    CASHIER_METHODS = ["cash", "kaspi", "remote", "invoice"]
+    CASHIER_METHODS = ["cash", "kaspi", "remote", "bank", "invoice"]
     # Деньги уже у кассы: приём таким способом закрывается сразу, без очереди.
     # «remote» — отметка о ранее полученной удалённой оплате: счёт не выставляется.
-    SETTLED_ON_RECORD = ("cash", "kaspi", "remote")
+    # «bank» — поступление на расчётный счёт (платёжное поручение из акта сверки 1С).
+    SETTLED_ON_RECORD = ("cash", "kaspi", "remote", "bank")
     # Служебный способ старых записей «в долг» — не деньги: в кассу, выписки
     # и отчёт бухгалтерии не входит.
     NON_MONEY_METHODS = ("debt",)

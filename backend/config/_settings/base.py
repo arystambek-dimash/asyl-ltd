@@ -149,6 +149,7 @@ INSTALLED_APPS = [
     "apps.tasks",
     "apps.grain",
     "apps.bots",
+    "apps.client_acts",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

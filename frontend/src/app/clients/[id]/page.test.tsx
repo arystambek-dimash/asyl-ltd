@@ -67,7 +67,8 @@ const history = {
     paid: "500.00",
     debt: "500.00",
     orders_count: 1,
-    by_currency: { KZT: { revenue: "1000.00", paid: "500.00", debt: "500.00" } },
+    overpaid: "0.00",
+    by_currency: { KZT: { revenue: "1000.00", paid: "500.00", debt: "500.00", overpaid: "0.00" } },
   },
   sales: [
     sale(10, "shipped", "1000.00"),
@@ -90,6 +91,35 @@ beforeEach(() => {
 });
 
 const renderPage = () => renderRoutePage(ClientDetailPage, "1");
+
+it("shows what we owe the client after an overpayment, per currency", async () => {
+  mocks.get.mockResolvedValue({
+    data: {
+      ...history,
+      summary: {
+        ...history.summary,
+        by_currency: {
+          ...history.summary.by_currency,
+          USD: { revenue: "2100245.00", paid: "2105920.00", debt: "0.00", overpaid: "5675.00" },
+        },
+      },
+    },
+  });
+  await renderPage();
+
+  expect(await screen.findByText("Мы должны клиенту 5 675 $")).toBeInTheDocument();
+  expect(screen.queryByText(/Мы должны клиенту .* ₸/)).not.toBeInTheDocument();
+});
+
+it("opens the reconciliation act import from the header", async () => {
+  const user = userEvent.setup();
+  await renderPage();
+
+  await user.click(await screen.findByRole("button", { name: "Импорт акта сверки" }));
+
+  expect(screen.getByRole("dialog", { name: "Импорт акта сверки" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Выбрать .xlsx" })).toBeInTheDocument();
+});
 
 it("sums only financial sales into the list total", async () => {
   const user = userEvent.setup();
