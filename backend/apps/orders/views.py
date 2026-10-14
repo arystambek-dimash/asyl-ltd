@@ -1141,7 +1141,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
             # Счёт и QR через кассу — оплата, которая только начинается сейчас.
             if channel or method not in Payment.SETTLED_ON_RECORD:
                 raise ValidationError({
-                    "detail": "Прошлым днём записываются только полученные деньги: наличные, QR или удалённая оплата",
+                    "detail": "Прошлым днём записываются только полученные деньги: наличные, QR, удалённая оплата или 1С перечисление",
                     "code": "payment_date_not_allowed",
                 })
             assert_paid_after_order(order, day)

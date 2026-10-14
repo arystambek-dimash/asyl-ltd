@@ -265,6 +265,8 @@ describe("ClientDebtPaymentModal", () => {
     expect(dialog).toHaveAccessibleName(/^Как клиент заплатил 500 \$\?$/);
     expect(within(dialog).queryByRole("button", { name: "QR" })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: /Удалённая оплата/ })).not.toBeInTheDocument();
+    // 1С перечисление сервер принимает в любой валюте.
+    expect(within(dialog).getByRole("button", { name: /1С перечисление/ })).toBeInTheDocument();
     expect(postMock).not.toHaveBeenCalledWith(ENDPOINT, expect.objectContaining({ preview: false }));
     await user.click(within(dialog).getByRole("button", { name: /Наличные/ }));
 
@@ -280,6 +282,7 @@ describe("ClientDebtPaymentModal", () => {
   it.each([
     ["QR", "kaspi"],
     [/Удалённая оплата/, "remote"],
+    [/1С перечисление/, "bank"],
   ])("records the tapped tenge method %s as %s", async (name, method) => {
     const user = userEvent.setup();
     const { dialog } = renderModal();

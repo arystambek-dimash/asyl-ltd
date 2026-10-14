@@ -165,7 +165,7 @@ def test_plan_follows_the_store_schedule_for_the_given_day(departments):
     }]
 
 
-def test_usd_debt_is_paid_in_cash_only(cashier, departments):
+def test_usd_debt_is_not_paid_by_kaspi(cashier, departments):
     client = _client(departments[0], currency="USD")
     _debt(client, "100.00", currency="USD")
 
@@ -174,6 +174,17 @@ def test_usd_debt_is_paid_in_cash_only(cashier, departments):
 
     assert error.value.detail["code"] == "payment_kzt_only"
     assert not Payment.objects.exists()
+
+
+def test_bank_transfer_pays_debt_in_any_currency(cashier, departments):
+    """«1С перечисление» — деньги уже на расчётном счёте: оплата подтверждена сразу, и в долларах тоже."""
+    client = _client(departments[0], currency="USD")
+    order = _debt(client, "100.00", currency="USD")
+
+    _pay(client, "60.00", cashier, method="bank", currency="USD")
+
+    payment = Payment.objects.get(order=order)
+    assert (payment.method, payment.status, payment.amount) == ("bank", "confirmed", Decimal("60.00"))
 
 
 @pytest.mark.parametrize("method", ["invoice", "card", "debt", None])

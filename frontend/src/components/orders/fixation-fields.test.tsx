@@ -77,7 +77,7 @@ describe("FixationFields", () => {
     expect(screen.getByRole("checkbox", { name: /Оплачен полностью/ })).toBeEnabled();
   });
 
-  it("offers a dollar order only cash", async () => {
+  it("offers a dollar order only cash and a 1С transfer", async () => {
     const user = userEvent.setup();
     render(<Harness orderStatus="shipped" currency="USD" />);
     await user.click(screen.getByRole("checkbox", { name: /Оплачен полностью/ }));
@@ -86,7 +86,7 @@ describe("FixationFields", () => {
       within(methods)
         .getAllByRole("radio")
         .map((radio) => radio.textContent),
-    ).toEqual(["Наличные"]);
+    ).toEqual(["Наличные", "1С перечисление"]);
   });
 });
 

@@ -231,7 +231,7 @@ def record_client_debt_payment(
     else:
         if method not in Payment.SETTLED_ON_RECORD:
             raise ValidationError({
-                "detail": "Внести оплату можно наличными, Kaspi-терминалом или удалённо",
+                "detail": "Внести оплату можно наличными, Kaspi-терминалом, удалённо или 1С перечислением",
                 "code": "debt_payment_method",
             })
         assert_payment_method_allowed(currency, method)

@@ -218,7 +218,7 @@ def test_usd_order_api_opens_only_cash_and_bank(auth_client, accountant, product
 
     data = auth_client(accountant).get(f"/api/orders/{order.id}/").data
 
-    # Банковский перевод — поступление по акту сверки 1С, в долларах тоже.
+    # 1С перечисление — поступление на расчётный счёт, в долларах тоже.
     assert data["payment_open_methods"] == ["cash", "bank"]
     assert data["payment_request_open"] is False
 

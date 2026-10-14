@@ -305,7 +305,7 @@ def test_goods_returns_and_counter_supplies_close_debt_as_act_offset(client, imp
         ("bank", Decimal("300000.00")), ("offset", Decimal("20000.00")), ("offset", Decimal("26890.00")),
     ]
     rows = client_history(client)["payments"]
-    assert {row["method_label"] for row in rows} == {"Банковский перевод", "Зачёт по акту сверки"}
+    assert {row["method_label"] for row in rows} == {"1С перечисление", "Зачёт по акту сверки"}
     assert _balance(client, "KZT") == act.closing == Decimal("286510.00")
 
 

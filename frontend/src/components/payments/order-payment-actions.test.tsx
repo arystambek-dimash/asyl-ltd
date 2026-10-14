@@ -25,7 +25,7 @@ const order = {
   remaining_amount: "707000",
   payment_status: "unpaid",
   payment_open: true,
-  payment_open_methods: ["cash", "kaspi", "remote", "invoice"],
+  payment_open_methods: ["cash", "kaspi", "remote", "bank", "invoice"],
   payment_request_open: true,
   payments: [],
   pending_payments: [],
@@ -68,7 +68,7 @@ describe("OrderPaymentActions", () => {
     expect(postMock).not.toHaveBeenCalled();
     expect(dialog).toHaveAccessibleName(/^Как клиент заплатил 707\s000 ₸\?$/);
     expect(within(dialog).queryByLabelText("Сумма")).not.toBeInTheDocument();
-    for (const name of [/Наличные/, "QR", /Удалённая оплата/]) {
+    for (const name of [/Наличные/, "QR", /Удалённая оплата/, /1С перечисление/]) {
       expect(within(dialog).getByRole("button", { name })).not.toHaveAttribute("aria-pressed");
     }
     await user.click(within(dialog).getByRole("button", { name: /Наличные/ }));
@@ -79,6 +79,17 @@ describe("OrderPaymentActions", () => {
       method: "cash",
     });
     expect(onChanged).toHaveBeenCalledWith(expect.stringContaining("долг уменьшен"));
+  });
+
+  it("records a 1С transfer as the bank method", async () => {
+    const user = userEvent.setup();
+    render(<OrderPaymentActions order={order} me={me} onChanged={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Принять оплату/ }));
+    await user.click(screen.getByRole("button", { name: "Принять" }));
+    await user.click(screen.getByRole("button", { name: /1С перечисление/ }));
+
+    expect(postMock).toHaveBeenCalledWith("/orders/156/payments/", { amount: "707000", method: "bank" });
   });
 
   it("records money received on a past day with that date", async () => {

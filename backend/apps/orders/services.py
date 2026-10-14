@@ -666,7 +666,7 @@ def record_staff_payment(
     """
     if paid_at is not None and method not in Payment.SETTLED_ON_RECORD:
         raise ValidationError({
-            "detail": "Прошлым днём записываются только полученные деньги: наличные, QR или удалённая оплата",
+            "detail": "Прошлым днём записываются только полученные деньги: наличные, QR, удалённая оплата или 1С перечисление",
             "code": "payment_date_not_allowed",
         })
     day = last_event = None

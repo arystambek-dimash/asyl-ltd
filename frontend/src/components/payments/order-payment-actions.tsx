@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Banknote, HandCoins, LoaderCircle, QrCode, Send, Smartphone } from "lucide-react";
+import { Banknote, HandCoins, Landmark, LoaderCircle, QrCode, Send, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,13 +14,15 @@ import type { Me, Order } from "@/lib/types";
 import { cn, formatCurrency, formatIsoDate, todayLocalIsoDate } from "@/lib/utils";
 
 type Flow = "receive" | "remote";
-export type ReceiveMethod = "cash" | "kaspi" | "remote";
+export type ReceiveMethod = "cash" | "kaspi" | "remote" | "bank";
 
 /** Способы «Принять оплату» — деньги уже у кассы, поэтому ими берут и предоплату.
  * `kaspi` — оплата по своему терминалу кассы (запрос без `channel`), подпись та же,
  * что у способа в labels.py; Kaspi QR через ApiPay выставляет только POS кассы.
  * «Удалённая оплата» — отметка о деньгах, полученных раньше и не через кассу:
- * счёт она не выставляет и новую оплату не начинает, только закрывает остаток. */
+ * счёт она не выставляет и новую оплату не начинает, только закрывает остаток.
+ * «1С перечисление» (`bank`) — платёжное поручение на расчётный счёт, тот же
+ * способ, которым импорт акта сверки 1С пишет поступления. */
 export const RECEIVE_METHOD_OPTIONS: {
   key: ReceiveMethod;
   label: string;
@@ -30,7 +32,11 @@ export const RECEIVE_METHOD_OPTIONS: {
   { key: "cash", label: "Наличные", icon: Banknote },
   { key: "kaspi", label: "QR", icon: QrCode },
   { key: "remote", label: "Удалённая оплата", hint: "клиент оплатил раньше", icon: Smartphone },
+  { key: "bank", label: "1С перечисление", hint: "на расчётный счёт", icon: Landmark },
 ];
+
+/** Способы, которые сервер принимает в любой валюте (`statuses.is_payment_method_allowed`). */
+const ANY_CURRENCY_METHODS: readonly ReceiveMethod[] = ["cash", "bank"];
 
 /**
  * Способы приёма из открытых сервером (`payment_open_methods`: статус и валюта
@@ -39,7 +45,7 @@ export const RECEIVE_METHOD_OPTIONS: {
  */
 export function receiveMethods(currency: string, open?: readonly string[]): ReceiveMethod[] {
   return RECEIVE_METHOD_OPTIONS.map(({ key }) => key).filter((key) =>
-    open ? open.includes(key) : currency === "KZT" || key === "cash",
+    open ? open.includes(key) : currency === "KZT" || ANY_CURRENCY_METHODS.includes(key),
   );
 }
 
