@@ -221,8 +221,9 @@ def test_stale_identity_worker_cannot_replace_manual_identification(start):
     assert segments.apply_identity(segment.pk, "456DEF13", "gpt", expected_lease=lease, recognition_model="vehicle_number") is None
     session.refresh_from_db()
     assert session.number == "123ABC13"
-    with pytest.raises(ValueError, match="already_resolved"):
-        segments.apply_identity(segment.pk, "456DEF13", "manual", recognition_model="vehicle_number")
+    # Исправить ручной номер можно только вручную же.
+    corrected = segments.apply_identity(segment.pk, "456DEF13", "manual", recognition_model="vehicle_number")
+    assert corrected.number == "456DEF13"
 
 
 def test_database_prevents_two_active_segments_and_double_event_mapping(start):

@@ -12,6 +12,9 @@ export const BOARD_SIZE = {
     row: "text-sm",
     rowGap: "py-2.5",
     pad: "p-5",
+    /** Фото товара в строке прихода. */
+    thumb: "size-9 rounded-lg",
+    thumbIcon: "size-4",
   },
   tv: {
     title: "text-[1.45vw] font-semibold",
@@ -22,6 +25,8 @@ export const BOARD_SIZE = {
     row: "text-[1.55vw] leading-tight",
     rowGap: "py-[0.4vw]",
     pad: "p-[1.3vw]",
+    thumb: "size-[2.8vw] rounded-[0.5vw]",
+    thumbIcon: "size-[1.5vw]",
   },
 } as const;
 

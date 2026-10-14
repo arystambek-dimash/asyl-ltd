@@ -8,10 +8,21 @@ import {
   formatCompactCurrency,
   formatCount,
   formatCurrency,
+  formatTons,
   pluralRu,
 } from "@/lib/utils";
 
-type Tile = { key: string; label: string; value: string; exact: string; unit: string; notes: string[]; href: string };
+type Tile = {
+  key: string;
+  label: string;
+  value: string;
+  exact: string;
+  unit: string;
+  /** Вес рядом с мешками, «7,1 т». */
+  tons?: string;
+  notes: string[];
+  href: string;
+};
 
 /** Мешки на ТВ — точным числом; от миллиона — «14,9 млн», иначе число не влезает в плитку. */
 function bagsValue(bags: number): string {
@@ -28,6 +39,7 @@ function tiles(m: DashboardMetrics): Tile[] {
       value: bagsValue(m.shippedToday),
       exact: formatCount(m.shippedToday),
       unit: "меш.",
+      tons: `${formatTons(m.shippedTodayKg)} т`,
       notes:
         m.shippedTodayOrders > 0
           ? [`фуры ${formatCount(m.truckBagsToday)} · вагоны ${formatCount(m.trainBagsToday)}`, yesterday]
@@ -43,6 +55,7 @@ function tiles(m: DashboardMetrics): Tile[] {
       value: bagsValue(m.stockTotal),
       exact: formatCount(m.stockTotal),
       unit: "меш.",
+      tons: `${formatTons(m.stockKg)} т`,
       notes: [`${m.stockWarehouse} · ${positions} ${pluralRu(positions, ["позиция", "позиции", "позиций"])}`],
       href: "/warehouse",
     });
@@ -95,7 +108,10 @@ export function KpiTiles({ m, size }: { m: DashboardMetrics; size: BoardSize }) 
               <span title={tile.exact} className={cn(s.value, "truncate font-semibold tracking-tight tabular-nums")}>
                 {tile.value}
               </span>
-              <span className={cn(s.unit, "text-[var(--muted-foreground)]")}>{tile.unit}</span>
+              <span className={cn(s.unit, "shrink-0 text-[var(--muted-foreground)]")}>{tile.unit}</span>
+              {tile.tons && (
+                <span className={cn(s.unit, "shrink-0 truncate text-[var(--muted-foreground)]")}>· {tile.tons}</span>
+              )}
             </div>
             {tile.notes.map((note) => (
               <div key={note} className={cn(s.note, "mt-1 truncate text-[var(--muted-foreground)]")}>

@@ -89,8 +89,8 @@ describe("adaptDashboardDebt", () => {
 describe("todayShipments", () => {
   it("takes today and yesterday from server days and splits trucks and wagons", () => {
     const days = [
-      { date: "2026-10-12", bags: 2134, orders: 11, truck_bags: 2134, train_bags: 0 },
-      { date: "2026-10-13", bags: 897, orders: 9, truck_bags: 620, train_bags: 277 },
+      { date: "2026-10-12", bags: 2134, orders: 11, truck_bags: 2134, train_bags: 0, kg: "106700.00" },
+      { date: "2026-10-13", bags: 897, orders: 9, truck_bags: 620, train_bags: 277, kg: "44850.00" },
     ];
 
     expect(todayShipments(days, "2026-10-13", "2026-10-12")).toEqual({
@@ -98,6 +98,7 @@ describe("todayShipments", () => {
       shippedTodayOrders: 9,
       truckBagsToday: 620,
       trainBagsToday: 277,
+      shippedTodayKg: 44850,
       shippedYesterday: 2134,
     });
   });
@@ -108,6 +109,7 @@ describe("todayShipments", () => {
       shippedTodayOrders: 0,
       truckBagsToday: 0,
       trainBagsToday: 0,
+      shippedTodayKg: 0,
       shippedYesterday: 0,
     });
   });

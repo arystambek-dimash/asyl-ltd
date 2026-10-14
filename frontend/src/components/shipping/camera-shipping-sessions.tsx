@@ -28,9 +28,21 @@ import { wagonsHeadline } from "@/lib/wagons";
 // Сегодняшний список живой: мешки идут каждые несколько секунд.
 const LIVE_POLL_MS = 3_000;
 
-function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; reload: () => Promise<void> }) {
+/**
+ * Номер отрезка вручную. Без номера — форма открыта сразу, с номером (исправление
+ * распознанного) — по кнопке «Изменить номер», с текущим номером и «Отменой».
+ */
+function SegmentNumberForm({
+  segment,
+  reload,
+  onCancel,
+}: {
+  segment: ShippingSegment;
+  reload: () => Promise<void>;
+  onCancel?: () => void;
+}) {
   const inputId = useId();
-  const [number, setNumber] = useState("");
+  const [number, setNumber] = useState(segment.number);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
@@ -43,6 +55,7 @@ function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; re
         number: number.trim().toUpperCase(),
       });
       await reload();
+      onCancel?.();
     } catch (failure) {
       setError(apiError(failure) || "Не удалось сохранить номер. Проверьте права и обновите данные.");
     } finally {
@@ -50,9 +63,19 @@ function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; re
     }
   }
   return (
-    <form onSubmit={(event) => void submit(event)} className="space-y-2 rounded-lg bg-[var(--muted)]/50 p-3">
+    <form
+      onSubmit={(event) => void submit(event)}
+      onKeyDown={(event) => {
+        // Esc закрывает только форму, а не окно камеры вокруг неё.
+        if (event.key !== "Escape" || !onCancel || saving) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+      }}
+      className="space-y-2 rounded-lg bg-[var(--muted)]/50 p-3"
+    >
       <label htmlFor={inputId} className="block text-sm font-medium">
-        Указать номер отрезка #{segment.id}
+        {segment.number ? `Новый номер отрезка #${segment.id}` : `Указать номер отрезка #${segment.id}`}
       </label>
       <div className="flex flex-wrap gap-2">
         <Input
@@ -62,6 +85,7 @@ function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; re
           onChange={(event) => setNumber(event.target.value)}
           maxLength={20}
           autoComplete="off"
+          autoFocus={Boolean(onCancel)}
           placeholder="Номер машины или вагона"
           required
           disabled={saving}
@@ -69,6 +93,11 @@ function ManualSegmentNumber({ segment, reload }: { segment: ShippingSegment; re
         <Button type="submit" size="sm" disabled={saving || !number.trim()}>
           {saving ? "Сохраняем…" : "Сохранить номер"}
         </Button>
+        {onCancel && (
+          <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={onCancel}>
+            Отмена
+          </Button>
+        )}
       </div>
       <p className="text-xs text-[var(--muted-foreground)]">
         Сверьте номер с кадром. Количество мешков останется прежним.
@@ -137,6 +166,9 @@ function SegmentCard({
   reload: () => Promise<void>;
   stale: boolean;
 }) {
+  const [editingNumber, setEditingNumber] = useState(false);
+  // Номер меняет суперпользователь: неопознанному отрезку — сразу, распознанному — по кнопке.
+  const canChangeNumber = segment.can_identify && !stale;
   return (
     <article aria-label={`Отрезок ${segment.id}`} className="grid gap-4 border-t p-4 sm:grid-cols-[180px_1fr]">
       <div className="space-y-1.5">
@@ -154,6 +186,17 @@ function SegmentCard({
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <strong>{segment.number || "Без номера"}</strong>
           <Badge tone={segment.number ? "muted" : "warning"}>{shippingIdentityLabel(segment)}</Badge>
+          {segment.number && canChangeNumber && !editingNumber && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-my-1 h-7 px-2"
+              aria-label={`Изменить номер отрезка #${segment.id}`}
+              onClick={() => setEditingNumber(true)}
+            >
+              <Pencil /> Изменить номер
+            </Button>
+          )}
         </div>
         <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
           <div>
@@ -178,7 +221,10 @@ function SegmentCard({
             {shippingIdentityError(segment.identity_error)} Подсчёт мешков сохранён.
           </p>
         )}
-        {!segment.number && segment.can_identify && !stale && <ManualSegmentNumber segment={segment} reload={reload} />}
+        {canChangeNumber && !segment.number && <SegmentNumberForm segment={segment} reload={reload} />}
+        {canChangeNumber && segment.number && editingNumber && (
+          <SegmentNumberForm segment={segment} reload={reload} onCancel={() => setEditingNumber(false)} />
+        )}
         <a
           href={shippingSegmentPrintHref(segment.id)}
           target="_blank"

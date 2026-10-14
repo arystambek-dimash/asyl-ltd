@@ -251,6 +251,51 @@ describe("CameraShippingSessions", () => {
     expect(mocks.reload).not.toHaveBeenCalled();
   });
 
+  it("lets the superuser correct a recognised number and closes the form after saving", async () => {
+    const user = userEvent.setup();
+    mocks.page = page([session({ segments: [segment({ can_identify: true })] })]);
+    mocks.post.mockResolvedValue({ data: segment({ number: "28055549", number_source: "manual" }) });
+    renderDay();
+    await user.click(screen.getByRole("button", { name: /Вагон 28055531/ }));
+
+    await user.click(screen.getByRole("button", { name: "Изменить номер отрезка #101" }));
+    const input = screen.getByRole("textbox", { name: "Новый номер отрезка #101" });
+    expect(input).toHaveValue("28055531");
+    await user.clear(input);
+    await user.type(input, "28055549");
+    await user.click(screen.getByRole("button", { name: "Сохранить номер" }));
+
+    expect(mocks.post).toHaveBeenCalledWith("/cameras/shipping-segments/101/identify/", { number: "28055549" });
+    expect(mocks.reload).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("closes the number correction on Esc and «Отмена» without saving", async () => {
+    const user = userEvent.setup();
+    mocks.page = page([session({ segments: [segment({ can_identify: true })] })]);
+    renderDay();
+    await user.click(screen.getByRole("button", { name: /Вагон 28055531/ }));
+
+    await user.click(screen.getByRole("button", { name: "Изменить номер отрезка #101" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Изменить номер отрезка #101" }));
+    await user.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a number correction without the right", async () => {
+    const user = userEvent.setup();
+    mocks.page = page([session({ segments: [segment({ can_identify: false })] })]);
+    renderDay();
+    await user.click(screen.getByRole("button", { name: /Вагон 28055531/ }));
+
+    expect(screen.getByRole("article", { name: "Отрезок 101" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Изменить номер/ })).toBeNull();
+  });
+
   it("keeps unidentified segments read-only without the load permission", () => {
     mocks.page = page([
       session({

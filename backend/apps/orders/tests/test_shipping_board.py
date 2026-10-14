@@ -233,13 +233,14 @@ def test_dashboard_operational_returns_authoritative_data(
         event_type="shipment",
         message="Отгружено",
         order=shipped,
-        payload={"bags_loaded": 12},
+        payload={"bags_loaded": 12, "bag_estimate_kg": "600.00"},
     )
     by_rail = _order(client, "shipped", timezone.now(), transport_type="train")
     EventLog.objects.create(
         event_type="shipment",
         message="Отгружено",
         order=by_rail,
+        # Старый снимок без веса — 0 кг, а не ошибка.
         payload={"bags_loaded": 1300},
     )
     today = timezone.localdate().isoformat()
@@ -250,9 +251,9 @@ def test_dashboard_operational_returns_authoritative_data(
 
     assert response.status_code == 200
     assert [item["id"] for item in response.data["queue"]] == [loading.id]
-    # Фуры и вагоны отдельно: на ТВ «Главной» видно, куда ушли мешки.
+    # Фуры и вагоны отдельно: на ТВ «Главной» видно, куда ушли мешки; вес — по фасовке.
     assert response.data["days"] == [
-        {"date": today, "bags": 1312, "orders": 2, "truck_bags": 12, "train_bags": 1300}
+        {"date": today, "bags": 1312, "orders": 2, "truck_bags": 12, "train_bags": 1300, "kg": "600.00"}
     ]
 
 

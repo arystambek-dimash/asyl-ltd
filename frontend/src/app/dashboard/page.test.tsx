@@ -29,6 +29,7 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     shippedTodayOrders: 9,
     truckBagsToday: 620,
     trainBagsToday: 277,
+    shippedTodayKg: 44_850,
     shippedYesterday: 2134,
     receivedToday: 8_240_000,
     receivedTodayCount: 8,
@@ -41,6 +42,7 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     overdueOthers: [],
     overdueClients: 2,
     stockTotal: 13_078,
+    stockKg: 653_900,
     stockRows,
     stockWarehouse: "Мельница",
     warehouses: [
@@ -54,16 +56,32 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     intake: {
       day: "2026-10-13",
       total: 1109,
-      all_time_total: 166_947,
+      kg: "42500.00",
       analytics_sync: { status: "synced", available: metrics.syncAvailable, detail: "Журнал камер отстал" },
       cameras: [
         {
           camera: "cam3",
           name: "Робот Кука",
           total: 1109,
-          colors: [
-            { color: "red", total: 600, percent: 54 },
-            { color: "blue", total: 509, percent: 46 },
+          items: [
+            {
+              product: 7,
+              name: "Первый сорт DIKHAN BABA NAN 50кг",
+              weight_kg: "50.00",
+              color_label: "Красный",
+              photo_url: "/api/product-photos/7/?token=t",
+              bags: 600,
+            },
+            {
+              product: 8,
+              name: "Высший сорт KOROL 25кг",
+              weight_kg: "25.00",
+              color_label: "Синий",
+              photo_url: null,
+              bags: 500,
+            },
+            { product: null, color: "unknown", bags: 7 },
+            { product: null, color: "white", bags: 2 },
           ],
         },
       ],
@@ -102,14 +120,22 @@ it("ведёт из плитки долга сразу на долги в кас
   expect(await screen.findByRole("link", { name: /Долг клиентов/ })).toHaveAttribute("href", "/accounting?view=debts");
 });
 
-it("показывает приход с камер 24/7: всего, по камерам и цветам", async () => {
+it("показывает приход с камер 24/7 по товарам: фото или «?», мешки и тонны", async () => {
   render(<DashboardPage />);
 
   const panel = (await screen.findByRole("heading", { name: "Приход сегодня" })).closest("section")!;
   expect(within(panel).getAllByText("1 109")).toHaveLength(2);
+  expect(within(panel).getByText("· 42,5 т")).toBeInTheDocument();
   expect(within(panel).getByText("Робот Кука")).toBeInTheDocument();
-  expect(within(panel).getByText("Красный 600")).toBeInTheDocument();
-  expect(within(panel).getByText("Синий 509")).toBeInTheDocument();
+  // Названия товаров из «Куда приходовать», а не цвета мешков.
+  expect(within(panel).queryByText(/Красный/)).not.toBeInTheDocument();
+  expect(within(panel).getByRole("img", { name: "DIKHAN BABA NAN · Первый сорт · 50 кг" })).toBeInTheDocument();
+  expect(within(panel).getByText("KOROL · Высший сорт · 25 кг")).toBeInTheDocument();
+  expect(within(panel).getByText("500")).toBeInTheDocument();
+  expect(within(panel).getByText("Не определён")).toBeInTheDocument();
+  expect(within(panel).getByText("Белый — товар не выбран")).toBeInTheDocument();
+  // Фото есть только у одного товара — остальные строки с заглушкой «?».
+  expect(within(panel).getAllByRole("img")).toHaveLength(1);
 });
 
 it("не выдаёт ноль за приход, когда журнал камер не догнан", async () => {
@@ -144,6 +170,8 @@ it("показывает отгрузку дня по фурам и вагона
 
   expect(await screen.findByText("фуры 620 · вагоны 277")).toBeInTheDocument();
   expect(screen.getByText("вчера 2 134")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /Отгружено сегодня/ })).toHaveTextContent("· 44,85 т");
+  expect(screen.getByRole("link", { name: /На складе/ })).toHaveTextContent("· 653,9 т");
 });
 
 it("показывает остаток одного склада, минус и сколько позиций не влезло", async () => {

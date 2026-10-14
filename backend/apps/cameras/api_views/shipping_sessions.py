@@ -50,7 +50,8 @@ def _visible_segments(user):
 
 
 def _can_identify(user, row):
-    return row.identity_status == "unidentified" and _can_manage(user)
+    """Суперпользователь ставит номер неопознанному отрезку или исправляет опознанный."""
+    return row.identity_status in {"unidentified", "identified"} and _can_manage(user)
 
 
 def segment_payload(row, user, *, total_bags, order_id=None):
@@ -157,14 +158,14 @@ class ShippingSegmentIdentifyView(PermAPIViewMixin, APIView):
         with transaction.atomic():
             row = get_object_or_404(_visible_segments(request.user), pk=pk)
             if not _can_identify(request.user, row):
-                raise PermissionDenied("Ручная привязка доступна только для неопознанного отрезка")
+                raise PermissionDenied("Номер ещё распознаётся. Изменить его можно после распознавания")
             # Core locks the lane before the segment, matching projection/AI.
             try:
                 shipping_segments.apply_identity(row.pk, number, "manual", user=request.user)
             except ValueError as exc:
                 message = "Проверьте номер машины или восьмизначный номер вагона"
-                if str(exc) == "shipping_identity_already_resolved":
-                    message = "Номер уже определён. Обновите список сессий"
+                if str(exc) == "shipping_identity_in_progress":
+                    message = "Номер ещё распознаётся. Обновите список сессий"
                 raise ValidationError({"number": message}) from exc
             row.refresh_from_db()
         return Response(_segment_detail(row, request.user))

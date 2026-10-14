@@ -9,6 +9,7 @@ from .api_views.operations import (
     AlwaysOnCameraSettingsView,
     AlwaysOnCloseTimeView,
     AlwaysOnDetectionsView,
+    AlwaysOnIntakeView,
     AlwaysOnProductionView,
     AlwaysOnStockRetryView,
     AlwaysOnUnknownColorView,
@@ -70,6 +71,7 @@ urlpatterns = [
         WagonNumberCameraSettingsView.as_view(),
     ),
     path("cameras/always-on-analytics/", AlwaysOnAnalyticsView.as_view()),
+    path("cameras/always-on-intake/", AlwaysOnIntakeView.as_view()),
     path("cameras/always-on-production/", AlwaysOnProductionView.as_view()),
     path(
         "cameras/always-on-production/batches/<int:batch_id>/retry/",

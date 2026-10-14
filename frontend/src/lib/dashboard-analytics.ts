@@ -10,6 +10,8 @@ interface DashboardShipments {
   shippedTodayOrders: number;
   truckBagsToday: number;
   trainBagsToday: number;
+  /** Вес отгруженного сегодня по фасовке, кг. */
+  shippedTodayKg: number;
   shippedYesterday: number;
 }
 
@@ -58,6 +60,7 @@ export function todayShipments(days: readonly OperationalDay[], today: string, y
     shippedTodayOrders: finiteMoney(current?.orders ?? 0),
     truckBagsToday: finiteMoney(current?.truck_bags ?? 0),
     trainBagsToday: finiteMoney(current?.train_bags ?? 0),
+    shippedTodayKg: finiteMoney(current?.kg ?? 0),
     shippedYesterday: finiteMoney(previous?.bags ?? 0),
   };
 }

@@ -14,6 +14,7 @@ from .. import (
     ai,
     analytics,
     continuous,
+    intake,
     production,
     production_queries,
     production_runs,
@@ -329,6 +330,15 @@ class AlwaysOnAnalyticsView(PermAPIViewMixin, APIView):
 
     def put(self, request):
         return Response(_edit_day_colors(request, ANALYTICS_SCOPE_AI247))
+
+
+class AlwaysOnIntakeView(PermAPIViewMixin, APIView):
+    """«Приход сегодня» на «Главной»: мешки камер AI 24/7 по товарам."""
+
+    required_perms: ClassVar[dict] = {"get": MONOBLOCK_VIEW}
+
+    def get(self, request):
+        return Response(intake.today_intake_payload())
 
 
 class AlwaysOnProductionView(PermAPIViewMixin, APIView):

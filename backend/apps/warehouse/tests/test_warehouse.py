@@ -372,6 +372,7 @@ def test_stock_by_product_counts_one_warehouse_and_keeps_negative(auth_client, u
     assert response.status_code == 200
     assert response.data["warehouse"] == {"id": main.pk, "name": main.name}
     assert response.data["total_bags"] == 328
+    assert response.data["total_kg"] == "16400.00"  # 328 меш. × 50 кг, минус вычитается
     assert [(row["product"], row["bags"]) for row in response.data["products"]] == [
         (flour.pk, 300), (bran.pk, 40), (short.pk, -12),
     ]

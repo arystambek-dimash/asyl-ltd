@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ImagePlus, Package, Trash2 } from "lucide-react";
+import { ImagePlus, Package, Trash2, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFileUrl } from "@/lib/api-file-url";
 import { PRODUCT_PHOTO_ACCEPT } from "@/lib/product-photo";
@@ -12,11 +12,14 @@ export function ProductPhoto({
   alt,
   className,
   iconClassName = "size-6",
+  fallbackIcon: FallbackIcon = Package,
 }: {
   url: string | null | undefined;
   alt: string;
   className?: string;
   iconClassName?: string;
+  /** Значок заглушки без фото: по умолчанию коробка, на «Главной» — «?». */
+  fallbackIcon?: LucideIcon;
 }) {
   const src = apiFileUrl(url);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
@@ -29,7 +32,7 @@ export function ProductPhoto({
           className,
         )}
       >
-        <Package className={iconClassName} />
+        <FallbackIcon className={iconClassName} />
       </div>
     );
   }

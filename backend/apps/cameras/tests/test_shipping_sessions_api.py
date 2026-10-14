@@ -123,10 +123,37 @@ def test_private_photo_rechecks_user_access(auth_client, operator, api_client, m
     photo.close()
 
 
-def test_number_input_cannot_overwrite_already_identified_segment(auth_client, admin_user):
-    row = segment(status="identified")
-    response = auth_client(admin_user).post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json")
+def test_superuser_corrects_a_recognised_number_without_changing_counts(auth_client, admin_user):
+    row = segment(status="identified", started_at=NOON)
+    row.number, row.number_source = "111AAA02", "model"
+    row.save(update_fields=["number", "number_source"])
+    ShippingLoadingSession.objects.filter(pk=row.session_id).update(number="111AAA02")
+    client = auth_client(admin_user)
+    assert client.get(BASE, DAY).data["results"][0]["segments"][0]["can_identify"] is True
+
+    response = client.post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "456bbb02"}, format="json")
+
+    assert response.status_code == 200
+    row.refresh_from_db()
+    assert (row.number, row.number_source) == ("456BBB02", "manual")
+    assert row.session.number == "456BBB02"
+    assert row.total_bags == row.session.total_bags == 3
+    event = EventLog.objects.get(event_type="shipping_loading_identified", user=admin_user)
+    assert event.message == "Номер транспорта исправлен вручную"
+    assert event.payload["previous"]["number"] == "111AAA02"
+
+
+@pytest.mark.parametrize("status", ["pending", "processing"])
+def test_number_cannot_be_set_while_it_is_being_recognised(auth_client, admin_user, status):
+    row = segment(status=status, started_at=NOON)
+    client = auth_client(admin_user)
+    assert client.get(BASE, DAY).data["results"][0]["segments"][0]["can_identify"] is False
+
+    response = client.post(f"/api/cameras/shipping-segments/{row.pk}/identify/", {"number": "123ABC02"}, format="json")
+
     assert response.status_code == 403
+    row.refresh_from_db()
+    assert row.number == ""
 
 
 def test_manual_number_is_audited_without_changing_counts(auth_client, admin_user):

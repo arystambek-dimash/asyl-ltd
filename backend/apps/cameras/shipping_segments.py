@@ -260,8 +260,10 @@ def apply_identity(segment_id, number, source, user=None, *, expected_lease=None
         return None
     if source not in {"model", "gpt", "manual"}:
         raise ValueError("invalid_identity_source")
-    if source == "manual" and segment.identity_status != "unidentified":
-        raise ValueError("shipping_identity_already_resolved")
+    # Вручную номер ставят неопознанному отрезку или исправляют опознанный.
+    # Пока идёт распознавание, его результат ещё не записан — не спорим с ним.
+    if source == "manual" and segment.identity_status not in {"unidentified", "identified"}:
+        raise ValueError("shipping_identity_in_progress")
     model = recognition_model or segment.recognition_model
     if not model and source == "manual":
         # The two validated formats do not overlap: truck plates contain
@@ -270,6 +272,8 @@ def apply_identity(segment_id, number, source, user=None, *, expected_lease=None
     normalized = ai.valid_transport_number(number, model)
     if not normalized:
         raise ValueError("invalid_transport_number")
+    if segment.identity_status == "identified" and (segment.number, segment.recognition_model) == (normalized, model):
+        return segment.session
     previous = {"number": segment.number, "recognition_model": segment.recognition_model, "session_id": segment.session_id}
     segment.number, segment.number_source = normalized, source
     segment.recognition_model, segment.identity_status = model, "identified"
@@ -277,7 +281,8 @@ def apply_identity(segment_id, number, source, user=None, *, expected_lease=None
     segment.save(update_fields=["number", "number_source", "recognition_model", "identity_status", "identity_lease_until", "identity_error"])
     _regroup_locked(segment.camera)
     segment.refresh_from_db()
-    log_event("shipping_loading_identified", "Транспорт погрузки распознан", user=user, payload={
+    message = "Номер транспорта исправлен вручную" if previous["number"] else "Транспорт погрузки распознан"
+    log_event("shipping_loading_identified", message, user=user, payload={
         "segment_id": segment.pk, "session_id": segment.session_id, "camera": segment.camera,
         "number": normalized, "recognition_model": model, "source": source, "previous": previous,
     })

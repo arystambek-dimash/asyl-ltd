@@ -454,8 +454,32 @@ export interface DashboardOperationalSummary {
     orders: number;
     truck_bags: number;
     train_bags: number;
+    /** Вес отгруженного по фасовке, кг (десятичная строка). */
+    kg: string;
   }[];
 }
+
+/** GET /cameras/always-on-intake/ — «Приход сегодня»: мешки камер AI 24/7 за день по товарам. */
+export interface DashboardIntake {
+  day: string;
+  analytics_sync?: AnalyticsSyncState;
+  total: number;
+  /** Вес мешков с товаром по фасовке, кг; мешки без товара не взвешены. */
+  kg: string;
+  cameras: { camera: string; name: string; total: number; items: DashboardIntakeItem[] }[];
+}
+
+/** Товар цвета из «Куда приходовать»; цвет без товара — только цвет мешка. */
+export type DashboardIntakeItem =
+  | {
+      product: number;
+      name: string;
+      weight_kg: string;
+      color_label: string;
+      photo_url: string | null;
+      bags: number;
+    }
+  | { product: null; color: string; bags: number };
 
 /** GET/PUT /dashboard/settings/ — какие отделы и склады показывает «Главная»; пусто — всё. */
 export interface DashboardSettings {
@@ -468,6 +492,8 @@ export interface DashboardSettings {
 export interface StockByProduct {
   warehouse: { id: number; name: string };
   total_bags: number;
+  /** Вес остатка по фасовке, кг (десятичная строка). */
+  total_kg: string;
   products: { product: number; name: string; weight_kg: string; color_label: string; bags: number }[];
 }
 

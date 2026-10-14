@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Iterable, Mapping
+from decimal import Decimal
 
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
@@ -181,6 +182,10 @@ def stock_by_product(warehouse) -> dict:
     return {
         "warehouse": {"id": warehouse.pk, "name": warehouse.name},
         "total_bags": sum(totals.values()),
+        # Вес по фасовке — «На складе … т» на «Главной».
+        "total_kg": str(
+            sum((products[pid].weight_kg * bags for pid, bags in totals.items()), Decimal(0))
+        ),
         "products": rows,
     }
 

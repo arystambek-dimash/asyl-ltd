@@ -5,13 +5,14 @@ import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
 import { useLocalDay } from "@/lib/use-local-day";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
+import { finiteMoney } from "@/lib/currency-map";
 import { adaptDashboardDebt, todayIncome, todayShipments } from "@/lib/dashboard-analytics";
 import { productParts, productTitle, twinKey, twinKeys } from "@/lib/product-parts";
 import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
 import { shiftIsoDate } from "@/lib/utils";
 import { pickWarehouse } from "@/lib/warehouses";
 import type {
-  AlwaysOnDailyAnalytics,
+  DashboardIntake,
   DashboardOperationalSummary,
   DashboardSettings,
   ReportSummary,
@@ -96,7 +97,7 @@ export function useDashboardMetrics() {
     data: intake,
     error: intakeError,
     reload: reloadIntake,
-  } = useApi<AlwaysOnDailyAnalytics>(canIntake ? "/cameras/always-on-analytics/" : null);
+  } = useApi<DashboardIntake>(canIntake ? "/cameras/always-on-intake/" : null);
   useVisiblePolling(reloadIntake, INTAKE_POLL_MS, canIntake);
 
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
@@ -145,6 +146,7 @@ export function useDashboardMetrics() {
     ...todayIncome(report),
     ...debt,
     stockTotal: stock?.total_bags ?? 0,
+    stockKg: finiteMoney(stock?.total_kg ?? 0),
     stockRows,
     stockWarehouse: stock?.warehouse.name ?? "",
     warehouses: shownWarehouses.filter((item) => item.is_active),
