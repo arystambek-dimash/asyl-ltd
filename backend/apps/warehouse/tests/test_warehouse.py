@@ -379,28 +379,34 @@ def test_stock_api_filters_and_writes_exact_warehouse(auth_client, boss, make_pr
     ) == {other.pk}
 
 
-def test_stock_by_product_sums_warehouses_and_keeps_negative(auth_client, user_with_perms, make_product):
-    """«Главная»: товар — одной строкой по всем складам, нули скрыты, минус виден."""
-    second = Warehouse.objects.create(code="second", name="Второй")
+def test_stock_by_product_counts_one_warehouse_and_keeps_negative(auth_client, user_with_perms, make_product):
+    """«Главная»: склады не складываются; без ?warehouse= — основной. Нули скрыты, минус виден."""
+    second = Warehouse.objects.create(code="second", name="Мельница 2")
     main = get_default_warehouse()
     flour, bran, empty, short = (make_product(name=name) for name in ("Мука", "Отруби", "Пусто", "Минус"))
     StockItem.objects.create(warehouse=main, product=flour, bags=300)
-    StockItem.objects.create(warehouse=second, product=flour, bags=200)
+    StockItem.objects.create(warehouse=second, product=flour, bags=9_895_388)
     StockItem.objects.create(warehouse=main, product=bran, bags=40)
     StockItem.objects.create(warehouse=main, product=empty, bags=0)
-    StockItem.objects.create(warehouse=second, product=short, bags=-12)
-    viewer = user_with_perms("stock-viewer", codes=["warehouse.view"])
+    StockItem.objects.create(warehouse=main, product=short, bags=-12)
+    api = auth_client(user_with_perms("stock-viewer", codes=["warehouse.view"]))
 
-    response = auth_client(viewer).get("/api/stock/by-product/")
+    response = api.get("/api/stock/by-product/")
 
     assert response.status_code == 200
-    assert response.data["total_bags"] == 528
+    assert response.data["warehouse"] == {"id": main.pk, "name": main.name}
+    assert response.data["total_bags"] == 328
     assert [(row["product"], row["bags"]) for row in response.data["products"]] == [
-        (flour.pk, 500), (bran.pk, 40), (short.pk, -12),
+        (flour.pk, 300), (bran.pk, 40), (short.pk, -12),
     ]
     assert response.data["products"][0] == {
-        "product": flour.pk, "name": "Мука", "weight_kg": "50.00", "color_label": "Красный", "bags": 500,
+        "product": flour.pk, "name": "Мука", "weight_kg": "50.00", "color_label": "Красный", "bags": 300,
     }
+
+    other = api.get(f"/api/stock/by-product/?warehouse={second.pk}")
+
+    assert other.data["warehouse"]["name"] == "Мельница 2"
+    assert other.data["total_bags"] == 9_895_388
 
 
 def test_stock_by_product_needs_warehouse_view(auth_client, user_with_perms):

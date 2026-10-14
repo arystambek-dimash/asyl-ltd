@@ -43,7 +43,7 @@ function tiles(m: DashboardMetrics): Tile[] {
       value: bagsValue(m.stockTotal),
       exact: formatCount(m.stockTotal),
       unit: "меш.",
-      notes: [`${positions} ${pluralRu(positions, ["позиция", "позиции", "позиций"])}`],
+      notes: [`${m.stockWarehouse} · ${positions} ${pluralRu(positions, ["позиция", "позиции", "позиций"])}`],
       href: "/warehouse",
     });
   }

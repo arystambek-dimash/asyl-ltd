@@ -2,7 +2,6 @@ import uuid
 from collections.abc import Iterable, Mapping
 
 from django.db import transaction
-from django.db.models import Sum
 from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
@@ -153,16 +152,16 @@ def stock_balances(warehouse, product_ids) -> dict[int, int]:
     return balances
 
 
-def stock_by_product() -> dict:
-    """Остаток мешков по товарам, сложенный по всем складам, — для «Главной».
+def stock_by_product(warehouse) -> dict:
+    """Остаток мешков по товарам одного склада — для «Главной».
 
+    Склады не складываются: у «Мельницы» и «Мельницы 2» свои остатки.
     Товар с нулём не попадает; минус (ошибка учёта) остаётся. Крупные сверху.
     """
     totals = dict(
-        StockItem.objects.values("product_id")
-        .annotate(total=Sum("bags"))
-        .exclude(total=0)
-        .values_list("product_id", "total")
+        StockItem.objects.filter(warehouse=warehouse)
+        .exclude(bags=0)
+        .values_list("product_id", "bags")
     )
     products = Product.objects.in_bulk(totals)
     # Подпись собирает фронт тем же правилом, что и «Склад» (lib/product-parts.ts).
@@ -179,7 +178,11 @@ def stock_by_product() -> dict:
         ),
         key=lambda row: (-row["bags"], row["name"]),
     )
-    return {"total_bags": sum(totals.values()), "products": rows}
+    return {
+        "warehouse": {"id": warehouse.pk, "name": warehouse.name},
+        "total_bags": sum(totals.values()),
+        "products": rows,
+    }
 
 
 def ensure_products_available(

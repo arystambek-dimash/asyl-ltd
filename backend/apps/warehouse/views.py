@@ -63,8 +63,9 @@ class StockViewSet(
 
     @action(detail=False, methods=["get"], url_path="by-product")
     def by_product(self, request):
-        """«Главная»: остаток по товарам, сложенный по складам."""
-        return Response(stock_by_product())
+        """«Главная»: остаток по товарам склада ``?warehouse=``; без него — основного."""
+        warehouse = resolve_warehouse(request.query_params.get("warehouse") or None, require_active=False)
+        return Response(stock_by_product(warehouse))
 
     @action(detail=False, methods=["post"])
     def adjust(self, request):

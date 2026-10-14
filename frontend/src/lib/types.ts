@@ -459,8 +459,9 @@ export interface DashboardOperationalSummary {
   }[];
 }
 
-/** GET /stock/by-product/ — остаток по товарам, сложенный по всем складам. */
+/** GET /stock/by-product/?warehouse= — остаток по товарам одного склада (без параметра — основного). */
 export interface StockByProduct {
+  warehouse: { id: number; name: string };
   total_bags: number;
   products: { product: number; name: string; weight_kg: string; color_label: string; bags: number }[];
 }

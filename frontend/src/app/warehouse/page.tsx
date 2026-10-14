@@ -48,6 +48,7 @@ import {
   X,
 } from "lucide-react";
 import type { StockItem, Product, Warehouse } from "@/lib/types";
+import { pickWarehouse } from "@/lib/warehouses";
 import { FilterChips, ProductName } from "@/components/catalog/product-name";
 import {
   EMPTY_PRODUCT_DRAFT,
@@ -97,10 +98,10 @@ function WarehousePageInner() {
     reload: reloadWarehouses,
   } = useApi<Warehouse[]>("/warehouses/");
   const activeWarehouses = useMemo(() => (warehouses ?? []).filter((item) => item.is_active), [warehouses]);
-  const selectedWarehouse = useMemo(() => {
-    const requested = activeWarehouses.find((item) => String(item.id) === warehouseParam);
-    return requested ?? activeWarehouses.find((item) => item.is_default) ?? activeWarehouses[0] ?? null;
-  }, [activeWarehouses, warehouseParam]);
+  const selectedWarehouse = useMemo(
+    () => pickWarehouse(warehouses ?? [], warehouseParam),
+    [warehouses, warehouseParam],
+  );
   const selectedWarehouseId = selectedWarehouse?.id ?? null;
   const stockUrl = selectedWarehouse ? `/stock/?warehouse=${selectedWarehouse.id}` : null;
   const { data: stock, loading: stockLoading, error: loadError, reload } = useApi<StockItem[]>(stockUrl);
@@ -252,7 +253,7 @@ function WarehousePageInner() {
         void reloadProducts();
       }
       if (mode === "transfer") {
-        if (!destination) return;
+        if (!destination || !selectedWarehouse) return;
         await api.post("/stock/transfer/", {
           from_warehouse: selectedWarehouse.id,
           to_warehouse: destination.id,

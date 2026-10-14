@@ -83,7 +83,7 @@ export function TodayBoard({ m, size, actions }: { m: DashboardMetrics; size: Bo
         <h2 className={cn("font-semibold tracking-tight", tv ? "text-[2.4vw] leading-none" : "text-2xl sm:text-3xl")}>
           {dayTitle(m.today)}
         </h2>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <BoardStatus m={m} size={size} />
           {actions}
         </div>

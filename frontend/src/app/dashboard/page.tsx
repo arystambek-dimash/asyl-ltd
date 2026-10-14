@@ -7,6 +7,7 @@ import { TodayBoard } from "@/components/dashboard/today-board";
 import { TvScreen } from "@/components/dashboard/tv-screen";
 import { AppShell } from "@/components/layout/app-shell";
 import { RequirePerm } from "@/components/require-perm";
+import { Select } from "@/components/ui/select";
 import { Tabs } from "@/components/ui/tabs";
 import { can } from "@/lib/can";
 import { forgetStoredChoice, readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
@@ -68,6 +69,20 @@ function AnalyticsView({ userId }: { userId: number }) {
         size="page"
         actions={
           <>
+            {m.warehouses.length > 1 && m.warehouseId !== null && (
+              <Select
+                aria-label="Склад"
+                className="h-11 w-auto rounded-xl"
+                value={String(m.warehouseId)}
+                onChange={(event) => m.chooseWarehouse(Number(event.target.value))}
+              >
+                {m.warehouses.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}
+                  </option>
+                ))}
+              </Select>
+            )}
             <button
               type="button"
               onClick={openTv}

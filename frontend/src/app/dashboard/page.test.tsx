@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import DashboardPage from "./page";
 
 const auth = vi.hoisted(() => ({ permissions: ["dashboard.view"] }));
+const metrics = vi.hoisted(() => ({ chooseWarehouse: vi.fn() }));
 vi.mock("@/store/auth", () => ({
   useAuth: () => ({ me: { id: 1, permissions: auth.permissions }, loading: false }),
 }));
@@ -37,6 +38,13 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     overdueClients: 2,
     stockTotal: 13_078,
     stockRows,
+    stockWarehouse: "Мельница",
+    warehouses: [
+      { id: 1, code: "main", name: "Мельница", address: "", is_active: true, is_default: true },
+      { id: 2, code: "second", name: "Мельница 2", address: "", is_active: true, is_default: false },
+    ],
+    warehouseId: 1,
+    chooseWarehouse: metrics.chooseWarehouse,
     attention: [
       { key: "overdue", count: 2 },
       { key: "payments", count: 3 },
@@ -82,10 +90,10 @@ it("показывает отгрузку дня по фурам и вагона
   expect(screen.getByText("вчера 2 134")).toBeInTheDocument();
 });
 
-it("показывает остаток по товарам, минус и сколько позиций не влезло", async () => {
+it("показывает остаток одного склада, минус и сколько позиций не влезло", async () => {
   render(<DashboardPage />);
 
-  const panel = (await screen.findByRole("heading", { name: "Остаток по товарам" })).closest("section")!;
+  const panel = (await screen.findByRole("heading", { name: "Остаток · Мельница" })).closest("section")!;
   expect(within(panel).getByText("Мука 1")).toBeInTheDocument();
   expect(within(panel).queryByText("Мука 13")).not.toBeInTheDocument();
   expect(within(panel).getByRole("link", { name: "ещё 2 позиции · 868 меш." })).toHaveAttribute("href", "/warehouse");
@@ -112,4 +120,15 @@ it("телевизор после перезагрузки сразу откры
   render(<DashboardPage />);
 
   expect(await screen.findByRole("dialog", { name: "Режим ТВ" })).toBeInTheDocument();
+});
+
+it("переключает склад сводки", async () => {
+  render(<DashboardPage />);
+
+  const select = await screen.findByRole("combobox", { name: "Склад" });
+  expect(select).toHaveValue("1");
+  fireEvent.change(select, { target: { value: "2" } });
+
+  expect(metrics.chooseWarehouse).toHaveBeenCalledWith(2);
+  expect(screen.getByText("Мельница · 14 позиций")).toBeInTheDocument();
 });

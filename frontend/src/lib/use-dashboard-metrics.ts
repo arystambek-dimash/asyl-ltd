@@ -7,14 +7,18 @@ import { useLocalDay } from "@/lib/use-local-day";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 import { adaptDashboardDebt, todayIncome, todayShipments } from "@/lib/dashboard-analytics";
 import { productParts, productTitle, twinKey, twinKeys } from "@/lib/product-parts";
+import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
 import { shiftIsoDate } from "@/lib/utils";
-import type { DashboardOperationalSummary, ReportSummary, StockByProduct } from "@/lib/types";
+import { pickWarehouse } from "@/lib/warehouses";
+import type { DashboardOperationalSummary, ReportSummary, StockByProduct, Warehouse } from "@/lib/types";
 
 export type DashboardAttentionKey = "overdue" | "payments" | "orders" | "stock";
 type DashboardAttentionItem = { key: DashboardAttentionKey; count: number };
 
 /** Главную держат открытой на ТВ: данные обновляются сами, без кликов. */
 const DASHBOARD_POLL_MS = 30_000;
+// Склад сводки помнит браузер: ТВ на «Мельнице» и ТВ на Нью-Сити показывают каждый свой.
+const WAREHOUSE_STORAGE_KEY = "dashboard:warehouse";
 
 /** Сводка дня для «Главной» и режима ТВ. Вызывать один раз на странице. */
 export function useDashboardMetrics() {
@@ -35,10 +39,27 @@ export function useDashboardMetrics() {
     canOrders ? `/orders/dashboard-operational/?date_from=${yesterday}&date_to=${today}` : null,
   );
   const {
+    data: warehouseList,
+    error: warehousesErr,
+    reload: reloadWarehouses,
+  } = useApi<Warehouse[]>(canStock ? "/warehouses/" : null);
+  const warehouseKey = userChoiceKey(WAREHOUSE_STORAGE_KEY, me?.id);
+  const [warehouseChoice, setWarehouseChoice] = useState<string | null>(null);
+  useEffect(() => {
+    setWarehouseChoice(readStoredChoice(warehouseKey));
+  }, [warehouseKey]);
+  const warehouses = useMemo(() => (warehouseList ?? []).filter((item) => item.is_active), [warehouseList]);
+  const warehouse = pickWarehouse(warehouseList ?? [], warehouseChoice);
+  const chooseWarehouse = (id: number) => {
+    setWarehouseChoice(String(id));
+    storeChoice(warehouseKey, String(id));
+  };
+  // Склады не складываются: остаток всегда одного склада, по умолчанию — основного.
+  const {
     data: stock,
     error: stockErr,
     reload: reloadStock,
-  } = useApi<StockByProduct>(canStock ? "/stock/by-product/" : null);
+  } = useApi<StockByProduct>(canStock && warehouse ? `/stock/by-product/?warehouse=${warehouse.id}` : null);
   const {
     data: report,
     error: reportErr,
@@ -50,14 +71,15 @@ export function useDashboardMetrics() {
   const loading = (canOrders && operational == null) || (canStock && stock == null) || (canFinance && report == null);
 
   // Ошибка видна всегда; если данные уже есть, сводка помечается устаревшей.
-  const loadError = (canOrders && operationalErr) || (canStock && stockErr) || (canFinance && reportErr) || "";
+  const loadError =
+    (canOrders && operationalErr) || (canStock && (warehousesErr || stockErr)) || (canFinance && reportErr) || "";
 
   useEffect(() => {
     if (loading || loadError) return;
     if (!canOrders && !canStock && !canFinance) return;
     setLastUpdatedAt(new Date());
   }, [canFinance, canOrders, canStock, loadError, loading, operational, report, stock]);
-  const reload = () => Promise.all([reloadOperational(), reloadStock(), reloadReport()]);
+  const reload = () => Promise.all([reloadOperational(), reloadWarehouses(), reloadStock(), reloadReport()]);
   useVisiblePolling(reload, DASHBOARD_POLL_MS, canOrders || canStock || canFinance);
 
   const stockRows = useMemo(() => {
@@ -93,6 +115,10 @@ export function useDashboardMetrics() {
     ...debt,
     stockTotal: stock?.total_bags ?? 0,
     stockRows,
+    stockWarehouse: stock?.warehouse.name ?? "",
+    warehouses,
+    warehouseId: warehouse?.id ?? null,
+    chooseWarehouse,
     attention,
     attentionCount: attention.reduce((sum, item) => sum + item.count, 0),
     loading,

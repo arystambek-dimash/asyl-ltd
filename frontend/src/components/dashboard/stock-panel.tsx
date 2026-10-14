@@ -6,7 +6,7 @@ import { cn, formatCount, pluralRu } from "@/lib/utils";
 /** Сколько строк влезает в панель: на ТВ шрифт крупнее, строк меньше. */
 const VISIBLE_ROWS: Record<BoardSize, number> = { page: 12, tv: 10 };
 
-/** Остаток по товарам, сложенный по складам. Минус — ошибка учёта, красным. */
+/** Остаток по товарам одного склада. Минус — ошибка учёта, красным. */
 export function StockPanel({ m, size }: { m: DashboardMetrics; size: BoardSize }) {
   const s = BOARD_SIZE[size];
   const shown = m.stockRows.slice(0, VISIBLE_ROWS[size]);
@@ -17,7 +17,7 @@ export function StockPanel({ m, size }: { m: DashboardMetrics; size: BoardSize }
   return (
     <section className={cn("flex min-h-0 min-w-0 flex-col rounded-[18px] border bg-[var(--card)] shadow-card", s.pad)}>
       <div className="flex items-baseline justify-between gap-3 border-b pb-2">
-        <h3 className={s.title}>Остаток по товарам</h3>
+        <h3 className={cn(s.title, "min-w-0 truncate")}>Остаток · {m.stockWarehouse}</h3>
         <span className={cn(s.note, "text-[var(--muted-foreground)]")}>мешков</span>
       </div>
       {shown.length === 0 ? (
