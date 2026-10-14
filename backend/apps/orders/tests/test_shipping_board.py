@@ -250,14 +250,28 @@ def test_dashboard_operational_returns_authoritative_data(
 
     assert response.status_code == 200
     assert [item["id"] for item in response.data["queue"]] == [loading.id]
-    assert response.data["attention"] == {
-        "pending_payments": 0,
-        "awaiting_review": 1,
-    }
     # Фуры и вагоны отдельно: на ТВ «Главной» видно, куда ушли мешки.
     assert response.data["days"] == [
         {"date": today, "bags": 1312, "orders": 2, "truck_bags": 12, "train_bags": 1300}
     ]
+
+
+def test_dashboard_operational_shows_only_chosen_departments(auth_client, operator, get_permission):
+    """«Главная» передаёт выбранные суперпользователем отделы: ?department=код,код."""
+    from apps.sales.models import Department
+
+    operator.employee.permissions.add(get_permission("dashboard.view"))
+    for code in ("mill", "mill-2", "city"):
+        Department.objects.create(code=code, name=code)
+    client = Client.objects.create_with_user(first_name="Dashboard", last_name="Departments", phone="5")
+    mill = _order(client, "loading", department="mill")
+    mill_2 = _order(client, "arrived", department="mill-2")
+    _order(client, "loading", department="city")
+
+    response = auth_client(operator).get("/api/orders/dashboard-operational/?department=mill,mill-2")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.data["queue"]] == [mill.id, mill_2.id]
 
 
 @pytest.mark.parametrize("codes", [["orders.view"], ["dashboard.view"]])

@@ -446,10 +446,6 @@ export interface Order {
 
 export interface DashboardOperationalSummary {
   queue: Order[];
-  attention: {
-    pending_payments: number;
-    awaiting_review: number;
-  };
   days: {
     date: string;
     bags: number;
@@ -457,6 +453,13 @@ export interface DashboardOperationalSummary {
     truck_bags: number;
     train_bags: number;
   }[];
+}
+
+/** GET/PUT /dashboard/settings/ — какие отделы и склады показывает «Главная»; пусто — всё. */
+export interface DashboardSettings {
+  departments: Pick<Department, "id" | "code" | "name">[];
+  warehouses: Pick<Warehouse, "id" | "name">[];
+  updated_at: string;
 }
 
 /** GET /stock/by-product/?warehouse= — остаток по товарам одного склада (без параметра — основного). */
@@ -993,6 +996,8 @@ export interface AlwaysOnHistoryPoint {
   updated_at: string | null;
 }
 export interface AlwaysOnDailyCameraAnalytics {
+  /** Подпись камеры из настроек («Робот Кука»); без неё — код камеры. */
+  name: string;
   /** Inclusive calendar range, present when date_from/date_to were requested. */
   date_from?: string;
   date_to?: string;

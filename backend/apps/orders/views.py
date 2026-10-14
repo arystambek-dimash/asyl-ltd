@@ -73,7 +73,7 @@ from .querysets import (
 )
 from .labels import payment_method_label, payment_status_label
 from .reports import summary_report
-from .dashboard import attention_counts, loading_queue, shipped_by_day
+from .dashboard import loading_queue, shipped_by_day
 from .references import build_order_form_options
 from .statuses import (
     REVIEWABLE_STATUSES, is_financial, is_in_progress, public_status_key, statuses_in_group,
@@ -777,8 +777,8 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         url_path="dashboard-operational",
     )
     def dashboard_operational(self, request):
-        """Сводка «Главной»: очередь погрузки, что решить и отгрузки по дням."""
-        qs = self.get_queryset()
+        """Сводка «Главной»: очередь погрузки и отгрузки по дням отделов ``?department=``."""
+        qs = filter_order_scope(self.get_queryset(), request.query_params)
         date_from, date_to = parse_date_range(request.query_params)
         return Response({
             "queue": OrderSerializer(
@@ -786,7 +786,6 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 many=True,
                 context={"request": request},
             ).data,
-            "attention": attention_counts(qs, request.user),
             "days": shipped_by_day(qs, date_from, date_to),
         })
 

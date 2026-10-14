@@ -151,6 +151,7 @@ INSTALLED_APPS = [
     "apps.bots",
     "apps.client_acts",
     "apps.assistant",
+    "apps.dashboard",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

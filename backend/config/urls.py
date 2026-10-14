@@ -38,4 +38,5 @@ urlpatterns = [
     path("api/", include("apps.bots.urls")),
     path("api/", include("apps.client_acts.urls")),
     path("api/", include("apps.assistant.urls")),
+    path("api/", include("apps.dashboard.urls")),
 ]

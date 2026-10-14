@@ -3,10 +3,14 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import DashboardPage from "./page";
 
-const auth = vi.hoisted(() => ({ permissions: ["dashboard.view"] }));
-const metrics = vi.hoisted(() => ({ chooseWarehouse: vi.fn() }));
+const auth = vi.hoisted(() => ({ permissions: ["dashboard.view"], superuser: false }));
+const metrics = vi.hoisted(() => ({
+  chooseWarehouse: vi.fn(),
+  intakeError: "",
+  syncAvailable: true,
+}));
 vi.mock("@/store/auth", () => ({
-  useAuth: () => ({ me: { id: 1, permissions: auth.permissions }, loading: false }),
+  useAuth: () => ({ me: { id: 1, permissions: auth.permissions, is_superuser: auth.superuser }, loading: false }),
 }));
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("next/link", () => import("@/test-utils/next-link"));
@@ -45,11 +49,26 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     ],
     warehouseId: 1,
     chooseWarehouse: metrics.chooseWarehouse,
-    attention: [
-      { key: "overdue", count: 2 },
-      { key: "payments", count: 3 },
-    ],
-    attentionCount: 5,
+    settings: { departments: [{ id: 1, code: "main", name: "Мельница" }], warehouses: [], updated_at: "" },
+    commitSettings: vi.fn(),
+    intake: {
+      day: "2026-10-13",
+      total: 1109,
+      all_time_total: 166_947,
+      analytics_sync: { status: "synced", available: metrics.syncAvailable, detail: "Журнал камер отстал" },
+      cameras: [
+        {
+          camera: "cam3",
+          name: "Робот Кука",
+          total: 1109,
+          colors: [
+            { color: "red", total: 600, percent: 54 },
+            { color: "blue", total: 509, percent: 46 },
+          ],
+        },
+      ],
+    },
+    intakeError: metrics.intakeError,
     loading: false,
     lastUpdatedAt: null,
     loadError: "",
@@ -57,13 +76,16 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     canOrders: true,
     canStock: true,
     canFinance: true,
-    canPayments: true,
+    canIntake: true,
   }),
 }));
 
 afterEach(() => {
   localStorage.clear();
   auth.permissions = ["dashboard.view"];
+  auth.superuser = false;
+  metrics.intakeError = "";
+  metrics.syncAvailable = true;
 });
 
 it("без права на главную показывает «Нет доступа» вместо сводки", () => {
@@ -71,16 +93,50 @@ it("без права на главную показывает «Нет дост
   render(<DashboardPage />);
 
   expect(screen.getByText("Нет доступа")).toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: /Подтвердить оплаты/ })).not.toBeInTheDocument();
+  expect(screen.queryByText("Приход сегодня")).not.toBeInTheDocument();
 });
 
-it("ведёт из «Нужно решить» и плитки долга сразу на нужный экран кассы", async () => {
+it("ведёт из плитки долга сразу на долги в кассе", async () => {
   render(<DashboardPage />);
 
-  const confirm = await screen.findByRole("link", { name: /Подтвердить оплаты/ });
-  expect(confirm).toHaveAttribute("href", "/accounting?view=confirm");
-  expect(screen.getByRole("link", { name: /Просрочена оплата/ })).toHaveAttribute("href", "/accounting?view=debts");
-  expect(screen.getByRole("link", { name: /Долг клиентов/ })).toHaveAttribute("href", "/accounting?view=debts");
+  expect(await screen.findByRole("link", { name: /Долг клиентов/ })).toHaveAttribute("href", "/accounting?view=debts");
+});
+
+it("показывает приход с камер 24/7: всего, по камерам и цветам", async () => {
+  render(<DashboardPage />);
+
+  const panel = (await screen.findByRole("heading", { name: "Приход сегодня" })).closest("section")!;
+  expect(within(panel).getAllByText("1 109")).toHaveLength(2);
+  expect(within(panel).getByText("Робот Кука")).toBeInTheDocument();
+  expect(within(panel).getByText("Красный 600")).toBeInTheDocument();
+  expect(within(panel).getByText("Синий 509")).toBeInTheDocument();
+});
+
+it("не выдаёт ноль за приход, когда журнал камер не догнан", async () => {
+  metrics.syncAvailable = false;
+  render(<DashboardPage />);
+
+  const panel = (await screen.findByRole("heading", { name: "Приход сегодня" })).closest("section")!;
+  expect(within(panel).getByText("Нет данных с камер")).toBeInTheDocument();
+  expect(within(panel).getByText("Журнал камер отстал")).toBeInTheDocument();
+  expect(within(panel).queryByText("1 109")).not.toBeInTheDocument();
+});
+
+it("«Что показывать» видит только суперпользователь", async () => {
+  render(<DashboardPage />);
+  await screen.findByRole("heading", { name: "Приход сегодня" });
+  expect(screen.queryByRole("button", { name: /Что показывать/ })).not.toBeInTheDocument();
+});
+
+it("суперпользователь открывает выбор отделов и складов", async () => {
+  auth.superuser = true;
+  render(<DashboardPage />);
+
+  fireEvent.click(await screen.findByRole("button", { name: /Что показывать/ }));
+
+  expect(screen.getByRole("dialog", { name: "Что показывать" })).toBeInTheDocument();
+  expect(screen.getByText("Отделы")).toBeInTheDocument();
+  expect(screen.getByText("Склады")).toBeInTheDocument();
 });
 
 it("показывает отгрузку дня по фурам и вагонам", async () => {
@@ -105,7 +161,7 @@ it("режим ТВ: сводка поверх меню без ссылок, Esc
   fireEvent.click(await screen.findByRole("button", { name: /Режим ТВ/ }));
 
   const tv = screen.getByRole("dialog", { name: "Режим ТВ" });
-  expect(within(tv).getByText("Подтвердить оплаты")).toBeInTheDocument();
+  expect(within(tv).getByText("Приход сегодня")).toBeInTheDocument();
   expect(within(tv).queryAllByRole("link")).toEqual([]);
   expect(localStorage.getItem("dashboard:tv:1")).toBe("1");
 

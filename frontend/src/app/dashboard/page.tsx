@@ -2,7 +2,8 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import { BarChart3, Maximize2, RefreshCw, Video } from "lucide-react";
+import { BarChart3, Maximize2, RefreshCw, SlidersHorizontal, Video } from "lucide-react";
+import { DashboardSettingsModal } from "@/components/dashboard/dashboard-settings-modal";
 import { TodayBoard } from "@/components/dashboard/today-board";
 import { TvScreen } from "@/components/dashboard/tv-screen";
 import { AppShell } from "@/components/layout/app-shell";
@@ -30,10 +31,11 @@ const VIEW_STORAGE_KEY = "dashboard:view";
 // Режим ТВ помнит браузер: телевизор после перезагрузки снова показывает сводку.
 const TV_STORAGE_KEY = "dashboard:tv";
 
-function AnalyticsView({ userId }: { userId: number }) {
+function AnalyticsView({ userId, isSuperuser }: { userId: number; isSuperuser: boolean }) {
   const m = useDashboardMetrics();
   const tvKey = userChoiceKey(TV_STORAGE_KEY, userId);
   const [tv, setTv] = useState(false);
+  const [editing, setEditing] = useState(false);
   useEffect(() => {
     setTv(readStoredChoice(tvKey) === "1");
   }, [tvKey]);
@@ -50,11 +52,13 @@ function AnalyticsView({ userId }: { userId: number }) {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
   };
 
-  if (!m.canOrders && !m.canStock && !m.canFinance) {
+  if (!m.canOrders && !m.canStock && !m.canFinance && !m.canIntake) {
     return (
       <section className="flex min-h-72 flex-col items-center justify-center gap-2 rounded-[22px] border border-dashed text-center">
         <BarChart3 className="size-8 text-[var(--muted-foreground)]/40" />
-        <p className="font-semibold">Сводка появится, когда роли дадут доступ к заказам, складу или отчётам</p>
+        <p className="font-semibold">
+          Сводка появится, когда роли дадут доступ к заказам, складу, отчётам или моноблоку
+        </p>
         <p className="max-w-md text-sm text-[var(--muted-foreground)]">
           Рабочие разделы есть в меню. Если раздела не хватает, попросите администратора добавить его в роль.
         </p>
@@ -83,6 +87,16 @@ function AnalyticsView({ userId }: { userId: number }) {
                 ))}
               </Select>
             )}
+            {isSuperuser && m.settings && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="inline-flex h-11 items-center gap-2 rounded-xl border bg-[var(--card)] px-4 text-sm font-medium transition hover:border-[var(--input)]"
+              >
+                <SlidersHorizontal className="size-4" />
+                Что показывать
+              </button>
+            )}
             <button
               type="button"
               onClick={openTv}
@@ -104,6 +118,16 @@ function AnalyticsView({ userId }: { userId: number }) {
         }
       />
       {tv && <TvScreen m={m} onExit={closeTv} />}
+      {editing && m.settings && (
+        <DashboardSettingsModal
+          settings={m.settings}
+          onClose={() => setEditing(false)}
+          onSaved={(settings) => {
+            m.commitSettings(settings);
+            setEditing(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -146,7 +170,13 @@ function DashboardPageInner() {
         )
       }
     >
-      {userId && activeView && (activeView === "analytics" ? <AnalyticsView userId={userId} /> : <CameraWall />)}
+      {userId &&
+        activeView &&
+        (activeView === "analytics" ? (
+          <AnalyticsView userId={userId} isSuperuser={Boolean(me?.is_superuser)} />
+        ) : (
+          <CameraWall />
+        ))}
     </AppShell>
   );
 }

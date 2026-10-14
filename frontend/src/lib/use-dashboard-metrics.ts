@@ -10,13 +10,19 @@ import { productParts, productTitle, twinKey, twinKeys } from "@/lib/product-par
 import { readStoredChoice, storeChoice, userChoiceKey } from "@/lib/stored-choice";
 import { shiftIsoDate } from "@/lib/utils";
 import { pickWarehouse } from "@/lib/warehouses";
-import type { DashboardOperationalSummary, ReportSummary, StockByProduct, Warehouse } from "@/lib/types";
-
-export type DashboardAttentionKey = "overdue" | "payments" | "orders" | "stock";
-type DashboardAttentionItem = { key: DashboardAttentionKey; count: number };
+import type {
+  AlwaysOnDailyAnalytics,
+  DashboardOperationalSummary,
+  DashboardSettings,
+  ReportSummary,
+  StockByProduct,
+  Warehouse,
+} from "@/lib/types";
 
 /** Главную держат открытой на ТВ: данные обновляются сами, без кликов. */
 const DASHBOARD_POLL_MS = 30_000;
+/** Приход с камер транслируется почти вживую — чаще остальной сводки. */
+const INTAKE_POLL_MS = 10_000;
 // Склад сводки помнит браузер: ТВ на «Мельнице» и ТВ на Нью-Сити показывают каждый свой.
 const WAREHOUSE_STORAGE_KEY = "dashboard:warehouse";
 
@@ -30,14 +36,36 @@ export function useDashboardMetrics() {
   const canOrders = can(me, "orders.view");
   const canStock = can(me, "warehouse.view");
   const canFinance = can(me, "reports.view");
-  const canPayments = can(me, "payments.confirm");
+  const canIntake = can(me, "monoblock.view");
+
+  // Какие отделы и склады показывать, решает суперпользователь; пусто — всё.
+  const {
+    data: settings,
+    error: settingsErr,
+    reload: reloadSettings,
+    setData: commitSettings,
+  } = useApi<DashboardSettings>("/dashboard/settings/");
+  const departmentParam = settings?.departments.length
+    ? `&department=${settings.departments.map((department) => encodeURIComponent(department.code)).join(",")}`
+    : "";
+
   const {
     data: operational,
     error: operationalErr,
     reload: reloadOperational,
   } = useApi<DashboardOperationalSummary>(
-    canOrders ? `/orders/dashboard-operational/?date_from=${yesterday}&date_to=${today}` : null,
+    settings && canOrders
+      ? `/orders/dashboard-operational/?date_from=${yesterday}&date_to=${today}${departmentParam}`
+      : null,
   );
+  const {
+    data: report,
+    error: reportErr,
+    reload: reloadReport,
+  } = useApi<ReportSummary>(
+    settings && canFinance ? `/reports/summary/?date_from=${today}&date_to=${today}${departmentParam}` : null,
+  );
+
   const {
     data: warehouseList,
     error: warehousesErr,
@@ -48,8 +76,11 @@ export function useDashboardMetrics() {
   useEffect(() => {
     setWarehouseChoice(readStoredChoice(warehouseKey));
   }, [warehouseKey]);
-  const warehouses = useMemo(() => (warehouseList ?? []).filter((item) => item.is_active), [warehouseList]);
-  const warehouse = pickWarehouse(warehouseList ?? [], warehouseChoice);
+  const shownWarehouses = useMemo(() => {
+    const allowed = new Set(settings?.warehouses.map((item) => item.id));
+    return (warehouseList ?? []).filter((item) => allowed.size === 0 || allowed.has(item.id));
+  }, [settings?.warehouses, warehouseList]);
+  const warehouse = settings ? pickWarehouse(shownWarehouses, warehouseChoice) : null;
   const chooseWarehouse = (id: number) => {
     setWarehouseChoice(String(id));
     storeChoice(warehouseKey, String(id));
@@ -60,26 +91,37 @@ export function useDashboardMetrics() {
     error: stockErr,
     reload: reloadStock,
   } = useApi<StockByProduct>(canStock && warehouse ? `/stock/by-product/?warehouse=${warehouse.id}` : null);
+
   const {
-    data: report,
-    error: reportErr,
-    reload: reloadReport,
-  } = useApi<ReportSummary>(canFinance ? `/reports/summary/?date_from=${today}&date_to=${today}` : null);
+    data: intake,
+    error: intakeError,
+    reload: reloadIntake,
+  } = useApi<AlwaysOnDailyAnalytics>(canIntake ? "/cameras/always-on-analytics/" : null);
+  useVisiblePolling(reloadIntake, INTAKE_POLL_MS, canIntake);
+
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-  // Пока ответы не пришли, все счётчики равны нулю — и «Нужно решить» показал
-  // бы «нечего решать» на пустых данных.
-  const loading = (canOrders && operational == null) || (canStock && stock == null) || (canFinance && report == null);
+  // Пока ответы не пришли, все счётчики равны нулю — экран не должен выдавать их за данные.
+  const loading =
+    settings == null ||
+    (canOrders && operational == null) ||
+    (canStock && stock == null) ||
+    (canFinance && report == null);
 
   // Ошибка видна всегда; если данные уже есть, сводка помечается устаревшей.
   const loadError =
-    (canOrders && operationalErr) || (canStock && (warehousesErr || stockErr)) || (canFinance && reportErr) || "";
+    settingsErr ||
+    (canOrders && operationalErr) ||
+    (canStock && (warehousesErr || stockErr)) ||
+    (canFinance && reportErr) ||
+    "";
 
   useEffect(() => {
     if (loading || loadError) return;
     if (!canOrders && !canStock && !canFinance) return;
     setLastUpdatedAt(new Date());
   }, [canFinance, canOrders, canStock, loadError, loading, operational, report, stock]);
-  const reload = () => Promise.all([reloadOperational(), reloadWarehouses(), reloadStock(), reloadReport()]);
+  const reload = () =>
+    Promise.all([reloadSettings(), reloadOperational(), reloadWarehouses(), reloadStock(), reloadReport()]);
   useVisiblePolling(reload, DASHBOARD_POLL_MS, canOrders || canStock || canFinance);
 
   const stockRows = useMemo(() => {
@@ -92,23 +134,12 @@ export function useDashboardMetrics() {
       title: productTitle(parts, twins.has(twinKey(parts)) ? color_label : undefined),
     }));
   }, [stock?.products]);
-  const negativeStock = stockRows.filter((row) => row.bags < 0).length;
   const debt = useMemo(() => adaptDashboardDebt(report?.debt_now), [report?.debt_now]);
-
-  // Что требует действия — один список для числа в шапке и блока «Нужно решить».
-  // Права здесь не проверяются: чужие разделы не запрашиваются, а оплаты на
-  // подтверждение бэкенд без payments.confirm отдаёт нулём.
-  const attention: DashboardAttentionItem[] = (
-    [
-      { key: "overdue", count: debt.overdueClients },
-      { key: "payments", count: operational?.attention.pending_payments ?? 0 },
-      { key: "orders", count: operational?.attention.awaiting_review ?? 0 },
-      { key: "stock", count: negativeStock },
-    ] satisfies DashboardAttentionItem[]
-  ).filter((item) => item.count > 0);
 
   return {
     today,
+    settings,
+    commitSettings,
     queue: operational?.queue ?? [],
     ...todayShipments(operational?.days ?? [], today, yesterday),
     ...todayIncome(report),
@@ -116,11 +147,11 @@ export function useDashboardMetrics() {
     stockTotal: stock?.total_bags ?? 0,
     stockRows,
     stockWarehouse: stock?.warehouse.name ?? "",
-    warehouses,
+    warehouses: shownWarehouses.filter((item) => item.is_active),
     warehouseId: warehouse?.id ?? null,
     chooseWarehouse,
-    attention,
-    attentionCount: attention.reduce((sum, item) => sum + item.count, 0),
+    intake,
+    intakeError,
     loading,
     lastUpdatedAt,
     loadError,
@@ -128,7 +159,7 @@ export function useDashboardMetrics() {
     canOrders,
     canStock,
     canFinance,
-    canPayments,
+    canIntake,
   };
 }
 

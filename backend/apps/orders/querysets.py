@@ -245,13 +245,16 @@ def department_q(code: str, prefix: str = "") -> Q:
 def filter_order_scope(queryset, params, *, prefix="", date_field=None, department_extra=None):
     """Общие фильтры списков заказов и оплат: ``?department=``, ``?store=`` и период.
 
-    ``prefix`` — путь до заказа (``order__`` у оплат), период — по полю
-    ``date_field``, если оно задано. ``department_extra`` добавляется к
-    условию отдела через ИЛИ.
+    ``?department=`` — код отдела или несколько через запятую («Главная» с
+    выбранными отделами). ``prefix`` — путь до заказа (``order__`` у оплат),
+    период — по полю ``date_field``, если оно задано. ``department_extra``
+    добавляется к условию отдела через ИЛИ.
     """
-    department = params.get("department")
-    if department:
-        match = department_q(department, prefix)
+    codes = [code.strip() for code in (params.get("department") or "").split(",") if code.strip()]
+    if codes:
+        match = Q()
+        for code in codes:
+            match |= department_q(code, prefix)
         if department_extra is not None:
             match |= department_extra
         queryset = queryset.filter(match)

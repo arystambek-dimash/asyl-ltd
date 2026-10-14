@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { AttentionPanel } from "@/components/dashboard/attention-panel";
 import { BOARD_SIZE, type BoardSize } from "@/components/dashboard/board-size";
+import { IntakePanel } from "@/components/dashboard/intake-panel";
 import { KpiTiles } from "@/components/dashboard/kpi-tiles";
 import { LoadingQueue } from "@/components/dashboard/loading-queue";
 import { StockPanel } from "@/components/dashboard/stock-panel";
@@ -67,8 +67,9 @@ function BoardSkeleton({ size }: { size: BoardSize }) {
 }
 
 function tvColumns(m: DashboardMetrics): string {
-  if (m.canStock && m.canOrders) return "grid-cols-[1.7fr_1.2fr_0.9fr]";
-  if (m.canStock || m.canOrders) return "grid-cols-[1.6fr_1fr]";
+  const panels = [m.canStock, m.canOrders, m.canIntake].filter(Boolean).length;
+  if (panels === 3) return "grid-cols-[1.7fr_1.2fr_0.9fr]";
+  if (panels === 2) return m.canStock ? "grid-cols-[1.6fr_1fr]" : "grid-cols-2";
   return "grid-cols-1";
 }
 
@@ -101,14 +102,14 @@ export function TodayBoard({ m, size, actions }: { m: DashboardMetrics; size: Bo
             <div className={cn("grid min-h-0 min-w-0 flex-1", gap, tvColumns(m))}>
               {m.canStock && <StockPanel m={m} size={size} />}
               {m.canOrders && <LoadingQueue m={m} size={size} />}
-              <AttentionPanel m={m} size={size} />
+              {m.canIntake && <IntakePanel m={m} size={size} />}
             </div>
           ) : (
             <div className={cn("grid min-w-0", gap, m.canStock && "xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start")}>
               {m.canStock && <StockPanel m={m} size={size} />}
               <div className={cn("flex min-w-0 flex-col", gap)}>
                 {m.canOrders && <LoadingQueue m={m} size={size} />}
-                <AttentionPanel m={m} size={size} />
+                {m.canIntake && <IntakePanel m={m} size={size} />}
               </div>
             </div>
           )}

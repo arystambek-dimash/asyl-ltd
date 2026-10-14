@@ -564,6 +564,10 @@ def today_payload(
         )
         for camera, camera_rows in rows_by_camera.items()
     ]
+    # Подпись камеры («Робот Кука») — для экранов, которые не грузят настройки камер.
+    names = MonoblockCameraSettings.display_names()
+    for item in cameras:
+        item["name"] = names.get(item["camera"], item["camera"])
     return {
         "analytics_scope": analytics_scope,
         "analytics_sync": _aggregate_sync_payload(

@@ -1,4 +1,4 @@
-"""Сводка «Главной»: очередь погрузки, что ждёт решения и отгрузки по дням."""
+"""Сводка «Главной»: очередь погрузки и отгрузки по дням."""
 from collections import defaultdict
 
 from django.db.models import Max
@@ -7,25 +7,10 @@ from django.utils import timezone
 from apps.common.query_params import filter_date_range
 from apps.eventlog.models import EventLog
 
-from .querysets import cashier_queue_payments
-from .statuses import statuses_in_group
-
 
 def loading_queue(orders):
     """Машины и вагоны на территории: приехали или грузятся."""
     return orders.filter(status__in=("arrived", "loading")).order_by("id")
-
-
-def attention_counts(orders, user) -> dict[str, int]:
-    """Сколько ждёт решения: оплаты в «Кассе» и новые заявки."""
-    pending_payments = 0
-    if user.has_perm_code("payments.confirm"):
-        # Ссылка ведёт в «Кассу» — число то же, что в её очереди.
-        pending_payments = cashier_queue_payments(user).count()
-    return {
-        "pending_payments": pending_payments,
-        "awaiting_review": orders.filter(status__in=statuses_in_group("pending")).count(),
-    }
 
 
 def shipped_by_day(orders, date_from, date_to) -> list[dict]:

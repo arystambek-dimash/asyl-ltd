@@ -44,6 +44,7 @@ def test_shipping_and_ai247_analytics_are_disjoint_and_report_sync_state(
     MonoblockCameraSettings.objects.create(
         camera_sources=["cam2"],
         always_on_camera_sources=["cam3"],
+        camera_names={"cam3": "Робот Кука"},
     )
     AlwaysOnDailyAnalytics.objects.bulk_create(
         [
@@ -100,6 +101,9 @@ def test_shipping_and_ai247_analytics_are_disjoint_and_report_sync_state(
     assert ai247.data["analytics_scope"] == "ai_247"
     assert ai247.data["total"] == 7
     assert [row["camera"] for row in ai247.data["cameras"]] == ["cam3"]
+    # Подпись для «Главной»: без имени в настройках — код камеры.
+    assert ai247.data["cameras"][0]["name"] == "Робот Кука"
+    assert shipping.data["cameras"][0]["name"] == "cam2"
 
 
 def test_shipping_analytics_marks_failed_import_instead_of_presenting_zero_as_fresh(

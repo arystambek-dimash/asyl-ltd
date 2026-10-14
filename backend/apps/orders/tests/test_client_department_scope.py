@@ -394,13 +394,11 @@ def test_post_board_and_dashboard_projection_are_ownership_scoped(
         department=scope["first_department"].code,
         status="arrived",
     )
-    foreign = _order(
+    _order(
         scope["second_client"],
         department=scope["first_department"].code,
         status="arrived",
     )
-    Payment.objects.create(order=own, amount="10.00", status="received")
-    Payment.objects.create(order=foreign, amount="90.00", status="received")
     api = auth_client(scope["user"])
 
     post_board = api.get("/api/orders/", {"post_board": "1"})
@@ -410,14 +408,9 @@ def test_post_board_and_dashboard_projection_are_ownership_scoped(
     assert [row["id"] for row in post_board.data] == [own.pk]
     assert dashboard.status_code == 200
     assert [row["id"] for row in dashboard.data["queue"]] == [own.pk]
-    # «Подтвердить оплаты» ведёт в «Кассу», а её очередь общая для всех
-    # отделов: число на дашборде совпадает с очередью, а не со своими заказами.
-    queue = api.get("/api/orders/payments-queue/")
-    assert queue.status_code == 200
-    assert dashboard.data["attention"]["pending_payments"] == len(queue.data) == 2
 
 
-def test_dashboard_pending_payments_counts_the_cashier_queue(auth_client, ownership_scope):
+def test_cashier_queue_skips_online_payment_waiting_for_client(auth_client, ownership_scope):
     """Онлайн-оплата ждёт клиента, а не кассу; заявка на наличные — наоборот."""
     scope = ownership_scope
     order = _order(
@@ -436,11 +429,9 @@ def test_dashboard_pending_payments_counts_the_cashier_queue(auth_client, owners
     ]
     api = auth_client(scope["user"])
 
-    dashboard = api.get("/api/orders/dashboard-operational/")
     queue = api.get("/api/orders/payments-queue/")
 
     assert sorted(row["id"] for row in queue.data) == [row.pk for row in cash_requests]
-    assert dashboard.data["attention"]["pending_payments"] == 2
 
 
 @pytest.mark.parametrize(

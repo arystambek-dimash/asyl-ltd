@@ -17,6 +17,7 @@ const point: AlwaysOnHistoryPoint = {
 const daily: AlwaysOnDailyCameraAnalytics = {
   ...point,
   camera: "cam3",
+  name: "Робот Кука",
   period_total: 817,
   all_time_total: 166947,
   history: [point],
