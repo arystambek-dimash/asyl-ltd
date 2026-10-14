@@ -1377,7 +1377,9 @@ def create_staff_order(
     template_order: Order | None = None,
     backdate: dict | None = None,
 ) -> Order:
-    """Новый заказ сотрудника: склад, остаток, позиции, цены и подтверждение.
+    """Новый заказ сотрудника: склад, позиции, цены и подтверждение.
+
+    Остаток склада заказ не проверяет: принимаем и на ноль, отгрузка уйдёт в минус.
 
     ``data`` — поля заказа из формы. ``prices`` — {product_id: цена за мешок}:
     заказ с ценами подтверждается сразу, если у сотрудника есть право и у заказа
@@ -1385,19 +1387,12 @@ def create_staff_order(
     заказ, по которому создан этот («Повторить»). ``backdate`` — параметры
     :func:`fixation.fixate_order` для заказа задним числом.
     """
-    from apps.warehouse.services import ensure_products_available, resolve_warehouse
+    from apps.warehouse.services import resolve_warehouse
 
     if backdate is not None:
         # Права проверяем до записи: отказ откатывает всю транзакцию.
         assert_can_fixate(user, paid=backdate.get("paid", False))
     warehouse = resolve_warehouse(data.get("warehouse"))
-    # Исторический заказ склад не списывает, поэтому и остаток на сегодня
-    # для него не важен — товара могло уже не остаться.
-    if backdate is None:
-        ensure_products_available(
-            (item["product"] for item in items_data),
-            warehouse=warehouse,
-        )
     fields = {**data, "warehouse": warehouse, "created_by": user}
     if fields.get("truck_number") or fields.get("trailer_number"):
         fields["truck_number_set_by"] = user
@@ -1432,14 +1427,13 @@ def create_staff_order(
 
 
 @transaction.atomic
-def set_order_warehouse(order: Order, warehouse, user, *, check_items: bool = True) -> Order:
+def set_order_warehouse(order: Order, warehouse, user) -> Order:
     """Сменить склад отгрузки — только до подтверждения заказа.
 
     Отключённый склад, уже закреплённый за заказом, остаётся читаемым и
-    сравнимым, но новый склад обязан быть действующим. ``check_items=False`` —
-    позиции заменяются следом, и остаток на новом складе проверит ``replace_items``.
+    сравнимым, но новый склад обязан быть действующим.
     """
-    from apps.warehouse.services import ensure_products_available, resolve_warehouse
+    from apps.warehouse.services import resolve_warehouse
 
     caller_order = order
     order = lock_live_order(order, user)
@@ -1453,18 +1447,6 @@ def set_order_warehouse(order: Order, warehouse, user, *, check_items: bool = Tr
         })
     order.warehouse = caller_order.warehouse = resolve_warehouse(requested)
     order.save(update_fields=["warehouse"])
-    if check_items:
-        current_items = list(order.items.select_related("product"))
-        deleted = [item.product_label for item in current_items if item.product_id is None]
-        if deleted:
-            raise ValidationError({
-                "detail": "Нельзя сменить склад: удалены товары — " + ", ".join(deleted),
-                "code": "product_deleted",
-            })
-        ensure_products_available(
-            (item.product for item in current_items),
-            warehouse=order.warehouse,
-        )
     return order
 
 
@@ -1511,7 +1493,6 @@ def replace_items(
 
     is_shipped = order.status == "shipped"
     reason = _shipped_edit_reason(edit_reason) if is_shipped else ""
-    warehouse = order.warehouse
     old_items = list(
         # ``product`` is nullable for historical rows. Lock only OrderItem;
         # PostgreSQL cannot apply FOR UPDATE to the nullable side of the outer
@@ -1529,18 +1510,6 @@ def replace_items(
             "detail": "Нельзя сверить склад: удалены товары — " + deleted,
             "code": "product_deleted",
         })
-
-    # Before shipment, order admission keeps the existing availability rule.
-    # A shipped edit instead corrects a historical inventory fact and may need
-    # to deduct a product whose current balance is zero or already negative.
-    if not is_shipped:
-        from apps.warehouse.services import ensure_products_available
-
-        ensure_products_available(
-            (item["product"] for item in items_data),
-            warehouse=warehouse,
-            require_active=False,
-        )
 
     old_total = order.total_amount
     old_payload = [_edit_item_payload(item) for item in old_items]

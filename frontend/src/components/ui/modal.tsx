@@ -84,8 +84,11 @@ export function Modal({
   mobileFullscreen?: boolean;
   /** "sheet": на телефоне шторка снизу, на десктопе обычный диалог. */
   variant?: "dialog" | "sheet";
-  /** false: клик мимо окна и Esc не закрывают его — только крестик и кнопки внутри. */
-  dismissible?: boolean;
+  /**
+   * false: клик мимо окна и Esc не закрывают его — только крестик и кнопки внутри.
+   * "escape": Esc закрывает, клик мимо — нет (длинная форма с черновиком).
+   */
+  dismissible?: boolean | "escape";
 }) {
   const [mounted, setMounted] = useState(false);
   const titleId = useId();
@@ -112,7 +115,7 @@ export function Modal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !isTopmostModal(modalId)) return;
       e.preventDefault();
-      if (dismissibleRef.current) onCloseRef.current();
+      if (dismissibleRef.current !== false) onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
 
@@ -150,7 +153,7 @@ export function Modal({
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-[1px] animate-modal-backdrop"
         onClick={() => {
-          if (dismissible) onCloseRef.current();
+          if (dismissible === true) onCloseRef.current();
         }}
       />
       <div

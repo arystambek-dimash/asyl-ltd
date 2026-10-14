@@ -2,15 +2,10 @@ import type { FilterOption, ProductParts } from "@/lib/product-parts";
 import { cn } from "@/lib/utils";
 
 /** Фасовка плашкой: не обрезается, даже когда длинная марка не помещается. */
-function WeightChip({ weight, muted }: { weight: number; muted?: boolean }) {
+function WeightChip({ weight }: { weight: number }) {
   if (!weight) return null;
   return (
-    <span
-      className={cn(
-        "shrink-0 rounded-md px-2 py-0.5 text-xs font-semibold tabular-nums",
-        muted ? "bg-slate-200 text-slate-600" : "bg-slate-900 text-white",
-      )}
-    >
+    <span className="shrink-0 rounded-md bg-slate-900 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">
       {weight} кг
     </span>
   );
@@ -21,17 +16,7 @@ function WeightChip({ weight, muted }: { weight: number; muted?: boolean }) {
  * ниже сорт и фасовка. Цвет — только когда без него два товара не различить.
  * Длинная марка переносится, а не обрезается: у двойников в конце строки цвет.
  */
-export function ProductName({
-  parts,
-  color,
-  muted,
-  className,
-}: {
-  parts: ProductParts;
-  color?: string;
-  muted?: boolean;
-  className?: string;
-}) {
+export function ProductName({ parts, color, className }: { parts: ProductParts; color?: string; className?: string }) {
   return (
     <span className={cn("block min-w-0 flex-1", className)}>
       <span className="block break-words text-sm font-bold uppercase leading-5 tracking-wide text-slate-900">
@@ -41,7 +26,7 @@ export function ProductName({
       <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 leading-5">
         {/* Без сорта в названии («Мука 50 кг») — только фасовка: марка уже строкой выше. */}
         {parts.grade && <span className="text-sm text-slate-600">{parts.grade}</span>}
-        <WeightChip weight={parts.weight} muted={muted} />
+        <WeightChip weight={parts.weight} />
       </span>
     </span>
   );

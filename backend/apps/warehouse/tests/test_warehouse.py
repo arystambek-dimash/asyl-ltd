@@ -12,7 +12,6 @@ from apps.warehouse.models import StockItem, StockMovement, StockReceipt, Wareho
 from apps.warehouse.services import (
     adjust_stock,
     deduct_stock,
-    ensure_products_available,
     get_default_warehouse,
     lock_stock_item,
     lock_stock_items,
@@ -76,21 +75,6 @@ def test_same_product_can_have_independent_balances_in_two_warehouses(boss, make
     assert StockReceipt.objects.filter(product=prod).count() == 2
 
 
-def test_availability_is_scoped_to_requested_warehouse(boss, make_product):
-    prod = make_product()
-    receive_stock(prod, 10, boss)
-    other = Warehouse.objects.create(code="east", name="Восточный склад")
-
-    ensure_products_available([prod])
-    with pytest.raises(ValidationError) as exc_info:
-        ensure_products_available([prod], warehouse=other)
-
-    assert str(exc_info.value.detail["code"]) == "out_of_stock"
-
-    receive_stock(prod, 2, boss, warehouse=other)
-    ensure_products_available([prod], warehouse=other)
-
-
 def test_stock_balances_are_scoped_to_warehouse(make_product):
     prod = make_product()
     missing = make_product(name="Нет на складе")
@@ -131,14 +115,6 @@ def test_pinned_inactive_warehouse_allows_historical_stock_operations(boss, make
     with pytest.raises(ValidationError) as exc_info:
         lock_stock_item(prod, warehouse=warehouse)
     assert str(exc_info.value.detail["code"]) == "warehouse_inactive"
-
-    with pytest.raises(ValidationError):
-        ensure_products_available([prod], warehouse=warehouse)
-    ensure_products_available(
-        [prod],
-        warehouse=warehouse,
-        require_active=False,
-    )
 
     with transaction.atomic():
         locked = lock_stock_item(

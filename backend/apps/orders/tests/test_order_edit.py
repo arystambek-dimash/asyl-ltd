@@ -302,20 +302,21 @@ def test_foreign_store_rejected(manager, api_as):
     assert r.status_code == 400
 
 
-def test_order_requires_stock_on_create(manager, api_as):
-    """Заказ принимается только на товар, имеющийся на складе."""
+@pytest.mark.parametrize("bags", [0, -5], ids=["no-stock-card", "negative"])
+def test_order_is_created_regardless_of_stock(manager, api_as, bags):
+    """Остаток заказ не держит: принимаем и без карточки склада, и в минусе."""
     client = Client.objects.create_with_user(first_name="A", last_name="B", phone="x")
-    empty = _product(bags=0)  # складской карточки нет вовсе
+    product = _product(bags=bags)
     r = api_as(manager).post("/api/orders/", {
         "client": client.id,
-        "items": [{"product": empty.id, "quantity": 1}],
-        "prices": {str(empty.id): "100.00"},
+        "items": [{"product": product.id, "quantity": 30}],
+        "prices": {str(product.id): "100.00"},
     }, format="json")
-    assert r.status_code == 400
-    assert "наличии" in str(r.data.get("detail", ""))
+    assert r.status_code == 201, r.data
+    assert Order.objects.get(pk=r.data["id"]).items.get().quantity == 30
 
 
-def test_edit_requires_stock_for_new_items(manager, api_as):
+def test_edit_accepts_items_without_stock(manager, api_as):
     o = _order(status="pending")
     from apps.warehouse.models import StockItem
     zero = _product(bags=0)
@@ -324,8 +325,8 @@ def test_edit_requires_stock_for_new_items(manager, api_as):
         "items": [{"product": zero.id, "quantity": 1}],
         "prices": {str(zero.id): "100.00"},
     }, format="json")
-    assert r.status_code == 400
-    assert "наличии" in str(r.data.get("detail", ""))
+    assert r.status_code == 200, r.data
+    assert o.items.get().product_id == zero.id
 
 
 def test_edit_requires_orders_edit_perm(operator, api_as):

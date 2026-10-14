@@ -51,7 +51,6 @@ function Harness({
           onChange(id);
         }}
         bagsOf={(product) => product.available_bags ?? 0}
-        allowOutOfStock={false}
         ariaLabel="Товар, позиция 1"
       />
     </div>
@@ -124,7 +123,7 @@ describe("ProductPicker", () => {
     ]);
   });
 
-  it("picks the first available match on Enter instead of submitting the order form", async () => {
+  it("picks the first match on Enter instead of submitting the order form", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
     const onChange = vi.fn();
@@ -139,7 +138,6 @@ describe("ProductPicker", () => {
     await user.type(screen.getByLabelText("Поиск товара"), "высший{Enter}");
 
     expect(onSubmit).not.toHaveBeenCalled();
-    // OMAD без остатка — первым доступным идёт DIKHAN высший.
     expect(onChange).toHaveBeenCalledWith("2");
   });
 
@@ -214,15 +212,18 @@ describe("ProductPicker", () => {
     document.removeEventListener("keydown", onKey);
   });
 
-  it("does not let an out-of-stock product be chosen", async () => {
+  it("lets a product without stock be chosen: the order goes through, stock may go negative", async () => {
     const user = userEvent.setup();
-    render(<Harness />);
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
 
     await user.click(trigger());
     const omad = screen.getAllByRole("option").find((row) => row.textContent?.startsWith("OMAD"));
 
-    expect(omad).toBeDisabled();
-    expect(omad).toHaveTextContent("нет в наличии");
+    expect(omad).toBeEnabled();
+    expect(omad).toHaveTextContent("нет остатка");
+    await user.click(omad!);
+    expect(onChange).toHaveBeenCalledWith("4");
   });
 
   it("names the colour only when two products would otherwise look the same", async () => {

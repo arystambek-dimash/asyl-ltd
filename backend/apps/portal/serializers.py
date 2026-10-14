@@ -256,14 +256,10 @@ class PortalOrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.
     @transaction.atomic
     def create(self, validated_data):
         # Атомарно: сбой на любой позиции не должен оставлять заказ-сироту.
-        from apps.warehouse.services import ensure_products_available, resolve_warehouse
+        from apps.warehouse.services import resolve_warehouse
         items = validated_data.pop("items")
+        # Остаток не проверяем: заказ принимается и на ноль, как у сотрудника.
         warehouse = resolve_warehouse()
-        # Клиент портала тоже заказывает только товар в наличии.
-        ensure_products_available(
-            (item["product"] for item in items),
-            warehouse=warehouse,
-        )
         transport = validated_data.get("transport_type", "truck")
         store = validated_data.get("store")
         client = self._client()

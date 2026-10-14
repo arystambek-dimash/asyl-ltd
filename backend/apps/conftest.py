@@ -451,3 +451,13 @@ def _main_warehouse_for_test_rows():
     pre_save.connect(_fill, dispatch_uid="tests.main_warehouse_for_test_rows")
     yield
     pre_save.disconnect(dispatch_uid="tests.main_warehouse_for_test_rows")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_close_schedule():
+    """Кэш часа автоприхода живёт в процессе — откат базы между тестами его не сбрасывает."""
+    from apps.cameras.production_runs import reset_close_schedule_cache
+
+    reset_close_schedule_cache()
+    yield
+    reset_close_schedule_cache()

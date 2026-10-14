@@ -1128,9 +1128,12 @@ export interface AlwaysOnProductionPayload extends CameraDayHistory {
   warehouse: number;
   warehouse_name: string;
   warehouses: Array<Omit<Warehouse, "address"> & { address?: string }>;
+  /** Час закрытия текущей смены «ЧЧ:ММ». */
   close_time: string;
   current_business_day: string;
   next_run_at: string;
+  /** Новый час, уже назначенный на одну из следующих смен. */
+  planned_close_time: { close_time: string; from_day: string } | null;
   fully_configured: boolean;
   available_colors: string[];
   mappings: AlwaysOnProductMapping[];

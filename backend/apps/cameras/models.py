@@ -896,10 +896,33 @@ class AlwaysOnStockBatch(models.Model):
         ]
 
 
+class AlwaysOnCloseTime(models.Model):
+    """Час закрытия смены AI 24/7 (автоприхода), действующий с ``effective_day``.
+
+    Строка действует до следующей: прошлые смены сохраняют свой час, иначе
+    их окна и мешки сдвинулись бы задним числом. Без строк — 19:00.
+    Меняет только суперпользователь (production_runs.set_close_time).
+    """
+
+    effective_day = models.DateField(unique=True)
+    close_time = models.TimeField()
+    set_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["effective_day"]
+
+
 class AlwaysOnStockPosting(models.Model):
     """One product receipt produced by an automatic daily stock batch.
 
-    ``shift`` rows are the 19:00 posting (one per colour). ``manual_color``
+    ``shift`` rows are the shift-close posting (one per colour). ``manual_color``
     rows receive bags an operator assigned a colour after that posting.
     """
 

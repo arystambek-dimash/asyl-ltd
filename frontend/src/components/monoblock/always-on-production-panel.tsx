@@ -16,8 +16,9 @@ import type {
 } from "@/lib/types";
 import { cn, formatIsoDate } from "@/lib/utils";
 import { colorMeta, normalizedColor } from "@/lib/monoblock-colors";
-import { ColorDot, Eyebrow, Hairline, InfoHint, Panel, SectionHead, StatusChip } from "@/components/monoblock/ui";
+import { ColorDot, Hairline, InfoHint, Panel, SectionHead, StatusChip } from "@/components/monoblock/ui";
 import { InferredBadge, UnknownColorDialog, unresolvedBagsLabel } from "@/components/monoblock/unknown-color";
+import { AlwaysOnCloseTimeCard } from "@/components/monoblock/always-on-close-time";
 
 const BATCH_META: Record<AlwaysOnStockBatch["status"], { label: string; className: string }> = {
   scheduled: { label: "Запланировано", className: "bg-blue-50 text-blue-600" },
@@ -210,6 +211,8 @@ interface AlwaysOnProductionPanelProps {
   canManage: boolean;
   onSave: (mappings: AlwaysOnProductMapping[], warehouse: number | null) => void | Promise<void>;
   onRetry: (batch: AlwaysOnStockBatch) => void | Promise<void>;
+  /** Час автоприхода (суперпользователь); бросает ошибку запроса — карточка покажет её у себя. */
+  onSaveCloseTime: (closeTime: string) => Promise<void>;
   /** «Указать цвет»: бросает ошибку запроса, чтобы окно показало её у себя. */
   onAssignUnknown: (input: AlwaysOnUnknownColorInput) => Promise<void>;
 }
@@ -461,6 +464,7 @@ export function AlwaysOnProductionPanel({
   canManage,
   onSave,
   onRetry,
+  onSaveCloseTime,
   onAssignUnknown,
 }: AlwaysOnProductionPanelProps) {
   const [draft, setDraft] = useState<AlwaysOnProductMapping[]>([]);
@@ -599,36 +603,14 @@ export function AlwaysOnProductionPanel({
         </div>
       )}
 
-      <Panel className="p-5 sm:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-6">
-          <div>
-            <Eyebrow>Автоприход</Eyebrow>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-5xl font-black tabular-nums tracking-tight text-slate-900">
-                {payload.close_time}
-              </span>
-              <span className="text-sm font-medium text-slate-400">каждый день</span>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
-            <div>
-              <Eyebrow>Следующий запуск</Eyebrow>
-              <div className="mt-1.5 font-semibold tabular-nums text-slate-800">{nextRun}</div>
-              <div className="mt-0.5 text-[11px] text-slate-400">{timezone}</div>
-            </div>
-            <div>
-              <Eyebrow>Готовность</Eyebrow>
-              <div className="mt-2">
-                {hasConfigurationIssue ? (
-                  <StatusChip tone="error">нужна настройка</StatusChip>
-                ) : (
-                  <StatusChip tone="ok">готово</StatusChip>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </Panel>
+      <AlwaysOnCloseTimeCard
+        closeTime={payload.close_time}
+        planned={payload.planned_close_time}
+        nextRun={nextRun}
+        timezone={timezone}
+        needsSetup={hasConfigurationIssue}
+        onSave={canManage ? onSaveCloseTime : undefined}
+      />
 
       <Panel>
         <div className="flex items-center gap-3 px-5 py-4">

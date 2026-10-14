@@ -7,6 +7,7 @@ from .api_views.history import CameraAiSessionListView
 from .api_views.operations import (
     AlwaysOnAnalyticsView,
     AlwaysOnCameraSettingsView,
+    AlwaysOnCloseTimeView,
     AlwaysOnDetectionsView,
     AlwaysOnProductionView,
     AlwaysOnStockRetryView,
@@ -73,6 +74,10 @@ urlpatterns = [
     path(
         "cameras/always-on-production/batches/<int:batch_id>/retry/",
         AlwaysOnStockRetryView.as_view(),
+    ),
+    path(
+        "cameras/always-on-production/close-time/",
+        AlwaysOnCloseTimeView.as_view(),
     ),
     path(
         "cameras/always-on-production/unknown-colors/",

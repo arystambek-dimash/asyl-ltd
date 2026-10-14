@@ -883,6 +883,21 @@ function AlwaysOnCard({
     showSuccess("Сохранено");
   }
 
+  // Час автоприхода. Ответ PUT — свежий снимок вкладки: применяем его сразу.
+  // Ошибку показывает карточка.
+  async function saveCloseTime(closeTime: string) {
+    if (!canManage) return;
+    const response = await runProductionMutation(() =>
+      api.put<AlwaysOnProductionPayload>("/cameras/always-on-production/close-time/", {
+        camera: processor.cam,
+        close_time: closeTime,
+      }),
+    );
+    setProduction(response.data);
+    setProductionError(null);
+    showSuccess("Время автоприхода сохранено");
+  }
+
   // «Указать цвет» мешкам без цвета. Ответ — свежий снимок вкладки: применяем
   // его сразу, чтобы опрос не показал старое число. Ошибку показывает окно.
   async function assignUnknownColor(input: AlwaysOnUnknownColorInput) {
@@ -1106,6 +1121,7 @@ function AlwaysOnCard({
               canManage={canManage}
               onSave={saveProductionMappings}
               onRetry={retryProductionBatch}
+              onSaveCloseTime={saveCloseTime}
               onAssignUnknown={assignUnknownColor}
             />
           </div>

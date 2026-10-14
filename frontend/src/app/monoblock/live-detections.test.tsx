@@ -385,6 +385,7 @@ const productionBase = {
   warehouses: [{ id: 1, code: "main", name: "Основной склад", is_active: true, is_default: true }],
   timezone: "Asia/Almaty",
   close_time: "19:00",
+  planned_close_time: null,
   current_business_day: "2026-08-24",
   next_run_at: "2026-08-24T13:00:00Z",
   selected_day: null,

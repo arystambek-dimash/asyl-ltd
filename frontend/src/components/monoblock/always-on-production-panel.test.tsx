@@ -49,6 +49,7 @@ const payload: AlwaysOnProductionPayload = {
   ],
   timezone: "Asia/Almaty",
   close_time: "19:00",
+  planned_close_time: null,
   current_business_day: "2026-08-16",
   next_run_at: "2026-08-16T14:00:00Z",
   selected_day: null,
@@ -140,6 +141,7 @@ function panel(props: Partial<ComponentProps<typeof AlwaysOnProductionPanel>> = 
       canManage
       onSave={vi.fn()}
       onRetry={vi.fn()}
+      onSaveCloseTime={vi.fn()}
       onAssignUnknown={vi.fn()}
       {...props}
     />

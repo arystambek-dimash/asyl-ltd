@@ -31,7 +31,6 @@ export function ProductPicker({
   value,
   onChange,
   bagsOf,
-  allowOutOfStock,
   disabled,
   ariaLabel,
   className,
@@ -39,10 +38,8 @@ export function ProductPicker({
   products: OrderProductOption[];
   value: string;
   onChange: (productId: string) => void;
-  /** Остаток мешков товара на выбранном складе. */
+  /** Остаток мешков товара на выбранном складе — подсказка: товар без остатка тоже выбирается. */
   bagsOf: (product: OrderProductOption) => number;
-  /** Задним числом, правка отгруженного и «Возврат»: товар без остатка тоже можно выбрать. */
-  allowOutOfStock: boolean;
   disabled?: boolean;
   ariaLabel: string;
   /** Размер кнопки в сетке строки. */
@@ -79,7 +76,6 @@ export function ProductPicker({
   }, [entries, brands, activeBrand, search]);
 
   const selected = entries.find((entry) => String(entry.product.id) === value);
-  const firstAvailable = rows.find(({ product }) => allowOutOfStock || bagsOf(product) > 0);
 
   function close() {
     setOpen(false);
@@ -151,7 +147,7 @@ export function ProductPicker({
                 if (event.key !== "Enter") return;
                 event.preventDefault();
                 // Пустой поиск — Enter ничего не меняет: иначе подменил бы уже выбранный товар.
-                if (search.trim() && firstAvailable) choose(firstAvailable.product.id);
+                if (search.trim() && rows[0]) choose(rows[0].product.id);
               }}
               placeholder="Поиск: Д1с, первый 25, KOROL…"
               className="h-11 w-full bg-transparent pl-10 pr-4 text-base outline-none placeholder:text-slate-400 sm:text-sm"
@@ -171,7 +167,6 @@ export function ProductPicker({
           <div role="listbox" aria-label="Товары" className="max-h-80 overflow-y-auto p-1.5">
             {rows.map(({ product, parts, twin }, index) => {
               const bags = bagsOf(product);
-              const unavailable = bags <= 0 && !allowOutOfStock;
               const isSelected = String(product.id) === value;
               // Новая марка в общем списке — черта: DIKHAN и KOROL не сливаются.
               const newBrand = index > 0 && brandKey(rows[index - 1].parts.brand) !== brandKey(parts.brand);
@@ -181,23 +176,21 @@ export function ProductPicker({
                   type="button"
                   role="option"
                   aria-selected={isSelected}
-                  disabled={unavailable}
                   onClick={() => choose(product.id)}
                   className={cn(
                     "flex w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2 text-left transition",
                     isSelected ? "bg-slate-100" : "hover:bg-slate-50",
                     newBrand && "mt-1.5 rounded-t-none border-t border-slate-200 pt-2.5",
-                    "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
                   )}
                 >
-                  <ProductName parts={parts} color={twin ? product.color_label : undefined} muted={unavailable} />
+                  <ProductName parts={parts} color={twin ? product.color_label : undefined} />
                   <span
                     className={cn(
                       "shrink-0 text-right text-xs tabular-nums",
                       bags > 0 ? "text-slate-600" : "text-slate-400",
                     )}
                   >
-                    {bags > 0 ? `${formatCount(bags)} меш.` : allowOutOfStock ? "нет остатка" : "нет в наличии"}
+                    {bags > 0 ? `${formatCount(bags)} меш.` : "нет остатка"}
                   </span>
                   {isSelected && <Check className="size-4 shrink-0 text-slate-900" />}
                 </button>

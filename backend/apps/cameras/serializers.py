@@ -147,6 +147,13 @@ class AlwaysOnProductMappingsSerializer(serializers.Serializer):
         return rows
 
 
+class AlwaysOnCloseTimeSerializer(serializers.Serializer):
+    """Час автоприхода AI 24/7; ``camera`` — чья вкладка вернётся в ответе."""
+
+    camera = serializers.CharField(max_length=32)
+    close_time = serializers.TimeField(input_formats=["%H:%M"])
+
+
 class AlwaysOnUnknownColorSerializer(serializers.Serializer):
     """«Указать цвет» for bags left without a colour in one AI 24/7 shift."""
 

@@ -185,34 +185,6 @@ def stock_by_product(warehouse) -> dict:
     }
 
 
-def ensure_products_available(
-    products,
-    warehouse=None,
-    *,
-    require_active=True,
-):
-    """Заказ принимается только на товар, имеющийся на складе.
-
-    products — итерируемое Product; товар без складской карточки или с
-    нулевым/отрицательным остатком считается отсутствующим.
-    """
-    warehouse = resolve_warehouse(warehouse, require_active=require_active)
-    unique_products = {product.pk: product for product in products}
-    balances = stock_balances(warehouse, unique_products)
-    missing = [
-        str(product)
-        for product_id, product in unique_products.items()
-        if balances[product_id] <= 0
-    ]
-    if missing:
-        raise ValidationError(
-            {
-                "detail": f"Нет в наличии на складе: {', '.join(missing)}",
-                "code": "out_of_stock",
-            }
-        )
-
-
 @transaction.atomic
 def adjust_stock(
     product,

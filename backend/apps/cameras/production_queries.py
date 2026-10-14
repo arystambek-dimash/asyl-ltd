@@ -39,12 +39,13 @@ from .production_catalog import (
     _warehouse_for_camera,
 )
 from .production_runs import (
-    CLOSE_TIME,
     _day_totals,
     _iso,
     business_day_for,
+    close_time_for,
     effective_ended_at,
     local_day_window,
+    planned_close_time,
     scheduled_for,
 )
 
@@ -428,8 +429,9 @@ def _selected_day_section(
         AlwaysOnProductionRun.objects.filter(
             camera=camera,
             # Analytics chart days are calendar dates.  ``business_day``
-            # is a warehouse shift marker and changes at 19:00, so using
-            # it here would put a 20:00 interval under tomorrow's bar.
+            # is a warehouse shift marker and changes at the shift close
+            # (19:00 by default), so it would put an evening interval
+            # under tomorrow's bar.
             # Overlap also preserves legacy rows created before runs were
             # split at local midnight.  ``gte`` keeps a legitimate first
             # bag counted exactly at 00:00 in the new calendar day.
@@ -468,6 +470,16 @@ def _selected_day_section(
         "algorithm_day_runs": algorithm_day_runs,
         "run_smoothing": run_smoothing,
     }
+
+
+def _planned_close_time_payload(current_day: date) -> dict | None:
+    """Новый час автоприхода, уже назначенный на одну из следующих смен."""
+
+    planned = planned_close_time(current_day)
+    if planned is None:
+        return None
+    from_day, close_time = planned
+    return {"close_time": close_time.strftime("%H:%M"), "from_day": from_day.isoformat()}
 
 
 def production_payload(camera: str, day: date | str | None = None) -> dict:
@@ -580,9 +592,10 @@ def production_payload(camera: str, day: date | str | None = None) -> dict:
         "selected_day": selected_day.isoformat() if selected_day else None,
         **_selected_day_section(camera, selected_day, now=now),
         "timezone": settings.TIME_ZONE,
-        "close_time": CLOSE_TIME.strftime("%H:%M"),
+        "close_time": close_time_for(current_day).strftime("%H:%M"),
         "current_business_day": current_day.isoformat(),
         "next_run_at": _iso(scheduled_for(current_day)),
+        "planned_close_time": _planned_close_time_payload(current_day),
         "fully_configured": all(
             is_configured(mapping_by_color.get(color)) for color in available_colors
         ),

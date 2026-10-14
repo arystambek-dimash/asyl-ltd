@@ -383,14 +383,12 @@ Monoblock/AI работает только с заказом, камерой, ч
 ### warehouse — склад
 
 - `StockItem(warehouse, product, bags)` — остаток с уникальной парой склад/товар; может быть отрицательным
-  (списание в минус при отгрузке).
+  (списание в минус при отгрузке). Заказ остаток не проверяет: принимается и на ноль, и в минус.
 - `StockReceipt` — акт приёмки; `StockMovement` — история каждого движения
   (`delta`, `balance_after`, `reason: adjustment/receipt/shipment`).
 
 Сервисы (все под `select_for_update`/`F()` — безопасны от гонок):
 
-- `ensure_products_available(products)` — товар заказываем только при
-  `stock.bags > 0` (проверка при создании/редактировании заказа);
 - `adjust_stock(product, delta, user, note)` — корректировка, минус запрещён;
 - `receive_stock(product, bags, user)` — приёмка;
 - `deduct_stock(product, bags, user)` — списание при отгрузке; уход в минус

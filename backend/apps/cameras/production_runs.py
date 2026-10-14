@@ -3,22 +3,32 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from time import monotonic
 
 from django.db import transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
+from apps.eventlog.services import log_event
+
 from . import ai
 from .models import (
     ANALYTICS_SCOPE_AI247,
+    AlwaysOnCloseTime,
     AlwaysOnProductionCorrection,
     AlwaysOnProductionRun,
     AlwaysOnStockBatch,
     ContinuousCameraRole,
 )
 
-CLOSE_TIME = time(hour=19)
+DEFAULT_CLOSE_TIME = time(hour=19)
+# Новый час применяется к идущей смене, только если до её закрытия — и по
+# старому, и по новому часу — остаётся запас; иначе со следующей смены.
+# Запас больше срока кэша ниже: другие процессы успевают увидеть новый час.
+CLOSE_TIME_CHANGE_MARGIN = timedelta(minutes=10)
+_SCHEDULE_TTL_SECONDS = 15.0
+_schedule_cache: tuple[float, tuple[tuple[date, time], ...]] | None = None
 RUN_GAP = timedelta(minutes=5)
 # A posted/empty shift is immutable: stock was received (or nothing was due).
 TERMINAL_BATCH_STATUSES = frozenset(
@@ -65,19 +75,115 @@ def local_day_window(first: date, last: date | None = None) -> tuple[datetime, d
     )
 
 
+def reset_close_schedule_cache() -> None:
+    global _schedule_cache
+    _schedule_cache = None
+
+
+def _close_schedule() -> tuple[tuple[date, time], ...]:
+    """История часа закрытия смены по возрастанию дня; кэш на процесс.
+
+    business_day_for зовётся на каждый мешок, а таблица меняется редко.
+    """
+    global _schedule_cache
+    now = monotonic()
+    if _schedule_cache is None or now - _schedule_cache[0] > _SCHEDULE_TTL_SECONDS:
+        rows = tuple(
+            AlwaysOnCloseTime.objects.order_by("effective_day").values_list(
+                "effective_day", "close_time"
+            )
+        )
+        _schedule_cache = (now, rows)
+    return _schedule_cache[1]
+
+
+def close_time_for(day: date) -> time:
+    """Час, в который закрывается смена ``day`` (по умолчанию 19:00)."""
+
+    result = DEFAULT_CLOSE_TIME
+    for effective_day, close_time in _close_schedule():
+        if effective_day > day:
+            break
+        result = close_time
+    return result
+
+
+def planned_close_time(after: date) -> tuple[date, time] | None:
+    """Первая смена после ``after`` с заранее назначенным новым часом."""
+
+    current = close_time_for(after)
+    for effective_day, close_time in _close_schedule():
+        if effective_day > after and close_time != current:
+            return effective_day, close_time
+    return None
+
+
 def business_day_for(value: datetime | None = None) -> date:
-    """Return the production day whose shift closes at 19:00 Almaty time."""
+    """Return the production day whose shift is open at ``value``.
+
+    Shift ``day`` closes on calendar ``day`` at :func:`close_time_for` and
+    starts where the previous one closed, so changing the hour never moves
+    an earlier shift.
+    """
 
     local = _local(value)
-    if local.timetz().replace(tzinfo=None) >= CLOSE_TIME:
-        return local.date() + timedelta(days=1)
-    return local.date()
+    day = local.date()
+    if local.timetz().replace(tzinfo=None) >= close_time_for(day):
+        return day + timedelta(days=1)
+    return day
 
 
 def scheduled_for(day: date) -> datetime:
-    """Return the aware 19:00 cutoff for a production day."""
+    """Return the aware cutoff (shift close) for a production day."""
 
-    return timezone.make_aware(datetime.combine(day, CLOSE_TIME), _default_timezone())
+    return timezone.make_aware(
+        datetime.combine(day, close_time_for(day)), _default_timezone()
+    )
+
+
+@transaction.atomic
+def set_close_time(value: time, user, now: datetime | None = None) -> date:
+    """Назначить новый час автоприхода; вернуть смену, с которой он действует.
+
+    Идущая смена получает новый час, если до её закрытия по обоим часам
+    остаётся :data:`CLOSE_TIME_CHANGE_MARGIN`: её мешки ещё не попали ни в
+    одну другую смену. Иначе — со следующей. Ранее назначенные на будущее
+    часы заменяются.
+    """
+
+    value = value.replace(second=0, microsecond=0, tzinfo=None)
+    now = _aware(now)
+    reset_close_schedule_cache()
+    current = business_day_for(now)
+    old = close_time_for(current)
+    if value == old and planned_close_time(current) is None:
+        return current
+    earliest = timezone.make_aware(
+        datetime.combine(current, min(old, value)), _default_timezone()
+    )
+    effective = (
+        current
+        if now + CLOSE_TIME_CHANGE_MARGIN < earliest
+        else current + timedelta(days=1)
+    )
+    AlwaysOnCloseTime.objects.filter(effective_day__gt=effective).delete()
+    AlwaysOnCloseTime.objects.update_or_create(
+        effective_day=effective,
+        defaults={"close_time": value, "set_by": user},
+    )
+    reset_close_schedule_cache()
+    transaction.on_commit(reset_close_schedule_cache)
+    log_event(
+        "always_on_close_time",
+        f"Автоприход AI 24/7: {old:%H:%M} → {value:%H:%M} со смены {effective:%d.%m.%Y}",
+        user=user,
+        payload={
+            "old": old.strftime("%H:%M"),
+            "new": value.strftime("%H:%M"),
+            "effective_day": effective.isoformat(),
+        },
+    )
+    return effective
 
 
 def _normalize_color(value: object) -> str:
@@ -133,7 +239,7 @@ def record_color_event(
             # Warehouse shifts span midnight, but analytics bars do not.
             # Split here so each run and its bag count belongs to exactly
             # one local calendar day while both halves retain the same
-            # 19:00-based business day for stock posting.
+            # shift-close business day for stock posting.
             or _local(row.last_counted_at).date() != _local(observed_at).date()
             or elapsed > RUN_GAP
         )

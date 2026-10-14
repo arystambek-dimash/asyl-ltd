@@ -595,7 +595,7 @@ def resolve_after_import(camera: str, since: datetime) -> int:
 
 
 def business_day_window(business_day: date) -> tuple[datetime, datetime]:
-    """[previous 19:00, this 19:00) — the production shift of ``business_day``."""
+    """[previous shift close, this shift close) — the shift of ``business_day``."""
 
     return scheduled_for(business_day - timedelta(days=1)), scheduled_for(business_day)
 
@@ -633,7 +633,7 @@ def resolve_business_day(camera: str, business_day: date) -> int:
 def awaits_following_bags(
     camera: str, business_day: date, caught_up_at: datetime | None
 ) -> bool:
-    """Whether a bag near the 19:00 cutoff may still get its "after" neighbour.
+    """Whether a bag near the shift-close cutoff may still get its "after" neighbour.
 
     The pass before posting freezes decisions for good. A bag without an
     answer in the last ``max_gap`` of the shift can borrow from the first bags

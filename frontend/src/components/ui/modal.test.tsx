@@ -139,7 +139,7 @@ describe("Modal dismissible=false", () => {
     const user = userEvent.setup();
     let closed = 0;
     render(
-      <Modal open onClose={() => (closed += 1)} title="Новый заказ" dismissible={false}>
+      <Modal open onClose={() => (closed += 1)} title="Возврат" dismissible={false}>
         <input aria-label="Поле" />
       </Modal>,
     );
@@ -148,6 +148,22 @@ describe("Modal dismissible=false", () => {
     await user.keyboard("{Escape}");
     expect(closed).toBe(0);
     await user.click(screen.getByRole("button", { name: "Закрыть" }));
+    expect(closed).toBe(1);
+  });
+});
+
+describe('Modal dismissible="escape"', () => {
+  it("closes on Escape but not on a backdrop click", async () => {
+    const user = userEvent.setup();
+    let closed = 0;
+    render(
+      <Modal open onClose={() => (closed += 1)} title="Новый заказ" dismissible="escape">
+        <input aria-label="Поле" />
+      </Modal>,
+    );
+    await user.click(document.querySelector(".animate-modal-backdrop") as HTMLElement);
+    expect(closed).toBe(0);
+    await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   });
 });

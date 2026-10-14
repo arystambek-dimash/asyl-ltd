@@ -673,13 +673,7 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
         # changed the transport after serializer validation.
         _final_transport(instance, validated_data)
         if "warehouse" in validated_data:
-            # До replace_items: его проверка остатка идёт уже по новому складу.
-            set_order_warehouse(
-                instance,
-                validated_data.pop("warehouse"),
-                user,
-                check_items="items" not in validated_data,
-            )
+            set_order_warehouse(instance, validated_data.pop("warehouse"), user)
         new_client = validated_data.pop("client", None)
         if new_client is not None and new_client.id != instance.client_id:
             raise serializers.ValidationError(

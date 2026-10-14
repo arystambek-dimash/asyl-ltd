@@ -256,8 +256,6 @@ export function OrderForm({
   // Один бонусный мешок на каждые 100 оплаченных — подсказка, а не правило: решает заявитель.
   const bonusDue = Math.floor(paidBags / 100);
   const bagsText = bagsSummary(estimate.bags, bonusBags);
-  // Исторический заказ склад не списывает — товар без остатка тоже можно выбрать.
-  const allowOutOfStock = shippedCorrection || backdating;
   const fixationError = backdating ? fixationDraftError(fixation, { currency }) : "";
   // Без цены у позиции итога нет — создать заказ всё равно нельзя (allPriced).
   const payNow = usePayNow(currency, moneyCents(estimate.amount ?? 0), draft?.payNow);
@@ -623,7 +621,6 @@ export function OrderForm({
                           ariaLabel={`Товар, позиция ${index + 1}`}
                           disabled={compositionLocked}
                           bagsOf={(product) => productBagsAtWarehouse(product, warehouse)}
-                          allowOutOfStock={allowOutOfStock}
                           onChange={(product) =>
                             updateRow(index, row.bonus ? { product } : { product, price: clientPrices[product] ?? "" })
                           }

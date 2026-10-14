@@ -209,7 +209,6 @@ function GoodsReturnForm({ onCancel, onCreated }: { onCancel: () => void; onCrea
                     className="col-span-2 sm:col-span-1"
                     ariaLabel={`Товар ${index + 1}`}
                     bagsOf={stockAt}
-                    allowOutOfStock
                     onChange={(product) => updateRow(row.id, { product })}
                   />
                   <Input

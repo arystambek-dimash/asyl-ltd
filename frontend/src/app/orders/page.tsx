@@ -924,7 +924,8 @@ function OrdersPageInner() {
         description="Создайте с нуля или подставьте старый заказ, проверьте данные и только потом сохраните."
         className="max-w-5xl"
         mobileFullscreen
-        dismissible={false}
+        // Esc закрывает — черновик сохранён; клик мимо окна — нет, чтобы не закрыть случайно.
+        dismissible="escape"
       >
         {open && (
           <div className="space-y-4">

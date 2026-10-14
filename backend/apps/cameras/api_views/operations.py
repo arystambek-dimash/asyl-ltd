@@ -16,6 +16,7 @@ from .. import (
     continuous,
     production,
     production_queries,
+    production_runs,
     recordings,
     shipping_history,
 )
@@ -33,6 +34,7 @@ from ..policies import (
     reserve_camera_roles,
 )
 from ..serializers import (
+    AlwaysOnCloseTimeSerializer,
     AlwaysOnProductMappingsSerializer,
     AlwaysOnUnknownColorSerializer,
     AnalyticsDayColorsSerializer,
@@ -392,6 +394,26 @@ class AlwaysOnUnknownColorView(PermAPIViewMixin, APIView):
                 request.user,
             )
         )
+
+
+class AlwaysOnCloseTimeView(PermAPIViewMixin, APIView):
+    """Час автоприхода AI 24/7 — меняет только суперпользователь."""
+
+    required_perms: ClassVar[dict] = {"put": SUPERUSER_ONLY}
+
+    def put(self, request):
+        serializer = AlwaysOnCloseTimeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        camera = assert_contour_camera(
+            serializer.validated_data["camera"],
+            ANALYTICS_SCOPE_AI247,
+            active=True,
+            field="camera",
+        )
+        production_runs.set_close_time(
+            serializer.validated_data["close_time"], request.user
+        )
+        return Response(production_queries.production_payload(camera))
 
 
 class AlwaysOnStockRetryView(PermAPIViewMixin, APIView):

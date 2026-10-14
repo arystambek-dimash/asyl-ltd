@@ -294,7 +294,7 @@ def _event_journal_wait(
         cursor.has_sync_failure
         or cursor.event_caught_up_at is None
         or cursor.event_caught_up_at < required_caught_up_at
-        # A bag without a colour just before 19:00 may take it from the
+        # A bag without a colour just before the shift close may take it from the
         # first bags after it; the final pass in _post_one freezes it.
         or color_resolution.awaits_following_bags(
             camera, business_day, cursor.event_caught_up_at
@@ -643,9 +643,9 @@ def assign_unknown_color(
 
     The oldest pending bags of the shift get ``color_resolution="manual"``;
     their original camera answer stays untouched. For an open shift that is
-    all: the 19:00 posting counts them under the colour. A shift already
+    all: the shift-close posting counts them under the colour. A shift already
     posted receives them now as a separate ``manual_color`` receipt, so the
-    immutable 19:00 posting is never rewritten. Every call is audited.
+    immutable shift-close posting is never rewritten. Every call is audited.
     ``bags`` is the positive count validated by AlwaysOnUnknownColorSerializer.
     """
 

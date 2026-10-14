@@ -53,7 +53,7 @@ def test_staff_create_defaults_to_main_warehouse_and_serializes_it(
     assert response.data["warehouse_name"] == main.name
 
 
-def test_staff_create_checks_stock_in_explicit_warehouse(auth_client, manager, make_product):
+def test_staff_create_pins_explicit_warehouse(auth_client, manager, make_product):
     alternate = _alternate_warehouse()
     product = make_product("Северный товар")
     receive_stock(product, 12, manager, warehouse=alternate)
@@ -74,6 +74,23 @@ def test_staff_create_checks_stock_in_explicit_warehouse(auth_client, manager, m
     assert order.warehouse_id == alternate.pk
     assert response.data["warehouse"] == alternate.pk
     assert response.data["warehouse_name"] == alternate.name
+
+
+def test_portal_order_is_created_when_stock_ran_out(auth_client, client_user, make_product):
+    """Товар закончился, пока лежал в корзине клиента, — заказ всё равно принимается."""
+    Client.objects.create_with_user(
+        first_name="Клиент", last_name="Портала", phone="warehouse-portal-empty", user=client_user,
+    )
+    product = make_product("Закончившийся товар")
+    StockItem.objects.create(product=product, bags=0)
+
+    response = auth_client(client_user).post(
+        "/api/portal/orders/",
+        {"items": [{"product": product.pk, "quantity": 5}]},
+        format="json",
+    )
+
+    assert response.status_code == 201, response.data
 
 
 def test_portal_creation_pins_default_without_exposing_warehouse(

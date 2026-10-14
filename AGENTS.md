@@ -61,6 +61,7 @@
 | Номер вагона | `common/wagon_numbers.py` | `ui/wagon-number-input.tsx`, `lib/wagons.ts` |
 | Нетто вагона | `Wagon.computed_net_kg` | — |
 | Склад и остатки | `warehouse/services.py` | — |
+| Час автоприхода AI 24/7 (закрытие смены, с историей) | `cameras/production_runs.py` (`close_time_for`, `set_close_time`), `cameras.AlwaysOnCloseTime` | `components/monoblock/always-on-close-time.tsx` |
 | Сводка «Главной» и режим ТВ | `orders/dashboard.py`, `warehouse/services.stock_by_product`; что показывать (отделы, склады) — `apps/dashboard` | `lib/use-dashboard-metrics.ts`, `lib/dashboard-analytics.ts`, `components/dashboard/*` |
 | С какого склада ушли мешки | `shipments/sources.py` | `components/loader/shipment-sources-sheet.tsx` |
 | Оплата долга клиента | `orders/debt_payments.py` | `components/payments/client-debt-payment-modal.tsx` |
