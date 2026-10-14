@@ -62,6 +62,14 @@ describe("карточка заказа у грузчика", () => {
     expect(screen.getByRole("list", { name: "Товары" }).querySelector("[aria-hidden]")).toBeNull();
   });
 
+  it("пробную партию помечает «Проба» рядом с клиентом, обычный заказ — без пометки", () => {
+    const { rerender } = render(<LoaderOrderCard order={{ ...twoFlours, is_trial: true }} onOpen={vi.fn()} />);
+    expect(screen.getByText(CLIENT)).toHaveTextContent(`${CLIENT}Проба`);
+
+    rerender(<LoaderOrderCard order={twoFlours} onOpen={vi.fn()} />);
+    expect(screen.queryByText("Проба")).not.toBeInTheDocument();
+  });
+
   it("ни имя, ни товары не обрезаются", () => {
     const { container } = render(<LoaderOrderCard order={twoFlours} onOpen={vi.fn()} />);
 

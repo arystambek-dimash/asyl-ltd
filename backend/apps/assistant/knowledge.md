@@ -63,6 +63,9 @@
 
 Вид транспорта `orders_order.transport_type`: {transport_types}.
 
+Пробная партия («проба»): `orders_order.is_trial = true`. Это обычный заказ —
+в деньгах, долге и складе считается как все, отличается только пометкой.
+
 ## Деньги заказа
 
 - Сумма заказа = Σ по позициям `(quantity - returned_quantity) * coalesce(unit_price, 0)`.

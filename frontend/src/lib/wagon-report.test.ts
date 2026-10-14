@@ -18,6 +18,7 @@ const row = (id: number, fields: Partial<LoaderOrder> = {}): LoaderOrder => ({
   truck_number: "12345678",
   planned_on: "2026-09-24",
   client_name: "ООО OSIYO NAV NIHOL",
+  is_trial: false,
   items: [],
   bags: 8160,
   total_kg: "408000.00",

@@ -90,6 +90,9 @@ class Order(models.Model):
     arrival_date = models.DateField(null=True, blank=True)
     # Короткая внутренняя заметка для оператора на детальной странице заказа.
     notes = models.TextField(blank=True, default="")
+    # Пробная партия: заказ как обычный (склад, деньги, отгрузка), а грузчик
+    # видит пометку «Проба».
+    is_trial = models.BooleanField(default=False, db_default=False)
     debt_requested = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

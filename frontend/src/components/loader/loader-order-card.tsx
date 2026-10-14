@@ -1,6 +1,7 @@
 "use client";
 import { ChevronRight } from "lucide-react";
 import { BonusBadge } from "@/components/orders/bonus-badge";
+import { TrialBadge } from "@/components/orders/trial-badge";
 import { OrderTransportBadge } from "@/components/ui/transport-number";
 import { WagonList } from "@/components/ui/wagon-list";
 import { isActOnlyLoad, loadWeight, type LoaderOrder, type LoaderOrderItem } from "@/lib/loader";
@@ -66,7 +67,10 @@ export function LoaderOrderCard({
     <>
       {/* Грузчик ищет заказ по клиенту: имя первым и крупно, переносится целиком. */}
       <div className="flex items-start justify-between gap-3">
-        <span className="min-w-0 break-words text-xl font-black leading-tight">{order.client_name}</span>
+        <span className="min-w-0 break-words text-xl font-black leading-tight">
+          {order.client_name}
+          {order.is_trial && <TrialBadge size="lg" className="ml-2 align-middle" />}
+        </span>
         {order.shipped_at ? (
           <span className="shrink-0 pt-0.5 text-sm font-semibold tabular-nums">{formatTime(order.shipped_at)}</span>
         ) : (

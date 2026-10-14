@@ -41,6 +41,7 @@ import { useOrderStatusChange } from "@/components/orders/use-order-status-chang
 import { useOrderActions } from "@/components/orders/order-actions";
 import { OrderReviewDialogs } from "@/components/orders/order-review-dialogs";
 import { BonusBadge } from "@/components/orders/bonus-badge";
+import { TrialBadge } from "@/components/orders/trial-badge";
 import { ArrowLeft, CalendarDays, CircleHelp, CopyPlus, Printer, Truck, UserRound } from "lucide-react";
 import { eventTypeMeta } from "@/lib/event-types";
 import type { Client, EventLog, Order, Store } from "@/lib/types";
@@ -195,6 +196,7 @@ function OrderDetailPageInner({ params }: { params: Promise<{ id: string }> }) {
             <h2 className="text-xl font-semibold tracking-tight">Заказ #{order.id}</h2>
             <StatusBadge status={order.status} dot />
             <OrderPaymentBadge order={order} pending={hasPendingPayment} dot />
+            {order.is_trial && <TrialBadge />}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--muted-foreground)]">
             <span className="flex items-center gap-1.5">

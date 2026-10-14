@@ -410,6 +410,7 @@ class OrderSerializer(OrderWagonsMixin, DepartmentLabelMixin, serializers.ModelS
             "wagons",
             "arrival_date",
             "notes",
+            "is_trial",
             "items",
             "total_amount",
             "paid_total",

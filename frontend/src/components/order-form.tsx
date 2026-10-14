@@ -56,6 +56,12 @@ const TRANSPORT_OPTIONS: { value: TruckKind | "train"; label: string }[] = [
   { value: "train", label: "Вагон" },
 ];
 
+// «Проба» — пробная партия: заказ обычный, грузчик видит пометку.
+const ORDER_KIND_OPTIONS: { value: "regular" | "trial"; label: string; caption: string }[] = [
+  { value: "regular", label: "Обычный", caption: "без пометки" },
+  { value: "trial", label: "Проба", caption: "увидит грузчик" },
+];
+
 const ADD_ROW_BUTTON =
   "inline-flex items-center gap-1.5 text-sm font-semibold text-slate-700 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -144,6 +150,8 @@ export function OrderForm({
   const [arrival, setArrival] = useState(
     draft?.arrival ?? editing?.arrival_date ?? (template ? todayLocalIsoDate() : ""),
   );
+  // Повтор старого заказа — уже не проба: из шаблона пометка не берётся.
+  const [trial, setTrial] = useState(draft?.trial ?? editing?.is_trial ?? false);
   const [rows, setRows] = useState<OrderDraftRow[]>(
     draft?.rows.length
       ? draft.rows
@@ -283,6 +291,7 @@ export function OrderForm({
       trailer,
       wagonNumber,
       arrival,
+      trial,
       rows,
       backdateOn,
       fixation,
@@ -307,6 +316,7 @@ export function OrderForm({
     trailer,
     wagonNumber,
     arrival,
+    trial,
     rows,
     backdateOn,
     fixation,
@@ -398,6 +408,7 @@ export function OrderForm({
         store: store ? Number(store) : null,
         ...(warehouse ? { warehouse: Number(warehouse) } : {}),
         arrival_date: arrival || null,
+        is_trial: trial,
         currency,
         ...(!physicalFieldsLocked
           ? {
@@ -457,6 +468,7 @@ export function OrderForm({
         .join(" "),
     },
     ...(arrival ? [{ label: "Прибытие", value: arrival }] : []),
+    ...(trial ? [{ label: "Заказ", value: "Проба" }] : []),
   ];
 
   return (
@@ -504,52 +516,59 @@ export function OrderForm({
                 }
               />
 
-              {(!assignedDepartment || (client && clientStores.length > 0)) && (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {!assignedDepartment && (
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="order-department">Отдел продаж</Label>
-                      <Select
-                        id="order-department"
-                        value={dept}
-                        disabled={departmentLocked}
-                        onChange={(event) => setDept(event.target.value)}
-                        className="h-10 rounded-lg bg-white"
-                      >
-                        <option value="">Выберите отдел</option>
-                        {departments.map((department) => (
-                          <option
-                            key={department.code}
-                            value={department.code}
-                            disabled={departmentLocked && department.code !== editing?.department}
-                          >
-                            {department.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                  )}
-                  {client && clientStores.length > 0 && (
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="order-store">Магазин</Label>
-                      <Select
-                        id="order-store"
-                        value={store}
-                        onChange={(event) => setStore(event.target.value)}
-                        className="h-10 rounded-lg bg-white"
-                      >
-                        <option value="">Без магазина — заказ на клиента</option>
-                        {clientStores.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.name}
-                            {item.address ? ` · ${item.address}` : ""}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                  )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                {!assignedDepartment && (
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="order-department">Отдел продаж</Label>
+                    <Select
+                      id="order-department"
+                      value={dept}
+                      disabled={departmentLocked}
+                      onChange={(event) => setDept(event.target.value)}
+                      className="h-10 rounded-lg bg-white"
+                    >
+                      <option value="">Выберите отдел</option>
+                      {departments.map((department) => (
+                        <option
+                          key={department.code}
+                          value={department.code}
+                          disabled={departmentLocked && department.code !== editing?.department}
+                        >
+                          {department.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
+                {client && clientStores.length > 0 && (
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="order-store">Магазин</Label>
+                    <Select
+                      id="order-store"
+                      value={store}
+                      onChange={(event) => setStore(event.target.value)}
+                      className="h-10 rounded-lg bg-white"
+                    >
+                      <option value="">Без магазина — заказ на клиента</option>
+                      {clientStores.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                          {item.address ? ` · ${item.address}` : ""}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
+                <div className="grid gap-1.5">
+                  <Label>Заказ</Label>
+                  <Segmented
+                    ariaLabel="Проба или обычный заказ"
+                    value={trial ? "trial" : "regular"}
+                    onChange={(value) => setTrial(value === "trial")}
+                    options={ORDER_KIND_OPTIONS}
+                  />
                 </div>
-              )}
+              </div>
             </section>
 
             <section className="space-y-4">

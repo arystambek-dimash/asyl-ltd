@@ -443,6 +443,29 @@ describe("OrderForm reference data resilience", () => {
     );
   });
 
+  it("marks a trial order; a repeated trial starts as a regular order", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm template={orderTemplate({ is_trial: true })} onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: /^Обычный/ })).toHaveAttribute("aria-checked", "true");
+
+    await user.click(screen.getByRole("radio", { name: /^Проба/ }));
+    expect(screen.getByText("Проба", { selector: "dd" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Создать заказ/ }));
+
+    expect(postMock).toHaveBeenCalledWith("/orders/", expect.objectContaining({ is_trial: true }));
+  });
+
+  it("takes the trial mark off an existing order", async () => {
+    const user = userEvent.setup();
+    render(<OrderForm editing={numberOrder({ is_trial: true })} onCancel={vi.fn()} onDone={vi.fn()} />);
+    expect(screen.getByRole("radio", { name: /^Проба/ })).toHaveAttribute("aria-checked", "true");
+
+    await user.click(screen.getByRole("radio", { name: /^Обычный/ }));
+    await user.click(screen.getByRole("button", { name: /Сохранить изменения/ }));
+
+    expect(patchMock).toHaveBeenCalledWith("/orders/22/", expect.objectContaining({ is_trial: false }));
+  });
+
   it("keeps a legacy truck number untouched on an unrelated edit", async () => {
     const user = userEvent.setup();
     render(

@@ -43,6 +43,15 @@ def test_queue_shows_orders_waiting_for_shipment(auth_client, loader, product, m
     assert shipped.pk not in [row["id"] for row in rows]
 
 
+def test_queue_marks_trial_orders(auth_client, loader, product, make_order):
+    trial = make_order(product, is_trial=True)
+    regular = make_order(product)
+
+    rows = auth_client(loader).get("/api/loader/queue/").data
+
+    assert {row["id"]: row["is_trial"] for row in rows} == {trial.pk: True, regular.pk: False}
+
+
 def test_queue_filters_by_planned_day_and_search(auth_client, loader, product, make_order):
     tomorrow = timezone.localdate() + timedelta(days=1)
     today_order = make_order(product)

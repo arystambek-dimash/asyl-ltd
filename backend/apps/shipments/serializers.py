@@ -48,6 +48,8 @@ class LoaderOrderSerializer(OrderWagonsMixin, TransportSuggestionsMixin, seriali
     # Плановый день (дата приезда, иначе день создания) — по нему очередь делится на дни.
     planned_on = serializers.DateField()
     client_name = serializers.SerializerMethodField()
+    # Пробная партия — грузчик видит пометку «Проба».
+    is_trial = serializers.BooleanField()
     # Страна номера по умолчанию в поле «Тягач».
     client_country = serializers.CharField(source="client.country")
     items = LoaderOrderItemSerializer(many=True, source="items.all")

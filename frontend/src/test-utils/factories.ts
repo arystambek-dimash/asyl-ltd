@@ -48,6 +48,7 @@ export function makeLoaderOrder(id: number, overrides: Partial<LoaderOrder> = {}
     truck_number: "",
     planned_on: "2026-09-16",
     client_name: "Клиент",
+    is_trial: false,
     items: [],
     bags: 1,
     total_kg: "50.00",

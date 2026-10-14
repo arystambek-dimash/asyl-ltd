@@ -29,6 +29,8 @@ export interface LoaderOrder {
   /** Плановый день: дата приезда, иначе день создания (ГГГГ-ММ-ДД). */
   planned_on: string;
   client_name: string;
+  /** Пробная партия — на карточке и экране заказа пометка «Проба». */
+  is_trial: boolean;
   /** Страна клиента — страна номера по умолчанию. */
   client_country: string;
   items: LoaderOrderItem[];

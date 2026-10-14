@@ -14,6 +14,7 @@ const wagonOrder: LoaderOrder = {
   truck_number: "",
   planned_on: "2026-09-24",
   client_name: "ТОО Нур",
+  is_trial: false,
   items: [makeLoaderItem({ label: "Мука в/с", quantity: 1360 })],
   bags: 1360,
   total_kg: "68000",

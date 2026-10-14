@@ -26,6 +26,8 @@ export interface OrderDraft {
   trailer?: string;
   wagonNumber: string;
   arrival: string;
+  /** Пробная партия; в черновиках до «Пробы» поля нет — заказ обычный. */
+  trial?: boolean;
   rows: OrderDraftRow[];
   backdateOn: boolean;
   fixation: FixationDraft;
@@ -89,6 +91,7 @@ export function orderDraftHasContent(draft: OrderDraft) {
     draft.trailer ||
     draft.wagonNumber ||
     draft.arrival ||
+    draft.trial ||
     draft.backdateOn ||
     draft.rows.some((row) => row.product || row.quantity || row.price),
   );

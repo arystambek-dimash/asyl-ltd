@@ -1,5 +1,6 @@
 "use client";
 import { ArrowLeft, ClipboardPaste, Lock, PackageCheck, Printer, Undo2 } from "lucide-react";
+import { TrialBadge } from "@/components/orders/trial-badge";
 import { Button } from "@/components/ui/button";
 import { FormError } from "@/components/ui/data-state";
 import { PlateSuggestions } from "@/components/ui/plate-input";
@@ -115,7 +116,10 @@ export function LoaderOrderScreen({
       <div className="flex flex-col gap-5 rounded-2xl border-2 border-[var(--loader-border)]! bg-[var(--card)] p-5">
         {/* Кому грузим — первым и крупно: так грузчик сверяет заказ с машиной. */}
         <div>
-          <h2 className="break-words text-2xl font-black leading-tight">{order.client_name}</h2>
+          <h2 className="break-words text-2xl font-black leading-tight">
+            {order.client_name}
+            {order.is_trial && <TrialBadge size="lg" className="ml-2 align-middle" />}
+          </h2>
           <div className="mt-1 text-sm font-medium tabular-nums text-[var(--muted-foreground)]">№{order.id}</div>
         </div>
         <TransportNumbers order={order} numbers={numbers} onNumbers={onNumbers} />

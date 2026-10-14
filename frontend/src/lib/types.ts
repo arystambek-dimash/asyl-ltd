@@ -414,6 +414,8 @@ export interface Order {
   wagons?: ShipmentWagon[];
   arrival_date?: string | null;
   notes?: string;
+  /** Пробная партия: обычный заказ с пометкой «Проба» (её видит грузчик). */
+  is_trial?: boolean;
   items: OrderItem[];
   total_amount: string;
   paid_total: string;
