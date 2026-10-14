@@ -777,8 +777,13 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
         url_path="dashboard-operational",
     )
     def dashboard_operational(self, request):
-        """Сводка «Главной»: очередь погрузки и отгрузки по дням отделов ``?department=``."""
-        qs = filter_order_scope(self.get_queryset(), request.query_params)
+        """Сводка «Главной»: очередь погрузки отделов ``?department=`` и отгрузки по дням.
+
+        Отгрузка — общая, по всем отделам, которые видит сотрудник, как «Аналитика
+        дня» грузчика; выбранные на «Главной» отделы ограничивают только очередь.
+        """
+        visible = self.get_queryset()
+        qs = filter_order_scope(visible, request.query_params)
         date_from, date_to = parse_date_range(request.query_params)
         return Response({
             "queue": OrderSerializer(
@@ -786,7 +791,7 @@ class OrderViewSet(PermViewSetMixin, viewsets.ModelViewSet):
                 many=True,
                 context={"request": request},
             ).data,
-            "days": shipped_by_day(qs, date_from, date_to),
+            "days": shipped_by_day(visible, date_from, date_to),
         })
 
     @action(detail=True, methods=["post"], url_path="correct-price")

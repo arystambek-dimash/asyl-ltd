@@ -258,7 +258,11 @@ def test_dashboard_operational_returns_authoritative_data(
 
 
 def test_dashboard_operational_shows_only_chosen_departments(auth_client, operator, get_permission):
-    """«Главная» передаёт выбранные суперпользователем отделы: ?department=код,код."""
+    """«Главная» передаёт выбранные суперпользователем отделы: ?department=код,код.
+
+    Они ограничивают очередь; отгрузка дня — общая, как «Аналитика дня» грузчика.
+    """
+    from apps.eventlog.models import EventLog
     from apps.sales.models import Department
 
     operator.employee.permissions.add(get_permission("dashboard.view"))
@@ -268,11 +272,22 @@ def test_dashboard_operational_shows_only_chosen_departments(auth_client, operat
     mill = _order(client, "loading", department="mill")
     mill_2 = _order(client, "arrived", department="mill-2")
     _order(client, "loading", department="city")
+    for department, bags in (("mill", 142), ("city", 252)):
+        EventLog.objects.create(
+            event_type="shipment",
+            message="Отгружено",
+            order=_order(client, "shipped", timezone.now(), department=department),
+            payload={"bags_loaded": bags},
+        )
+    today = timezone.localdate().isoformat()
 
-    response = auth_client(operator).get("/api/orders/dashboard-operational/?department=mill,mill-2")
+    response = auth_client(operator).get(
+        f"/api/orders/dashboard-operational/?department=mill,mill-2&date_from={today}&date_to={today}"
+    )
 
     assert response.status_code == 200
     assert [item["id"] for item in response.data["queue"]] == [mill.id, mill_2.id]
+    assert [(day["bags"], day["orders"]) for day in response.data["days"]] == [(394, 2)]
 
 
 @pytest.mark.parametrize("codes", [["orders.view"], ["dashboard.view"]])
