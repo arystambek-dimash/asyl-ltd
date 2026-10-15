@@ -11,7 +11,7 @@ export interface Me {
   position: string | null;
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
   /** Свой магазин сотрудника — пункт меню «Мой магазин»; null — магазина нет. */
-  shop?: { name: string; warehouse_name: string } | null;
+  shop?: { name: string } | null;
 }
 
 /** Код товара в отчётах о вагонах («Д1с»), хранится ключом сравнения. */
@@ -1187,15 +1187,12 @@ export interface EmployeeShopSettings {
   /** Клиент-магазин: его прайс ставит бухгалтер, долг виден в кассе. */
   client: number;
   name: string;
-  warehouse: number;
-  warehouse_name: string;
 }
 /** Шапка «Моего магазина»: долг и взятое за текущий месяц — суммы считает сервер. */
 export interface MyShopSummary {
   /** Клиент-магазин: его прайс сотрудник с правом на цены ставит сам. */
   client: number;
   name: string;
-  warehouse_name: string;
   currency: "KZT" | "USD";
   debt_total: string;
   debt_currency: string;

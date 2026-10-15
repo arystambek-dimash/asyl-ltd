@@ -1,8 +1,9 @@
-"""Магазин сотрудника: включение в карточке сотрудника и заказы «сразу со склада».
+"""Магазин сотрудника: включение в карточке сотрудника и заказы без грузчика.
 
 Магазин — покупатель (``EmployeeShop.client``): цены — его прайс (ставит
 бухгалтер, как клиентам), неоплаченное — долг магазина в кассе. Заказ не идёт
-грузчику: подтверждается по прайсу и сразу отгружается со склада магазина.
+грузчику: подтверждается по прайсу и сразу считается отгруженным, а склад при
+этом не списывается — ни один (владелец, 15.10.2026).
 Свой заказ сотрудник отменяет в течение часа, пока по нему нет денег, — по тому
 же правилу, что грузчик свою отгрузку.
 """
@@ -21,7 +22,7 @@ from apps.orders.debt import debt_by_currency, debt_fields, financial_orders
 from apps.orders.models import Order, OrderItem, Payment
 from apps.orders.services import confirm_order, order_items_error
 from apps.sales.models import Department
-from apps.shipments.services import loader_rollback_blocker, rollback_shipment, ship_from_warehouse
+from apps.shipments.services import loader_rollback_blocker, rollback_shipment, ship_without_stock
 from apps.warehouse.services import resolve_warehouse
 
 from .models import EmployeeShop
@@ -55,18 +56,16 @@ def _shop_department(employee) -> Department:
 
 
 @transaction.atomic
-def set_employee_shop(employee, user, *, enabled: bool, name: str = "", warehouse=None) -> EmployeeShop | None:
+def set_employee_shop(employee, user, *, enabled: bool, name: str = "") -> EmployeeShop | None:
     """Включить, настроить или выключить магазин сотрудника.
 
     Первое включение заводит покупателя-магазин (клиента с выключенным входом в
     портал) в отделе сотрудника. Выключение только прячет «Мой магазин»: клиент,
     заказы и долг остаются, а повторное включение берёт того же клиента.
-    ``warehouse`` — склад, с которого списываются заказы; ``None`` — прежний,
-    у нового магазина — основной.
     """
     shop = (
         EmployeeShop.objects.select_for_update(of=("self",))
-        .select_related("client__user", "client__department", "warehouse")
+        .select_related("client__user", "client__department")
         .filter(employee=employee)
         .first()
     )
@@ -77,18 +76,17 @@ def set_employee_shop(employee, user, *, enabled: bool, name: str = "", warehous
         return shop
 
     name = " ".join(str(name or "").split()) or (shop.client.name if shop else default_shop_name(employee))
-    warehouse = resolve_warehouse(warehouse if warehouse is not None else (shop.warehouse if shop else None))
     department = _shop_department(employee)
     if shop is None:
         client = Client.objects.create_with_user(
             first_name=name, last_name="", phone=employee.phone, department=department,
         )
-        return EmployeeShop.objects.create(employee=employee, client=client, warehouse=warehouse)
+        return EmployeeShop.objects.create(employee=employee, client=client, warehouse=resolve_warehouse(None))
 
     sync_user_names(shop.client.user, {"first_name": name, "last_name": ""})
     _move_with_employee(shop, department, user)
-    shop.warehouse, shop.is_active = warehouse, True
-    shop.save(update_fields=["warehouse", "is_active"])
+    shop.is_active = True
+    shop.save(update_fields=["is_active"])
     return shop
 
 
@@ -123,8 +121,6 @@ def shop_settings(shop: EmployeeShop | None) -> dict | None:
         "enabled": shop.is_active,
         "client": shop.client_id,
         "name": shop.client.name,
-        "warehouse": shop.warehouse_id,
-        "warehouse_name": shop.warehouse.name,
     }
 
 
@@ -159,7 +155,6 @@ def shop_summary(shop: EmployeeShop) -> dict:
         # Клиент-магазин: его прайс сотрудник с правом на цены ставит сам из «Моего магазина».
         "client": client.pk,
         "name": client.name,
-        "warehouse_name": shop.warehouse.name,
         "currency": client.currency,
         **debt_fields(debt_by_currency(orders), fallback=client.currency),
         "month_bags": sum(order.goods_bags for order in month),
@@ -229,7 +224,7 @@ def place_shop_order(user, items: list[dict]) -> Order:
             order=order, product=item["product"], quantity=item["quantity"], unit_price=prices[item["product"].pk],
         )
     confirm_order(order, user)
-    ship_from_warehouse(order, user, label=f"Магазин сотрудника: списано со склада «{shop.warehouse.name}»")
+    ship_without_stock(order, user, label="Магазин сотрудника: без грузчика, склад не списан")
     return order
 
 

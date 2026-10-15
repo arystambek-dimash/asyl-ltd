@@ -27,7 +27,6 @@ vi.mock("next/link", () => import("@/test-utils/next-link"));
 const summary = {
   client: 77,
   name: "Магазин Иван Петров",
-  warehouse_name: "Мельница",
   currency: "KZT",
   debt_total: "150000.00",
   debt_currency: "KZT",
@@ -83,12 +82,12 @@ describe("MyShopPage", () => {
     });
   });
 
-  it("показывает только товары с ценой и списывает корзину со склада одной кнопкой", async () => {
+  it("показывает только товары с ценой и оформляет корзину одной кнопкой, не списывая склад", async () => {
     const user = userEvent.setup();
     mocks.post.mockResolvedValue({ data: { ...order, id: 42, bags: 2 } });
     render(<MyShopPage />);
 
-    expect(screen.getByText(/списываются со склада «Мельница» сразу/)).toBeInTheDocument();
+    expect(screen.getByText(/без грузчика, склад не списывается/)).toBeInTheDocument();
     expect(screen.queryByText("Без цены · Синий 25 кг")).not.toBeInTheDocument();
     expect(screen.getByText(/Ещё 1 товар без цены/)).toBeInTheDocument();
 
@@ -97,13 +96,13 @@ describe("MyShopPage", () => {
     await user.click(screen.getByRole("button", { name: "Оформить" }));
 
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText(/без грузчика/)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: /Списать 2 мешка/ }));
+    expect(within(dialog).getByText(/склад не списывается/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: /Оформить 2 мешка/ }));
 
     await waitFor(() =>
       expect(mocks.post).toHaveBeenCalledWith("/my-shop/orders/", { items: [{ product: 1, quantity: 2 }] }),
     );
-    expect(mocks.toast).toHaveBeenCalledWith("Заказ №42: 2 мешка списано со склада", "success");
+    expect(mocks.toast).toHaveBeenCalledWith("Заказ №42: 2 мешка оформлено", "success");
     expect(useCartStore.getState().carts["3"].lines).toEqual([]);
     expect(screen.getByText("№41")).toBeInTheDocument();
   });

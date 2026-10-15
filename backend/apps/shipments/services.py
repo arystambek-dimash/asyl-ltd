@@ -574,6 +574,7 @@ def _do_ship(
     *,
     shipped_at: datetime | None = None,
     sources: list[ShipmentSource] | None = None,
+    write_off_stock: bool = True,
 ):
     """Списать со склада и зафиксировать отгрузку. Общее для трака и вагона.
 
@@ -584,12 +585,18 @@ def _do_ship(
     ``shipped_at`` — отгрузка по отчёту за прошедший день: момент выезда и
     события отгрузки и долга переносятся на этот день (сводки читают их по
     дате события), склад списывается как обычно.
+    ``write_off_stock=False`` — отгрузка без списания (магазин сотрудника,
+    :func:`ship_without_stock`): ``Shipment.stock_deducted = False``, откат склад не вернёт.
     """
     from apps.orders.transport import client_transport_phrase
 
-    if sources is None:
-        sources = default_sources(order, _order_items(order, refusal="Нельзя отгрузить"))
-    written = write_off(order, shipment, sources, user)
+    if not write_off_stock:
+        shipment.stock_deducted = False
+        written = []
+    else:
+        if sources is None:
+            sources = default_sources(order, _order_items(order, refusal="Нельзя отгрузить"))
+        written = write_off(order, shipment, sources, user)
     shipment.shipped_at = shipped_at or timezone.now()
     shipment.save()
     debt_event = mark_order_shipped(order, user)
@@ -604,7 +611,8 @@ def _do_ship(
                      str(shipment.weigh_in_kg)
                      if shipment.weigh_in_kg is not None else None
                  ),
-                 "sources": written})
+                 "sources": written,
+                 **({} if write_off_stock else {"stock_deducted": False})})
     if shipped_at is not None:
         backdate_events([shipment_event, debt_event], shipped_at)
     # Единственное уведомление клиенту об отгрузке. Машина на территории —
@@ -667,18 +675,18 @@ def dispatch_order(
 
 
 @transaction.atomic
-def ship_from_warehouse(order, user, *, label: str):
-    """Отгрузка без поста и грузчика: заказ целиком уходит со «Склада отгрузки».
-
-    Товар забирают прямо со склада (магазин сотрудника, ``employees/shop.py``):
-    права грузчика не нужны — кто вправе так отгружать, решает вызывающий
-    сервис. Списание, долг и журнал — общие с кнопкой грузчика (``_do_ship``).
+def ship_without_stock(order, user, *, label: str):
+    """Отгрузка без поста, грузчика и списания склада (магазин сотрудника,
+    ``employees/shop.py``): заказ целиком считается отгруженным, остатки не
+    трогаются — и откат их не вернёт (``Shipment.stock_deducted = False``, как
+    у фиксации). Права грузчика не нужны — кто вправе так отгружать, решает
+    вызывающий сервис. Долг и журнал — общие с кнопкой грузчика (``_do_ship``).
     """
     order = _locked(order)
     _assert_awaiting_shipment(order)
     shipment, _ = Shipment.objects.get_or_create(order=order)
     shipment.bags_loaded = order.ordered_bags
-    return _do_ship(order, shipment, user, label)
+    return _do_ship(order, shipment, user, label, write_off_stock=False)
 
 
 def _check_loader_dispatch(order, user, *, truck_number: str, trailer_number: str | None) -> None:

@@ -76,9 +76,9 @@ def test_admin_turns_shop_on_when_creating_employee(admin_api, departments):
         "enabled": True,
         "client": shop.client_id,
         "name": "Магазин Иван Петров",
-        "warehouse": Warehouse.objects.get(is_default=True).pk,
-        "warehouse_name": shop.warehouse.name,
     }
+    # Заказы магазина относятся к основному складу, но его не списывают.
+    assert shop.warehouse == Warehouse.objects.get(is_default=True)
     # Магазин — покупатель в отделе сотрудника, без входа в портал.
     assert shop.client.department == departments[1]
     assert not shop.client.user.is_active
@@ -153,10 +153,7 @@ def test_menu_shows_my_shop_only_with_active_shop(auth_client, worker, user_with
     from apps.employees.shop import set_employee_shop
 
     set_employee_shop(worker.employee, worker, enabled=True)
-    assert auth_client(worker).get("/api/auth/me/").data["shop"] == {
-        "name": "Магазин A B",
-        "warehouse_name": Warehouse.objects.get(is_default=True).name,
-    }
+    assert auth_client(worker).get("/api/auth/me/").data["shop"] == {"name": "Магазин A B"}
 
 
 def test_catalog_shows_shop_prices(auth_client, worker, shop, flour, make_product):
@@ -172,7 +169,7 @@ def test_catalog_shows_shop_prices(auth_client, worker, shop, flour, make_produc
     assert "bags" not in rows[flour.pk]
 
 
-def test_order_ships_from_warehouse_at_once_into_shop_debt(auth_client, worker, shop, flour):
+def test_order_ships_at_once_into_shop_debt_without_touching_stock(auth_client, worker, shop, flour):
     _price(shop, flour)
     api = auth_client(worker)
 
@@ -183,8 +180,11 @@ def test_order_ships_from_warehouse_at_once_into_shop_debt(auth_client, worker, 
     assert order.status == "shipped"
     assert order.client == shop.client
     assert order.created_by == worker
-    assert Shipment.objects.get(order=order).bags_loaded == 30
-    assert _bags(flour) == 70
+    shipment = Shipment.objects.get(order=order)
+    assert shipment.bags_loaded == 30
+    assert shipment.stock_deducted is False
+    # Ни один склад не списан (владелец, 15.10.2026).
+    assert _bags(flour) == 100
     assert response.data["total_amount"] == "150000.00"
     assert response.data["remaining_amount"] == "150000.00"
     assert response.data["cancel_blocker"] == ""
@@ -198,20 +198,29 @@ def test_order_ships_from_warehouse_at_once_into_shop_debt(auth_client, worker, 
     assert [row["id"] for row in api.get("/api/my-shop/orders/").data] == [order.pk]
 
 
-def test_order_from_shop_warehouse(admin_api, auth_client, worker, shop, flour, boss):
+def test_shop_orders_touch_no_warehouse_even_for_a_product_nowhere_in_stock(auth_client, worker, shop, flour, make_product, boss):
     from apps.warehouse.services import receive_stock
 
     second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
     receive_stock(flour, 50, boss, warehouse=second)
-    admin_api.patch(
-        f"/api/employees/{worker.employee.pk}/security/", {"shop": {"enabled": True, "warehouse": second.pk}},
+    own = make_product(name="Свой товар")  # ни на одном складе его нет
+    _price(shop, flour)
+    _price(shop, own)
+    api = auth_client(worker)
+
+    created = api.post(
+        "/api/my-shop/orders/",
+        {"items": [{"product": flour.pk, "quantity": 7}, {"product": own.pk, "quantity": 3}]},
         format="json",
     )
-    _price(shop, flour)
 
-    assert _order(auth_client(worker), flour, quantity=5).status_code == 201
-    assert _bags(flour, second) == 45
-    assert _bags(flour) == 100
+    assert created.status_code == 201, created.data
+    assert (_bags(flour), _bags(flour, second)) == (100, 50)
+    assert not StockItem.objects.filter(product=own).exists()
+    # Отмена тоже ничего на склад не возвращает — нечего.
+    assert api.post(f"/api/my-shop/orders/{created.data['id']}/cancel/").status_code == 200
+    assert (_bags(flour), _bags(flour, second)) == (100, 50)
+    assert not StockItem.objects.filter(product=own).exists()
 
 
 def test_product_without_shop_price_is_not_ordered(auth_client, worker, shop, flour):
@@ -364,3 +373,4 @@ def test_employee_does_not_take_payment_for_own_shop(auth_client, cashier_with_s
         services.correct_order_prices(sold, user, total_amount="1")
     # Другой сотрудник — как с любым клиентом.
     assert services.accountant_confirm_payment(received, boss).status == "confirmed"
+

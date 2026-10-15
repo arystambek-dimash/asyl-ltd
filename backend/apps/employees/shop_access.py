@@ -14,7 +14,7 @@ def active_shop(user) -> EmployeeShop | None:
     if not getattr(user, "is_authenticated", False) or user.is_client:
         return None
     return (
-        EmployeeShop.objects.select_related("client__user", "client__department", "warehouse")
+        EmployeeShop.objects.select_related("client__user", "client__department")
         .filter(employee__user=user, employee__is_active=True, is_active=True)
         .first()
     )

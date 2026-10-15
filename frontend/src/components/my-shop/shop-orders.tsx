@@ -13,7 +13,7 @@ import { useConfirmAction } from "@/lib/use-confirm-action";
 import { useLocalDay } from "@/lib/use-local-day";
 import { bagsLabel, formatCurrency, formatTime } from "@/lib/utils";
 
-/** «Мои заказы»: что и когда списано, сколько должен магазин; «Повторить» и отмена в течение часа. */
+/** «Мои заказы»: что и когда заказано, сколько должен магазин; «Повторить» и отмена в течение часа. */
 export function ShopOrders({
   orders,
   total,
@@ -44,7 +44,7 @@ export function ShopOrders({
           <ScrollText className="size-8 text-[var(--muted-foreground)]" />
           <div className="text-sm font-medium">Заказов пока нет</div>
           <p className="max-w-xs text-xs text-[var(--muted-foreground)]">
-            Выберите товары во вкладке «Заказать» — здесь появится, что и когда списано со склада.
+            Выберите товары во вкладке «Заказать» — здесь появится, что и когда вы заказали.
           </p>
         </CardContent>
       </Card>
@@ -137,7 +137,7 @@ function ShopOrderRow({
             size="sm"
             variant="ghost"
             className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-            title="Отменить можно в течение часа после списания"
+            title="Отменить можно в течение часа после заказа"
             onClick={onCancel}
           >
             <Undo2 className="size-4" /> Отменить

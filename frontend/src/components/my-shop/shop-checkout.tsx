@@ -13,18 +13,16 @@ import { bagsLabel, formatCurrency } from "@/lib/utils";
 import { useCart } from "@/store/cart";
 
 /**
- * Нижняя панель корзины «Моего магазина» и окно «Списать со склада».
- * Заказ не ждёт ни менеджера, ни грузчика: после подтверждения мешки уже списаны.
+ * Нижняя панель корзины «Моего магазина» и окно «Оформить заказ».
+ * Заказ не ждёт ни менеджера, ни грузчика и склад не списывает.
  */
 export function ShopCheckout({
   priced,
   currency,
-  warehouseName,
   onPlaced,
 }: {
   priced: PricedCart;
   currency: string;
-  warehouseName: string;
   onPlaced: (order: MyShopOrder) => void;
 }) {
   const cart = useCart();
@@ -70,8 +68,8 @@ export function ShopCheckout({
         onClose={() => !busy && setOpen(false)}
         variant="sheet"
         eyebrow="Мой магазин"
-        title="Списать со склада"
-        description={`Мешки сразу спишутся со склада «${warehouseName}», без грузчика. Сумма ляжет в долг магазина — оплата в кассе.`}
+        title="Оформить заказ"
+        description="Без грузчика, склад не списывается. Сумма ляжет в долг магазина — оплата в кассе."
         className="max-w-xl"
         footer={
           <>
@@ -80,7 +78,7 @@ export function ShopCheckout({
             </Button>
             <Button type="button" disabled={busy || priced.orderItems.length === 0} onClick={place}>
               <PackageCheck className="size-4" />
-              {busy ? "Списываем…" : `Списать ${bagsLabel(priced.quantity)}`}
+              {busy ? "Оформляем…" : `Оформить ${bagsLabel(priced.quantity)}`}
             </Button>
           </>
         }

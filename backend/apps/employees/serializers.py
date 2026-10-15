@@ -14,7 +14,6 @@ from apps.orders.statuses import is_financial, public_status_label
 from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
 from apps.sales.models import Department
 from apps.sys_permissions.models import Permission
-from apps.warehouse.models import Warehouse
 
 from .models import Employee
 from .shop import cancel_blocker, follow_employee_department, set_employee_shop, shop_settings
@@ -86,9 +85,6 @@ class ShopSettingsSerializer(serializers.Serializer):
 
     enabled = serializers.BooleanField()
     name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
-    warehouse = serializers.PrimaryKeyRelatedField(
-        queryset=Warehouse.objects.all(), required=False, allow_null=True, default=None,
-    )
 
 
 def _save_shop(serializer, employee, shop_data) -> None:

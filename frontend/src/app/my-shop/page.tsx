@@ -49,7 +49,7 @@ export default function MyShopPage() {
   }
 
   function placed(order: MyShopOrder) {
-    showToast(`Заказ №${order.id}: ${bagsLabel(order.bags)} списано со склада`, "success");
+    showToast(`Заказ №${order.id}: ${bagsLabel(order.bags)} оформлено`, "success");
     setTab("orders");
     refresh();
   }
@@ -93,17 +93,8 @@ export default function MyShopPage() {
   return (
     <AppShell
       title="Мой магазин"
-      description={`${shop.name} · мешки списываются со склада «${shop.warehouse_name}» сразу, без грузчика.`}
-      footer={
-        tab === "order" && (
-          <ShopCheckout
-            priced={priced}
-            currency={shop.currency}
-            warehouseName={shop.warehouse_name}
-            onPlaced={placed}
-          />
-        )
-      }
+      description={`${shop.name} · без грузчика, склад не списывается.`}
+      footer={tab === "order" && <ShopCheckout priced={priced} currency={shop.currency} onPlaced={placed} />}
     >
       <section className="mb-5 grid grid-cols-2 gap-3">
         <StatCard
