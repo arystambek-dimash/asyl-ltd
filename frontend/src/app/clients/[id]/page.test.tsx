@@ -111,6 +111,29 @@ it("shows what we owe the client after an overpayment, per currency", async () =
   expect(screen.queryByText(/Мы должны клиенту .* ₸/)).not.toBeInTheDocument();
 });
 
+it("goes below zero when there is no debt and we owe the client", async () => {
+  mocks.get.mockResolvedValue({
+    data: {
+      ...history,
+      summary: {
+        ...history.summary,
+        debt: "0.00",
+        overpaid: "7059300.00",
+        by_currency: {
+          KZT: { revenue: "253940700.00", paid: "261000000.00", debt: "0.00", overpaid: "7059300.00" },
+          USD: { revenue: "100.00", paid: "120.00", debt: "0.00", overpaid: "20.00" },
+        },
+      },
+    },
+  });
+  await renderPage();
+
+  expect(await screen.findByText("−7 059 300 ₸")).toBeInTheDocument();
+  expect(screen.getByText("мы должны клиенту")).toBeInTheDocument();
+  expect(screen.getByText("Также −20 $")).toBeInTheDocument();
+  expect(screen.queryByText("задолженности нет")).not.toBeInTheDocument();
+});
+
 it("opens the reconciliation act import from the header", async () => {
   const user = userEvent.setup();
   await renderPage();

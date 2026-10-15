@@ -17,6 +17,15 @@ export function fieldByCurrency<T, K extends keyof T>(
   return Object.fromEntries(Object.entries(byCurrency).map(([currency, row]) => [currency, row[field]]));
 }
 
+/** Только положительные суммы раскладки: {KZT: "150", USD: "0"} → [["KZT", 150]]. */
+export function positiveAmounts(
+  byCurrency: Readonly<Record<string, string | number>>,
+): [currency: string, amount: number][] {
+  return Object.entries(byCurrency)
+    .map(([currency, value]) => [currency, finiteMoney(value)] as [string, number])
+    .filter(([, value]) => value > 0);
+}
+
 export function otherCurrencyAmounts(
   byCurrency: Readonly<Record<string, string | number>>,
   primary: string,

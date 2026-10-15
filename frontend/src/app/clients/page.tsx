@@ -19,7 +19,6 @@ import { ErrorAlert, FormError } from "@/components/ui/data-state";
 import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
 import { ActionCard } from "@/components/ui/action-card";
 import { StatCard } from "@/components/ui/stat-card";
-import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { Field, fieldErrorId } from "@/components/ui/field";
 import { Select } from "@/components/ui/select";
 import { useApi } from "@/lib/use-api";
@@ -37,6 +36,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DepartmentDot } from "@/components/ui/department-badge";
 import { Badge } from "@/components/ui/badge";
 import { UnassignedClients } from "@/components/clients/unassigned-clients";
+import { ClientDebtAmounts, owedToClientAmount } from "@/components/clients/client-debt-amounts";
 import { ALL_CLIENTS_STATEMENT_SECTIONS, StatementExportModal } from "@/components/statement-export-modal";
 import type { Client, ClientDebt, Department, Me } from "@/lib/types";
 
@@ -515,7 +515,9 @@ function ClientsPageInner() {
       const aCurrency = a.debt_currency ?? a.currency;
       const bCurrency = b.debt_currency ?? b.currency;
       const currencyCmp = aCurrency.localeCompare(bCurrency);
-      const amountCmp = Number(a.debt_total ?? 0) - Number(b.debt_total ?? 0);
+      // Переплата («мы должны клиенту») — ниже нуля, как её и показывает колонка.
+      const balance = (c: Client) => Number(c.debt_total ?? 0) || -owedToClientAmount(c);
+      const amountCmp = balance(a) - balance(b);
       const cmp = currencyCmp || amountCmp;
       return sortDir === "asc" ? cmp : -cmp;
     }
@@ -744,16 +746,8 @@ function ClientsPageInner() {
                 {canMoney && (
                   <div>
                     <div className="text-[11px] text-[var(--muted-foreground)]">Задолженность</div>
-                    <div className="font-medium tabular-nums text-[var(--destructive)]">
-                      {/* Долг в ₸ и в $ — два отдельных долга: обе суммы одинаково заметны. */}
-                      <CurrencyAmounts
-                        byCurrency={c.debt_by_currency}
-                        fallbackAmount={c.debt_total}
-                        fallbackCurrency={c.debt_currency ?? c.currency}
-                        equal
-                        className="items-start"
-                      />
-                    </div>
+                    {/* Долг в ₸ и в $ — два отдельных долга: обе суммы одинаково заметны. */}
+                    <ClientDebtAmounts client={c} />
                   </div>
                 )}
                 <div>
@@ -821,16 +815,8 @@ function ClientsPageInner() {
                     <TD className="tabular-nums">{c.iin || "—"}</TD>
                     <TD className="tabular-nums">{c.phone}</TD>
                     {canMoney && (
-                      <TD className="tabular-nums">
-                        <span className="font-medium text-[var(--destructive)]">
-                          <CurrencyAmounts
-                            byCurrency={c.debt_by_currency}
-                            fallbackAmount={c.debt_total}
-                            fallbackCurrency={c.debt_currency ?? c.currency}
-                            equal
-                            className="items-start"
-                          />
-                        </span>
+                      <TD>
+                        <ClientDebtAmounts client={c} />
                       </TD>
                     )}
                     <TD className="tabular-nums text-[var(--muted-foreground)]">

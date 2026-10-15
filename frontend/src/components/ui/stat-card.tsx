@@ -14,8 +14,8 @@ export function StatCard({
   label: string;
   value: React.ReactNode;
   accent?: boolean;
-  /** Цвет значения: красный для долгов/просрочки, зелёный для оплат. */
-  tone?: "destructive" | "success";
+  /** Цвет значения: красный для долгов/просрочки, зелёный для оплат, жёлтый — мы должны клиенту. */
+  tone?: "destructive" | "success" | "warning";
   caption?: string;
   icon?: React.ElementType;
   className?: string;
@@ -51,6 +51,7 @@ export function StatCard({
           accent ? "text-[var(--ring)]" : "text-[var(--foreground)]",
           tone === "destructive" && "text-[var(--destructive)]",
           tone === "success" && "text-[var(--success)]",
+          tone === "warning" && "text-[var(--warning)]",
         )}
       >
         {value}

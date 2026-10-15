@@ -20,7 +20,7 @@ import { useApi } from "@/lib/use-api";
 import { onlyDigits } from "@/lib/phone";
 import { useAuth } from "@/store/auth";
 import { can } from "@/lib/can";
-import { fieldByCurrency, finiteMoney } from "@/lib/currency-map";
+import { fieldByCurrency, finiteMoney, positiveAmounts } from "@/lib/currency-map";
 import { bonusLabel } from "@/lib/orders";
 import type { ClientHistory, ClientHistorySale } from "@/lib/types";
 import { formatCurrency, formatDateTime, sumMoneyByCurrency, toLocalIsoDate } from "@/lib/utils";
@@ -197,9 +197,11 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
   const summaryByCurrency = summary.by_currency;
   const hasDebt = Object.values(summaryByCurrency).some((row) => finiteMoney(row.debt) > 0);
   // Переплата клиента («К возврату» кассы) — по каждой валюте, где она есть.
-  const owedToClient = Object.entries(fieldByCurrency(summaryByCurrency, "overpaid")).filter(
-    ([, amount]) => finiteMoney(amount) > 0,
-  );
+  const owedToClient = positiveAmounts(fieldByCurrency(summaryByCurrency, "overpaid"));
+  // Долга нет, а переплата есть — «Текущий долг» уходит в минус: столько мы должны клиенту.
+  const owedMain = hasDebt
+    ? undefined
+    : (owedToClient.find(([currency]) => currency === summaryCurrency) ?? owedToClient[0]);
   const initials =
     client.name
       .trim()
@@ -392,20 +394,35 @@ function ClientDetailPageInner({ params }: { params: Promise<{ id: string }> }) 
                 </StatCard>
                 <StatCard
                   label="Текущий долг"
-                  value={formatCurrency(summary.debt, summaryCurrency)}
-                  caption={hasDebt ? "ожидает погашения" : "задолженности нет"}
+                  value={
+                    owedMain
+                      ? `−${formatCurrency(owedMain[1], owedMain[0])}`
+                      : formatCurrency(summary.debt, summaryCurrency)
+                  }
+                  caption={hasDebt ? "ожидает погашения" : owedMain ? "мы должны клиенту" : "задолженности нет"}
                   icon={AlertCircle}
-                  className={hasDebt ? "border-[var(--destructive)]/25 bg-[var(--destructive)]/6" : undefined}
+                  tone={owedMain ? "warning" : undefined}
+                  className={
+                    hasDebt
+                      ? "border-[var(--destructive)]/25 bg-[var(--destructive)]/6"
+                      : owedMain
+                        ? "border-[var(--warning)]/30 bg-[var(--warning)]/8"
+                        : undefined
+                  }
                 >
                   <OtherCurrencyRows
                     byCurrency={fieldByCurrency(summaryByCurrency, "debt")}
                     primary={summaryCurrency}
                   />
-                  {owedToClient.map(([currency, amount]) => (
-                    <span key={currency} className="text-xs font-medium text-[var(--warning)]">
-                      Мы должны клиенту {formatCurrency(amount, currency)}
-                    </span>
-                  ))}
+                  {owedToClient
+                    .filter(([currency]) => currency !== owedMain?.[0])
+                    .map(([currency, amount]) => (
+                      <span key={currency} className="text-xs font-medium text-[var(--warning)]">
+                        {owedMain
+                          ? `Также −${formatCurrency(amount, currency)}`
+                          : `Мы должны клиенту ${formatCurrency(amount, currency)}`}
+                      </span>
+                    ))}
                 </StatCard>
               </div>
             </div>

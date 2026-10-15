@@ -1,8 +1,10 @@
-from django.db import transaction
+from django.db import models, transaction
 from rest_framework import serializers
 
 from apps.accounts.passwords import validate_new_password
+from apps.common.money import as_money_strings
 from apps.orders.debt import debt_by_currency, debt_fields
+from apps.orders.querysets import overpaid_by_client
 from apps.sales.access import assigned_department_id, scope_by_client_department
 from apps.sales.models import Department
 
@@ -10,9 +12,21 @@ from .managers import sync_user_names
 from .models import Client, Store
 
 
+class ClientListSerializer(serializers.ListSerializer):
+    """Переплату всего списка считает разом (querysets.overpaid_by_client)."""
+
+    def to_representation(self, data):
+        clients = list(data.all() if isinstance(data, models.Manager) else data)
+        if "overpaid_by_currency" in self.child.fields:
+            overpaid = overpaid_by_client([client.pk for client in clients])
+            for client in clients:
+                client._overpaid_cache = overpaid.get(client.pk, {})
+        return super().to_representation(clients)
+
+
 class ClientReadSerializer(serializers.ModelSerializer):
     FINANCIAL_FIELDS = frozenset(
-        {"debt_total", "debt_currency", "debt_by_currency"}
+        {"debt_total", "debt_currency", "debt_by_currency", "overpaid_by_currency"}
     )
 
     username = serializers.CharField(source="user.username", read_only=True)
@@ -28,9 +42,12 @@ class ClientReadSerializer(serializers.ModelSerializer):
     debt_total = serializers.SerializerMethodField()
     debt_currency = serializers.SerializerMethodField()
     debt_by_currency = serializers.SerializerMethodField()
+    # «Мы должны клиенту» — переплата по валютам, как summary.overpaid в /history/.
+    overpaid_by_currency = serializers.SerializerMethodField()
 
     class Meta:
         model = Client
+        list_serializer_class = ClientListSerializer
         fields = [
             "id",
             "username",
@@ -51,6 +68,7 @@ class ClientReadSerializer(serializers.ModelSerializer):
             "debt_total",
             "debt_currency",
             "debt_by_currency",
+            "overpaid_by_currency",
             "created_at",
         ]
         read_only_fields = ["user", "created_at"]
@@ -86,6 +104,12 @@ class ClientReadSerializer(serializers.ModelSerializer):
 
     def get_debt_total(self, obj):
         return self._debt(obj)["debt_total"]
+
+    def get_overpaid_by_currency(self, obj):
+        overpaid = getattr(obj, "_overpaid_cache", None)
+        if overpaid is None:
+            overpaid = overpaid_by_client([obj.pk]).get(obj.pk, {})
+        return as_money_strings(overpaid)
 
 
 class ClientCreateUpdateSerializer(serializers.ModelSerializer):

@@ -341,6 +341,8 @@ export interface Client {
   debt_currency?: "KZT" | "USD";
   /** Полная раскладка долга по валютам заказов. */
   debt_by_currency?: Record<string, string>;
+  /** «Мы должны клиенту»: переплата по валютам, как summary.overpaid в /history/. */
+  overpaid_by_currency?: Record<string, string>;
   created_at?: string;
 }
 export interface Store {

@@ -121,3 +121,43 @@ it("форма клиента не отправляется с ошибками 
     }),
   );
 });
+
+it("переплату клиента показывает в колонке долга со знаком минус, а не «0 ₸»", async () => {
+  mocks.permissions = ["clients.view", "reports.view"];
+  const client = {
+    id: 8,
+    username: "client8",
+    first_name: "Attila",
+    last_name: "",
+    phone: "",
+    name: "ТОО Attila NAN",
+    company_name: "",
+    country: "",
+    currency: "KZT",
+    iin: "",
+    bank: "",
+    bank_account: "",
+    department: null,
+    department_name: "Мельница",
+    user: 80,
+    portal_access_enabled: false,
+    debt_total: "0.00",
+    debt_currency: "KZT",
+    debt_by_currency: {},
+    overpaid_by_currency: { KZT: "7059300.00" },
+  };
+  mocks.get.mockImplementation(async (raw: string) => {
+    const url = new URL(raw, "http://localhost");
+    if (url.pathname === "/clients/" && url.searchParams.has("page"))
+      return { data: { results: [client], count: 1, next: null, previous: null } };
+    return { data: [] };
+  });
+  render(<ClientsPage />);
+
+  const amounts = await screen.findAllByText("−7 059 300 ₸");
+  expect(amounts.length).toBeGreaterThan(0);
+  // Таблица и мобильная карточка: только минус и подпись, без «0 ₸» долга.
+  for (const amount of amounts) {
+    expect(amount.parentElement).toHaveTextContent(/^−7 059 300 ₸мы должны клиенту$/);
+  }
+});

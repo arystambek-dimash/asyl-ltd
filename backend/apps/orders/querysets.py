@@ -32,6 +32,7 @@ from django.db.models.lookups import Exact, IContains
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 
+from apps.common.money import DEFAULT_CURRENCY
 from apps.common.plates import is_valid_plate, normalize_plate, plate_match_key
 from apps.common.query_params import (
     filter_date_range,
@@ -192,6 +193,21 @@ def order_overpaid_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
         for pk, status, refundable in money
     )
     return {pk: amount for pk, amount in overpaid if amount > 0}
+
+
+def overpaid_by_client(client_ids) -> dict[int, dict[str, Decimal]]:
+    """«Мы должны клиенту»: переплата по валютам для каждого из ``client_ids``.
+
+    Те же заказы, что у сводки клиента (clients.services.client_history): все
+    живые заказы клиента, переплата каждого — :func:`order_overpaid_by_id`.
+    Список клиентов получает её разом, а не запросами на каждого клиента.
+    """
+    overpaid = order_overpaid_by_id(Order.objects.filter(client_id__in=client_ids))
+    totals: dict[int, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    rows = Order.objects.filter(pk__in=list(overpaid)).values_list("pk", "client_id", "currency")
+    for pk, client_id, currency in rows:
+        totals[client_id][currency or DEFAULT_CURRENCY] += overpaid[pk]
+    return {client_id: dict(by_currency) for client_id, by_currency in totals.items()}
 
 
 def order_remaining_by_id(queryset: QuerySet[Order]) -> dict[int, Decimal]:
