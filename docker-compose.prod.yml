@@ -131,7 +131,7 @@ x-backend-environment: &backend-environment
 # CI supplies an immutable digest reference. The all-zero fallback cannot
 # resolve to a real manifest: `ps`/`exec` remain usable for an existing
 # stack, while any manual recreate without a digest fails closed.
-x-backend-image: &backend-image ${BACKEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+x-backend-image: &backend-image ${BACKEND_IMAGE_REF:-ghcr.io/dimqsh/asyl-ltd-backend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
 
 x-default-logging: &default-logging
   driver: json-file
@@ -198,7 +198,7 @@ services:
       - default
 
   frontend:
-    image: ${FRONTEND_IMAGE_REF:-ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
+    image: ${FRONTEND_IMAGE_REF:-ghcr.io/dimqsh/asyl-ltd-frontend@sha256:0000000000000000000000000000000000000000000000000000000000000000}
     environment:
       NODE_ENV: production
     depends_on:
