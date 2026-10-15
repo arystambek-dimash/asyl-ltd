@@ -1,15 +1,18 @@
 "use client";
 import { useMemo, useState } from "react";
-import { ClipboardList, PackageOpen, ShoppingBasket, Store } from "lucide-react";
+import { ClipboardList, PackageOpen, Plus, ShoppingBasket, Store } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { ShopCheckout } from "@/components/my-shop/shop-checkout";
+import { ShopPriceModal } from "@/components/my-shop/shop-price-modal";
 import { ShopOrders } from "@/components/my-shop/shop-orders";
 import { ProductCard } from "@/components/portal/product-card";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CurrencyAmounts } from "@/components/ui/currency-amounts";
 import { DataGate, ErrorAlert } from "@/components/ui/data-state";
 import { StatCard } from "@/components/ui/stat-card";
 import { Tabs } from "@/components/ui/tabs";
+import { can } from "@/lib/can";
 import { priceCart } from "@/lib/cart";
 import { repeatLines } from "@/lib/my-shop";
 import { showToast } from "@/lib/toast";
@@ -17,6 +20,7 @@ import type { MyShopOrder, MyShopSummary, PortalProduct } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { usePagedApi } from "@/lib/use-paged-api";
 import { bagsLabel, pluralRu } from "@/lib/utils";
+import { useAuth } from "@/store/auth";
 import { useCart } from "@/store/cart";
 
 type ShopTab = "order" | "orders";
@@ -28,7 +32,11 @@ export default function MyShopPage() {
   const catalog = useApi<PortalProduct[]>(shop ? "/my-shop/catalog/" : null);
   const orders = usePagedApi<MyShopOrder>(shop ? "/my-shop/orders/" : null, 20);
   const cart = useCart();
+  const { me } = useAuth();
+  // С правом на цены сотрудник сам ставит прайс своему магазину (и заводит товар с правом на каталог).
+  const canPrice = can(me, "clients.set_price");
   const [tab, setTab] = useState<ShopTab>("order");
+  const [pricing, setPricing] = useState(false);
 
   // Заказать можно только товар с ценой: цену магазину ставит бухгалтер.
   const products = useMemo(() => (catalog.data ?? []).filter((product) => product.price), [catalog.data]);
@@ -44,6 +52,12 @@ export default function MyShopPage() {
     showToast(`Заказ №${order.id}: ${bagsLabel(order.bags)} списано со склада`, "success");
     setTab("orders");
     refresh();
+  }
+
+  function priceSaved(label: string) {
+    setPricing(false);
+    showToast(`«${label}» — в прайсе магазина`, "success");
+    catalog.reload();
   }
 
   function repeat(order: MyShopOrder) {
@@ -120,6 +134,14 @@ export default function MyShopPage() {
         ]}
       />
 
+      {tab === "order" && canPrice && catalog.data && (
+        <div className="mb-3 flex justify-end">
+          <Button variant="outline" size="sm" onClick={() => setPricing(true)}>
+            <Plus className="size-4" /> Товар в прайс
+          </Button>
+        </div>
+      )}
+
       {tab === "order" ? (
         !catalog.data ? (
           <DataGate loading={catalog.loading} error={catalog.error} onRetry={catalog.reload} />
@@ -129,7 +151,9 @@ export default function MyShopPage() {
               <PackageOpen className="size-8 text-[var(--muted-foreground)]" />
               <div className="text-sm font-medium">В прайсе магазина пока нет цен</div>
               <p className="max-w-sm text-xs text-[var(--muted-foreground)]">
-                Цены вашему магазину ставит бухгалтер — как только поставит, товары появятся здесь.
+                {canPrice
+                  ? "Добавьте товар и его цену — он сразу появится здесь."
+                  : "Цены вашему магазину ставит бухгалтер — как только поставит, товары появятся здесь."}
               </p>
             </CardContent>
           </Card>
@@ -142,7 +166,8 @@ export default function MyShopPage() {
             </div>
             {unpriced > 0 && (
               <p className="mt-4 text-xs text-[var(--muted-foreground)]">
-                Ещё {unpriced} {pluralRu(unpriced, ["товар", "товара", "товаров"])} без цены — их цену ставит бухгалтер.
+                Ещё {unpriced} {pluralRu(unpriced, ["товар", "товара", "товаров"])} без цены —{" "}
+                {canPrice ? "цену ставят через «Товар в прайс»." : "их цену ставит бухгалтер."}
               </p>
             )}
           </>
@@ -160,6 +185,16 @@ export default function MyShopPage() {
           onLoadMore={orders.loadMore}
           onRepeat={repeat}
           onChanged={refresh}
+        />
+      )}
+
+      {pricing && catalog.data && (
+        <ShopPriceModal
+          clientId={shop.client}
+          currency={shop.currency}
+          catalog={catalog.data}
+          onClose={() => setPricing(false)}
+          onSaved={priceSaved}
         />
       )}
     </AppShell>

@@ -1192,6 +1192,8 @@ export interface EmployeeShopSettings {
 }
 /** Шапка «Моего магазина»: долг и взятое за текущий месяц — суммы считает сервер. */
 export interface MyShopSummary {
+  /** Клиент-магазин: его прайс сотрудник с правом на цены ставит сам. */
+  client: number;
   name: string;
   warehouse_name: string;
   currency: "KZT" | "USD";

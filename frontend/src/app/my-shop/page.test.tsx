@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   useApi: vi.fn(),
   usePagedApi: vi.fn(),
   post: vi.fn(),
+  put: vi.fn(),
+  me: { id: 3, is_client: false, is_superuser: false, permissions: [] as string[] },
   reload: vi.fn(),
   refresh: vi.fn(),
   toast: vi.fn(),
@@ -16,13 +18,14 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/use-api", () => ({ useApi: mocks.useApi }));
 vi.mock("@/lib/use-paged-api", () => ({ usePagedApi: mocks.usePagedApi }));
-vi.mock("@/lib/api", () => ({ api: { post: mocks.post }, apiError: (e: Error) => e.message }));
+vi.mock("@/lib/api", () => ({ api: { post: mocks.post, put: mocks.put }, apiError: (e: Error) => e.message }));
 vi.mock("@/lib/toast", () => ({ showToast: mocks.toast }));
-vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: { id: 3, is_client: false } }) }));
+vi.mock("@/store/auth", () => ({ useAuth: () => ({ me: mocks.me }) }));
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("next/link", () => import("@/test-utils/next-link"));
 
 const summary = {
+  client: 77,
   name: "Магазин Иван Петров",
   warehouse_name: "Мельница",
   currency: "KZT",
@@ -63,6 +66,7 @@ function apiState(data: unknown) {
 describe("MyShopPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.me.permissions = [];
     useCartStore.setState({ carts: {} });
     mocks.useApi.mockImplementation((url: string | null) =>
       apiState(url === "/my-shop/" ? summary : url === "/my-shop/catalog/" ? products : null),
@@ -126,5 +130,58 @@ describe("MyShopPage", () => {
     render(<MyShopPage />);
 
     expect(screen.getByText("У вас нет своего магазина")).toBeInTheDocument();
+  });
+
+  it("без права на цены кнопки «Товар в прайс» нет", () => {
+    render(<MyShopPage />);
+
+    expect(screen.queryByRole("button", { name: /Товар в прайс/ })).not.toBeInTheDocument();
+  });
+
+  it("с правом на цены сотрудник сам ставит цену товару своего магазина", async () => {
+    const user = userEvent.setup();
+    mocks.me.permissions = ["clients.set_price"];
+    mocks.put.mockResolvedValue({ data: {} });
+    render(<MyShopPage />);
+
+    await user.click(screen.getByRole("button", { name: /Товар в прайс/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("option", { name: /Новый товар/ })).not.toBeInTheDocument();
+    await user.selectOptions(within(dialog).getByLabelText("Товар"), "2");
+    await user.type(within(dialog).getByLabelText("Цена за мешок"), "4500");
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить цену" }));
+
+    await waitFor(() =>
+      expect(mocks.put).toHaveBeenCalledWith("/clients/77/prices/", {
+        prices: [{ product: 2, currency: "KZT", price: "4500" }],
+      }),
+    );
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(mocks.toast).toHaveBeenCalledWith("«Без цены · Синий 25 кг» — в прайсе магазина", "success");
+    expect(mocks.reload).toHaveBeenCalled();
+  });
+
+  it("с правом на каталог заводит новый товар и сразу ставит ему цену", async () => {
+    const user = userEvent.setup();
+    mocks.me.permissions = ["clients.set_price", "catalog.create"];
+    mocks.post.mockResolvedValue({ data: { id: 9, label: "Отруби · Красный 25 кг" } });
+    mocks.put.mockResolvedValue({ data: {} });
+    render(<MyShopPage />);
+
+    await user.click(screen.getByRole("button", { name: /Товар в прайс/ }));
+    const dialog = screen.getByRole("dialog");
+    await user.selectOptions(within(dialog).getByLabelText("Товар"), "new");
+    await user.type(within(dialog).getByLabelText("Название"), "Отруби");
+    await user.selectOptions(within(dialog).getByLabelText("Фасовка"), "25");
+    await user.type(within(dialog).getByLabelText("Цена за мешок"), "3000");
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить цену" }));
+
+    await waitFor(() =>
+      expect(mocks.put).toHaveBeenCalledWith("/clients/77/prices/", {
+        prices: [{ product: 9, currency: "KZT", price: "3000" }],
+      }),
+    );
+    expect(mocks.post).toHaveBeenCalledWith("/products/", { name: "Отруби", weight_kg: "25", color: "Red" });
+    expect(mocks.toast).toHaveBeenCalledWith("«Отруби · Красный 25 кг» — в прайсе магазина", "success");
   });
 });

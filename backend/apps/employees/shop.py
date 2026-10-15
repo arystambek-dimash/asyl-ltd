@@ -156,6 +156,8 @@ def shop_summary(shop: EmployeeShop) -> dict:
         if timezone.localdate(order.sale_at) >= month_start
     ]
     return {
+        # Клиент-магазин: его прайс сотрудник с правом на цены ставит сам из «Моего магазина».
+        "client": client.pk,
         "name": client.name,
         "warehouse_name": shop.warehouse.name,
         "currency": client.currency,

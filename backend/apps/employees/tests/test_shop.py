@@ -5,7 +5,7 @@ import pytest
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 
-from apps.catalog.models import ClientPrice
+from apps.catalog.models import ClientPrice, Product
 from apps.employees.models import Employee, EmployeeShop
 from apps.eventlog.models import EventLog
 from apps.orders.models import Order, Payment
@@ -314,16 +314,33 @@ def test_loader_does_not_see_shop_sales(auth_client, user_with_perms, worker, sh
     assert loader.get(f"/api/loader/orders/{sold}/waybill/").status_code == 404
 
 
-def test_employee_does_not_set_prices_of_own_shop(auth_client, admin_api, cashier_with_shop, flour):
+def test_employee_with_price_access_adds_own_product_and_price(auth_client, cashier_with_shop, get_permission):
+    """Из «Моего магазина»: новый товар в каталог и его цена в прайс магазина — и он в заказе."""
     user, own = cashier_with_shop
+    user.employee.permissions.add(get_permission("catalog.create"))
+    api = auth_client(user)
+    summary = api.get("/api/my-shop/").data
+    assert summary["client"] == own.client_id
+
+    product = api.post("/api/products/", {"name": "Отруби", "weight_kg": "25", "color": "Red"}, format="json")
+    assert product.status_code == 201, product.data
+    priced = api.put(
+        f"/api/clients/{summary['client']}/prices/",
+        {"prices": [{"product": product.data["id"], "currency": "KZT", "price": "3000"}]},
+        format="json",
+    )
+
+    assert priced.status_code == 200, priced.data
+    row = next(item for item in api.get("/api/my-shop/catalog/").data if item["id"] == product.data["id"])
+    assert row["price"] == "3000.00"
+    assert _order(api, Product.objects.get(pk=product.data["id"]), quantity=2).status_code == 201
+
+
+def test_employee_without_price_access_does_not_set_shop_prices(auth_client, worker, shop, flour):
     body = {"prices": [{"product": flour.pk, "currency": "KZT", "price": "1"}]}
 
-    response = auth_client(user).put(f"/api/clients/{own.client_id}/prices/", body, format="json")
-
-    assert response.status_code == 403
-    assert response.data["code"] == "own_shop"
-    assert not ClientPrice.objects.filter(client=own.client).exists()
-    assert admin_api.put(f"/api/clients/{own.client_id}/prices/", body, format="json").status_code == 200
+    assert auth_client(worker).put(f"/api/clients/{shop.client_id}/prices/", body, format="json").status_code == 403
+    assert not ClientPrice.objects.filter(client=shop.client).exists()
 
 
 def test_employee_does_not_take_payment_for_own_shop(auth_client, cashier_with_shop, flour, boss):

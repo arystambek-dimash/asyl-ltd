@@ -23,7 +23,6 @@ from apps.common.pagination import OptInPageNumberPagination
 from apps.common.permissions import SUPERUSER_ONLY, PermViewSetMixin
 from apps.common.query_params import parse_date_range, parse_money_param
 from apps.common.viewsets import SerializerViewSetMixin
-from apps.employees.shop_access import forbid_own_shop
 from apps.eventlog.services import log_event
 from apps.orders.debt import (
     DEBT_STATUS,
@@ -426,7 +425,6 @@ class ClientViewSet(
         removed = 0
         with transaction.atomic():
             client = lock_scoped_client(client.pk, request.user)
-            forbid_own_shop(request.user, client.pk, "прайс")
             for row in serializer.validated_data["prices"]:
                 product = row["product"]
                 currency = row["currency"]
