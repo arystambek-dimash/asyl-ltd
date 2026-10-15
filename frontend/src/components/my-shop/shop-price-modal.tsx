@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { ArrowLeft, Plus } from "lucide-react";
+import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import {
   canViewProductColor,
   EMPTY_PRODUCT_DRAFT,
@@ -24,27 +24,33 @@ import { useAuth } from "@/store/auth";
  * Товар в прайс своего магазина (право на цены): товар из каталога — тем же
  * выбором, что в заказе, — или новый (право на каталог) и его цена. Пишет в
  * общий прайс клиента-магазина — тот же, что у бухгалтера в карточке клиента.
+ * ``productId`` — правка цены этого товара (кнопка на карточке): цену можно
+ * поменять или убрать товар из прайса.
  */
 export function ShopPriceModal({
   clientId,
   currency,
   catalog,
+  productId,
   onClose,
   onSaved,
 }: {
   clientId: number;
   currency: "KZT" | "USD";
   catalog: PortalProduct[];
+  productId?: number;
   onClose: () => void;
-  onSaved: (label: string) => void;
+  /** Готовое сообщение для уведомления: что сохранено или убрано. */
+  onSaved: (message: string) => void;
 }) {
   const { me } = useAuth();
   const canCreate = can(me, "catalog.create");
   const canViewColor = canViewProductColor(me);
-  const [choice, setChoice] = useState("");
-  const [isNew, setIsNew] = useState(() => catalog.length === 0 && canCreate);
+  const editing = catalog.find((item) => item.id === productId);
+  const [choice, setChoice] = useState(editing ? String(editing.id) : "");
+  const [isNew, setIsNew] = useState(() => !editing && catalog.length === 0 && canCreate);
   const [draft, setDraft] = useState<ProductDraft>(EMPTY_PRODUCT_DRAFT);
-  const [price, setPrice] = useState("");
+  const [price, setPrice] = useState(() => priceInput(editing));
   // Товар, заведённый в этом окне: если цена не сохранилась, повтор не создаст дубль.
   const [created, setCreated] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,9 +58,28 @@ export function ShopPriceModal({
 
   function choose(productId: string) {
     setChoice(productId);
-    const product = catalog.find((item) => String(item.id) === productId);
-    setPrice(product?.price ? String(Number(product.price)) : "");
+    setPrice(priceInput(catalog.find((item) => String(item.id) === productId)));
     setError("");
+  }
+
+  const chosen = isNew ? undefined : catalog.find((item) => String(item.id) === choice);
+
+  /** Цену в прайсе: строка, а ``null`` — убрать товар из прайса магазина. */
+  async function putPrice(product: { id: number }, value: string | null) {
+    await api.put(`/clients/${clientId}/prices/`, { prices: [{ product: product.id, currency, price: value }] });
+  }
+
+  async function remove() {
+    if (!chosen) return;
+    setBusy(true);
+    setError("");
+    try {
+      await putPrice(chosen, null);
+      onSaved(`«${chosen.label}» убран из прайса магазина`);
+    } catch (cause) {
+      setError(apiError(cause));
+      setBusy(false);
+    }
   }
 
   async function save(event: React.FormEvent) {
@@ -62,18 +87,14 @@ export function ShopPriceModal({
     setBusy(true);
     setError("");
     try {
-      let product: { id: number; label: string } | undefined = isNew
-        ? (created ?? undefined)
-        : catalog.find((item) => String(item.id) === choice);
+      let product: { id: number; label: string } | undefined = isNew ? (created ?? undefined) : chosen;
       if (!product) {
         const response = await api.post<Product>("/products/", productPayload(draft, { canViewColor, editing: false }));
         setCreated(response.data);
         product = response.data;
       }
-      await api.put(`/clients/${clientId}/prices/`, {
-        prices: [{ product: product.id, currency, price: price.trim() }],
-      });
-      onSaved(product.label);
+      await putPrice(product, price.trim());
+      onSaved(`«${product.label}» — ${formatCurrency(price.trim(), currency)} в прайсе магазина`);
     } catch (cause) {
       setError(apiError(cause));
     } finally {
@@ -85,10 +106,20 @@ export function ShopPriceModal({
     <Modal
       open
       onClose={onClose}
-      title="Товар в прайс магазина"
+      title={editing ? "Цена товара" : "Товар в прайс магазина"}
       description={`Цена за мешок для заказов «Моего магазина», в ${currencySymbol(currency)}.`}
       footer={
         <>
+          {chosen?.price && (
+            <Button
+              variant="ghost"
+              className="mr-auto text-[var(--destructive)]"
+              disabled={busy}
+              onClick={() => void remove()}
+            >
+              <Trash2 className="size-4" /> Убрать из прайса
+            </Button>
+          )}
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Отмена
           </Button>
@@ -165,4 +196,8 @@ export function ShopPriceModal({
       </form>
     </Modal>
   );
+}
+
+function priceInput(product: PortalProduct | undefined): string {
+  return product?.price ? String(Number(product.price)) : "";
 }

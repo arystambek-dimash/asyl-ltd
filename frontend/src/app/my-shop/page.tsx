@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { ClipboardList, PackageOpen, Plus, ShoppingBasket, Store } from "lucide-react";
+import { ClipboardList, PackageOpen, Pencil, Plus, ShoppingBasket, Store } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
 import { ShopCheckout } from "@/components/my-shop/shop-checkout";
 import { ShopPriceModal } from "@/components/my-shop/shop-price-modal";
@@ -36,7 +36,8 @@ export default function MyShopPage() {
   // С правом на цены сотрудник сам ставит прайс своему магазину (и заводит товар с правом на каталог).
   const canPrice = can(me, "clients.set_price");
   const [tab, setTab] = useState<ShopTab>("order");
-  const [pricing, setPricing] = useState(false);
+  // Окно прайса: новый товар в прайс или правка цены товара с карточки (productId).
+  const [pricing, setPricing] = useState<{ productId?: number } | null>(null);
 
   // Заказать можно только товар с ценой: цену магазину ставит бухгалтер.
   const products = useMemo(() => (catalog.data ?? []).filter((product) => product.price), [catalog.data]);
@@ -54,9 +55,9 @@ export default function MyShopPage() {
     refresh();
   }
 
-  function priceSaved(label: string) {
-    setPricing(false);
-    showToast(`«${label}» — в прайсе магазина`, "success");
+  function priceSaved(message: string) {
+    setPricing(null);
+    showToast(message, "success");
     catalog.reload();
   }
 
@@ -127,7 +128,7 @@ export default function MyShopPage() {
 
       {tab === "order" && canPrice && catalog.data && (
         <div className="mb-3 flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => setPricing(true)}>
+          <Button variant="outline" size="sm" onClick={() => setPricing({})}>
             <Plus className="size-4" /> Товар в прайс
           </Button>
         </div>
@@ -152,7 +153,23 @@ export default function MyShopPage() {
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4">
               {products.map((product) => (
-                <ProductCard key={product.id} product={product} />
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  priceAction={
+                    canPrice && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Изменить цену: ${product.label}`}
+                        title="Изменить цену"
+                        onClick={() => setPricing({ productId: product.id })}
+                      >
+                        <Pencil className="size-4" />
+                      </Button>
+                    )
+                  }
+                />
               ))}
             </div>
             {unpriced > 0 && (
@@ -184,7 +201,8 @@ export default function MyShopPage() {
           clientId={shop.client}
           currency={shop.currency}
           catalog={catalog.data}
-          onClose={() => setPricing(false)}
+          productId={pricing.productId}
+          onClose={() => setPricing(null)}
           onSaved={priceSaved}
         />
       )}

@@ -151,6 +151,7 @@ describe("MyShopPage", () => {
     render(<MyShopPage />);
 
     expect(screen.queryByRole("button", { name: /Товар в прайс/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Изменить цену/ })).not.toBeInTheDocument();
   });
 
   it("с правом на цены сотрудник сам ставит цену товару своего магазина", async () => {
@@ -176,7 +177,10 @@ describe("MyShopPage", () => {
       }),
     );
     expect(mocks.post).not.toHaveBeenCalled();
-    expect(mocks.toast).toHaveBeenCalledWith("«Без цены · Синий 25 кг» — в прайсе магазина", "success");
+    expect(mocks.toast).toHaveBeenCalledWith(
+      expect.stringMatching(/^«Без цены · Синий 25 кг» — 4\s500.* в прайсе магазина$/),
+      "success",
+    );
     expect(mocks.reload).toHaveBeenCalled();
   });
 
@@ -201,6 +205,49 @@ describe("MyShopPage", () => {
       }),
     );
     expect(mocks.post).toHaveBeenCalledWith("/products/", { name: "Отруби", weight_kg: "25", color: "Red" });
-    expect(mocks.toast).toHaveBeenCalledWith("«Отруби · Красный 25 кг» — в прайсе магазина", "success");
+    expect(mocks.toast).toHaveBeenCalledWith(
+      expect.stringMatching(/^«Отруби · Красный 25 кг» — 3\s000.* в прайсе магазина$/),
+      "success",
+    );
+  });
+
+  it("неверную цену меняют с карточки товара", async () => {
+    const user = userEvent.setup();
+    mocks.me.permissions = ["clients.set_price"];
+    mocks.put.mockResolvedValue({ data: {} });
+    render(<MyShopPage />);
+
+    await user.click(screen.getByRole("button", { name: "Изменить цену: Д1с · Красный 50 кг" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Цена товара")).toBeInTheDocument();
+    const price = within(dialog).getByLabelText("Цена за мешок");
+    expect(price).toHaveValue(5000);
+    await user.clear(price);
+    await user.type(price, "5200");
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить цену" }));
+
+    await waitFor(() =>
+      expect(mocks.put).toHaveBeenCalledWith("/clients/77/prices/", {
+        prices: [{ product: 1, currency: "KZT", price: "5200" }],
+      }),
+    );
+    expect(mocks.reload).toHaveBeenCalled();
+  });
+
+  it("ошибочный товар убирают из прайса", async () => {
+    const user = userEvent.setup();
+    mocks.me.permissions = ["clients.set_price"];
+    mocks.put.mockResolvedValue({ data: {} });
+    render(<MyShopPage />);
+
+    await user.click(screen.getByRole("button", { name: "Изменить цену: Д1с · Красный 50 кг" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Убрать из прайса/ }));
+
+    await waitFor(() =>
+      expect(mocks.put).toHaveBeenCalledWith("/clients/77/prices/", {
+        prices: [{ product: 1, currency: "KZT", price: null }],
+      }),
+    );
+    expect(mocks.toast).toHaveBeenCalledWith("«Д1с · Красный 50 кг» убран из прайса магазина", "success");
   });
 });
