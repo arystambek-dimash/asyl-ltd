@@ -86,6 +86,9 @@ class PricedProductSerializer(serializers.ModelSerializer):
     """
 
     label = serializers.CharField(source="__str__", read_only=True)
+    # Цвет и так есть в подписи (``__str__``): отдельно — чтобы выбор товара
+    # разобрал марку, сорт и фасовку, как в заказе, и различал двойников.
+    color_label = serializers.CharField(source="get_color_display", read_only=True)
     weight_kg = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True
     )
@@ -98,7 +101,7 @@ class PricedProductSerializer(serializers.ModelSerializer):
         # Warehouse balance is staff-only operational data.  The portal may
         # list orderable catalogue references and the client's own price, but
         # must never serialize an exact stock quantity.
-        fields = ["id", "label", "weight_kg", "price", "currency", "photo_url"]
+        fields = ["id", "name", "label", "color_label", "weight_kg", "price", "currency", "photo_url"]
 
     def get_photo_url(self, obj):
         return product_photo_url(obj)

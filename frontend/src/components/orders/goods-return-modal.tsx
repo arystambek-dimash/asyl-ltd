@@ -9,7 +9,7 @@ import {
   type OrderFormOptions,
   type OrderProductOption,
 } from "@/components/orders/order-form-parts";
-import { ProductPicker } from "@/components/orders/product-picker";
+import { ProductPicker, stockHint } from "@/components/orders/product-picker";
 import { Button } from "@/components/ui/button";
 import { DataGate, FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
@@ -208,7 +208,7 @@ function GoodsReturnForm({ onCancel, onCreated }: { onCancel: () => void; onCrea
                     value={row.product}
                     className="col-span-2 sm:col-span-1"
                     ariaLabel={`Товар ${index + 1}`}
-                    bagsOf={stockAt}
+                    hintOf={(product) => stockHint(stockAt(product))}
                     onChange={(product) => updateRow(row.id, { product })}
                   />
                   <Input

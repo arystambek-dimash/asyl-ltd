@@ -28,7 +28,7 @@ import {
 } from "@/components/orders/order-form-parts";
 import { BonusBadge } from "@/components/orders/bonus-badge";
 import { OptionToggle } from "@/components/orders/option-toggle";
-import { ProductPicker } from "@/components/orders/product-picker";
+import { ProductPicker, stockHint } from "@/components/orders/product-picker";
 import { PayNowFields, payAfterCreate, usePayNow } from "@/components/orders/pay-now";
 import { moneyCents } from "@/lib/debt-orders";
 import { useApi } from "@/lib/use-api";
@@ -639,7 +639,7 @@ export function OrderForm({
                           className="col-span-3 sm:col-span-1"
                           ariaLabel={`Товар, позиция ${index + 1}`}
                           disabled={compositionLocked}
-                          bagsOf={(product) => productBagsAtWarehouse(product, warehouse)}
+                          hintOf={(product) => stockHint(productBagsAtWarehouse(product, warehouse))}
                           onChange={(product) =>
                             updateRow(index, row.bonus ? { product } : { product, price: clientPrices[product] ?? "" })
                           }

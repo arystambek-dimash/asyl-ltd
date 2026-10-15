@@ -36,8 +36,24 @@ const summary = {
 };
 
 const products = [
-  { id: 1, label: "Д1с · Красный 50 кг", weight_kg: "50.00", price: "5000.00", currency: "KZT" },
-  { id: 2, label: "Без цены · Синий 25 кг", weight_kg: "25.00", price: null, currency: "KZT" },
+  {
+    id: 1,
+    name: "Д1с",
+    label: "Д1с · Красный 50 кг",
+    color_label: "Красный",
+    weight_kg: "50.00",
+    price: "5000.00",
+    currency: "KZT",
+  },
+  {
+    id: 2,
+    name: "Без цены",
+    label: "Без цены · Синий 25 кг",
+    color_label: "Синий",
+    weight_kg: "25.00",
+    price: null,
+    currency: "KZT",
+  },
 ];
 
 const order = {
@@ -145,8 +161,12 @@ describe("MyShopPage", () => {
 
     await user.click(screen.getByRole("button", { name: /Товар в прайс/ }));
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).queryByRole("option", { name: /Новый товар/ })).not.toBeInTheDocument();
-    await user.selectOptions(within(dialog).getByLabelText("Товар"), "2");
+    expect(within(dialog).queryByRole("button", { name: /Новый товар/ })).not.toBeInTheDocument();
+    // Тот же выбор, что в заказе: поиск, марки, справа — цена или «без цены».
+    await user.click(within(dialog).getByRole("button", { name: /^Товар/ }));
+    expect(within(dialog).getByRole("option", { name: /Д1с.*5\s000/ })).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText("Поиск товара"), "без");
+    await user.click(within(dialog).getByRole("option", { name: /Без цены/ }));
     await user.type(within(dialog).getByLabelText("Цена за мешок"), "4500");
     await user.click(within(dialog).getByRole("button", { name: "Сохранить цену" }));
 
@@ -169,7 +189,7 @@ describe("MyShopPage", () => {
 
     await user.click(screen.getByRole("button", { name: /Товар в прайс/ }));
     const dialog = screen.getByRole("dialog");
-    await user.selectOptions(within(dialog).getByLabelText("Товар"), "new");
+    await user.click(within(dialog).getByRole("button", { name: /Новый товар/ }));
     await user.type(within(dialog).getByLabelText("Название"), "Отруби");
     await user.selectOptions(within(dialog).getByLabelText("Фасовка"), "25");
     await user.type(within(dialog).getByLabelText("Цена за мешок"), "3000");

@@ -45,7 +45,10 @@ export interface Product {
 /** Товар в каталоге клиента: цена из его личного прайса, остатков нет намеренно. */
 export interface PortalProduct {
   id: number;
+  name: string;
   label: string;
+  /** Цвет — чтобы выбор товара различал двойников (он же есть в label). */
+  color_label: string;
   weight_kg: string;
   price: string | null;
   currency: "KZT" | "USD";

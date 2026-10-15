@@ -2,7 +2,6 @@
 
 import { useId, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
-import type { OrderProductOption } from "@/components/orders/order-form-parts";
 import { FilterChips, ProductName } from "@/components/catalog/product-name";
 import {
   brandKey,
@@ -14,32 +13,48 @@ import {
   twinKey,
   twinKeys,
 } from "@/lib/product-parts";
+import type { Product } from "@/lib/types";
 import { cn, formatCount } from "@/lib/utils";
 
 const ALL_BRANDS = "";
 
+/** Что нужно выбору: название и фасовка; цвет и коды отчётов — если есть. */
+type PickerProduct = Pick<Product, "id" | "label" | "name" | "weight_kg"> & { color_label?: string; codes?: string[] };
+
+/** Подсказка справа в строке товара: остаток на складе, цена в прайсе… */
+interface ProductHint {
+  text: string;
+  /** Бледнее — «нет остатка», «без цены»: товар всё равно выбирается. */
+  muted?: boolean;
+}
+
+/** Остаток мешков — подсказка заказа и «Возврата»: товар без остатка тоже выбирается. */
+export function stockHint(bags: number): ProductHint {
+  return bags > 0 ? { text: `${formatCount(bags)} меш.` } : { text: "нет остатка", muted: true };
+}
+
 /**
- * Выбор товара позиции заказа или «Возврата» — без цвета. Марка видна всегда: кнопками-фильтрами
+ * Выбор товара позиции заказа, «Возврата» или прайса «Моего магазина» — без цвета. Марка видна всегда: кнопками-фильтрами
  * вверху списка, первой строкой в каждом товаре и на самой кнопке. Список
  * раскрывается во всю ширину строки (это элемент её сетки): на телефоне сразу
  * под кнопкой, на компьютере (`sm:order-last`) под всей строкой. Поиск — по
  * марке, сорту, фасовке и кодам отчётов («Д1с»). Цвет дописывается, только
  * если без него двух товаров не различить.
  */
-export function ProductPicker({
+export function ProductPicker<T extends PickerProduct>({
   products,
   value,
   onChange,
-  bagsOf,
+  hintOf,
   disabled,
   ariaLabel,
   className,
 }: {
-  products: OrderProductOption[];
+  products: T[];
   value: string;
   onChange: (productId: string) => void;
-  /** Остаток мешков товара на выбранном складе — подсказка: товар без остатка тоже выбирается. */
-  bagsOf: (product: OrderProductOption) => number;
+  /** Подсказка справа: остаток на складе (:func:`stockHint`), цена в прайсе… */
+  hintOf: (product: T) => ProductHint;
   disabled?: boolean;
   ariaLabel: string;
   /** Размер кнопки в сетке строки. */
@@ -166,7 +181,7 @@ export function ProductPicker({
 
           <div role="listbox" aria-label="Товары" className="max-h-80 overflow-y-auto p-1.5">
             {rows.map(({ product, parts, twin }, index) => {
-              const bags = bagsOf(product);
+              const hint = hintOf(product);
               const isSelected = String(product.id) === value;
               // Новая марка в общем списке — черта: DIKHAN и KOROL не сливаются.
               const newBrand = index > 0 && brandKey(rows[index - 1].parts.brand) !== brandKey(parts.brand);
@@ -187,10 +202,10 @@ export function ProductPicker({
                   <span
                     className={cn(
                       "shrink-0 text-right text-xs tabular-nums",
-                      bags > 0 ? "text-slate-600" : "text-slate-400",
+                      hint.muted ? "text-slate-400" : "text-slate-600",
                     )}
                   >
-                    {bags > 0 ? `${formatCount(bags)} меш.` : "нет остатка"}
+                    {hint.text}
                   </span>
                   {isSelected && <Check className="size-4 shrink-0 text-slate-900" />}
                 </button>
