@@ -29,6 +29,7 @@ from .api_views.transport_camera import (
     ShippingTransportRecognizeView,
 )
 from .api_views.vehicle_runtime import VehiclePlateRuntimeView
+from .api_views.visibility_zone import CameraVisibilityZoneView
 from .api_views.wagon_arch_runtime import WagonArchCameraRuntimeView
 from .vehicle_plate_events import VehiclePlateWebhookView
 
@@ -89,6 +90,7 @@ urlpatterns = [
     path("cameras/ai/sessions/", CameraAiSessionListView.as_view()),
     path("cameras/<str:cam>/counting-line", CameraCountingLineView.as_view()),
     path("cameras/<str:cam>/counting-line/frame", CameraCountingLineFrameView.as_view()),
+    path("cameras/<str:cam>/visibility-zone/", CameraVisibilityZoneView.as_view()),
     # Runtime-экраны: без <cam> — только чтение камеры из настроек,
     # с <cam> — только сохранение зоны этой камеры суперпользователем.
     path(

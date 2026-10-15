@@ -3,7 +3,8 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NormalizedLine, VerificationLine } from "@/lib/camera-counting-line";
 import { installVideoGeometry, stubOverlaySurface } from "@/test-utils/video-geometry";
-import { CameraLineEditor, LIVE_FALLBACK_MS } from "./camera-line-editor";
+import { LIVE_FALLBACK_MS } from "@/lib/use-camera-still-frame";
+import { CameraLineEditor } from "./camera-line-editor";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),

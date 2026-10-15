@@ -751,6 +751,8 @@ export interface CameraFeed {
   note?: string;
   /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
   line_config?: CameraCountingLine | null;
+  /** Зона видимости: вне полигона кадр закрыт и для AI, и на экранах. */
+  visibility_zone?: VehicleRoiConfig | null;
 }
 export interface MonoblockCameraSettings {
   camera_sources: string[];
@@ -793,36 +795,6 @@ export interface AlwaysOnProcessorStatus {
   last_frame_at?: string | null;
   error?: string | null;
   metrics?: { inference_fps?: number; dropped_frames?: number };
-}
-export interface CameraCountingLine {
-  configured: boolean;
-  coordinate_space: "normalized";
-  line: NormalizedLine | null;
-  line_spec?: string | null;
-  direction: LineDirection;
-  updated_at?: string | null;
-  /** Линии проверки мешков: классифицируют, но не считают. */
-  verification_lines?: VerificationLine[] | null;
-  /** false — AI-сервис старый и не хранит линии проверки. */
-  verification_lines_supported?: boolean;
-  /** Только в ответе на «Обновить статус»: работает ли камера с этими линиями. */
-  line_applied?: "applied" | "not_applied" | "not_running";
-}
-/** Камера из живого инвентаря сети (бэкенд строит его из ai_service). */
-export interface CameraFeed {
-  /** Стабильный ключ: kind + MAC (не меняется при перетасовке каналов NVR). */
-  id: string;
-  name: string;
-  zone: string;
-  /** Имя потока в go2rtc (cam2, cam_8c26); null у locked-камер. */
-  src: string | null;
-  kind: "nvr-channel" | "direct" | "locked";
-  /** Живость источника по данным инвентаря (у locked всегда false). */
-  online: boolean;
-  /** Пояснение для locked: обнаружена, но пароль неизвестен. */
-  note?: string;
-  /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
-  line_config?: CameraCountingLine | null;
 }
 export interface CameraContinuousReadiness {
   status: "synced" | "pending";

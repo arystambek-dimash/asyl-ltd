@@ -165,6 +165,17 @@ INVENTORY = {
             "direction": "negative",
         },
     },
+    "visibility_zones": {
+        "cam2": {
+            "cam": "cam2",
+            "configured": True,
+            "enabled": True,
+            "source": "main",
+            "coordinate_space": "normalized",
+            "points": [{"x": 0.1, "y": 0.1}, {"x": 0.9, "y": 0.1}, {"x": 0.9, "y": 0.9}],
+            "updated_at": "2026-10-15T07:00:00+00:00",
+        },
+    },
 }
 
 
@@ -189,9 +200,24 @@ def test_discover_prefers_inventory(monkeypatch):
     assert (cam2["src"], cam2["name"]) == ("cam2", "DS-2CD1643G2-LIZU")
     assert cam2["line_config"] == INVENTORY["line_configs"]["cam2"]
     assert cam1["line_config"] is None
+    assert cam2["visibility_zone"] == INVENTORY["visibility_zones"]["cam2"]
+    assert cam1["visibility_zone"] is None
     assert direct["src"] == "cam_8c28"
     assert locked["src"] is None and locked["online"] is False
     assert "нет доступа" in locked["note"].lower() or "401" in locked["note"]
+
+
+@pytest.mark.parametrize("zones", [["cam2"], "broken", None])
+def test_discover_ignores_unreadable_visibility_zones(monkeypatch, zones):
+    monkeypatch.setattr(ai, "AI_KEY", "k")
+    with (
+        patch.object(ai, "inventory", return_value={**INVENTORY, "visibility_zones": zones}),
+        patch.object(services, "_probe_path"),
+    ):
+        cams = services.discover_cameras()
+
+    assert len(cams) == 5
+    assert all(camera.get("visibility_zone") is None for camera in cams)
 
 
 def test_discover_syncs_dynamic_streams_to_go2rtc(monkeypatch):

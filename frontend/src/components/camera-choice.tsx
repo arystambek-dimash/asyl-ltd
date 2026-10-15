@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Check, LockKeyhole, VideoOff, type LucideIcon } from "lucide-react";
 import { CameraStream } from "@/components/camera-stream";
+import { CameraVisibilityMask, visibilityZoneActive } from "@/components/camera-visibility-mask";
 import type { PlayableCamera } from "@/lib/shipping-cameras";
 import { cn } from "@/lib/utils";
 
@@ -60,8 +61,13 @@ export function CameraChoice({
         <CameraStream
           src={camera.src}
           onStateChange={setStreamOnline}
-          className="absolute inset-0 size-full object-cover transition duration-300 group-hover:scale-[1.02]"
+          className={cn(
+            "absolute inset-0 size-full object-cover transition duration-300",
+            // Маска не масштабируется вместе с видео: при зоне кадр не «дышит».
+            !visibilityZoneActive(camera.visibility_zone) && "group-hover:scale-[1.02]",
+          )}
         />
+        <CameraVisibilityMask zone={camera.visibility_zone} />
 
         {!streamOnline && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-950/75 text-white/45">

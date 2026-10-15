@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Grid2x2, Pencil, RectangleHorizontal, ScanLine, Video, VideoOff } from "lucide-react";
+import { Check, Crop, Grid2x2, Pencil, RectangleHorizontal, ScanLine, Video, VideoOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, apiError } from "@/lib/api";
 import { can } from "@/lib/can";
@@ -9,6 +9,8 @@ import { isLogicalCamera, playableCameras, type PlayableCamera } from "@/lib/shi
 import type { CameraFeed } from "@/lib/types";
 import { CameraLineModal } from "@/components/camera-line-modal";
 import { CameraStream } from "@/components/camera-stream";
+import { CameraVisibilityMask, visibilityZoneActive } from "@/components/camera-visibility-mask";
+import { CameraVisibilityModal } from "@/components/camera-visibility-modal";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
@@ -25,6 +27,7 @@ export function CameraTile({
   onClick,
   onRename,
   onConfigureLine,
+  onConfigureZone,
 }: {
   // Только играбельные камеры (с потоком); недоступные не показываем.
   cam: PlayableCamera;
@@ -32,6 +35,7 @@ export function CameraTile({
   onClick?: () => void;
   onRename?: (camera: PlayableCamera) => void;
   onConfigureLine?: (camera: PlayableCamera) => void;
+  onConfigureZone?: (camera: PlayableCamera) => void;
 }) {
   const [online, setOnline] = useState(false);
   const handleState = useCallback(
@@ -46,6 +50,7 @@ export function CameraTile({
   return (
     <div className="group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]">
       <CameraStream src={cam.src} onStateChange={handleState} className="absolute inset-0 h-full w-full object-cover" />
+      <CameraVisibilityMask zone={cam.visibility_zone} />
 
       {!online && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-white/30">
@@ -63,13 +68,29 @@ export function CameraTile({
         />
       )}
 
-      {(onRename || onConfigureLine) && (
+      {(onRename || onConfigureLine || onConfigureZone) && (
         <div
           className={cn(
             "absolute right-2 top-2 z-10 flex gap-1.5 transition focus-within:opacity-100",
-            onConfigureLine ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+            onConfigureLine || onConfigureZone ? "opacity-100" : "opacity-0 group-hover:opacity-100",
           )}
         >
+          {onConfigureZone && (
+            <button
+              type="button"
+              title="Зона видимости камеры"
+              onClick={(event) => {
+                event.stopPropagation();
+                onConfigureZone(cam);
+              }}
+              className={cn(
+                "flex size-8 items-center justify-center rounded-lg border border-white/15 bg-black/55 text-white/85 shadow-sm backdrop-blur-md transition hover:bg-violet-500 hover:text-white",
+                visibilityZoneActive(cam.visibility_zone) && "border-violet-300/50 bg-violet-500/80 text-white",
+              )}
+            >
+              <Crop className="size-3.5" />
+            </button>
+          )}
           {onConfigureLine && (
             <button
               type="button"
@@ -203,8 +224,9 @@ export function CameraWall() {
   const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<PlayableCamera | null>(null);
   const [lineCamera, setLineCamera] = useState<PlayableCamera | null>(null);
+  const [zoneCamera, setZoneCamera] = useState<PlayableCamera | null>(null);
   const canRename = can(me, "sys_permissions.manage");
-  const canConfigureLine = !!me?.is_superuser;
+  const canConfigureCamera = !!me?.is_superuser;
 
   const updateCamera = useCallback((src: string, change: Partial<CameraFeed>) => {
     setCameras((current) => current.map((camera) => (camera.src === src ? { ...camera, ...change } : camera)));
@@ -277,12 +299,16 @@ export function CameraWall() {
     });
   }, []);
 
-  /** Общие действия плитки: онлайн-счётчик, переименование, линия подсчёта. */
-  const tileActions = (camera: PlayableCamera) => ({
-    onOnline: handleOnline,
-    onRename: canRename ? setRenaming : undefined,
-    onConfigureLine: canConfigureLine && isLogicalCamera(camera.src) ? setLineCamera : undefined,
-  });
+  /** Общие действия плитки: онлайн-счётчик, переименование, линия подсчёта, зона видимости. */
+  const tileActions = (camera: PlayableCamera) => {
+    const configurable = canConfigureCamera && isLogicalCamera(camera.src);
+    return {
+      onOnline: handleOnline,
+      onRename: canRename ? setRenaming : undefined,
+      onConfigureLine: configurable ? setLineCamera : undefined,
+      onConfigureZone: configurable ? setZoneCamera : undefined,
+    };
+  };
 
   // Показываем только играбельные камеры; недоступные (locked) не выводим вовсе.
   const active = playable.find((c) => c.id === activeId) ?? playable[0];
@@ -391,6 +417,15 @@ export function CameraWall() {
           camera={lineCamera}
           onClose={() => setLineCamera(null)}
           onConfigChange={(src, lineConfig) => updateCamera(src, { line_config: lineConfig })}
+        />
+      )}
+
+      {zoneCamera && (
+        <CameraVisibilityModal
+          key={zoneCamera.src}
+          camera={zoneCamera}
+          onClose={() => setZoneCamera(null)}
+          onZoneChange={(src, zone) => updateCamera(src, { visibility_zone: zone })}
         />
       )}
     </>

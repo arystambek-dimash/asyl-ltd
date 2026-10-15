@@ -521,6 +521,16 @@ def save_arch_zone(cam: str, payload: dict) -> tuple[int, dict]:
     return _probe_put(f"/cameras/{camera_id(cam)}/arch-zone", payload)
 
 
+def visibility_zone(cam: str) -> dict:
+    """Зона видимости камеры: вне полигона кадр не видят ни AI, ни экраны CRM."""
+    return _probe_get(f"/cameras/{camera_id(cam)}/visibility-zone")
+
+
+def save_visibility_zone(cam: str, payload: dict) -> tuple[int, dict]:
+    """Forward one visibility-zone update with a bounded camera-PC timeout."""
+    return _probe_put(f"/cameras/{camera_id(cam)}/visibility-zone", payload)
+
+
 def _same_camera_timestamp(actual, expected: str) -> bool:
     """Compare instants without rejecting equivalent ISO timezone spellings."""
     if not isinstance(actual, str):

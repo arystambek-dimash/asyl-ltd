@@ -216,3 +216,81 @@ describe("VehicleRoiOverlay", () => {
     ]);
   });
 });
+
+describe("VehicleRoiOverlay reshaping", () => {
+  afterEach(restoreVideoGeometry);
+
+  function renderEditor(points: VehicleRoiConfig["points"], reshapable = true) {
+    installVideoGeometry();
+    const onPointsChange = vi.fn();
+    render(
+      <div>
+        <video style={{ objectFit: "cover" }} />
+        <VehicleRoiOverlay
+          roi={roi({ points })}
+          expectedSource="main"
+          editable
+          reshapable={reshapable}
+          onPointsChange={onPointsChange}
+        />
+      </div>,
+    );
+    return onPointsChange;
+  }
+
+  it("inserts a point in the middle of the chosen side", () => {
+    const onPointsChange = renderEditor(roi().points);
+
+    fireEvent.click(screen.getByRole("button", { name: "Добавить точку между 3 и 1" }));
+
+    expect(onPointsChange).toHaveBeenLastCalledWith([
+      [0.1, 0.2],
+      [0.6, 0.3],
+      [0.95, 0.9],
+      [0.525, 0.55],
+    ]);
+  });
+
+  it("removes a point by Delete or double click but keeps at least three", () => {
+    const square = [
+      { x: 0.1, y: 0.1 },
+      { x: 0.9, y: 0.1 },
+      { x: 0.9, y: 0.9 },
+      { x: 0.1, y: 0.9 },
+    ];
+    const onPointsChange = renderEditor(square);
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Точка ROI 2" }), { key: "Delete" });
+    expect(onPointsChange).toHaveBeenLastCalledWith([
+      [0.1, 0.1],
+      [0.9, 0.9],
+      [0.1, 0.9],
+    ]);
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Точка ROI 4" }));
+    expect(onPointsChange).toHaveBeenLastCalledWith([
+      [0.1, 0.1],
+      [0.9, 0.1],
+      [0.9, 0.9],
+    ]);
+  });
+
+  it("does not drop below three points or add past twelve", () => {
+    const triangle = renderEditor(roi().points);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Точка ROI 1" }), { key: "Delete" });
+    expect(triangle).not.toHaveBeenCalled();
+  });
+
+  it("hides the insert handles once the polygon has twelve points", () => {
+    renderEditor(
+      Array.from({ length: 12 }, (_, index) => ({ x: 0.5 + 0.4 * Math.cos(index), y: 0.5 + 0.4 * Math.sin(index) })),
+    );
+    expect(screen.queryByRole("button", { name: /Добавить точку/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a fixed shape for editors without reshaping", () => {
+    const onPointsChange = renderEditor(roi().points, false);
+    expect(screen.queryByRole("button", { name: /Добавить точку/ })).not.toBeInTheDocument();
+    fireEvent.doubleClick(screen.getByRole("button", { name: "Точка ROI 1" }));
+    expect(onPointsChange).not.toHaveBeenCalled();
+  });
+});

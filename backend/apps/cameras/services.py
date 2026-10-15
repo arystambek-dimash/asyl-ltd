@@ -100,7 +100,6 @@ def update_cached_counting_line(camera: str, payload: dict) -> None:
     the shop-floor network. A line edit must not inherit that delay, so update
     only the matching camera in both snapshots without triggering discovery.
     """
-    camera = normalize_camera_path(camera)
     config = {
         field: payload.get(field)
         for field in COUNTING_LINE_CONFIG_FIELDS
@@ -110,7 +109,17 @@ def update_cached_counting_line(camera: str, payload: dict) -> None:
         config.get("line"), dict
     ):
         return
+    _patch_cached_camera(camera, {"line_config": config})
 
+
+def update_cached_visibility_zone(camera: str, zone: dict) -> None:
+    """Сохранённая зона видимости сразу видна на всех экранах, без нового обнаружения."""
+    _patch_cached_camera(camera, {"visibility_zone": dict(zone)})
+
+
+def _patch_cached_camera(camera: str, changes: dict) -> None:
+    """Обновить поля одной камеры в обоих снимках инвентаря."""
+    camera = normalize_camera_path(camera)
     for key in (CACHE_KEY, LAST_GOOD_CACHE_KEY):
         snapshot = cache.get(key)
         if not isinstance(snapshot, list):
@@ -119,7 +128,7 @@ def update_cached_counting_line(camera: str, payload: dict) -> None:
         updated = []
         for item in snapshot:
             if isinstance(item, dict) and item.get("src") == camera:
-                updated.append({**item, "line_config": dict(config)})
+                updated.append({**item, **changes})
                 changed = True
             else:
                 updated.append(item)
@@ -236,6 +245,10 @@ def _discover_by_inventory() -> list[dict] | None:
         inventory = ai.inventory()
         devices = inventory.get("devices") or []
         line_configs = inventory.get("line_configs") or {}
+        visibility_zones = inventory.get("visibility_zones")
+        if not isinstance(visibility_zones, dict):
+            # Неразборные зоны — это «зон нет», а не 500 на всём списке камер.
+            visibility_zones = {}
     except (ai.AiUnavailable, ai.AiError) as e:
         log.warning("Инвентарь камер недоступен (%s) — резервные RTSP-пробы", e)
         return None
@@ -256,6 +269,7 @@ def _discover_by_inventory() -> list[dict] | None:
                 "kind": kind,
                 "online": bool(d.get("online", True)),
                 "line_config": line_configs.get(path),
+                "visibility_zone": visibility_zones.get(path),
             })
             sync.append((path, d.get("sub") or path))
         elif kind == "direct" and path:
@@ -267,6 +281,7 @@ def _discover_by_inventory() -> list[dict] | None:
                 "kind": kind,
                 "online": bool(d.get("online", True)),
                 "line_config": line_configs.get(path),
+                "visibility_zone": visibility_zones.get(path),
             })
             sync.append((path, d.get("sub") or path))
         elif kind == "locked":

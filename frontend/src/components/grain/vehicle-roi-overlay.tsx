@@ -11,6 +11,8 @@ export type NormalizedRoiPoint = readonly [number, number];
 
 const KEYBOARD_STEP = 0.005;
 const KEYBOARD_LARGE_STEP = 0.02;
+const MIN_POINTS = 3;
+const MAX_POINTS = 12;
 
 function clampCoordinate(value: number) {
   return Number(clampUnit(value).toFixed(6));
@@ -22,7 +24,7 @@ function clampCoordinate(value: number) {
  * physical zone over the live image.
  */
 export function normalizeVehicleRoi(points: unknown): NormalizedRoiPoint[] {
-  if (!Array.isArray(points) || points.length < 3 || points.length > 12) return [];
+  if (!Array.isArray(points) || points.length < MIN_POINTS || points.length > MAX_POINTS) return [];
 
   const normalized: NormalizedRoiPoint[] = [];
   for (const point of points) {
@@ -68,14 +70,14 @@ function polygonArea(points: readonly NormalizedRoiPoint[]) {
 
 /** Same rule as the backend (cameras/api_views/vehicle_runtime.py): 3..12 points and a non-degenerate area. */
 export function isValidRoiDraft(points: readonly NormalizedRoiPoint[]): boolean {
-  return points.length >= 3 && points.length <= 12 && polygonArea(points) >= 0.0001;
+  return points.length >= MIN_POINTS && points.length <= MAX_POINTS && polygonArea(points) >= 0.0001;
 }
 
 type RoiSaveNotice = { message: string; tone: "success" | "warning" };
 
 type SavedRoi = { roi: VehicleRoiConfig; appliedToMonitor: boolean };
 
-function readSavedRoi(value: unknown, responseKey: string, source: string): SavedRoi | null {
+function readSavedRoi(value: unknown, responseKey: string, source: string, enabled: boolean): SavedRoi | null {
   if (!value || typeof value !== "object") return null;
   const payload = value as Record<string, unknown>;
   const roi = payload[responseKey] as VehicleRoiConfig | undefined;
@@ -83,7 +85,8 @@ function readSavedRoi(value: unknown, responseKey: string, source: string): Save
     payload.saved !== true ||
     typeof payload.applied_to_monitor !== "boolean" ||
     !roi ||
-    !isDrawableVehicleRoi(roi, source) ||
+    // A switched-off polygon is stored but not drawn: check its shape directly.
+    !isDrawableVehicleRoi({ ...roi, enabled: roi.enabled === enabled }, source) ||
     !isValidRoiDraft(normalizeVehicleRoi(roi.points))
   )
     return null;
@@ -138,21 +141,25 @@ export function useRoiEditor({
     setError("");
   }
 
-  async function save() {
-    if (!saveUrl || !canSave) return;
+  /**
+   * Saves the draft, or `points` outside the editing mode. `enabled: false`
+   * keeps the polygon on the camera PC but switches it off.
+   */
+  async function save({ enabled = true, points = draft }: { enabled?: boolean; points?: NormalizedRoiPoint[] } = {}) {
+    if (!saveUrl || saving || !isValidRoiDraft(points)) return;
     setSaving(true);
     setError("");
-    const body = { points: draft.map(([x, y]) => ({ x, y })), enabled: true, source };
+    const body = { points: points.map(([x, y]) => ({ x, y })), enabled, source };
     try {
       const response = await api.put<unknown>(saveUrl, body, { timeout: 12_000 });
-      const saved = readSavedRoi(response.data, responseKey, source);
+      const saved = readSavedRoi(response.data, responseKey, source, enabled);
       if (!saved) throw new Error("Некорректный ответ сохранения зоны");
       accept(saved);
     } catch (cause) {
       // A 503 may mean that the polygon was persisted while the live monitor
       // refresh failed. Keep that authoritative value instead of rolling back.
       const response = (cause as AxiosError<unknown>).response;
-      const partial = response?.status === 503 ? readSavedRoi(response.data, responseKey, source) : null;
+      const partial = response?.status === 503 ? readSavedRoi(response.data, responseKey, source, enabled) : null;
       if (partial) accept(partial);
       else setError(apiError(cause));
     } finally {
@@ -182,7 +189,9 @@ export function VehicleRoiOverlay({
   expectedSource,
   editable = false,
   onPointsChange,
+  reshapable = false,
   label = "ROI ОСТАНОВКИ",
+  editingLabel = "ПЕРЕТАЩИТЕ ТОЧКИ",
   editorLabel = "Редактор зоны остановки",
   pointLabel = "Точка ROI",
 }: {
@@ -190,7 +199,11 @@ export function VehicleRoiOverlay({
   expectedSource: string;
   editable?: boolean;
   onPointsChange?: (points: NormalizedRoiPoint[]) => void;
+  /** «+» на середине стороны добавляет точку; Delete или двойной клик убирает её. */
+  reshapable?: boolean;
   label?: string;
+  /** Метка у первой точки при правке; пустая — без метки. */
+  editingLabel?: string;
   editorLabel?: string;
   pointLabel?: string;
 }) {
@@ -201,10 +214,27 @@ export function VehicleRoiOverlay({
   const drawable = videoBox && isDrawableVehicleRoi(roi, expectedSource);
   const svgPoints = points.map(([x, y]) => `${x * 1000},${y * 1000}`).join(" ");
   const labelPoint = points[0];
+  const labelText = editable ? editingLabel : label;
+
+  const canInsert = editable && reshapable && points.length < MAX_POINTS;
+  const canRemove = editable && reshapable && points.length > MIN_POINTS;
 
   function updatePoint(index: number, x: number, y: number) {
     if (!editable || !onPointsChange) return;
     onPointsChange(points.map((point, pointIndex) => (pointIndex === index ? [x, y] : point)));
+  }
+
+  function insertPoint(afterIndex: number) {
+    if (!canInsert || !onPointsChange) return;
+    const [x1, y1] = points[afterIndex];
+    const [x2, y2] = points[(afterIndex + 1) % points.length];
+    const midpoint: NormalizedRoiPoint = [clampCoordinate((x1 + x2) / 2), clampCoordinate((y1 + y2) / 2)];
+    onPointsChange([...points.slice(0, afterIndex + 1), midpoint, ...points.slice(afterIndex + 1)]);
+  }
+
+  function removePoint(index: number) {
+    if (!canRemove || !onPointsChange) return;
+    onPointsChange(points.filter((_, pointIndex) => pointIndex !== index));
   }
 
   function movePointFromPointer(index: number, event: PointerEvent<HTMLButtonElement>) {
@@ -221,6 +251,11 @@ export function VehicleRoiOverlay({
   function movePointFromKeyboard(index: number, event: KeyboardEvent<HTMLButtonElement>) {
     const point = points[index];
     if (!point) return;
+    if (canRemove && (event.key === "Delete" || event.key === "Backspace")) {
+      event.preventDefault();
+      removePoint(index);
+      return;
+    }
     const step = event.shiftKey ? KEYBOARD_LARGE_STEP : KEYBOARD_STEP;
     const movement: Partial<Record<string, NormalizedRoiPoint>> = {
       ArrowLeft: [-step, 0],
@@ -264,12 +299,12 @@ export function VehicleRoiOverlay({
               vectorEffect="non-scaling-stroke"
             />
           </svg>
-          {labelPoint ? (
+          {labelPoint && labelText ? (
             <span
               className="pointer-events-none absolute -translate-y-full rounded bg-sky-400/90 px-2 py-1 text-[9px] font-black tracking-[0.12em] text-slate-950 shadow-lg"
               style={{ left: `${labelPoint[0] * 100}%`, top: `${labelPoint[1] * 100}%` }}
             >
-              {editable ? "ПЕРЕТАЩИТЕ ТОЧКИ" : label}
+              {labelText}
             </span>
           ) : null}
           {editable
@@ -296,8 +331,27 @@ export function VehicleRoiOverlay({
                     setDraggingIndex(null);
                   }}
                   onPointerCancel={() => setDraggingIndex(null)}
+                  onDoubleClick={() => removePoint(index)}
                 />
               ))
+            : null}
+          {canInsert
+            ? points.map(([x1, y1], index) => {
+                const [x2, y2] = points[(index + 1) % points.length];
+                return (
+                  <button
+                    key={`insert-${index}`}
+                    type="button"
+                    aria-label={`Добавить точку между ${index + 1} и ${((index + 1) % points.length) + 1}`}
+                    title="Добавить точку"
+                    className="absolute flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/80 bg-slate-950/70 text-[13px] font-bold leading-none text-white opacity-70 shadow transition hover:scale-110 hover:bg-sky-500 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-sky-300/60"
+                    style={{ left: `${((x1 + x2) / 2) * 100}%`, top: `${((y1 + y2) / 2) * 100}%` }}
+                    onClick={() => insertPoint(index)}
+                  >
+                    +
+                  </button>
+                );
+              })
             : null}
         </>
       ) : null}

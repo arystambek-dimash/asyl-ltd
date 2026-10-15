@@ -1,13 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { ArrowDownUp, Camera, Crosshair, Plus, RefreshCw, RotateCcw, ScanSearch, Trash2, Video } from "lucide-react";
+import { useId, useState } from "react";
+import { ArrowDownUp, Plus, RotateCcw, ScanSearch, Trash2 } from "lucide-react";
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
-import { CameraStream } from "@/components/camera-stream";
+import { CameraFrameStage } from "@/components/camera-frame-stage";
+import { CameraVisibilityMask } from "@/components/camera-visibility-mask";
 import { Button } from "@/components/ui/button";
-import { FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
-import { api, blobApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   COUNT_LINE_ID,
@@ -20,9 +19,7 @@ import {
   type NormalizedLine,
   type VerificationLine,
 } from "@/lib/camera-counting-line";
-
-/** «Подключение…» that never ends must not leave the operator without a picture. */
-export const LIVE_FALLBACK_MS = 6_000;
+import type { VehicleRoiConfig } from "@/lib/types";
 
 const DIRECTIONS: Array<{ value: LineDirection; label: string; hint: string }> = [
   { value: "any", label: "В обе стороны", hint: "Считать любое пересечение" },
@@ -32,113 +29,6 @@ const DIRECTIONS: Array<{ value: LineDirection; label: string; hint: string }> =
   { value: "negative", label: "Сторона −", hint: "Против нормали линии" },
 ];
 
-/**
- * Live stream by default; the camera PC's latest still frame as a fallback.
- * The automatic fallback keeps the stream running until a frame has actually
- * arrived, and fires once: after that the operator chooses the source.
- */
-function useStillFrame(src: string) {
-  const [mode, setMode] = useState<"live" | "still">("live");
-  const [online, setOnline] = useState(false);
-  const [autoFallback, setAutoFallback] = useState(true);
-  const [url, setUrl] = useState<string | null>(null);
-  const [takenAt, setTakenAt] = useState<Date | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const requestId = useRef(0);
-  const urlRef = useRef<string | null>(null);
-  const onlineRef = useRef(false);
-
-  /** A stream only reports changes, so a freshly mounted one starts offline. */
-  const reportOnline = useCallback((value: boolean) => {
-    onlineRef.current = value;
-    setOnline(value);
-  }, []);
-
-  const enter = useCallback(
-    (next: "live" | "still") => {
-      reportOnline(false);
-      setMode(next);
-    },
-    [reportOnline],
-  );
-
-  /** True when this request is still current and delivered a frame. */
-  const load = useCallback(async () => {
-    const id = ++requestId.current;
-    setLoading(true);
-    setError("");
-    try {
-      const response = await api.get<Blob>(`/cameras/${encodeURIComponent(src)}/counting-line/frame`, {
-        responseType: "blob",
-        timeout: 15_000,
-      });
-      if (id !== requestId.current) return false;
-      const next = URL.createObjectURL(response.data);
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = next;
-      setUrl(next);
-      setTakenAt(new Date());
-      return true;
-    } catch (cause) {
-      const message = await blobApiError(cause);
-      if (id === requestId.current) setError(message || "Не удалось получить кадр камеры.");
-      return false;
-    } finally {
-      if (id === requestId.current) setLoading(false);
-    }
-  }, [src]);
-
-  const showStill = useCallback(() => {
-    setAutoFallback(false);
-    enter("still");
-    void load();
-  }, [enter, load]);
-
-  const showLive = useCallback(() => {
-    requestId.current += 1;
-    setLoading(false);
-    setError("");
-    setAutoFallback(false);
-    enter("live");
-  }, [enter]);
-
-  useEffect(() => {
-    if (mode !== "live" || online || !autoFallback) return;
-    const timer = setTimeout(() => {
-      setAutoFallback(false);
-      void load().then((loaded) => {
-        // A stream that connected meanwhile wins; a failure stays a hint.
-        if (loaded && !onlineRef.current) enter("still");
-      });
-    }, LIVE_FALLBACK_MS);
-    return () => clearTimeout(timer);
-  }, [mode, online, autoFallback, load, enter]);
-
-  useEffect(
-    () => () => {
-      requestId.current += 1;
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-    },
-    [],
-  );
-
-  return {
-    mode,
-    online,
-    autoFallback,
-    url,
-    takenAt,
-    loading,
-    error,
-    reportOnline,
-    showStill,
-    showLive,
-    refresh: load,
-  };
-}
-
 export function CameraLineEditor({
   src,
   line,
@@ -146,6 +36,7 @@ export function CameraLineEditor({
   disabled = false,
   verificationLines,
   verificationSupported,
+  visibilityZone,
   onLineChange,
   onDirectionChange,
   onVerificationLinesChange,
@@ -157,15 +48,14 @@ export function CameraLineEditor({
   verificationLines: VerificationLine[];
   /** False on an AI service that cannot store verification lines yet. */
   verificationSupported: boolean;
+  /** Зона видимости камеры: вне неё AI не видит, линии там бесполезны. */
+  visibilityZone?: VehicleRoiConfig | null;
   onLineChange: (line: NormalizedLine) => void;
   onDirectionChange: (direction: LineDirection) => void;
   onVerificationLinesChange: (lines: VerificationLine[]) => void;
 }) {
   const [activeId, setActiveId] = useState(COUNT_LINE_ID);
-  const frame = useStillFrame(src);
-  const { online } = frame;
   const headingId = useId();
-  const live = frame.mode === "live";
   const active = verificationLines.find((item) => item.id === activeId);
   const canAdd = !disabled && verificationSupported && verificationLines.length < MAX_VERIFICATION_LINES;
 
@@ -183,30 +73,18 @@ export function CameraLineEditor({
     if (activeId === id) setActiveId(COUNT_LINE_ID);
   };
 
-  let status = online ? "Живое видео" : "Подключение…";
-  if (!live) status = frame.loading ? "Загрузка кадра…" : frame.url ? "Снимок кадра" : "Нет кадра";
-
   return (
     <div className="space-y-4">
-      <div className="group/line relative aspect-video overflow-hidden rounded-xl bg-[#111318] shadow-[0_20px_55px_-24px_rgba(15,23,42,.8)]">
-        {live && (
-          <CameraStream
-            src={src}
-            onStateChange={frame.reportOnline}
-            className="absolute inset-0 h-full w-full object-contain"
-          />
-        )}
-        {!live && frame.url && (
-          // A blob: URL of an authenticated JPEG; next/image cannot optimize it.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            data-video-box-source
-            src={frame.url}
-            alt="Кадр камеры для разметки"
-            className="absolute inset-0 h-full w-full object-contain"
-          />
-        )}
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/15" />
+      <CameraFrameStage
+        src={src}
+        hintColor={active ? undefined : "#7dd3fc"}
+        hint={
+          active
+            ? `«${active.name.trim() || active.id}»: проведите линию или перетащите её точки`
+            : "Проведите основную линию или перетащите её точки"
+        }
+      >
+        <CameraVisibilityMask zone={visibilityZone} preview />
         <CameraCountingLineOverlay
           line={line}
           direction={direction}
@@ -218,66 +96,7 @@ export function CameraLineEditor({
           onVerificationLineChange={(id, next) => replaceLine(id, { line: next })}
           onActiveLineChange={setActiveId}
         />
-
-        <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-full border border-white/15 bg-black/55 px-3 py-1.5 text-xs font-medium text-white shadow-lg backdrop-blur-md">
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              (live ? online : !!frame.url && !frame.loading) ? "bg-emerald-400" : "bg-amber-400",
-            )}
-          />
-          {status}
-        </div>
-        <div className="pointer-events-none absolute bottom-3 left-3 right-3 flex items-center gap-2 rounded-lg border border-white/15 bg-black/60 px-3 py-2 text-xs text-white/90 backdrop-blur-md sm:right-auto">
-          <Crosshair className="size-4 shrink-0" style={{ color: active ? undefined : "#7dd3fc" }} />
-          <span className="truncate">
-            {active
-              ? `«${active.name.trim() || active.id}»: проведите линию или перетащите её точки`
-              : "Проведите основную линию или перетащите её точки"}
-          </span>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        {live ? (
-          <Button type="button" size="sm" variant="outline" onClick={frame.showStill}>
-            <Camera className="size-4" /> Показать кадр
-          </Button>
-        ) : (
-          <>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={frame.loading}
-              onClick={() => void frame.refresh()}
-            >
-              <RefreshCw className={cn("size-4", frame.loading && "animate-spin")} /> Обновить кадр
-            </Button>
-            <Button type="button" size="sm" variant="ghost" onClick={frame.showLive}>
-              <Video className="size-4" /> Живое видео
-            </Button>
-          </>
-        )}
-        <span className="text-xs text-[var(--muted-foreground)]">
-          {live
-            ? frame.autoFallback && !online
-              ? "Если видео не подключится, откроется последний кадр камеры."
-              : ""
-            : frame.takenAt
-              ? `Кадр от ${frame.takenAt.toLocaleTimeString("ru-RU")}`
-              : ""}
-        </span>
-      </div>
-      {frame.error &&
-        (live ? (
-          // The automatic fallback found no frame: the stream keeps trying.
-          <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            Снимок кадра недоступен: {frame.error}
-          </p>
-        ) : (
-          <FormError message={frame.error} className="rounded-lg px-4 py-3" />
-        ))}
+      </CameraFrameStage>
 
       <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <label className="block">

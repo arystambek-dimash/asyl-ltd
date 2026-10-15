@@ -17,7 +17,7 @@ import {
   type NormalizedLine,
   type VerificationLine,
 } from "@/lib/camera-counting-line";
-import type { CameraCountingLine } from "@/lib/types";
+import type { CameraCountingLine, VehicleRoiConfig } from "@/lib/types";
 import { useVisiblePolling } from "@/lib/use-visible-polling";
 
 const LINE_SYNC_MS = 3 * 1000;
@@ -76,7 +76,12 @@ export function CameraLineModal({
   onClose,
   onConfigChange,
 }: {
-  camera: { src: string; zone: string; line_config?: CameraCountingLine | null };
+  camera: {
+    src: string;
+    zone: string;
+    line_config?: CameraCountingLine | null;
+    visibility_zone?: VehicleRoiConfig | null;
+  };
   onClose: () => void;
   /** Сохранённая конфигурация камеры изменилась: обновить инвентарь. */
   onConfigChange: (src: string, config: CameraCountingLine) => void;
@@ -297,6 +302,7 @@ export function CameraLineModal({
           disabled={loading || saving || !authoritative}
           verificationLines={draft.verification}
           verificationSupported={draft.verificationSupported}
+          visibilityZone={camera.visibility_zone}
           onLineChange={(line) => editDraft({ line })}
           onDirectionChange={(direction) => editDraft({ direction })}
           onVerificationLinesChange={(verification) => editDraft({ verification })}
