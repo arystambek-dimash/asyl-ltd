@@ -40,7 +40,6 @@ from apps.orders.querysets import (
     order_remaining_by_id,
     with_order_api_relations,
 )
-from apps.orders.statuses import ON_POST_STATUSES
 from apps.sales.access import assigned_department_id, scope_by_client_department
 from apps.sales.models import Department
 
@@ -64,6 +63,7 @@ from .serializers import (
     StoreSerializer,
 )
 from .services import (
+    assert_no_active_loading,
     client_history,
     detect_overdue,
     is_payment_window_open,
@@ -93,22 +93,6 @@ class StoreChanged(APIException):
         super().__init__({
             "detail": "Магазин был изменён другим запросом; обновите страницу",
             "code": self.default_code,
-        })
-
-
-def _assert_no_active_loading(locked_orders):
-    from apps.cameras.models import AiCountingSession
-
-    if (
-        AiCountingSession.objects.filter(
-            order_id__in=[order.pk for order in locked_orders],
-            status__in=AiCountingSession.OPEN_STATUSES,
-        ).exists()
-        or any(order.status in ON_POST_STATUSES for order in locked_orders)
-    ):
-        raise ValidationError({
-            "detail": "Сначала завершите или верните активные погрузки клиента",
-            "code": "active_loading",
         })
 
 
@@ -247,7 +231,7 @@ class ClientViewSet(
             # Repeat after Client is locked: an Order whose FK key lock began
             # before our Client lock may have committed after the first pass.
             # No new Order can pass its FK check while Client stays locked.
-            _assert_no_active_loading(lock_client_orders(client_pk))
+            assert_no_active_loading(lock_client_orders(client_pk))
         client = serializer.save()
         current = client.department
         if (previous.pk if previous else None) == (current.pk if current else None):
@@ -280,7 +264,7 @@ class ClientViewSet(
         client_pk = self.get_object().pk
         with transaction.atomic():
             client, locked_orders = lock_client_with_orders(client_pk, request.user)
-            _assert_no_active_loading(locked_orders)
+            assert_no_active_loading(locked_orders)
             portal_user = client.user
             order_ids = [order.pk for order in locked_orders]
             orders_count = len(order_ids)

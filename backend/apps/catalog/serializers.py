@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY
+from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY, money_string
 
 from .models import Product
 from .photos import product_photo_url
@@ -76,3 +76,37 @@ class ClientPriceUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Товар в одной валюте указан в прайс-листе повторно.")
         return rows
+
+
+class PricedProductSerializer(serializers.ModelSerializer):
+    """Товар для заказа покупателем: подпись, фото и его закреплённая цена.
+
+    Цену кладёт :func:`services.with_client_prices` (``client_price_rows``),
+    валюту — контекст ``currency``. Каталог портала и «Мой магазин» сотрудника.
+    """
+
+    label = serializers.CharField(source="__str__", read_only=True)
+    weight_kg = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    price = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    photo_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Product
+        # Warehouse balance is staff-only operational data.  The portal may
+        # list orderable catalogue references and the client's own price, but
+        # must never serialize an exact stock quantity.
+        fields = ["id", "label", "weight_kg", "price", "currency", "photo_url"]
+
+    def get_photo_url(self, obj):
+        return product_photo_url(obj)
+
+    def get_price(self, obj):
+        # Только закреплённая цена этого покупателя.
+        prices = getattr(obj, "client_price_rows", [])
+        return money_string(prices[0].price) if prices else None
+
+    def get_currency(self, obj):
+        return self.context.get("currency", DEFAULT_CURRENCY)

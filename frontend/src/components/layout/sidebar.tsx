@@ -25,6 +25,7 @@ import {
   Wheat,
   Bot,
   Sparkles,
+  ShoppingBasket,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { canAny, TASKS_ENTRY_PERMS, type Perm } from "@/lib/can";
@@ -38,6 +39,8 @@ interface NavItem {
   icon: React.ElementType;
   /** Нужно ЛЮБОЕ из прав, как в RequirePerm; без perm пункт виден всем. */
   perm?: Perm;
+  /** Доступ не правом, а состоянием сотрудника (свой магазин). */
+  when?: (me: Me) => boolean;
 }
 interface NavSection {
   title: string;
@@ -45,7 +48,7 @@ interface NavSection {
 }
 
 function navItemVisible(me: Me, item: NavItem): boolean {
-  return !item.perm || canAny(me, item.perm);
+  return (!item.perm || canAny(me, item.perm)) && (!item.when || item.when(me));
 }
 
 const STAFF_SECTIONS: NavSection[] = [
@@ -61,6 +64,8 @@ const STAFF_SECTIONS: NavSection[] = [
   {
     title: "Работа",
     items: [
+      // Свой магазин сотрудника: заказ сразу со склада, без грузчика — включают в карточке сотрудника.
+      { href: "/my-shop", label: "Мой магазин", icon: ShoppingBasket, when: (me) => Boolean(me.shop) },
       { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
       // Касса: подтверждение оплат + вкладки «Долги» и «Транзакции».
       { href: "/accounting", label: "Касса", icon: HandCoins, perm: CASHIER_ENTRY_PERMS },

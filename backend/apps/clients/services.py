@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import APIException, PermissionDenied
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 
 from apps.common.money import (
     money_string as _d,
@@ -19,7 +19,7 @@ from apps.orders.debt import (
     payment_counts_as_paid,
 )
 from apps.orders.labels import payment_method_label, payment_status_label
-from apps.orders.statuses import is_financial
+from apps.orders.statuses import ON_POST_STATUSES, is_financial
 from apps.sales.access import scope_by_client_department
 
 from .models import Client
@@ -66,6 +66,24 @@ def lock_client_orders(client_pk):
         .only("pk", "status")
         .order_by("pk")
     )
+
+
+def assert_no_active_loading(locked_orders):
+    """Клиента с идущей погрузкой нельзя переносить и удалять: заказ на посту
+    или открытая сессия подсчёта мешков — 400 ``active_loading``."""
+    from apps.cameras.models import AiCountingSession
+
+    if (
+        AiCountingSession.objects.filter(
+            order_id__in=[order.pk for order in locked_orders],
+            status__in=AiCountingSession.OPEN_STATUSES,
+        ).exists()
+        or any(order.status in ON_POST_STATUSES for order in locked_orders)
+    ):
+        raise ValidationError({
+            "detail": "Сначала завершите или верните активные погрузки клиента",
+            "code": "active_loading",
+        })
 
 
 def lock_client_with_orders(client_pk, user):

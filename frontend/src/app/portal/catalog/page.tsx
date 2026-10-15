@@ -2,16 +2,15 @@
 import Link from "next/link";
 import { Boxes, ShoppingCart } from "lucide-react";
 import { AppShell } from "@/components/layout/app-shell";
-import { ProductPhoto } from "@/components/catalog/product-photo";
-import { AddToCart } from "@/components/portal/add-to-cart";
 import { CartBar } from "@/components/portal/cart-bar";
 import { CurrencyToggle } from "@/components/portal/currency-toggle";
+import { ProductCard } from "@/components/portal/product-card";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { DataGate } from "@/components/ui/data-state";
 import { priceCart } from "@/lib/cart";
 import { usePortalCatalog } from "@/lib/use-portal-catalog";
-import { bagsLabel, cn, formatCurrency } from "@/lib/utils";
+import { bagsLabel, cn } from "@/lib/utils";
 import { useCart } from "@/store/cart";
 
 export default function PortalCatalogPage() {
@@ -51,25 +50,8 @@ export default function PortalCatalogPage() {
         </Card>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4">
-          {products.map((p) => (
-            <Card key={p.id} className="flex flex-col overflow-hidden">
-              <ProductPhoto url={p.photo_url} alt={p.label} className="aspect-[4/3] w-full" iconClassName="size-10" />
-              <div className="flex flex-1 flex-col gap-3 p-3 sm:p-4">
-                <div className="flex-1">
-                  <div className="text-sm font-medium leading-snug sm:text-[15px]">{p.label}</div>
-                  <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{Number(p.weight_kg)} кг / мешок</div>
-                </div>
-                {p.price ? (
-                  <div className="text-lg font-semibold tabular-nums">
-                    {formatCurrency(p.price, p.currency)}
-                    <span className="ml-1 text-xs font-normal text-[var(--muted-foreground)]">/ мешок</span>
-                  </div>
-                ) : (
-                  <div className="text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
-                )}
-                <AddToCart product={p} />
-              </div>
-            </Card>
+          {products.map((product) => (
+            <ProductCard key={product.id} product={product} />
           ))}
         </div>
       )}

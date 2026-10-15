@@ -666,6 +666,21 @@ def dispatch_order(
     return _do_ship(order, shipment, user, label, sources=plan)
 
 
+@transaction.atomic
+def ship_from_warehouse(order, user, *, label: str):
+    """Отгрузка без поста и грузчика: заказ целиком уходит со «Склада отгрузки».
+
+    Товар забирают прямо со склада (магазин сотрудника, ``employees/shop.py``):
+    права грузчика не нужны — кто вправе так отгружать, решает вызывающий
+    сервис. Списание, долг и журнал — общие с кнопкой грузчика (``_do_ship``).
+    """
+    order = _locked(order)
+    _assert_awaiting_shipment(order)
+    shipment, _ = Shipment.objects.get_or_create(order=order)
+    shipment.bags_loaded = order.ordered_bags
+    return _do_ship(order, shipment, user, label)
+
+
 def _check_loader_dispatch(order, user, *, truck_number: str, trailer_number: str | None) -> None:
     """Проверки кнопки грузчика без записи: область отгрузки и номера машины.
 

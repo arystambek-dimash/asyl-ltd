@@ -5,6 +5,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainSerializer
 
+from apps.employees.shop import active_shop
 from apps.sales.access import assigned_department_id
 
 from .credentials import password_change_required
@@ -91,13 +92,14 @@ class MeSerializer(serializers.ModelSerializer):
     permissions = serializers.SerializerMethodField()
     position = serializers.SerializerMethodField()
     sales_department = serializers.SerializerMethodField()
+    shop = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "first_name", "last_name",
             "is_client", "is_superuser",
-            "permissions", "position", "sales_department"]
+            "permissions", "position", "sales_department", "shop"]
 
 
     def get_permissions(self, obj):
@@ -106,6 +108,11 @@ class MeSerializer(serializers.ModelSerializer):
     def get_position(self, obj):
         emp = getattr(obj, "employee", None)
         return emp.position if emp else None
+
+    def get_shop(self, obj):
+        """Свой магазин сотрудника — пункт меню «Мой магазин»; без него — null."""
+        shop = active_shop(obj)
+        return {"name": shop.client.name, "warehouse_name": shop.warehouse.name} if shop else None
 
     def get_sales_department(self, obj):
         """Отдел, которым сервер ограничивает пользователя (sales.access); у суперюзера — нет."""

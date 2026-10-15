@@ -9,10 +9,17 @@ import {
   KeyRound,
   Pencil,
   Plus,
+  Store,
   Trash2,
   UserRound,
 } from "lucide-react";
 
+import {
+  EmployeeShopFields,
+  shopFormFrom,
+  shopPayload,
+  type ShopForm,
+} from "@/components/employees/employee-shop-fields";
 import { AppShell } from "@/components/layout/app-shell";
 import { PermissionPicker } from "@/components/permission-picker";
 import { Chip } from "@/components/ui/chip";
@@ -39,7 +46,7 @@ import {
   newEmployeePermissions,
   type PermissionPreset,
 } from "@/lib/permission-presets";
-import type { Department, Employee, Permission } from "@/lib/types";
+import type { Department, Employee, Permission, Warehouse } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useConfirmAction } from "@/lib/use-confirm-action";
 import { cn, toggledSet } from "@/lib/utils";
@@ -69,6 +76,7 @@ function EmployeesPageInner() {
   const [form, setForm] = useState(emptyForm);
   const [selectedPermissions, setSelectedPermissions] = useState<Set<string>>(new Set());
   const [salesEmployee, setSalesEmployee] = useState(false);
+  const [shop, setShop] = useState<ShopForm>(shopFormFrom(null));
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,6 +98,8 @@ function EmployeesPageInner() {
   );
 
   const { data: departments } = useApi<Department[]>(open && canManage ? "/departments/?all=1" : null);
+  // Без права на склады список не придёт — магазин возьмёт прежний или основной склад.
+  const { data: warehouses } = useApi<Warehouse[]>(open && canEditSecurity ? "/warehouses/" : null);
 
   function openNew() {
     if (!canManageSecurity) return;
@@ -97,6 +107,7 @@ function EmployeesPageInner() {
     setForm(emptyForm);
     setSelectedPermissions(newEmployeePermissions(ungrantable));
     setSalesEmployee(false);
+    setShop(shopFormFrom(null));
     setStep(1);
     setError("");
     setOpen(true);
@@ -116,6 +127,7 @@ function EmployeesPageInner() {
     });
     setSelectedPermissions(new Set(employee.permissions));
     setSalesEmployee(Boolean(employee.sales_department));
+    setShop(shopFormFrom(employee.shop));
     setStep(1);
     setError("");
     setOpen(true);
@@ -164,6 +176,7 @@ function EmployeesPageInner() {
         position: form.position,
       };
       const salesDepartment = salesEmployee ? Number(form.sales_department) : null;
+      const shopData = shopPayload(shop, editing?.shop);
 
       if (editing) {
         await api.patch(`/employees/${editing.id}/`, profile);
@@ -173,6 +186,7 @@ function EmployeesPageInner() {
             permission_codes: Array.from(selectedPermissions),
             is_active: form.is_active,
             sales_department: salesDepartment,
+            ...(shopData && { shop: shopData }),
           });
         }
         if (form.password && canChangePassword) {
@@ -188,6 +202,7 @@ function EmployeesPageInner() {
           password: form.password,
           permission_codes: Array.from(selectedPermissions),
           is_active: form.is_active,
+          ...(shopData && { shop: shopData }),
         });
       }
 
@@ -269,7 +284,14 @@ function EmployeesPageInner() {
             <TBody>
               {sorted.map((employee) => (
                 <TR key={employee.id}>
-                  <TD className="font-medium">{employee.name}</TD>
+                  <TD className="font-medium">
+                    {employee.name}
+                    {employee.shop?.enabled && (
+                      <Badge tone="muted" className="ml-2 align-middle">
+                        <Store className="size-3" /> Магазин
+                      </Badge>
+                    )}
+                  </TD>
                   <TD>{employee.username}</TD>
                   <TD>
                     <div>{employee.position || "—"}</div>
@@ -354,7 +376,7 @@ function EmployeesPageInner() {
           <div className="relative grid grid-cols-3 gap-2 rounded-2xl border bg-[var(--muted)]/45 p-2">
             {[
               { number: 1, label: "Сотрудник", icon: UserRound },
-              { number: 2, label: "Отдел", icon: BriefcaseBusiness },
+              { number: 2, label: "Отдел и магазин", icon: BriefcaseBusiness },
               { number: 3, label: "Доступы", icon: KeyRound },
             ].map((item) => {
               const Icon = item.icon;
@@ -521,6 +543,15 @@ function EmployeesPageInner() {
                   })}
                 </div>
               )}
+
+              <EmployeeShopFields
+                value={shop}
+                onChange={setShop}
+                existing={editing?.shop}
+                defaultName={`Магазин ${[form.first_name, form.last_name].filter(Boolean).join(" ")}`.trim()}
+                warehouses={warehouses}
+                disabled={!canEditSecurity}
+              />
             </section>
           )}
 

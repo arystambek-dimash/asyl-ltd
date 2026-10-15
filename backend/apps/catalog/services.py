@@ -1,9 +1,20 @@
 from apps.common.text import dictionary_key
 from apps.eventlog.services import log_event
 from django.db import IntegrityError, transaction
+from django.db.models import Prefetch
 from rest_framework.exceptions import ValidationError
 
-from .models import Product, ProductAlias
+from .models import ClientPrice, Product, ProductAlias
+
+
+def with_client_prices(products, client_id, currency):
+    """Товары с ценой покупателя в валюте — ``client_price_rows`` для
+    :class:`serializers.PricedProductSerializer`, одним запросом на список."""
+    return products.prefetch_related(Prefetch(
+        "client_prices",
+        queryset=ClientPrice.objects.filter(client_id=client_id, currency=currency),
+        to_attr="client_price_rows",
+    ))
 
 
 @transaction.atomic

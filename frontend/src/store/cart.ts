@@ -59,6 +59,8 @@ export function useCart() {
       }),
     remove: (product: number) => change((current) => ({ ...current, lines: withQuantity(current.lines, product, 0) })),
     clear: () => change((current) => ({ ...current, lines: [] })),
+    /** Корзина целиком из готовых строк — «Повторить» заказ. */
+    replace: (lines: CartLine[]) => change((current) => ({ ...current, lines })),
     setCurrency: (currency: CartCurrency) => change((current) => ({ ...current, currency })),
   };
 }

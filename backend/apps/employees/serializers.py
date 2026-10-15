@@ -6,10 +6,18 @@ from rest_framework import serializers
 
 from apps.accounts.credentials import username_taken
 from apps.accounts.passwords import validate_new_password
+from apps.catalog.models import Product
+from apps.common.money import money_string
+from apps.orders.debt import order_remaining
+from apps.orders.models import Order, OrderItem
+from apps.orders.statuses import is_financial, public_status_label
+from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
 from apps.sales.models import Department
 from apps.sys_permissions.models import Permission
+from apps.warehouse.models import Warehouse
 
 from .models import Employee
+from .shop import cancel_blocker, follow_employee_department, set_employee_shop, shop_settings
 
 User = get_user_model()
 
@@ -73,6 +81,26 @@ def _validate_permission_assignment(serializer, attrs):
         )
 
 
+class ShopSettingsSerializer(serializers.Serializer):
+    """«Свой магазин» в карточке сотрудника (``shop.set_employee_shop``)."""
+
+    enabled = serializers.BooleanField()
+    name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    warehouse = serializers.PrimaryKeyRelatedField(
+        queryset=Warehouse.objects.all(), required=False, allow_null=True, default=None,
+    )
+
+
+def _save_shop(serializer, employee, shop_data) -> None:
+    if shop_data is None:
+        return
+    shop = set_employee_shop(employee, serializer.context["request"].user, **shop_data)
+    if shop is not None:
+        # Ответ читает employee.shop: без этого он показал бы прежний магазин
+        # (или его отсутствие) из кэша связи.
+        employee.shop = shop
+
+
 class EmployeeReadSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     first_name = serializers.CharField(source="user.first_name", read_only=True)
@@ -85,6 +113,7 @@ class EmployeeReadSerializer(serializers.ModelSerializer):
     )
     name = serializers.CharField(read_only=True)
     permissions = serializers.SerializerMethodField()
+    shop = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
@@ -101,10 +130,14 @@ class EmployeeReadSerializer(serializers.ModelSerializer):
             "name",
             "permissions",
             "is_active",
+            "shop",
         ]
 
     def get_permissions(self, obj):
         return sorted(permission.code for permission in obj.permissions.all())
+
+    def get_shop(self, obj):
+        return shop_settings(getattr(obj, "shop", None))
 
 
 class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
@@ -114,6 +147,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
     last_name = serializers.CharField(max_length=100)
     permission_codes = _permission_codes_field()
     sales_department = _sales_department_field()
+    shop = ShopSettingsSerializer(write_only=True, required=False)
 
     class Meta:
         model = Employee
@@ -127,6 +161,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
             "sales_department",
             "permission_codes",
             "is_active",
+            "shop",
         ]
 
     def to_representation(self, instance):
@@ -140,6 +175,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
                 "permission_codes",
                 "is_active",
                 "sales_department",
+                "shop",
             } & set(data)
             if security_fields:
                 raise serializers.ValidationError(
@@ -185,6 +221,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
         first_name = validated_data.pop("first_name")
         last_name = validated_data.pop("last_name")
         permissions = validated_data.pop("permissions", [])
+        shop_data = validated_data.pop("shop", None)
         user = User.objects.create_user(
             username=username,
             password=password,
@@ -194,6 +231,7 @@ class EmployeeCreateUpdateSerializer(serializers.ModelSerializer):
         )
         employee = Employee.objects.create(user=user, **validated_data)
         employee.permissions.set(permissions)
+        _save_shop(self, employee, shop_data)
         return employee
 
     @transaction.atomic
@@ -217,6 +255,7 @@ class EmployeeSecuritySerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", required=False)
     permission_codes = _permission_codes_field()
     sales_department = _sales_department_field()
+    shop = ShopSettingsSerializer(write_only=True, required=False)
 
     class Meta:
         model = Employee
@@ -225,6 +264,7 @@ class EmployeeSecuritySerializer(serializers.ModelSerializer):
             "permission_codes",
             "is_active",
             "sales_department",
+            "shop",
         ]
 
     def validate_sales_department(self, value):
@@ -248,6 +288,7 @@ class EmployeeSecuritySerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         user_data = validated_data.pop("user", None)
         permissions = validated_data.pop("permissions", None)
+        shop_data = validated_data.pop("shop", None)
 
         if user_data and user_data.get("username"):
             instance.user.username = user_data["username"]
@@ -267,6 +308,9 @@ class EmployeeSecuritySerializer(serializers.ModelSerializer):
 
         if permissions is not None:
             instance.permissions.set(permissions)
+        if shop_data is None and "sales_department" in employee_update_fields:
+            follow_employee_department(instance, self.context["request"].user)
+        _save_shop(self, instance, shop_data)
         return instance
 
 
@@ -287,3 +331,64 @@ class EmployeePasswordSerializer(serializers.Serializer):
         employee.user.set_password(self.validated_data["password"])
         employee.user.save(update_fields=["password"])
         return employee
+
+
+# «Мой магазин» сотрудника: заказ сразу со склада и свои заказы (employees/shop.py).
+
+
+class ShopOrderItemInputSerializer(serializers.Serializer):
+    product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
+    quantity = serializers.IntegerField(min_value=1, max_value=MAX_PORTAL_ITEM_QUANTITY)
+
+
+class ShopOrderCreateSerializer(serializers.Serializer):
+    # Те же пределы, что у корзины портала: корзина на фронте общая.
+    items = ShopOrderItemInputSerializer(many=True, allow_empty=False, max_length=MAX_PORTAL_ORDER_ITEMS)
+
+
+class ShopOrderItemSerializer(serializers.ModelSerializer):
+    product_label = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = OrderItem
+        fields = ["id", "product", "product_label", "quantity", "unit_price", "is_bonus"]
+
+
+class ShopOrderSerializer(serializers.ModelSerializer):
+    items = ShopOrderItemSerializer(many=True, read_only=True)
+    bags = serializers.IntegerField(source="goods_bags", read_only=True)
+    status_label = serializers.SerializerMethodField()
+    shipped_at = serializers.SerializerMethodField()
+    total_amount = serializers.SerializerMethodField()
+    paid_total = serializers.SerializerMethodField()
+    remaining_amount = serializers.SerializerMethodField()
+    cancel_blocker = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = [
+            "id", "created_at", "shipped_at", "status", "status_label", "currency",
+            "items", "bags", "total_amount", "paid_total", "remaining_amount",
+            "payment_status", "cancel_blocker",
+        ]
+
+    def get_status_label(self, obj):
+        return public_status_label(obj.status)
+
+    def get_shipped_at(self, obj):
+        shipment = getattr(obj, "shipment", None)
+        return shipment.shipped_at if shipment else None
+
+    # Отменённый заказ ничего не стоит — деньги только у финансовых (как в портале).
+    def get_total_amount(self, obj):
+        return money_string(obj.total_amount) if is_financial(obj.status) else None
+
+    def get_paid_total(self, obj):
+        return money_string(obj.paid_total) if is_financial(obj.status) else None
+
+    def get_remaining_amount(self, obj):
+        return money_string(order_remaining(obj)) if is_financial(obj.status) else None
+
+    def get_cancel_blocker(self, obj):
+        """Пусто — сотрудник может сам отменить заказ (час после списания, без денег)."""
+        return cancel_blocker(obj, self.context["request"].user)

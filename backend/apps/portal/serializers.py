@@ -1,9 +1,8 @@
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
-from apps.common.money import CURRENCY_CHOICES, DEFAULT_CURRENCY, money_string
-from apps.catalog.models import ClientPrice, Product
-from apps.catalog.photos import product_photo_url
+from apps.common.money import CURRENCY_CHOICES, money_string
+from apps.catalog.models import ClientPrice
 from apps.clients.models import Store
 from apps.orders.debt import available_to_pay, order_remaining
 from apps.orders.labels import payment_method_label
@@ -19,34 +18,6 @@ from apps.orders.transport import transport_locked, transport_on_site
 
 MAX_PORTAL_ORDER_ITEMS = 100
 MAX_PORTAL_ITEM_QUANTITY = 1_000_000
-
-
-class CatalogProductSerializer(serializers.ModelSerializer):
-    label = serializers.CharField(source="__str__", read_only=True)
-    weight_kg = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True
-    )
-    price = serializers.SerializerMethodField()
-    currency = serializers.SerializerMethodField()
-    photo_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Product
-        # Warehouse balance is staff-only operational data.  The portal may
-        # list orderable catalogue references and the client's own price, but
-        # must never serialize an exact stock quantity.
-        fields = ["id", "label", "weight_kg", "price", "currency", "photo_url"]
-
-    def get_photo_url(self, obj):
-        return product_photo_url(obj)
-
-    def get_price(self, obj):
-        # Только закреплённая цена текущего клиента.
-        prices = getattr(obj, "portal_client_prices", [])
-        return money_string(prices[0].price) if prices else None
-
-    def get_currency(self, obj):
-        return self.context.get("currency", DEFAULT_CURRENCY)
 
 
 class PortalOrderItemSerializer(serializers.ModelSerializer):

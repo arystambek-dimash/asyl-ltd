@@ -8,7 +8,9 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from apps.catalog.models import ClientPrice, Product
+from apps.catalog.models import Product
+from apps.catalog.serializers import PricedProductSerializer
+from apps.catalog.services import with_client_prices
 from apps.clients.models import Client, Store
 from apps.clients.serializers import StoreSerializer
 from apps.common.money import CURRENCY_CODES, DEFAULT_CURRENCY
@@ -36,7 +38,7 @@ from apps.warehouse.models import StockItem, Warehouse
 from config.throttles import PortalOrderCreateRateThrottle
 
 from .exceptions import Conflict
-from .serializers import CatalogProductSerializer, PortalOrderSerializer
+from .serializers import PortalOrderSerializer
 
 
 class PortalStoreViewSet(
@@ -53,7 +55,7 @@ class PortalStoreViewSet(
 
 
 class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = CatalogProductSerializer
+    serializer_class = PricedProductSerializer
     permission_classes = [IsClientUser]
 
     @cached_property
@@ -71,8 +73,6 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return getattr(self._client, "currency", "") or DEFAULT_CURRENCY
 
     def get_queryset(self):
-        price_qs = ClientPrice.objects.filter(
-            client_id=getattr(self._client, "pk", None), currency=self._currency)
         default_warehouse = (
             Warehouse.objects.filter(is_default=True, is_active=True)
             .only("id")
@@ -85,11 +85,11 @@ class PortalCatalogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         in_stock = StockItem.objects.filter(
             warehouse_id=default_warehouse.pk, product=OuterRef("pk"), bags__gt=0)
 
-        return (Product.objects.filter(Exists(in_stock), is_active=True)
-                .prefetch_related(Prefetch(
-            "client_prices", queryset=price_qs,
-            to_attr="portal_client_prices"))
-                .order_by("name", "color", "weight_kg"))
+        return with_client_prices(
+            Product.objects.filter(Exists(in_stock), is_active=True),
+            getattr(self._client, "pk", None),
+            self._currency,
+        ).order_by("name", "color", "weight_kg")
 
     def get_serializer_context(self):
         context = super().get_serializer_context()

@@ -44,3 +44,28 @@ class Employee(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class EmployeeShop(models.Model):
+    """Свой магазин сотрудника: заказывает сам, без грузчика — мешки сразу
+    списываются со склада магазина (``employees/shop.py``).
+
+    Магазин — покупатель ``client``: прайс, долг, касса и отчёты у него как у
+    любого клиента. Выключенный магазин остаётся — по нему видны история и долг,
+    а повторное включение берёт того же клиента.
+    """
+
+    employee = models.OneToOneField(
+        Employee, on_delete=models.CASCADE, related_name="shop"
+    )
+    client = models.OneToOneField(
+        "clients.Client", on_delete=models.CASCADE, related_name="employee_shop"
+    )
+    warehouse = models.ForeignKey(
+        "warehouse.Warehouse", on_delete=models.PROTECT, related_name="employee_shops"
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.client.name
