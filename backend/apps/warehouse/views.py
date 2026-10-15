@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.common.permissions import PermViewSetMixin
+from apps.common.query_params import parse_id_list
 
 from .models import StockItem, Warehouse
 from .serializers import (
@@ -63,9 +64,11 @@ class StockViewSet(
 
     @action(detail=False, methods=["get"], url_path="by-product")
     def by_product(self, request):
-        """«Главная»: остаток по товарам склада ``?warehouse=``; без него — основного."""
+        """«Главная»: остаток по товарам склада ``?warehouse=`` (без него — основного),
+        только товары ``?product=`` (без него — все)."""
         warehouse = resolve_warehouse(request.query_params.get("warehouse") or None, require_active=False)
-        return Response(stock_by_product(warehouse))
+        product_ids = parse_id_list(request.query_params.get("product"), "товары")
+        return Response(stock_by_product(warehouse, product_ids))
 
     @action(detail=False, methods=["post"])
     def adjust(self, request):

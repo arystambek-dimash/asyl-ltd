@@ -87,11 +87,17 @@ export function useDashboardMetrics() {
     storeChoice(warehouseKey, String(id));
   };
   // Склады не складываются: остаток всегда одного склада, по умолчанию — основного.
+  // Товары тоже выбирает суперпользователь: строки и «На складе» — только по ним.
+  const productParam = settings?.products.length
+    ? `&product=${settings.products.map((product) => product.id).join(",")}`
+    : "";
   const {
     data: stock,
     error: stockErr,
     reload: reloadStock,
-  } = useApi<StockByProduct>(canStock && warehouse ? `/stock/by-product/?warehouse=${warehouse.id}` : null);
+  } = useApi<StockByProduct>(
+    canStock && warehouse ? `/stock/by-product/?warehouse=${warehouse.id}${productParam}` : null,
+  );
 
   const {
     data: intake,
@@ -129,9 +135,10 @@ export function useDashboardMetrics() {
     // Подпись — как на «Складе»: марка, сорт, фасовка; цвет — только у двойников.
     const rows = (stock?.products ?? []).map((row) => ({ ...row, parts: productParts(row.name, row.weight_kg) }));
     const twins = twinKeys(rows.map(({ parts }) => parts));
-    return rows.map(({ product, bags, parts, color_label }) => ({
+    return rows.map(({ product, bags, kg, parts, color_label }) => ({
       product,
       bags,
+      kg,
       title: productTitle(parts, twins.has(twinKey(parts)) ? color_label : undefined),
     }));
   }, [stock?.products]);

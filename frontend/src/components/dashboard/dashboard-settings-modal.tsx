@@ -1,11 +1,12 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
 import { api, apiError } from "@/lib/api";
+import { productChoices } from "@/lib/product-parts";
 import { useApi } from "@/lib/use-api";
-import type { DashboardSettings, Department, Warehouse } from "@/lib/types";
+import type { DashboardSettings, Department, Product, Warehouse } from "@/lib/types";
 
 type Option = { id: number; name: string };
 
@@ -44,7 +45,7 @@ function toggled(set: Set<number>, id: number): Set<number> {
 
 /**
  * Что показывает «Главная» (суперпользователь): отделы — для отгрузок, погрузки
- * и денег, склады — для остатка. Ничего не отмечено — видно всё. Ответ PUT
+ * и денег, склады и товары — для остатка. Ничего не отмечено — видно всё. Ответ PUT
  * экран применяет сразу, а не перечитывает опрашиваемую сводку.
  */
 export function DashboardSettingsModal({
@@ -58,8 +59,14 @@ export function DashboardSettingsModal({
 }) {
   const { data: departments } = useApi<Department[]>("/departments/");
   const { data: warehouses } = useApi<Warehouse[]>("/warehouses/");
+  const { data: products } = useApi<Product[]>("/products/");
+  const productOptions = useMemo(
+    () => productChoices(products ?? []).map(({ id, title }) => ({ id, name: title })),
+    [products],
+  );
   const [departmentIds, setDepartmentIds] = useState(() => new Set(settings.departments.map((item) => item.id)));
   const [warehouseIds, setWarehouseIds] = useState(() => new Set(settings.warehouses.map((item) => item.id)));
+  const [productIds, setProductIds] = useState(() => new Set(settings.products.map((item) => item.id)));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -70,6 +77,7 @@ export function DashboardSettingsModal({
       const { data } = await api.put<DashboardSettings>("/dashboard/settings/", {
         departments: [...departmentIds],
         warehouses: [...warehouseIds],
+        products: [...productIds],
       });
       onSaved(data);
     } catch (cause) {
@@ -93,7 +101,7 @@ export function DashboardSettingsModal({
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Отмена
           </Button>
-          <Button disabled={busy || !departments || !warehouses} onClick={() => void save()}>
+          <Button disabled={busy || !departments || !warehouses || !products} onClick={() => void save()}>
             {busy ? "Сохраняем…" : "Сохранить"}
           </Button>
         </>
@@ -114,6 +122,13 @@ export function DashboardSettingsModal({
           options={(warehouses ?? []).filter((item) => item.is_active)}
           chosen={warehouseIds}
           onToggle={(id) => setWarehouseIds((current) => toggled(current, id))}
+        />
+        <CheckList
+          title="Товары в остатке"
+          hint="Остаток и «На складе» считаются только по отмеченным товарам. Если ничего не отмечено, видны все товары склада."
+          options={productOptions}
+          chosen={productIds}
+          onToggle={(id) => setProductIds((current) => toggled(current, id))}
         />
       </div>
     </Modal>

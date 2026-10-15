@@ -378,12 +378,36 @@ def test_stock_by_product_counts_one_warehouse_and_keeps_negative(auth_client, u
     ]
     assert response.data["products"][0] == {
         "product": flour.pk, "name": "Мука", "weight_kg": "50.00", "color_label": "Красный", "bags": 300,
+        "kg": "15000.00",
     }
 
     other = api.get(f"/api/stock/by-product/?warehouse={second.pk}")
 
     assert other.data["warehouse"]["name"] == "Мельница 2"
     assert other.data["total_bags"] == 9_895_388
+
+
+def test_stock_by_product_shows_only_chosen_products(auth_client, user_with_perms, make_product):
+    """Суперпользователь выбрал товары для «Главной» — строки и итоги только по ним."""
+    main = get_default_warehouse()
+    flour, bran = (make_product(name=name) for name in ("Мука", "Отруби"))
+    small = make_product(name="Мелкая", weight_kg="25")
+    StockItem.objects.create(warehouse=main, product=flour, bags=300)
+    StockItem.objects.create(warehouse=main, product=bran, bags=40)
+    StockItem.objects.create(warehouse=main, product=small, bags=8)
+    api = auth_client(user_with_perms("stock-chosen", codes=["warehouse.view"]))
+
+    response = api.get(f"/api/stock/by-product/?product={bran.pk},{small.pk}")
+
+    assert response.status_code == 200
+    assert [(row["product"], row["kg"]) for row in response.data["products"]] == [
+        (bran.pk, "2000.00"), (small.pk, "200.00"),
+    ]
+    assert response.data["total_bags"] == 48
+    assert response.data["total_kg"] == "2200.00"
+    assert api.get("/api/stock/by-product/?product=abc").status_code == 400
+    # «²» — цифра для isdigit(), но не для int(): 400, а не 500.
+    assert api.get("/api/stock/by-product/?product=²").status_code == 400
 
 
 def test_stock_by_product_needs_warehouse_view(auth_client, user_with_perms):

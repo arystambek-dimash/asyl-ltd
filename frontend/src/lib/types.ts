@@ -487,16 +487,19 @@ export type DashboardIntakeItem =
 export interface DashboardSettings {
   departments: Pick<Department, "id" | "code" | "name">[];
   warehouses: Pick<Warehouse, "id" | "name">[];
+  /** Товары в «Остатке»; пусто — все товары склада. */
+  products: Pick<Product, "id" | "name">[];
   updated_at: string;
 }
 
-/** GET /stock/by-product/?warehouse= — остаток по товарам одного склада (без параметра — основного). */
+/** GET /stock/by-product/?warehouse=&product= — остаток по товарам одного склада (без параметра — основного). */
 export interface StockByProduct {
   warehouse: { id: number; name: string };
   total_bags: number;
   /** Вес остатка по фасовке, кг (десятичная строка). */
   total_kg: string;
-  products: { product: number; name: string; weight_kg: string; color_label: string; bags: number }[];
+  /** `kg` — вес строки по фасовке, кг (десятичная строка). */
+  products: { product: number; name: string; weight_kg: string; color_label: string; bags: number; kg: string }[];
 }
 
 /** Client-portal projection: prices are deliberately hidden until confirmation. */

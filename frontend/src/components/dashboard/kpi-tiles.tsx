@@ -104,13 +104,14 @@ export function KpiTiles({ m, size }: { m: DashboardMetrics; size: BoardSize }) 
         const body = (
           <>
             <div className={cn(s.label, "text-[var(--muted-foreground)]")}>{tile.label}</div>
-            <div className="mt-1 flex min-w-0 items-baseline gap-1.5">
-              <span title={tile.exact} className={cn(s.value, "truncate font-semibold tracking-tight tabular-nums")}>
+            {/* Главное число не режется: места мало (ТВ) — тонны переходят на следующую строку. */}
+            <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+              <span title={tile.exact} className={cn(s.value, "shrink-0 font-semibold tracking-tight tabular-nums")}>
                 {tile.value}
               </span>
               <span className={cn(s.unit, "shrink-0 text-[var(--muted-foreground)]")}>{tile.unit}</span>
               {tile.tons && (
-                <span className={cn(s.unit, "shrink-0 truncate text-[var(--muted-foreground)]")}>· {tile.tons}</span>
+                <span className={cn(s.unit, "min-w-0 truncate text-[var(--muted-foreground)]")}>· {tile.tons}</span>
               )}
             </div>
             {tile.notes.map((note) => (

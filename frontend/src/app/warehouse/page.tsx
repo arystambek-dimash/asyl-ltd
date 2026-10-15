@@ -24,6 +24,7 @@ import {
   brandKey,
   compareProductParts,
   productBrands,
+  productChoices,
   productParts,
   productSearch,
   productTitle,
@@ -183,20 +184,7 @@ function WarehousePageInner() {
   const attentionCount = filtered.filter(({ item }) => stockTone(item.bags).tone !== "success").length;
 
   // Товары каталога для приёмки: та же подпись без цвета, в порядке марок.
-  const productOptions = (() => {
-    const rows = availableProducts.map((item) => ({
-      item,
-      parts: productParts(item.name || item.label, item.weight_kg),
-    }));
-    const twins = twinKeys(rows.map(({ parts }) => parts));
-    const order = productBrands(rows.map(({ parts }) => parts));
-    return rows
-      .sort((a, b) => compareProductParts(a.parts, b.parts, order))
-      .map(({ item, parts }) => ({
-        id: item.id,
-        title: productTitle(parts, twins.has(twinKey(parts)) ? item.color_label : undefined),
-      }));
-  })();
+  const productOptions = productChoices(availableProducts);
   const adjustedEntry = entries.find(({ item }) => String(item.product) === product);
 
   // Каждое открытие окна начинает с чистой формы: закрытие состояние не сбрасывает.

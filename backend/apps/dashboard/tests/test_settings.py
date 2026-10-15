@@ -11,6 +11,45 @@ from apps.warehouse.services import get_default_warehouse
 pytestmark = pytest.mark.django_db
 
 
+def test_superuser_chooses_stock_products_and_old_clients_keep_them(auth_client, make_user, make_product):
+    flour = make_product(name="Мука")
+    root = make_user(username="dashboard-products")
+    root.is_superuser = True
+    root.save(update_fields=["is_superuser"])
+    api = auth_client(root)
+
+    response = api.put(
+        "/api/dashboard/settings/", {"departments": [], "warehouses": [], "products": [flour.pk]}, format="json"
+    )
+
+    assert response.status_code == 200, response.data
+    assert response.data["products"] == [{"id": flour.pk, "name": "Мука"}]
+    # Экран без выбора товаров (старая вкладка) сохраняет отделы — товары не сбрасываются.
+    api.put("/api/dashboard/settings/", {"departments": [], "warehouses": []}, format="json")
+    assert list(DashboardSettings.load().products.all()) == [flour]
+
+
+def test_archived_product_drops_out_of_stock_products(auth_client, make_user, make_product):
+    flour, bran = make_product(name="Мука"), make_product(name="Отруби")
+    root = make_user(username="dashboard-archived")
+    root.is_superuser = True
+    root.save(update_fields=["is_superuser"])
+    api = auth_client(root)
+    url = "/api/dashboard/settings/"
+    assert api.put(url, {"departments": [], "warehouses": [], "products": [flour.pk, bran.pk]},
+                   format="json").status_code == 200
+
+    bran.is_active = False
+    bran.save(update_fields=["is_active"])
+
+    # В окне архивного товара нет — значит, его нет и в выборе, иначе его не снять.
+    assert api.get(url).data["products"] == [{"id": flour.pk, "name": "Мука"}]
+    assert api.put(url, {"departments": [], "warehouses": [], "products": [bran.pk]},
+                   format="json").status_code == 400
+    assert api.put(url, {"departments": [], "warehouses": [], "products": [999999]},
+                   format="json").status_code == 400
+
+
 def test_superuser_chooses_departments_and_warehouses(auth_client, make_user, user_with_perms):
     city = Department.objects.create(code="city", name="Нью-Сити")
     second = Warehouse.objects.create(code="second", name="Мельница 2")

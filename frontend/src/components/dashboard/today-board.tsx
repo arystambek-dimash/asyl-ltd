@@ -68,7 +68,7 @@ function BoardSkeleton({ size }: { size: BoardSize }) {
 
 function tvColumns(m: DashboardMetrics): string {
   const panels = [m.canStock, m.canOrders, m.canIntake].filter(Boolean).length;
-  if (panels === 3) return "grid-cols-[1.7fr_1.2fr_0.9fr]";
+  if (panels === 3) return "grid-cols-[2fr_1.1fr_1fr]";
   if (panels === 2) return m.canStock ? "grid-cols-[1.6fr_1fr]" : "grid-cols-2";
   return "grid-cols-1";
 }

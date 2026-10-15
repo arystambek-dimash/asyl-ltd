@@ -10,6 +10,8 @@ export const BOARD_SIZE = {
     unit: "text-sm",
     note: "text-xs",
     row: "text-sm",
+    /** Тонны в строке остатка — рядом с мешками, второстепенно. */
+    rowTons: "text-sm",
     rowGap: "py-2.5",
     pad: "p-5",
     /** Фото товара в строке прихода. */
@@ -23,6 +25,8 @@ export const BOARD_SIZE = {
     unit: "text-[1.4vw]",
     note: "text-[1.1vw]",
     row: "text-[1.55vw] leading-tight",
+    // Мельче строки: на ТВ место в колонке остатка уходит названию товара.
+    rowTons: "text-[1.2vw]",
     rowGap: "py-[0.4vw]",
     pad: "p-[1.3vw]",
     thumb: "size-[2.8vw] rounded-[0.5vw]",

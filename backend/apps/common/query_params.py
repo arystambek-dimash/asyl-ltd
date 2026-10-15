@@ -104,3 +104,12 @@ def parse_store_id(raw: str | None) -> int | None:
     if not raw.isdigit():
         raise ValidationError({"detail": "Некорректный магазин", "code": "bad_store"})
     return int(raw)
+
+
+def parse_id_list(raw: str | None, name: str) -> list[int]:
+    """Список id через запятую: ``?product=3,7``. Пусто — пустой список."""
+    parts = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    # isdigit() пропускает «²» и другие цифры Юникода, на которых падает int().
+    if not all(part.isascii() and part.isdigit() for part in parts):
+        raise ValidationError({"detail": f"Некорректный список: {name}", "code": "bad_ids"})
+    return [int(part) for part in parts]

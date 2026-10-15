@@ -15,11 +15,10 @@ vi.mock("@/store/auth", () => ({
 vi.mock("@/components/layout/app-shell", () => import("@/test-utils/app-shell"));
 vi.mock("next/link", () => import("@/test-utils/next-link"));
 
-const stockRows = Array.from({ length: 14 }, (_, index) => ({
-  product: index + 1,
-  title: `Мука ${index + 1}`,
-  bags: index === 13 ? -12 : 1000 - index * 10,
-}));
+const stockRows = Array.from({ length: 14 }, (_, index) => {
+  const bags = index === 13 ? -12 : 1000 - index * 10;
+  return { product: index + 1, title: `Мука ${index + 1}`, bags, kg: String(bags * 50) };
+});
 
 vi.mock("@/lib/use-dashboard-metrics", () => ({
   useDashboardMetrics: () => ({
@@ -51,7 +50,12 @@ vi.mock("@/lib/use-dashboard-metrics", () => ({
     ],
     warehouseId: 1,
     chooseWarehouse: metrics.chooseWarehouse,
-    settings: { departments: [{ id: 1, code: "main", name: "Мельница" }], warehouses: [], updated_at: "" },
+    settings: {
+      departments: [{ id: 1, code: "main", name: "Мельница" }],
+      warehouses: [],
+      products: [],
+      updated_at: "",
+    },
     commitSettings: vi.fn(),
     intake: {
       day: "2026-10-13",
@@ -163,6 +167,7 @@ it("суперпользователь открывает выбор отдел�
   expect(screen.getByRole("dialog", { name: "Что показывать" })).toBeInTheDocument();
   expect(screen.getByText("Отделы")).toBeInTheDocument();
   expect(screen.getByText("Склады")).toBeInTheDocument();
+  expect(screen.getByText("Товары в остатке")).toBeInTheDocument();
 });
 
 it("показывает отгрузку дня по фурам и вагонам", async () => {
@@ -174,11 +179,12 @@ it("показывает отгрузку дня по фурам и вагона
   expect(screen.getByRole("link", { name: /На складе/ })).toHaveTextContent("· 653,9 т");
 });
 
-it("показывает остаток одного склада, минус и сколько позиций не влезло", async () => {
+it("показывает остаток одного склада в мешках и тоннах, минус и сколько позиций не влезло", async () => {
   render(<DashboardPage />);
 
   const panel = (await screen.findByRole("heading", { name: "Остаток · Мельница" })).closest("section")!;
-  expect(within(panel).getByText("Мука 1")).toBeInTheDocument();
+  const first = within(panel).getByText("Мука 1").closest("li")!;
+  expect(within(first).getByText("50 т")).toBeInTheDocument();
   expect(within(panel).queryByText("Мука 13")).not.toBeInTheDocument();
   expect(within(panel).getByRole("link", { name: "ещё 2 позиции · 868 меш." })).toHaveAttribute("href", "/warehouse");
 });

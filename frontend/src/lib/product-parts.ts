@@ -6,6 +6,7 @@
  * Один разбор — для выбора товара в заказе и для списка склада.
  */
 import { lookalikeKey } from "@/lib/plates";
+import type { Product } from "@/lib/types";
 
 const GRADE = /(высший|первый|второй|третий)\s+сорт/i;
 const GRADE_RANK = ["высший", "первый", "второй", "третий"];
@@ -103,4 +104,20 @@ function gradeRank(grade: string) {
 export function compareProductParts(a: ProductParts, b: ProductParts, brands: FilterOption[]): number {
   const order = (parts: ProductParts) => brands.findIndex(({ key }) => key === brandKey(parts.brand));
   return order(a) - order(b) || gradeRank(a.grade) - gradeRank(b.grade) || b.weight - a.weight;
+}
+
+/** Товары каталога для выбора подписью «Склада» и в его порядке: цвет — только у двойников. */
+export function productChoices(products: Product[]): { id: number; title: string }[] {
+  const rows = products.map((product) => ({
+    product,
+    parts: productParts(product.name || product.label, product.weight_kg),
+  }));
+  const brands = productBrands(rows.map(({ parts }) => parts));
+  const twins = twinKeys(rows.map(({ parts }) => parts));
+  return rows
+    .sort((a, b) => compareProductParts(a.parts, b.parts, brands))
+    .map(({ product, parts }) => ({
+      id: product.id,
+      title: productTitle(parts, twins.has(twinKey(parts)) ? product.color_label : undefined),
+    }));
 }

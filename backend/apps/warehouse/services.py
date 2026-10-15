@@ -153,18 +153,21 @@ def stock_balances(warehouse, product_ids) -> dict[int, int]:
     return balances
 
 
-def stock_by_product(warehouse) -> dict:
+def stock_by_product(warehouse, product_ids=None) -> dict:
     """Остаток мешков по товарам одного склада — для «Главной».
 
     Склады не складываются: у «Мельницы» и «Мельницы 2» свои остатки.
     Товар с нулём не попадает; минус (ошибка учёта) остаётся. Крупные сверху.
+    ``product_ids`` — товары, которые выбрал суперпользователь; итоги
+    считаются только по ним. ``None`` или пусто — все товары склада.
     """
-    totals = dict(
-        StockItem.objects.filter(warehouse=warehouse)
-        .exclude(bags=0)
-        .values_list("product_id", "bags")
-    )
+    stock = StockItem.objects.filter(warehouse=warehouse).exclude(bags=0)
+    if product_ids:
+        stock = stock.filter(product_id__in=product_ids)
+    totals = dict(stock.values_list("product_id", "bags"))
     products = Product.objects.in_bulk(totals)
+    # Вес по фасовке — тонны строки и «На складе … т» на «Главной».
+    kg = {pid: products[pid].weight_kg * bags for pid, bags in totals.items()}
     # Подпись собирает фронт тем же правилом, что и «Склад» (lib/product-parts.ts).
     rows = sorted(
         (
@@ -174,6 +177,7 @@ def stock_by_product(warehouse) -> dict:
                 "weight_kg": str(products[pid].weight_kg),
                 "color_label": products[pid].get_color_display(),
                 "bags": bags,
+                "kg": str(kg[pid]),
             }
             for pid, bags in totals.items()
         ),
@@ -182,10 +186,7 @@ def stock_by_product(warehouse) -> dict:
     return {
         "warehouse": {"id": warehouse.pk, "name": warehouse.name},
         "total_bags": sum(totals.values()),
-        # Вес по фасовке — «На складе … т» на «Главной».
-        "total_kg": str(
-            sum((products[pid].weight_kg * bags for pid, bags in totals.items()), Decimal(0))
-        ),
+        "total_kg": str(sum(kg.values(), Decimal(0))),
         "products": rows,
     }
 
