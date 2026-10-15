@@ -5,7 +5,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainSerializer
 
-from apps.employees.shop import active_shop
+from apps.employees.shop_access import active_shop
 from apps.sales.access import assigned_department_id
 
 from .credentials import password_change_required

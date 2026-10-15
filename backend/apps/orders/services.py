@@ -10,6 +10,7 @@ from apps.clients.assignment import assign_client_department
 from apps.clients.models import Client
 from apps.clients.services import is_payment_window_open
 from apps.common.money import money_string
+from apps.employees.shop_access import forbid_own_shop
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
@@ -611,6 +612,7 @@ def accountant_confirm_payment(
     """
     original = payment
     payment, order = _locked_payment_with_order(payment, user, any_department=any_department)
+    forbid_own_shop(user, order.client_id, "подтверждение оплаты")
     provider = getattr(payment, "apipay_invoice", None)
     if provider is not None and provider.status != "paid":
         raise ValidationError({
@@ -664,6 +666,7 @@ def record_staff_payment(
     Invoices deliberately remain requests: issuing a PDF or provider invoice
     is not evidence that money arrived.
     """
+    forbid_own_shop(user, order.client_id, "оплату")
     if paid_at is not None and method not in Payment.SETTLED_ON_RECORD:
         raise ValidationError({
             "detail": "Прошлым днём записываются только полученные деньги: наличные, QR, удалённая оплата или 1С перечисление",
@@ -1176,6 +1179,7 @@ def correct_order_prices(
     confirmed cash movements remain immutable accounting facts.
     """
     locked = lock_live_order(order, user)
+    forbid_own_shop(user, locked.client_id, "цены заказа")
     all_items = list(
         OrderItem.objects.select_for_update()
         .filter(order=locked)

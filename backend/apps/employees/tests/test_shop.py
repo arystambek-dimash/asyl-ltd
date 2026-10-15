@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 
 from apps.catalog.models import ClientPrice
 from apps.employees.models import Employee, EmployeeShop
@@ -282,3 +283,67 @@ def test_disabled_shop_cannot_order(auth_client, worker, shop, flour):
 
 def test_client_users_have_no_shop(auth_client, client_user):
     assert auth_client(client_user).get("/api/my-shop/").status_code == 403
+
+
+# --- Без грузчика и без «на себя» -------------------------------------------
+
+
+@pytest.fixture
+def cashier_with_shop(user_with_perms, departments, admin_user):
+    """Сотрудник с правами кассы и прайса, у которого есть свой магазин."""
+    from apps.employees.shop import set_employee_shop
+
+    user = user_with_perms(
+        "cashier-shop", department=departments[0],
+        codes=["clients.view", "clients.set_price", "payments.create", "payments.confirm", "orders.view"],
+    )
+    return user, set_employee_shop(user.employee, admin_user, enabled=True)
+
+
+def test_loader_does_not_see_shop_sales(auth_client, user_with_perms, worker, shop, flour, admin_user):
+    _price(shop, flour)
+    sold = _order(auth_client(worker), flour, quantity=3).data["id"]
+    assert Order.objects.get(pk=sold).is_shop_sale
+    # Обычный заказ фурой на того же клиента-магазина — работа грузчика, как всегда.
+    truck = Order.objects.create(client=shop.client, status="confirmed", created_by=admin_user)
+    loader = auth_client(user_with_perms("trucks-loader", codes=["loader.view", "loader.confirm", "loader.trucks"]))
+
+    assert [row["id"] for row in loader.get("/api/loader/queue/").data] == [truck.pk]
+    assert loader.get("/api/loader/history/").data == []
+    assert loader.get("/api/loader/day-summary/").data["bags"] == 0
+    assert loader.get(f"/api/loader/orders/{sold}/waybill/").status_code == 404
+
+
+def test_employee_does_not_set_prices_of_own_shop(auth_client, admin_api, cashier_with_shop, flour):
+    user, own = cashier_with_shop
+    body = {"prices": [{"product": flour.pk, "currency": "KZT", "price": "1"}]}
+
+    response = auth_client(user).put(f"/api/clients/{own.client_id}/prices/", body, format="json")
+
+    assert response.status_code == 403
+    assert response.data["code"] == "own_shop"
+    assert not ClientPrice.objects.filter(client=own.client).exists()
+    assert admin_api.put(f"/api/clients/{own.client_id}/prices/", body, format="json").status_code == 200
+
+
+def test_employee_does_not_take_payment_for_own_shop(auth_client, cashier_with_shop, flour, boss):
+    from apps.orders import services
+
+    user, own = cashier_with_shop
+    _price(own, flour)
+    sold = Order.objects.get(pk=_order(auth_client(user), flour, quantity=2).data["id"])
+    url = f"/api/orders/{sold.pk}/payments/"
+
+    response = auth_client(user).post(url, {"amount": "10000", "method": "cash"}, format="json")
+
+    assert response.status_code == 403
+    assert response.data["code"] == "own_shop"
+    assert not Payment.objects.filter(order=sold).exists()
+    # Деньги, которые принял другой, сам сотрудник тоже не подтверждает и цену не правит.
+    received = services.add_payment(sold, "10000", boss, method="bank")
+    with pytest.raises(PermissionDenied):
+        services.accountant_confirm_payment(received, user)
+    with pytest.raises(PermissionDenied):
+        services.correct_order_prices(sold, user, total_amount="1")
+    # Другой сотрудник — как с любым клиентом.
+    assert services.accountant_confirm_payment(received, boss).status == "confirmed"

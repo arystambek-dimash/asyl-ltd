@@ -25,23 +25,13 @@ from apps.shipments.services import loader_rollback_blocker, rollback_shipment, 
 from apps.warehouse.services import resolve_warehouse
 
 from .models import EmployeeShop
+from .shop_access import active_shop
 
 CANCEL_REASON = "Сотрудник отменил заказ своего магазина"
 
 
 def default_shop_name(employee) -> str:
     return f"Магазин {employee.name}"
-
-
-def active_shop(user) -> EmployeeShop | None:
-    """Включённый магазин действующего сотрудника ``user``; иначе None."""
-    if not getattr(user, "is_authenticated", False) or user.is_client:
-        return None
-    return (
-        EmployeeShop.objects.select_related("client__user", "client__department", "warehouse")
-        .filter(employee__user=user, employee__is_active=True, is_active=True)
-        .first()
-    )
 
 
 def require_shop(user) -> EmployeeShop:
@@ -230,6 +220,7 @@ def place_shop_order(user, items: list[dict]) -> Order:
         warehouse=resolve_warehouse(shop.warehouse),
         created_by=user,
         status="pending",
+        is_shop_sale=True,
     )
     for item in items:
         OrderItem.objects.create(
