@@ -9,6 +9,11 @@ from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
 from apps.common.money import money_string
+from apps.employees.shop_stock import (
+    lock_replenishment_shop,
+    receive_shop_replenishment,
+    reverse_shop_replenishment,
+)
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.orders.backdate import backdate_events, backdate_moment
@@ -495,6 +500,7 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     # каскадом): мешки возвращаются туда, откуда ушли. Старая отгрузка без
     # строк — на склад заказа, фиксация без списания — никуда.
     # Блокировки: Order → Product → StockItem → Shipment.
+    reverse_shop_replenishment(order)
     stock_basis, sources = checked_sources(order, items, user)
     restored = restore_stock(sources, user, note=f"Откат отгрузки заказа #{order.pk}: {reason}")
 
@@ -589,7 +595,9 @@ def _do_ship(
 
     if sources is None:
         sources = default_sources(order, _order_items(order, refusal="Нельзя отгрузить"))
+    shop = lock_replenishment_shop(order)
     written = write_off(order, shipment, sources, user)
+    receive_shop_replenishment(order, shop, _order_items(order, refusal="Нельзя пополнить магазин"))
     shipment.shipped_at = shipped_at or timezone.now()
     shipment.save()
     debt_event = mark_order_shipped(order, user)
