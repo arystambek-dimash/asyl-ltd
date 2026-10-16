@@ -29,7 +29,7 @@ export function shopPayload(form: ShopForm, existing: EmployeeShopSettings | nul
   };
 }
 
-/** «Свой магазин» в карточке сотрудника: заказы сразу со склада, без грузчика. */
+/** «Свой магазин» в карточке сотрудника: получатель пополнений и отдельные продажи. */
 export function EmployeeShopFields({
   value,
   onChange,
@@ -63,8 +63,8 @@ export function EmployeeShopFields({
             <Store className="size-4" /> Свой магазин
           </span>
           <span className="mt-1 block text-xs text-[var(--muted-foreground)]">
-            Сотрудник сам заказывает в «Моём магазине»: мешки сразу списываются со склада, без грузчика. Цены — из
-            прайса магазина, неоплаченное — долг магазина в кассе.
+            Пополнение — обычным заказом на магазин, через грузчика. Продажи в «Заказах магазина» списывают только
+            собственный остаток магазина. Цены — из прайса магазина.
           </span>
         </span>
       </label>
@@ -82,7 +82,7 @@ export function EmployeeShopFields({
             />
           </Field>
           {active.length > 1 && (
-            <Field label="Склад списания" htmlFor="employee-shop-warehouse">
+            <Field label="Склад пополнения" htmlFor="employee-shop-warehouse">
               <Select
                 id="employee-shop-warehouse"
                 value={value.warehouse}

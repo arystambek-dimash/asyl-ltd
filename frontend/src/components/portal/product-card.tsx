@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 import type { PortalProduct } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 
-/** Карточка товара для заказа: фото, фасовка, цена покупателя и «В корзину». Портал и «Мой магазин». */
+/** Карточка товара для заказа: фото, фасовка, цена покупателя и «В корзину». Каталог портала. */
 export function ProductCard({ product }: { product: PortalProduct }) {
   return (
     <Card className="flex flex-col overflow-hidden">

@@ -64,8 +64,13 @@ const STAFF_SECTIONS: NavSection[] = [
   {
     title: "Работа",
     items: [
-      // Свой магазин сотрудника: заказ сразу со склада, без грузчика — включают в карточке сотрудника.
-      { href: "/my-shop", label: "Мой магазин", icon: ShoppingBasket, when: (me) => Boolean(me.shop) },
+      {
+        href: "/shop-orders",
+        label: "Заказы магазина",
+        icon: ShoppingBasket,
+        perm: "orders.create",
+        when: (me) => Boolean(me.shop),
+      },
       { href: "/orders", label: "Заказы", icon: ClipboardList, perm: "orders.view" },
       // Касса: подтверждение оплат + вкладки «Долги» и «Транзакции».
       { href: "/accounting", label: "Касса", icon: HandCoins, perm: CASHIER_ENTRY_PERMS },

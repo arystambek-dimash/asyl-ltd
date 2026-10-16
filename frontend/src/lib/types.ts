@@ -10,7 +10,7 @@ export interface Me {
   permissions: string[];
   position: string | null;
   sales_department: Pick<Department, "id" | "code" | "name" | "color"> | null;
-  /** Свой магазин сотрудника — пункт меню «Мой магазин»; null — магазина нет. */
+  /** Свой магазин сотрудника — пункт меню «Заказы магазина»; null — магазина нет. */
   shop?: { name: string; warehouse_name: string } | null;
 }
 
@@ -1190,40 +1190,36 @@ export interface EmployeeShopSettings {
   warehouse: number;
   warehouse_name: string;
 }
-/** Шапка «Моего магазина»: долг и взятое за текущий месяц — суммы считает сервер. */
-export interface MyShopSummary {
+/** Собственный остаток и отдельная история продаж магазина. */
+export interface ShopSummary {
   name: string;
   warehouse_name: string;
   currency: "KZT" | "USD";
-  debt_total: string;
-  debt_currency: string;
-  debt_by_currency: Record<string, string>;
-  month_bags: number;
-  month_amounts: Record<string, string>;
+  client: number;
 }
-export interface MyShopOrder {
+export interface ShopProduct extends PortalProduct {
+  name: string;
+  color_label: string;
+  stock_bags: number;
+}
+export interface ShopOrder {
   id: number;
   created_at: string;
-  shipped_at: string | null;
-  status: string;
+  cancelled_at: string | null;
+  status: "completed" | "cancelled";
   status_label: string;
   currency: "KZT" | "USD";
+  client: number | null;
+  client_name: string | null;
   items: {
     id: number;
     product: number | null;
     product_label: string;
     quantity: number;
-    unit_price: string | null;
-    is_bonus: boolean;
+    unit_price: string;
   }[];
   bags: number;
-  /** null у отменённого заказа: он ничего не стоит. */
-  total_amount: string | null;
-  paid_total: string | null;
-  remaining_amount: string | null;
-  payment_status: string;
-  /** Пусто — сотрудник может отменить сам; иначе — почему нельзя. */
-  cancel_blocker: string;
+  total_amount: string;
 }
 export interface EventLog {
   id: number;
