@@ -11,7 +11,7 @@ class Migration(migrations.Migration):
         ("catalog", "0017_remove_product_ask_truck_weight"),
         ("clients", "0018_remove_store_contract_signed_at"),
         ("employees", "0012_employee_shop"),
-        ("orders", "0059_order_is_trial"),
+        ("orders", "0061_retire_shop_sale_flag"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

@@ -158,7 +158,7 @@ export function ShopOrderForm({
             <SectionTitle
               step={2}
               title="Товары"
-              caption="Цена — из прайса магазина. Итоговую сумму рассчитает сервер при сохранении."
+              caption="Цена — из прайса магазина. Выберите товар и количество мешков."
             />
             {lines.map((line, index) => {
               const product = products.find((item) => String(item.id) === line.product);

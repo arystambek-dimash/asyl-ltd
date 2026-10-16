@@ -499,7 +499,7 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     # Строки складов-источников читаются до удаления Shipment (они уходят с ней
     # каскадом): мешки возвращаются туда, откуда ушли. Старая отгрузка без
     # строк — на склад заказа, фиксация без списания — никуда.
-    # Блокировки: Order → Product → StockItem → Shipment.
+    # Блокировки: Order → EmployeeShop (если есть приход) → Product → StockItem → Shipment.
     reverse_shop_replenishment(order)
     stock_basis, sources = checked_sources(order, items, user)
     restored = restore_stock(sources, user, note=f"Откат отгрузки заказа #{order.pk}: {reason}")
@@ -672,21 +672,6 @@ def dispatch_order(
         else f"Отгружено по накладной №{order.pk}"
     )
     return _do_ship(order, shipment, user, label, sources=plan)
-
-
-@transaction.atomic
-def ship_from_warehouse(order, user, *, label: str):
-    """Отгрузка без поста и грузчика: заказ целиком уходит со «Склада отгрузки».
-
-    Товар забирают прямо со склада (магазин сотрудника, ``employees/shop.py``):
-    права грузчика не нужны — кто вправе так отгружать, решает вызывающий
-    сервис. Списание, долг и журнал — общие с кнопкой грузчика (``_do_ship``).
-    """
-    order = _locked(order)
-    _assert_awaiting_shipment(order)
-    shipment, _ = Shipment.objects.get_or_create(order=order)
-    shipment.bags_loaded = order.ordered_bags
-    return _do_ship(order, shipment, user, label)
 
 
 def _check_loader_dispatch(order, user, *, truck_number: str, trailer_number: str | None) -> None:

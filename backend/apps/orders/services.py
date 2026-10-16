@@ -10,6 +10,7 @@ from apps.clients.assignment import assign_client_department
 from apps.clients.models import Client
 from apps.clients.services import is_payment_window_open
 from apps.common.money import money_string
+from apps.employees.shop_stock import reconcile_shop_replenishment
 from apps.eventlog.models import EventLog
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
@@ -1541,6 +1542,7 @@ def replace_items(
         # Payment mutations take the Order lock first, so this cannot deadlock
         # with a concurrent cashier action.
         payment_exposure = _validate_payment_exposure(order, new_total)
+        reconcile_shop_replenishment(order, created)
         stock_changes, sources_after = reconcile_sources(
             order, old_items, created, user=user, reason=reason,
         )
