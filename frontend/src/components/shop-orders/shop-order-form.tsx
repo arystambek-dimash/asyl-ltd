@@ -8,6 +8,7 @@ import {
   type OrderFormOptions,
   type OrderProductOption,
 } from "@/components/orders/order-form-parts";
+import { ShopOrderAdditions, useShopOrderAdditions } from "@/components/shop-orders/shop-order-additions";
 import { Button } from "@/components/ui/button";
 import { DataGate, FormError } from "@/components/ui/data-state";
 import { Modal } from "@/components/ui/modal";
@@ -64,6 +65,8 @@ export function ShopOrderForm({
     setError("");
   }
 
+  const extras = useShopOrderAdditions(currency, moneyCents(estimate.amount ?? 0), changed);
+
   function updateLine(id: number, patch: Partial<OrderDraftRow>) {
     changed();
     setLines((current) => current.map((line) => (line.id === id ? { ...line, ...patch } : line)));
@@ -83,12 +86,13 @@ export function ShopOrderForm({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (busy || !valid) return;
+    if (busy || !valid || extras.problem) return;
     setBusy(true);
     setError("");
     requestKey.current ??= crypto.randomUUID();
     try {
       await api.post<ShopOrder>("/shop-orders/", {
+        ...extras.body,
         idempotency_key: requestKey.current,
         client: client ? Number(client) : null,
         items: lines.map((line) => ({
@@ -102,6 +106,7 @@ export function ShopOrderForm({
       setClient("");
       setSearch("");
       setClientListOpen(false);
+      extras.reset();
       onCreated();
     } catch (cause) {
       setError(apiError(cause));
@@ -232,6 +237,7 @@ export function ShopOrderForm({
                 ))}
               </OrderComposition>
             </section>
+            <ShopOrderAdditions extras={extras} />
           </div>
           <aside className="space-y-4 lg:sticky lg:top-0">
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
@@ -255,15 +261,21 @@ export function ShopOrderForm({
           </aside>
         </fieldset>
         <FormError message={error} className="rounded-lg py-2.5 font-medium" />
-        <div className="sticky -bottom-5 z-10 flex items-center justify-end gap-2 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
-          <span className="mr-auto text-sm text-slate-500 lg:hidden">
+        <div className="sticky -bottom-5 z-10 flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-white/95 pb-1 pt-3 backdrop-blur-md">
+          <span className="mr-auto w-full text-sm text-slate-500 sm:w-auto lg:hidden">
             <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b> · {bagsText}
           </span>
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             Отмена
           </Button>
-          <Button type="submit" disabled={busy || !valid}>
-            {busy ? "Сохранение…" : "Создать заказ"}
+          <Button type="submit" disabled={busy || !valid || Boolean(extras.problem)}>
+            {busy
+              ? "Сохранение…"
+              : extras.backdating
+                ? "Создать задним числом"
+                : extras.payingNow
+                  ? "Создать и принять оплату"
+                  : "Создать заказ"}
             {!busy && <Check className="size-4" />}
           </Button>
         </div>

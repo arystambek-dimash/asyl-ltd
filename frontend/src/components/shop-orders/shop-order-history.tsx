@@ -1,5 +1,6 @@
 "use client";
 import { Undo2 } from "lucide-react";
+import { RECEIVE_METHOD_OPTIONS } from "@/components/payments/order-payment-actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -7,6 +8,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { LoadMore } from "@/components/ui/load-more";
 import { EmptyRow, Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { can } from "@/lib/can";
+import { useAuth } from "@/store/auth";
 import type { ShopOrder } from "@/lib/types";
 import { useConfirmAction } from "@/lib/use-confirm-action";
 import { usePagedApi } from "@/lib/use-paged-api";
@@ -19,6 +22,7 @@ export function ShopOrderHistory({
   orders: ReturnType<typeof usePagedApi<ShopOrder>>;
   onChanged: () => void;
 }) {
+  const { me } = useAuth();
   const cancel = useConfirmAction<ShopOrder>(async (order) => {
     await api.post(`/shop-orders/${order.id}/cancel/`);
     onChanged();
@@ -32,7 +36,7 @@ export function ShopOrderHistory({
               <TH>Заказ</TH>
               <TH>Покупатель / товары</TH>
               <TH>Статус</TH>
-              <TH className="text-right">Сумма</TH>
+              <TH className="text-right">Сумма / оплата</TH>
               <TH>
                 <span className="sr-only">Действия</span>
               </TH>
@@ -49,7 +53,7 @@ export function ShopOrderHistory({
                 <TD className="align-top py-3">
                   <div className="font-medium">№{order.id}</div>
                   <div className="text-xs text-[var(--muted-foreground)] whitespace-nowrap">
-                    {formatDateTime(order.created_at)}
+                    {formatDateTime(order.sold_at ?? order.created_at)}
                   </div>
                 </TD>
                 <TD className="min-w-44 py-3">
@@ -64,10 +68,22 @@ export function ShopOrderHistory({
                   <Badge tone={order.status === "completed" ? "success" : "muted"}>{order.status_label}</Badge>
                 </TD>
                 <TD className="text-right whitespace-nowrap tabular-nums">
-                  {formatCurrency(order.total_amount, order.currency)}
+                  <div>{formatCurrency(order.total_amount, order.currency)}</div>
+                  <div className="text-xs text-[var(--muted-foreground)]">
+                    Оплачено: {formatCurrency(order.paid_total, order.currency)}
+                  </div>
+                  <div className="text-xs text-[var(--muted-foreground)]">
+                    Остаток: {formatCurrency(order.remaining, order.currency)}
+                  </div>
+                  {order.payment && (
+                    <div className="text-xs text-[var(--muted-foreground)]">
+                      {RECEIVE_METHOD_OPTIONS.find(({ key }) => key === order.payment?.method)?.label}
+                      {order.payment.voided_at ? " · Оплата отменена" : ""}
+                    </div>
+                  )}
                 </TD>
                 <TD className="text-right">
-                  {order.status === "completed" && (
+                  {order.status === "completed" && (Number(order.paid_total) <= 0 || can(me, "payments.create")) && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -94,7 +110,7 @@ export function ShopOrderHistory({
       <ConfirmDialog
         {...cancel.dialog}
         title={cancel.item ? `Отменить заказ магазина №${cancel.item.id}?` : "Отменить заказ?"}
-        description="Товар вернётся только на остаток магазина. Основной склад мельницы не изменится."
+        description={`${cancel.item?.stock_deducted === false ? "Этот заказ оформлен задним числом без списания: остаток магазина не изменится." : "Товар вернётся только на остаток магазина."} Основной склад мельницы не изменится.${cancel.item?.payment && !cancel.item.payment.voided_at ? " Оплата магазина будет отменена." : ""}`}
         confirmLabel="Отменить заказ"
       />
     </>

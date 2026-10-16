@@ -93,6 +93,8 @@ class ShopSale(models.Model):
     request_payload = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     cancelled_at = models.DateTimeField(null=True, blank=True)
+    backdated_at = models.DateTimeField(null=True, blank=True)
+    stock_deducted = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["-created_at", "-id"]
@@ -105,6 +107,33 @@ class ShopSale(models.Model):
     @property
     def total_amount(self):
         return sum((item.total_amount for item in self.items.all()), Decimal("0"))
+
+    @property
+    def sold_at(self):
+        return self.backdated_at or self.created_at
+
+    @property
+    def paid_total(self):
+        payment = getattr(self, "payment", None)
+        return payment.amount if self.status != "cancelled" and payment and payment.voided_at is None else Decimal("0")
+
+    @property
+    def remaining(self):
+        return self.total_amount - self.paid_total if self.status != "cancelled" else Decimal("0")
+
+
+class ShopSalePayment(models.Model):
+    METHODS = (("cash", "Наличные"), ("kaspi", "Kaspi"), ("remote", "Удалённая оплата"), ("bank", "Банк"))
+
+    sale = models.OneToOneField(ShopSale, on_delete=models.PROTECT, related_name="payment")
+    amount = models.DecimalField(max_digits=24, decimal_places=2)
+    method = models.CharField(max_length=10, choices=METHODS)
+    paid_at = models.DateTimeField()
+    voided_at = models.DateTimeField(null=True, blank=True)
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(amount__gt=0), name="shop_payment_amount_positive")]
 
 
 class ShopSaleItem(models.Model):

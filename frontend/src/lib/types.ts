@@ -1208,6 +1208,16 @@ export interface ShopProduct extends PortalProduct {
 export interface ShopOrder {
   id: number;
   created_at: string;
+  sold_at: string;
+  stock_deducted: boolean;
+  paid_total: string;
+  remaining: string;
+  payment: {
+    amount: string;
+    method: "cash" | "kaspi" | "remote" | "bank";
+    paid_at: string;
+    voided_at: string | null;
+  } | null;
   cancelled_at: string | null;
   status: "completed" | "cancelled";
   status_label: string;

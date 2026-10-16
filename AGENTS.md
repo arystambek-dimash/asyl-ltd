@@ -70,6 +70,7 @@
 | Магазин сотрудника: привязка и клиент для пополнения | `employees/shop.py`, `employees.EmployeeShop` | `components/employees/employee-shop-fields.tsx` |
 | Остатки магазина (допускают минус) и пополнение подтверждённой отгрузкой мельницы | `employees/shop_stock.py`, `employees.ShopStock`; подтверждение и откат — `shipments/services.py` | `app/shop-orders` |
 | Внутренние продажи магазина (отдельно от заказов и кассы мельницы) | `employees/shop_sales.py`, `employees.ShopSale`; API — `employees/shop_views.py` | `app/shop-orders`, `components/shop-orders/*`; загрузка — `lib/use-api.ts`, `lib/use-paged-api.ts` |
+| Дата продажи и отдельный учёт оплат магазина | `employees/shop_payments.py`, `employees.ShopSalePayment` | `components/shop-orders/shop-order-additions.tsx`, `components/shop-orders/shop-order-history.tsx` |
 | Импорт акта сверки 1С | `client_acts/` (`parser.py`, `services.py`) | `lib/client-acts.ts`, `components/clients/client-act-import-modal.tsx` |
 | Задним числом / фиксация | `orders/backdate.py`, `orders/fixation.py` | — |
 | Права | `sys_permissions/perms.py`, `common/permissions.py` | `lib/can.ts` |

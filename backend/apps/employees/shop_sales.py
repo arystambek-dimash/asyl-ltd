@@ -17,15 +17,23 @@ from apps.sales.access import scope_by_client_department
 
 from .models import EmployeeShop, ShopSale, ShopSaleItem, ShopStock
 from .shop import require_shop
+from .shop_payments import (
+    assert_sale_additions_permission,
+    record_shop_sale_payment,
+    sale_additions,
+    sale_backdated_at,
+    void_shop_sale_payment,
+)
 from .shop_stock import deduct_shop_stock, restore_shop_stock
 
 
 def sale_orders(shop):
     return (
         ShopSale.objects.filter(shop=shop)
-        .select_related("client__user")
+        .select_related("client__user", "payment")
         .prefetch_related("items__product")
-        .order_by("-created_at", "-pk")
+        .alias(effective_sold_at=Coalesce("backdated_at", "created_at"))
+        .order_by("-effective_sold_at", "-pk")
     )
 
 
@@ -95,9 +103,10 @@ def _sale_unit_price(raw):
 
 
 @transaction.atomic
-def place_shop_sale(user, *, idempotency_key, items, client=None):
-    """Один ключ запроса создаёт ровно одну продажу и одно списание магазина."""
+def place_shop_sale(user, *, idempotency_key, items, client=None, payment=None, backdate=None):
+    """Сохранить продажу и её операции один раз для одного ключа запроса."""
     shop = _locked_shop(user)
+    additions = sale_additions(payment=payment, backdate=backdate)
     requested_items = [
         {
             "product": item["product"].pk, "quantity": item["quantity"],
@@ -106,6 +115,7 @@ def place_shop_sale(user, *, idempotency_key, items, client=None):
         for item in items
     ]
     payload = {
+        **additions,
         "client": client.pk if client else None,
         "items": sorted(
             requested_items,
@@ -117,6 +127,7 @@ def place_shop_sale(user, *, idempotency_key, items, client=None):
         if existing.request_payload != payload:
             raise ValidationError({"idempotency_key": "Этот ключ уже использован для другой продажи"})
         return existing
+    assert_sale_additions_permission(user, shop.client.currency, additions)
     rows = _sale_items(items)
     client = _sale_client(user, client)
     prices = dict(ClientPrice.objects.filter(
@@ -130,29 +141,37 @@ def place_shop_sale(user, *, idempotency_key, items, client=None):
             "detail": "Нет цены в прайсе магазина: " + ", ".join(unpriced) + ". Укажите цену в заказе.",
             "code": "shop_price_missing",
         })
-    deduct_shop_stock(shop, rows)
+    if backdate is None:
+        deduct_shop_stock(shop, rows)
     sale = ShopSale.objects.create(
         shop=shop, client=client, created_by=user, currency=shop.client.currency,
         idempotency_key=idempotency_key, request_payload=payload,
+        backdated_at=sale_backdated_at(additions), stock_deducted=backdate is None,
     )
     for item in rows:
         ShopSaleItem.objects.create(
             sale=sale, product=item["product"], quantity=item["quantity"],
             unit_price=prices[item["product"].pk], product_label_snapshot=str(item["product"]),
         )
+    record_shop_sale_payment(sale, user, additions)
     return sale
 
 
 @transaction.atomic
 def cancel_shop_sale(user, sale_id):
-    """Отмена возвращает мешки только в магазин и только один раз."""
+    """Атомарно отменить оплату и вернуть только реально списанный товар."""
     shop = _locked_shop(user)
     sale = ShopSale.objects.select_for_update().filter(shop=shop, pk=sale_id).first()
     if sale is None:
         raise NotFound("Заказ магазина не найден")
     if sale.status == "cancelled":
         return sale
-    restore_shop_stock(shop, list(sale.items.select_related("product")))
+    payment = getattr(sale, "payment", None)
+    if payment and payment.voided_at is None and not user.has_perm_code("payments.create"):
+        raise PermissionDenied("Нет права отменять оплаты")
+    if sale.stock_deducted:
+        restore_shop_stock(shop, list(sale.items.select_related("product")))
+    void_shop_sale_payment(sale)
     sale.status = "cancelled"
     sale.cancelled_at = timezone.now()
     sale.save(update_fields=["status", "cancelled_at"])

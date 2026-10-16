@@ -25,7 +25,7 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
-def shop(boss):
+def shop(boss, departments):
     return set_employee_shop(boss.employee, boss, enabled=True)
 
 
