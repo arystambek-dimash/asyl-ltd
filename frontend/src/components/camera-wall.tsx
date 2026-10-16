@@ -9,7 +9,7 @@ import { isLogicalCamera, playableCameras, type PlayableCamera } from "@/lib/shi
 import type { CameraFeed } from "@/lib/types";
 import { CameraLineModal } from "@/components/camera-line-modal";
 import { CameraStream } from "@/components/camera-stream";
-import { CameraVisibilityMask, visibilityZoneActive } from "@/components/camera-visibility-mask";
+import { visibilityZoneActive } from "@/components/camera-visibility-mask";
 import { CameraVisibilityModal } from "@/components/camera-visibility-modal";
 import { Button } from "@/components/ui/button";
 import { ErrorAlert } from "@/components/ui/data-state";
@@ -50,7 +50,6 @@ export function CameraTile({
   return (
     <div className="group relative aspect-video overflow-hidden rounded-lg bg-[#1c1c1e]">
       <CameraStream src={cam.src} onStateChange={handleState} className="absolute inset-0 h-full w-full object-cover" />
-      <CameraVisibilityMask zone={cam.visibility_zone} />
 
       {!online && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-white/30">

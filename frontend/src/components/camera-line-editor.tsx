@@ -84,7 +84,7 @@ export function CameraLineEditor({
             : "Проведите основную линию или перетащите её точки"
         }
       >
-        <CameraVisibilityMask zone={visibilityZone} preview />
+        <CameraVisibilityMask zone={visibilityZone} />
         <CameraCountingLineOverlay
           line={line}
           direction={direction}

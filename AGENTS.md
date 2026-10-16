@@ -77,7 +77,7 @@
 | Блокировки, heartbeat, демоны | `common/locks.py`, `common/heartbeat.py`, `common/daemon.py` | — |
 | Telegram API | `common/telegram.py` | — |
 | ИИ-ассистент по данным (только чтение) | `assistant/` (`sql_guard.py` — что можно читать, `queries.py` — READ ONLY, `schema.py`, `knowledge.md`) | `lib/assistant.ts`, `components/assistant/*` |
-| Зона видимости (маска) камеры для ИИ и экранов | хранит и применяет AI-сервис; CRM — прокси `cameras/api_views/visibility_zone.py` (общий `save_polygon`), кэш инвентаря — `services.update_cached_visibility_zone` | `components/camera-visibility-modal.tsx`, `camera-visibility-mask.tsx` |
+| Зона видимости (маска) камеры — только для ИИ, людям кадр целиком | хранит и применяет AI-сервис; CRM — прокси `cameras/api_views/visibility_zone.py` (общий `save_polygon`), кэш инвентаря — `services.update_cached_visibility_zone` | `components/camera-visibility-modal.tsx`, `camera-visibility-mask.tsx` |
 
 Новая тема → новый модуль с говорящим именем, строка в эту таблицу в той же
 правке. Никаких `utils.py`/`helpers.py`/`misc` внутри фичевых приложений.

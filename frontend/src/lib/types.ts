@@ -45,7 +45,10 @@ export interface Product {
 /** Товар в каталоге клиента: цена из его личного прайса, остатков нет намеренно. */
 export interface PortalProduct {
   id: number;
+  name: string;
   label: string;
+  /** Цвет — чтобы выбор товара различал двойников (он же есть в label). */
+  color_label: string;
   weight_kg: string;
   price: string | null;
   currency: "KZT" | "USD";
@@ -753,7 +756,7 @@ export interface CameraFeed {
   note?: string;
   /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
   line_config?: CameraCountingLine | null;
-  /** Зона видимости: вне полигона кадр закрыт и для AI, и на экранах. */
+  /** Зона видимости: вне полигона кадр закрыт для AI; экраны показывают его целиком. */
   visibility_zone?: VehicleRoiConfig | null;
 }
 export interface MonoblockCameraSettings {

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { OrderProductOption } from "@/components/orders/order-form-parts";
-import { ProductPicker } from "./product-picker";
+import { ProductPicker, stockHint } from "./product-picker";
 
 function option(id: number, name: string, weight: string, bags: number, extra: Partial<OrderProductOption> = {}) {
   return {
@@ -50,7 +50,7 @@ function Harness({
           setValue(id);
           onChange(id);
         }}
-        bagsOf={(product) => product.available_bags ?? 0}
+        hintOf={(product) => stockHint(product.available_bags ?? 0)}
         ariaLabel="Товар, позиция 1"
       />
     </div>

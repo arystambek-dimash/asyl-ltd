@@ -4,7 +4,9 @@ import { MAX_CART_QUANTITY, clampQuantity, priceCart, withQuantity } from "./car
 
 const product = (id: number, price: string | null): PortalProduct => ({
   id,
+  name: `Товар ${id}`,
   label: `Товар ${id}`,
+  color_label: "Красный",
   weight_kg: "25.00",
   price,
   currency: "KZT",

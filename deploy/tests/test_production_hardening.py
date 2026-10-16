@@ -21,11 +21,12 @@ WEIGHBRIDGE_COMPOSE = REPO_ROOT / "deploy" / "weighbridge" / "compose.yml"
 WEIGHBRIDGE_INSTALL = REPO_ROOT / "deploy" / "weighbridge" / "install.sh"
 WEIGHBRIDGE_GO2RTC = REPO_ROOT / "deploy" / "weighbridge" / "go2rtc.yaml"
 
+# Новые релизы — под dimqsh, прежний (для отката) — ещё под старым именем репозитория.
 CANDIDATE_BACKEND = (
-    "ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:" + "a" * 64
+    "ghcr.io/dimqsh/asyl-ltd-backend@sha256:" + "a" * 64
 )
 CANDIDATE_FRONTEND = (
-    "ghcr.io/arystambek-dimash/asyl-ltd-frontend@sha256:" + "b" * 64
+    "ghcr.io/dimqsh/asyl-ltd-frontend@sha256:" + "b" * 64
 )
 PREVIOUS_BACKEND = (
     "ghcr.io/arystambek-dimash/asyl-ltd-backend@sha256:" + "c" * 64

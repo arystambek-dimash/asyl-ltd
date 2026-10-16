@@ -10,11 +10,10 @@ from .models import ShopSale, ShopSaleItem
 
 
 class ShopCatalogSerializer(PricedProductSerializer):
-    color_label = serializers.CharField(source="get_color_display", read_only=True)
     stock_bags = serializers.IntegerField(read_only=True)
 
     class Meta(PricedProductSerializer.Meta):
-        fields = [*PricedProductSerializer.Meta.fields, "name", "color_label", "stock_bags"]
+        fields = [*PricedProductSerializer.Meta.fields, "stock_bags"]
 
 
 class ShopSaleItemInputSerializer(serializers.Serializer):

@@ -7,7 +7,7 @@ import {
   type OrderFormOptions,
   type OrderProductOption,
 } from "@/components/orders/order-form-parts";
-import { ProductPicker } from "@/components/orders/product-picker";
+import { ProductPicker, stockHint } from "@/components/orders/product-picker";
 import { Button } from "@/components/ui/button";
 import { DataGate, FormError } from "@/components/ui/data-state";
 import { Input } from "@/components/ui/input";
@@ -171,7 +171,7 @@ export function ShopOrderForm({
                     products={options}
                     value={line.product}
                     onChange={(value) => updateLine(line.id, { product: value })}
-                    bagsOf={(item) => item.available_bags ?? 0}
+                    hintOf={(item) => stockHint(item.available_bags ?? 0)}
                     disabled={busy}
                     ariaLabel={`Товар, позиция ${index + 1}`}
                     className="col-span-full sm:col-span-1"

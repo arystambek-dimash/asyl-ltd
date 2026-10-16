@@ -94,7 +94,7 @@ describe("CameraVisibilityModal", () => {
       { timeout: 12_000 },
     );
     expect(
-      await within(dialog).findByText("Зона сохранена: AI и экраны видят только выделенную область."),
+      await within(dialog).findByText("Зона сохранена: AI видит только выделенную область, на экранах кадр целиком."),
     ).toBeInTheDocument();
     expect(onZoneChange).toHaveBeenLastCalledWith("cam3", zone());
     expect(within(dialog).getByRole("button", { name: /Выключить маску/ })).toBeInTheDocument();
@@ -111,7 +111,7 @@ describe("CameraVisibilityModal", () => {
 
     await waitFor(() => expect(mocks.put).toHaveBeenCalledTimes(1));
     expect(mocks.put.mock.calls[0][1]).toEqual({ points: SQUARE, enabled: false, source: "main" });
-    expect(await within(dialog).findByText("Маска выключена: камера снова видит весь кадр.")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Маска выключена: AI снова видит весь кадр.")).toBeInTheDocument();
     expect(onZoneChange).toHaveBeenLastCalledWith("cam3", zone({ enabled: false }));
     expect(within(dialog).getByRole("button", { name: /Включить маску/ })).toBeInTheDocument();
   });
@@ -143,7 +143,7 @@ describe("CameraVisibilityModal", () => {
 });
 
 describe("CameraVisibilityMask", () => {
-  it("covers everything outside the zone over the contained video box", () => {
+  it("dims what AI does not see over the contained video box and outlines the zone", () => {
     render(
       <div>
         <video style={{ objectFit: "contain" }} />
@@ -159,6 +159,28 @@ describe("CameraVisibilityMask", () => {
       "M0,0 H1000 V1000 H0 Z M200,100 L800,100 L800,900 L200,900 Z",
     );
     expect(mask.querySelector("path")).toHaveAttribute("fill-rule", "evenodd");
+    // Only a dimming preview: people still see the frame through it.
+    expect(mask.querySelector("path")).toHaveAttribute("fill", "rgba(2, 6, 23, 0.62)");
+    expect(mask.querySelector("polygon")).toHaveAttribute("points", "200,100 800,100 800,900 200,900");
+  });
+
+  it("leaves the outline of a draft to the point editor", () => {
+    render(
+      <div>
+        <video style={{ objectFit: "contain" }} />
+        <CameraVisibilityMask
+          points={[
+            [0.2, 0.1],
+            [0.8, 0.1],
+            [0.8, 0.9],
+          ]}
+        />
+      </div>,
+    );
+
+    const mask = screen.getByTestId("camera-visibility-mask");
+    expect(mask.querySelector("path")).not.toBeNull();
+    expect(mask.querySelector("polygon")).toBeNull();
   });
 
   it.each([
@@ -198,9 +220,10 @@ describe("CameraTile zone control", () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
-  it("masks the tile with the saved zone", () => {
-    render(<CameraTile cam={{ ...camera, visibility_zone: zone() }} onOnline={vi.fn()} />);
+  it("shows people the whole frame: the zone only marks the button", () => {
+    render(<CameraTile cam={{ ...camera, visibility_zone: zone() }} onOnline={vi.fn()} onConfigureZone={vi.fn()} />);
 
-    expect(screen.getByTestId("camera-visibility-mask").querySelector("path")).not.toBeNull();
+    expect(screen.queryByTestId("camera-visibility-mask")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Зона видимости камеры" })).toHaveClass("bg-violet-500/80");
   });
 });

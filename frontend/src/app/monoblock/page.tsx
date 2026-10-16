@@ -21,7 +21,6 @@ import {
 import { AppShell } from "@/components/layout/app-shell";
 import { CameraChoice } from "@/components/camera-choice";
 import { CameraStream } from "@/components/camera-stream";
-import { CameraVisibilityMask } from "@/components/camera-visibility-mask";
 import { CameraCountingLineOverlay } from "@/components/camera-counting-line-overlay";
 import { DetectionOverlay } from "@/components/detection-overlay";
 import {
@@ -1008,14 +1007,11 @@ function AlwaysOnCard({
             {/* Видео остаётся тёмным, как плитки: на чёрном кадре рамки и линия читаются лучше. */}
             <div className="relative aspect-video min-h-0 overflow-hidden bg-[#141416] lg:aspect-auto lg:min-h-[460px]">
               {camera?.src ? (
-                <>
-                  <CameraStream
-                    src={camera.src}
-                    onStateChange={setStreamOnline}
-                    className="absolute inset-0 size-full object-contain"
-                  />
-                  <CameraVisibilityMask zone={camera.visibility_zone} />
-                </>
+                <CameraStream
+                  src={camera.src}
+                  onStateChange={setStreamOnline}
+                  className="absolute inset-0 size-full object-contain"
+                />
               ) : null}
               {/* Всегда-включённый поток идёт без вжатых рамок и линии,
                   поэтому весь слой модели собирает браузер поверх видео. */}

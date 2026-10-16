@@ -17,22 +17,19 @@ export function visibilityZoneActive(zone: VehicleRoiConfig | null | undefined):
 const svgPoints = (points: readonly NormalizedRoiPoint[]) => points.map(([x, y]) => `${x * 1000},${y * 1000}`);
 
 /**
- * Закрывает кадр вне зоны видимости камеры — там же, где кадр закрыт для AI
- * на ПК камер. Слой — сосед CameraStream и подгоняется под реальный бокс
- * видео (object-cover / object-contain), поэтому полигон совпадает с картинкой.
- * Ставить сразу после видео: без z-index слой закрывает только кадр, а
- * подписи и кнопки, идущие следом, остаются поверх.
- * `preview` только затемняет: в редакторе видно, что окажется за маской.
+ * Показывает в редакторах, что AI не увидит: кадр вне зоны видимости
+ * затемнён, зона обведена. Маска действует только на AI (её применяет ПК
+ * камер), поэтому на обычных экранах этот слой не ставят — люди видят кадр
+ * целиком. Слой — сосед видео и подгоняется под его реальный бокс
+ * (object-cover / object-contain); ставить сразу после видео, без z-index.
  */
 export function CameraVisibilityMask({
   zone,
   points,
-  preview = false,
 }: {
   zone?: VehicleRoiConfig | null;
   /** Черновик редактора вместо сохранённой зоны. */
   points?: readonly NormalizedRoiPoint[];
-  preview?: boolean;
 }) {
   const [container, setContainer] = useState<HTMLElement | null>(null);
   const videoBox = useVideoBox(container);
@@ -52,14 +49,15 @@ export function CameraVisibilityMask({
           <path
             d={`M0,0 H1000 V1000 H0 Z M${svgPoints(polygon).join(" L")} Z`}
             fillRule="evenodd"
-            fill={preview ? "rgba(2, 6, 23, 0.62)" : "#0d0e11"}
+            fill="rgba(2, 6, 23, 0.62)"
           />
-          {!preview && (
+          {/* Черновик обводит сам редактор точек; сохранённую зону — этот слой. */}
+          {!points && (
             <polygon
               points={svgPoints(polygon).join(" ")}
               fill="none"
-              stroke="rgba(255, 255, 255, 0.16)"
-              strokeWidth="1"
+              stroke="rgba(167, 139, 250, 0.9)"
+              strokeWidth="2"
               vectorEffect="non-scaling-stroke"
             />
           )}

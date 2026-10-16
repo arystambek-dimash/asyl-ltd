@@ -62,14 +62,16 @@ prepare_secure_state_directory() {
   fi
 }
 
+# Репозиторий переехал с arystambek-dimash на dimqsh (15.10.2026): новые релизы
+# публикуются под dimqsh, а прежний релиз для отката может лежать под старым именем.
 is_backend_image_ref() {
   printf '%s\n' "$1" \
-    | grep -Eq '^ghcr\.io/arystambek-dimash/asyl-ltd-backend@sha256:[0-9a-f]{64}$'
+    | grep -Eq '^ghcr\.io/(dimqsh|arystambek-dimash)/asyl-ltd-backend@sha256:[0-9a-f]{64}$'
 }
 
 is_frontend_image_ref() {
   printf '%s\n' "$1" \
-    | grep -Eq '^ghcr\.io/arystambek-dimash/asyl-ltd-frontend@sha256:[0-9a-f]{64}$'
+    | grep -Eq '^ghcr\.io/(dimqsh|arystambek-dimash)/asyl-ltd-frontend@sha256:[0-9a-f]{64}$'
 }
 
 is_git_sha() {
