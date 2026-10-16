@@ -1,7 +1,6 @@
 from decimal import Decimal
 
 import pytest
-from rest_framework.exceptions import ValidationError
 
 from apps.employees.models import ShopReplenishment, ShopStock
 from apps.employees.shop import set_employee_shop
@@ -44,18 +43,17 @@ def test_shipped_replenishment_correction_moves_both_stocks_and_rollback_uses_co
     assert ShopStock.objects.get(shop=shop, product=product).bags == 0
 
 
-def test_correction_cannot_remove_already_sold_shop_stock_and_is_atomic(replenishment, boss):
+def test_correction_after_shop_sale_moves_both_stocks_and_records_deficit(replenishment, boss):
     shop, product, order = replenishment
     deduct_shop_stock(shop, [{"product": product, "quantity": 7}])
-    with pytest.raises(ValidationError, match="Недостаточно"):
-        replace_items(
-            order, [{"product": product, "quantity": 2}], {str(product.pk): Decimal("100")},
-            boss, edit_reason="Уменьшение количества пополнения",
-        )
-    assert order.items.get(product=product).quantity == 10
-    assert StockItem.objects.get(product=product, warehouse=shop.warehouse).bags == 90
-    assert ShopStock.objects.get(shop=shop, product=product).bags == 3
-    assert ShopReplenishment.objects.get(order=order).items.get(product=product).quantity == 10
+    replace_items(
+        order, [{"product": product, "quantity": 2}], {str(product.pk): Decimal("100")},
+        boss, edit_reason="Уменьшение количества пополнения",
+    )
+    assert order.items.get(product=product).quantity == 2
+    assert StockItem.objects.get(product=product, warehouse=shop.warehouse).bags == 98
+    assert ShopStock.objects.get(shop=shop, product=product).bags == -5
+    assert ShopReplenishment.objects.get(order=order).items.get(product=product).quantity == 2
 
 
 def test_correction_replaces_product_in_both_stocks(replenishment, boss, make_product):

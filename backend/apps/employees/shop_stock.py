@@ -30,12 +30,6 @@ def _change_stock(shop, changes):
     for product_id in sorted(changes):
         row, _ = ShopStock.objects.get_or_create(shop=shop, product_id=product_id)
         rows[product_id] = ShopStock.objects.select_for_update().get(pk=row.pk)
-    short = [product_id for product_id, row in rows.items() if row.bags + changes[product_id] < 0]
-    if short:
-        raise ValidationError({
-            "detail": "Недостаточно товара в магазине", "code": "shop_stock_insufficient",
-            "products": short,
-        })
     for product_id, row in rows.items():
         row.bags += changes[product_id]
         row.save(update_fields=["bags"])
@@ -94,7 +88,7 @@ def reverse_shop_replenishment(order):
     """Откатить только реально зачисленный приход, до восстановления мельницы.
 
     Старые отгрузки без записи прихода не меняют новый остаток магазина.
-    Если товар уже продан, откат отгрузки целиком запрещён.
+    Проданный товар при откате прихода образует отрицательный остаток.
     """
     receipt = ShopReplenishment.objects.filter(order=order, reversed_at__isnull=True).first()
     if receipt is None:

@@ -75,7 +75,7 @@ class EmployeeShop(models.Model):
 class ShopStock(models.Model):
     shop = models.ForeignKey(EmployeeShop, on_delete=models.PROTECT, related_name="stock")
     product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
-    bags = models.PositiveIntegerField(default=0)
+    bags = models.IntegerField(default=0)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["shop", "product"], name="shop_stock_product_uniq")]

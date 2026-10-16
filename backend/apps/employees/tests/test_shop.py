@@ -242,7 +242,7 @@ def test_cancel_and_repeat_create_return_stock_once(auth_client, worker, stocked
     assert _shop_bags(stocked_shop, flour) == 40
 
 
-def test_insufficient_stock_rejects_sale_atomically(auth_client, worker, stocked_shop, flour, make_product):
+def test_sales_allow_negative_stock_and_keep_mill_unchanged(auth_client, worker, stocked_shop, flour, make_product):
     other = make_product(name="Другой")
     _price(stocked_shop, other)
     api = auth_client(worker)
@@ -250,11 +250,15 @@ def test_insufficient_stock_rejects_sale_atomically(auth_client, worker, stocked
         "idempotency_key": str(uuid4()),
         "items": [{"product": flour.pk, "quantity": 5}, {"product": other.pk, "quantity": 1}],
     }, format="json")
-    assert response.status_code == 400
-    assert not ShopSale.objects.exists()
-    assert _shop_bags(stocked_shop, flour) == 40
+    assert response.status_code == 201, response.data
+    assert _shop_bags(stocked_shop, flour) == 35
+    assert _shop_bags(stocked_shop, other) == -1
     assert _bags(flour) == 100
-    assert _order(api, flour, quantity=41).status_code == 400
+    assert _order(api, flour, quantity=41).status_code == 201
+    assert _shop_bags(stocked_shop, flour) == -6
+    catalog = {row["id"]: row for row in api.get("/api/shop-orders/catalog/").data}
+    assert catalog[flour.pk]["stock_bags"] == -6
+    assert catalog[other.pk]["stock_bags"] == -1
 
 
 def test_unpriced_and_archived_products_are_rejected(auth_client, worker, shop, flour):
@@ -296,7 +300,9 @@ def test_shops_do_not_see_or_cancel_each_others_sales(auth_client, worker, stock
     assert api.get("/api/shop-orders/").data == []
     assert api.get("/api/shop-orders/catalog/").data[0]["stock_bags"] == 0
     assert api.post(f"/api/shop-orders/{sale_id}/cancel/").status_code == 404
-    assert _order(api, flour, shop=stocked_shop.pk).status_code == 400
+    assert _order(api, flour, shop=stocked_shop.pk).status_code == 201
+    assert _shop_bags(other_shop, flour) == -10
+    assert ShopSale.objects.filter(shop=other_shop).get().shop_id == other_shop.pk
     assert _shop_bags(stocked_shop, flour) == 30
 
 
@@ -342,3 +348,54 @@ def test_repeat_sale_uses_snapshot_after_price_and_product_change(auth_client, w
     assert repeated.status_code == 201
     assert repeated.data == original.data
     assert _shop_bags(stocked_shop, flour) == 30
+
+
+def test_explicit_sale_price_without_shop_price_is_snapshotted_and_idempotent(auth_client, worker, shop, flour):
+    api = auth_client(worker)
+    key = str(uuid4())
+    payload = {"idempotency_key": key, "items": [{"product": flour.pk, "quantity": 3, "unit_price": "5000"}]}
+    first = api.post("/api/shop-orders/", payload, format="json")
+    assert first.status_code == 201, first.data
+    assert first.data["items"][0]["unit_price"] == "5000.00"
+    assert first.data["total_amount"] == "15000.00"
+    assert _shop_bags(shop, flour) == -3
+    assert _bags(flour) == 100
+    assert not ClientPrice.objects.filter(client=shop.client, product=flour).exists()
+    assert not Order.objects.exists()
+    assert not Shipment.objects.exists()
+    payload["items"][0]["unit_price"] = "5000.00"
+    assert api.post("/api/shop-orders/", payload, format="json").data == first.data
+    payload["items"][0]["unit_price"] = "5001"
+    assert api.post("/api/shop-orders/", payload, format="json").status_code == 400
+    assert _shop_bags(shop, flour) == -3
+    assert ShopSale.objects.count() == 1
+    sale = ShopSale.objects.get()
+    assert sale.request_payload["items"][0]["unit_price"] == "5000.00"
+    url = f"/api/shop-orders/{sale.pk}/cancel/"
+    assert api.post(url).status_code == api.post(url).status_code == 200
+    assert _shop_bags(shop, flour) == 0
+
+
+def test_explicit_sale_price_overrides_shop_price_without_changing_it(auth_client, worker, stocked_shop, flour):
+    response = _order(auth_client(worker), flour, items=[{
+        "product": flour.pk, "quantity": 2, "unit_price": "50.25",
+    }])
+    assert response.status_code == 201, response.data
+    assert response.data["total_amount"] == "100.50"
+    assert ClientPrice.objects.get(client=stocked_shop.client, product=flour).price == Decimal("5000")
+    assert _shop_bags(stocked_shop, flour) == 38
+
+
+@pytest.mark.parametrize("price", ["0", "-1", "0.001", "10000000000", "NaN", "Infinity", "garbage", None, True])
+def test_invalid_explicit_sale_price_has_no_side_effects(auth_client, worker, shop, flour, price):
+    from rest_framework.exceptions import ValidationError
+
+    from apps.employees.shop_sales import place_shop_sale
+
+    items = [{"product": flour.pk, "quantity": 1, "unit_price": price}]
+    response = _order(auth_client(worker), flour, items=items)
+    assert response.status_code == 400, response.data
+    with pytest.raises(ValidationError):
+        place_shop_sale(worker, idempotency_key=uuid4(), items=[{**items[0], "product": flour}])
+    assert not ShopSale.objects.exists()
+    assert not ShopStock.objects.exists()

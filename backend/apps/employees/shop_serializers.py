@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.catalog.models import Product
@@ -19,6 +21,9 @@ class ShopCatalogSerializer(PricedProductSerializer):
 class ShopSaleItemInputSerializer(serializers.Serializer):
     product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
     quantity = serializers.IntegerField(min_value=1, max_value=MAX_PORTAL_ITEM_QUANTITY)
+    unit_price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal("0.01"), required=False,
+    )
 
 
 class ShopSaleCreateSerializer(serializers.Serializer):

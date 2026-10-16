@@ -50,7 +50,7 @@ async function fillSale(user: ReturnType<typeof userEvent.setup>) {
   const dialog = within(screen.getByRole("dialog"));
   await user.click(dialog.getByRole("button", { name: "Товар, позиция 1" }));
   await user.click(dialog.getByRole("option"));
-  await user.type(dialog.getByRole("spinbutton", { name: "Количество, позиция 1" }), "2");
+  await user.type(dialog.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }), "2");
   return dialog;
 }
 
@@ -98,16 +98,56 @@ describe("Заказы магазина", () => {
     const user = userEvent.setup();
     render(<ShopOrdersPage />);
     const dialog = await fillSale(user);
-    await user.click(dialog.getByRole("button", { name: "Завершить продажу" }));
+    await user.click(dialog.getByRole("button", { name: "Создать заказ" }));
     await waitFor(() =>
       expect(mocks.post).toHaveBeenCalledWith("/shop-orders/", {
         idempotency_key: expect.any(String),
         client: null,
-        items: [{ product: 1, quantity: 2 }],
+        items: [{ product: 1, quantity: 2, unit_price: "5000.00" }],
       }),
     );
     expect(mocks.reload).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it.each([0, -3])("продаёт при остатке %s с вручную введённой ценой без доставки", async (stock) => {
+    mocks.useApi.mockImplementation((url: string | null) =>
+      apiState(
+        url === "/shop-orders/summary/"
+          ? summary
+          : url === "/shop-orders/catalog/"
+            ? [{ ...products[0], stock_bags: stock, price: null }]
+            : url === "/orders/form-options/"
+              ? { clients: [client] }
+              : null,
+      ),
+    );
+    const user = userEvent.setup();
+    render(<ShopOrdersPage />);
+    await user.click(screen.getByRole("button", { name: "Новый заказ" }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("heading", { name: "Новый заказ" })).toBeInTheDocument();
+    expect(dialog.getByRole("heading", { name: "Состав заказа" })).toBeInTheDocument();
+    expect(dialog.getByText("Итог")).toBeInTheDocument();
+    for (const label of ["Доставка", "Транспорт", "Склад отгрузки", "Тягач", "Плановая дата прибытия", "Валюта"]) {
+      expect(dialog.queryByText(label)).not.toBeInTheDocument();
+    }
+    await user.click(dialog.getByRole("button", { name: "Товар, позиция 1" }));
+    expect(dialog.getByRole("option")).toHaveTextContent(`${stock} меш.`);
+    await user.click(dialog.getByRole("option"));
+    await user.type(dialog.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }), "2");
+    const submit = dialog.getByRole("button", { name: "Создать заказ" });
+    expect(submit).toBeDisabled();
+    await user.type(dialog.getByRole("spinbutton", { name: "Цена, позиция 1" }), "1250.25");
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+    await waitFor(() =>
+      expect(mocks.post).toHaveBeenCalledWith("/shop-orders/", {
+        idempotency_key: expect.any(String),
+        client: null,
+        items: [{ product: 1, quantity: 2, unit_price: "1250.25" }],
+      }),
+    );
   });
 
   it("сохраняет UUID при повторе после сетевой ошибки и меняет после правки", async () => {
@@ -115,17 +155,24 @@ describe("Заказы магазина", () => {
     mocks.post.mockRejectedValue(new Error("Сеть недоступна"));
     render(<ShopOrdersPage />);
     const dialog = await fillSale(user);
-    await user.click(dialog.getByRole("button", { name: "Завершить продажу" }));
+    await user.click(dialog.getByRole("button", { name: "Создать заказ" }));
     await screen.findByRole("alert");
     const firstKey = mocks.post.mock.calls[0][1].idempotency_key;
-    await user.click(dialog.getByRole("button", { name: "Завершить продажу" }));
+    await user.click(dialog.getByRole("button", { name: "Создать заказ" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(2));
     expect(mocks.post.mock.calls[1][1].idempotency_key).toBe(firstKey);
-    await user.clear(dialog.getByRole("spinbutton"));
-    await user.type(dialog.getByRole("spinbutton"), "3");
-    await user.click(dialog.getByRole("button", { name: "Завершить продажу" }));
+    await user.clear(dialog.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }));
+    await user.type(dialog.getByRole("spinbutton", { name: "Количество мешков, позиция 1" }), "3");
+    await user.click(dialog.getByRole("button", { name: "Создать заказ" }));
     await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(3));
     expect(mocks.post.mock.calls[2][1].idempotency_key).not.toBe(firstKey);
+    const quantityKey = mocks.post.mock.calls[2][1].idempotency_key;
+    await user.clear(dialog.getByRole("spinbutton", { name: "Цена, позиция 1" }));
+    await user.type(dialog.getByRole("spinbutton", { name: "Цена, позиция 1" }), "7000");
+    await user.click(dialog.getByRole("button", { name: "Создать заказ" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(4));
+    expect(mocks.post.mock.calls[3][1].idempotency_key).not.toBe(quantityKey);
+    expect(mocks.post.mock.calls[3][1].items).toEqual([{ product: 1, quantity: 3, unit_price: "7000.00" }]);
   });
 
   it("позволяет выбрать клиента и отменить только продажу магазина", async () => {
@@ -134,7 +181,7 @@ describe("Заказы магазина", () => {
     const dialog = await fillSale(user);
     await user.click(dialog.getByRole("button", { name: "Выбрать клиента" }));
     await user.click(dialog.getByRole("button", { name: /Покупатель Иван/ }));
-    await user.click(dialog.getByRole("button", { name: "Завершить продажу" }));
+    await user.click(dialog.getByRole("button", { name: "Создать заказ" }));
     await waitFor(() => expect(mocks.post.mock.calls[0][1].client).toBe(9));
     await user.click(screen.getByRole("button", { name: "Отменить заказ №41" }));
     const cancel = within(screen.getByRole("dialog"));

@@ -68,7 +68,7 @@
 | Подключения Kaspi (ApiPay) отделов | `sales/apipay_accounts.py`, `sales.ApiPayAccount`; запросы и вебхуки — `orders/apipay.py`, `orders/webhooks.py` | `components/orders/apipay-accounts.tsx`, `apipay-account-form.tsx` |
 | Возвраты товара | `orders/goods_returns.py` | `components/storekeeper/*` |
 | Магазин сотрудника: привязка и клиент для пополнения | `employees/shop.py`, `employees.EmployeeShop` | `components/employees/employee-shop-fields.tsx` |
-| Остатки магазина и пополнение подтверждённой отгрузкой мельницы | `employees/shop_stock.py`, `employees.ShopStock`; подтверждение и откат — `shipments/services.py` | `app/shop-orders` |
+| Остатки магазина (допускают минус) и пополнение подтверждённой отгрузкой мельницы | `employees/shop_stock.py`, `employees.ShopStock`; подтверждение и откат — `shipments/services.py` | `app/shop-orders` |
 | Внутренние продажи магазина (отдельно от заказов и кассы мельницы) | `employees/shop_sales.py`, `employees.ShopSale`; API — `employees/shop_views.py` | `app/shop-orders`, `components/shop-orders/*`; загрузка — `lib/use-api.ts`, `lib/use-paged-api.ts` |
 | Импорт акта сверки 1С | `client_acts/` (`parser.py`, `services.py`) | `lib/client-acts.ts`, `components/clients/client-act-import-modal.tsx` |
 | Задним числом / фиксация | `orders/backdate.py`, `orders/fixation.py` | — |

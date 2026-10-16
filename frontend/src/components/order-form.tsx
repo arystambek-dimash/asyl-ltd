@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CalendarClock, Check, Gift, Info, Plus, RefreshCw, Trash2, Truck } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Gift, Info, Plus, RefreshCw, Truck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,9 +26,10 @@ import {
   type OrderFormOptions,
   type OrderProductOption,
 } from "@/components/orders/order-form-parts";
+import { OrderComposition, OrderCompositionRow } from "@/components/orders/order-composition";
 import { BonusBadge } from "@/components/orders/bonus-badge";
 import { OptionToggle } from "@/components/orders/option-toggle";
-import { ProductPicker, stockHint } from "@/components/orders/product-picker";
+import { stockHint } from "@/components/orders/product-picker";
 import { PayNowFields, payAfterCreate, usePayNow } from "@/components/orders/pay-now";
 import { moneyCents } from "@/lib/debt-orders";
 import { useApi } from "@/lib/use-api";
@@ -37,7 +38,7 @@ import { can } from "@/lib/can";
 import { ORDER_AWAITING_SHIPMENT_STATUSES, ORDER_LOADING_STATUSES } from "@/lib/constants";
 import { formatEstimate, requestEstimate } from "@/lib/orders";
 import { formatPlatePair, isValidWagonNumber } from "@/lib/plates";
-import { formatCurrency, todayLocalIsoDate, currencySymbol } from "@/lib/utils";
+import { todayLocalIsoDate } from "@/lib/utils";
 import { useAuth } from "@/store/auth";
 import {
   clearOrderDraft,
@@ -612,117 +613,73 @@ export function OrderForm({
                   </Button>
                 </div>
               )}
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                <div className="hidden grid-cols-[minmax(0,1fr)_96px_128px_112px_36px] gap-3 border-b border-slate-100 bg-slate-50/80 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:grid">
-                  <span>Товар</span>
-                  <span>Мешков</span>
-                  <span>Цена, {currencySymbol(currency)}</span>
-                  <span className="text-right">Сумма</span>
-                  <span />
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {rows.map((row, index) => {
-                    const currentProduct = products.find((item) => String(item.id) === row.product);
-                    const selectableProducts =
-                      editing && currentProduct && !warehouseProducts.some((item) => item.id === currentProduct.id)
-                        ? [currentProduct, ...warehouseProducts]
-                        : warehouseProducts;
-                    const lineTotal = row.bonus ? 0 : Number(row.price || 0) * Number(row.quantity || 0);
-                    return (
-                      <div
-                        key={row.id}
-                        className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_36px] gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_96px_128px_112px_36px] sm:gap-3 sm:items-center"
+              <OrderComposition
+                currency={currency}
+                footer={
+                  <>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                      <button type="button" disabled={compositionLocked} onClick={addRow} className={ADD_ROW_BUTTON}>
+                        <Plus className="size-4" /> Добавить позицию
+                      </button>
+                      <button
+                        type="button"
+                        disabled={compositionLocked}
+                        onClick={addBonusRow}
+                        className={ADD_ROW_BUTTON}
                       >
-                        <ProductPicker
-                          products={selectableProducts}
-                          value={row.product}
-                          className="col-span-3 sm:col-span-1"
-                          ariaLabel={`Товар, позиция ${index + 1}`}
-                          disabled={compositionLocked}
-                          hintOf={(product) => stockHint(productBagsAtWarehouse(product, warehouse))}
-                          onChange={(product) =>
-                            updateRow(index, row.bonus ? { product } : { product, price: clientPrices[product] ?? "" })
-                          }
-                        />
-                        <Input
-                          type="number"
-                          min="1"
-                          inputMode="numeric"
-                          placeholder="Мешков"
-                          className="h-10 rounded-lg"
-                          value={row.quantity}
-                          aria-label={`Количество мешков, позиция ${index + 1}`}
-                          disabled={compositionLocked}
-                          onChange={(event) => updateRow(index, { quantity: event.target.value })}
-                        />
-                        {row.bonus ? (
+                        <Gift className="size-4" /> Бонусный мешок
+                      </button>
+                    </div>
+                    <span className="text-xs text-slate-500">
+                      {bagsText} · <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b>
+                    </span>
+                  </>
+                }
+              >
+                {rows.map((row, index) => {
+                  const currentProduct = products.find((item) => String(item.id) === row.product);
+                  const selectableProducts =
+                    editing && currentProduct && !warehouseProducts.some((item) => item.id === currentProduct.id)
+                      ? [currentProduct, ...warehouseProducts]
+                      : warehouseProducts;
+                  return (
+                    <OrderCompositionRow
+                      key={row.id}
+                      row={row}
+                      index={index}
+                      products={selectableProducts}
+                      currency={currency}
+                      disabled={compositionLocked}
+                      hintOf={(product) => stockHint(productBagsAtWarehouse(product, warehouse))}
+                      onProduct={(product) =>
+                        updateRow(index, row.bonus ? { product } : { product, price: clientPrices[product] ?? "" })
+                      }
+                      onQuantity={(quantity) => updateRow(index, { quantity })}
+                      onPrice={(price) => updateRow(index, { price })}
+                      onRemove={() =>
+                        setRows((current) =>
+                          current.length > 1
+                            ? current.filter((_, itemIndex) => itemIndex !== index)
+                            : [{ id: nextRowId.current++, product: "", quantity: "", price: "" }],
+                        )
+                      }
+                      priceContent={
+                        row.bonus ? (
                           <div className="flex h-10 items-center">
                             <BonusBadge />
                           </div>
-                        ) : (
-                          <Input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            inputMode="decimal"
-                            className="h-10 rounded-lg"
-                            aria-label={`Цена, позиция ${index + 1}`}
-                            placeholder={`Цена, ${currencySymbol(currency)}`}
-                            value={row.price}
-                            disabled={compositionLocked}
-                            onChange={(event) => updateRow(index, { price: event.target.value })}
-                          />
-                        )}
-                        <div className="col-span-2 self-center text-sm font-semibold tabular-nums text-slate-900 sm:col-span-1 sm:text-right">
-                          {row.bonus ? (
-                            <span className="font-medium text-slate-500">бесплатно</span>
-                          ) : lineTotal > 0 ? (
-                            formatCurrency(String(lineTotal), currency)
-                          ) : (
-                            <span className="text-slate-300">—</span>
-                          )}
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="justify-self-end text-slate-400 hover:text-red-600"
-                          title="Удалить позицию"
-                          aria-label={`Удалить позицию ${index + 1}`}
-                          disabled={compositionLocked}
-                          onClick={() =>
-                            setRows((current) =>
-                              current.length > 1
-                                ? current.filter((_, itemIndex) => itemIndex !== index)
-                                : [{ id: nextRowId.current++, product: "", quantity: "", price: "" }],
-                            )
-                          }
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
-                        {row.bonus && (
-                          <p className="col-span-3 -mt-1 text-xs text-slate-500 sm:col-span-5">
-                            1 на 100 оплаченных → {bonusDue} меш.
-                          </p>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-slate-100 bg-slate-50/60 px-4 py-2.5">
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                    <button type="button" disabled={compositionLocked} onClick={addRow} className={ADD_ROW_BUTTON}>
-                      <Plus className="size-4" /> Добавить позицию
-                    </button>
-                    <button type="button" disabled={compositionLocked} onClick={addBonusRow} className={ADD_ROW_BUTTON}>
-                      <Gift className="size-4" /> Бонусный мешок
-                    </button>
-                  </div>
-                  <span className="text-xs text-slate-500">
-                    {bagsText} · <b className="font-semibold tabular-nums text-slate-900">{totalLabel}</b>
-                  </span>
-                </div>
-              </div>
+                        ) : undefined
+                      }
+                    >
+                      {row.bonus && (
+                        <p className="col-span-3 -mt-1 text-xs text-slate-500 sm:col-span-5">
+                          1 на 100 оплаченных → {bonusDue} меш.
+                        </p>
+                      )}
+                    </OrderCompositionRow>
+                  );
+                })}
+              </OrderComposition>
             </section>
 
             {(canBackdate || canPayNow || shippedCorrection || editing || template) && (

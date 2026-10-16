@@ -127,20 +127,18 @@ def _concurrent(calls):
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("same_key", [True, False])
-def test_concurrent_sale_requests_are_idempotent_and_cannot_oversell(auth_client, workflow, same_key):
+def test_concurrent_sale_requests_are_idempotent_and_allow_negative_stock(auth_client, workflow, same_key):
     owner, _, shop, product = workflow
     ShopStock.objects.create(shop=shop, product=product, bags=10)
     key = uuid4()
     calls = [lambda: _sale(auth_client(owner), product, quantity=6, key=key)]
     calls.append(lambda: _sale(auth_client(owner), product, quantity=6, key=key if same_key else uuid4()))
     outcomes = _concurrent(calls)
-    assert sorted(status for status, _ in outcomes) == ([201, 201] if same_key else [201, 400])
-    assert ShopSale.objects.count() == 1
-    assert _balances(shop, product) == (100, 4)
+    assert [status for status, _ in outcomes] == [201, 201]
+    assert ShopSale.objects.count() == (1 if same_key else 2)
+    assert _balances(shop, product) == (100, 4 if same_key else -2)
     if same_key:
         assert outcomes[0][1] == outcomes[1][1]
-    else:
-        assert next(data for status, data in outcomes if status == 400)["code"] == "shop_stock_insufficient"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -155,3 +153,19 @@ def test_sale_and_replenishment_concurrently_preserve_both_stocks(auth_client, w
     assert sorted(status for status, _ in outcomes) == [200, 201]
     assert _balances(shop, product) == (90, 11)
     assert ShopSale.objects.count() == ShopReplenishment.objects.count() == Shipment.objects.count() == 1
+
+
+def test_replenishment_offsets_negative_sale_balance_and_cancel_restores_once(auth_client, workflow):
+    owner, loader, shop, product = workflow
+    api = auth_client(owner)
+    sale = _sale(api, product, quantity=12)
+    assert sale.status_code == 201, sale.data
+    assert _balances(shop, product) == (100, -12)
+    order_id = _replenish(api, shop, product, quantity=10)
+    assert _dispatch(auth_client(loader), order_id).status_code == 200
+    assert _balances(shop, product) == (90, -2)
+    assert _dispatch(auth_client(loader), order_id).status_code == 400
+    assert _balances(shop, product) == (90, -2)
+    cancel = f"/api/shop-orders/{sale.data['id']}/cancel/"
+    assert api.post(cancel).status_code == api.post(cancel).status_code == 200
+    assert _balances(shop, product) == (90, 10)

@@ -76,29 +76,27 @@ def test_ordinary_order_unchanged(shop, product, boss):
     assert not ShopReplenishment.objects.exists()
 
 
-def test_shop_sale_stock_cannot_affect_mill_or_go_negative(shop, product):
+def test_shop_sale_stock_can_go_negative_without_affecting_mill(shop, product):
     restore_shop_stock(shop, [{"product": product, "quantity": 10}])
     deduct_shop_stock(shop, [{"product": product, "quantity": 3}])
     assert _shop(shop, product) == 7
     assert _mill(product) == 100
-    with pytest.raises(ValidationError) as error:
-        deduct_shop_stock(shop, [{"product": product, "quantity": 8}])
-    assert error.value.detail["code"] == "shop_stock_insufficient"
-    assert _shop(shop, product) == 7
+    deduct_shop_stock(shop, [{"product": product, "quantity": 8}])
+    assert _shop(shop, product) == -1
+    assert _mill(product) == 100
 
 
 def test_duplicate_product_lines_are_aggregated(shop, product):
     restore_shop_stock(shop, [{"product": product, "quantity": 10}])
-    with pytest.raises(ValidationError):
-        deduct_shop_stock(shop, [{"product": product, "quantity": 6}] * 2)
-    assert _shop(shop, product) == 10
+    deduct_shop_stock(shop, [{"product": product, "quantity": 6}] * 2)
+    assert _shop(shop, product) == -2
 
 
 def test_multi_product_deduction_is_atomic(shop, product, make_product):
     other = make_product(name="Другой товар")
     restore_shop_stock(shop, [{"product": product, "quantity": 10}])
     with pytest.raises(ValidationError):
-        deduct_shop_stock(shop, [{"product": product, "quantity": 3}, {"product": other, "quantity": 1}])
+        deduct_shop_stock(shop, [{"product": product, "quantity": 3}, {"product": other, "quantity": -1}])
     assert _shop(shop, product) == 10
     assert not ShopStock.objects.filter(shop=shop, product=other).exists()
 
@@ -118,18 +116,17 @@ def test_rollback_and_reship_balance_both_stocks_once(shop, product, boss):
     assert ShopReplenishment.objects.count() == 1
 
 
-def test_rollback_refused_after_goods_sold_is_atomic(shop, product, boss):
+def test_rollback_after_goods_sold_records_deficit(shop, product, boss):
     order = _order(shop.client, product)
     dispatch_order(order, boss)
     deduct_shop_stock(shop, [{"product": product, "quantity": 1}])
-    with pytest.raises(ValidationError):
-        rollback_shipment(order, boss, target_status="confirmed", reason="Откат после продажи")
-    assert _mill(product) == 90
-    assert _shop(shop, product) == 9
+    rollback_shipment(order, boss, target_status="confirmed", reason="Откат после продажи")
+    assert _mill(product) == 100
+    assert _shop(shop, product) == -1
     order.refresh_from_db()
-    assert order.status == "shipped"
-    assert Shipment.objects.filter(order=order).exists()
-    assert ShopReplenishment.objects.get(order=order).reversed_at is None
+    assert order.status == "confirmed"
+    assert not Shipment.objects.filter(order=order).exists()
+    assert ShopReplenishment.objects.get(order=order).reversed_at is not None
 
 
 def test_historical_shipment_without_receipt_does_not_change_shop(shop, product, boss):
@@ -150,14 +147,13 @@ def test_receipt_correction_and_rollback_use_updated_snapshot(shop, product, bos
     assert _shop(shop, product) == 15
     assert ShopReplenishment.objects.get(order=order).items.get().quantity == 15
     deduct_shop_stock(shop, [{"product": product, "quantity": 12}])
-    with pytest.raises(ValidationError):
-        reconcile_shop_replenishment(order, [{"product": product, "quantity": 5}])
-    assert _shop(shop, product) == 3
-    assert ShopReplenishment.objects.get(order=order).items.get().quantity == 15
+    reconcile_shop_replenishment(order, [{"product": product, "quantity": 5}])
+    assert _shop(shop, product) == -7
+    assert ShopReplenishment.objects.get(order=order).items.get().quantity == 5
 
 
 @pytest.mark.django_db(transaction=True)
-def test_concurrent_sales_cannot_oversell(shop, product):
+def test_concurrent_stock_deductions_preserve_negative_balance(shop, product):
     restore_shop_stock(shop, [{"product": product, "quantity": 10}])
     barrier = Barrier(2)
 
@@ -167,13 +163,11 @@ def test_concurrent_sales_cannot_oversell(shop, product):
             barrier.wait(timeout=5)
             deduct_shop_stock(shop, [{"product": product, "quantity": 6}])
             return "sold"
-        except ValidationError:
-            return "insufficient"
         finally:
             close_old_connections()
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         outcomes = list(workers.map(lambda _: sell(), range(2)))
-    assert sorted(outcomes) == ["insufficient", "sold"]
-    assert _shop(shop, product) == 4
+    assert outcomes == ["sold", "sold"]
+    assert _shop(shop, product) == -2
     assert _mill(product) == 100

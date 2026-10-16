@@ -124,6 +124,7 @@ function ShopOrdersContent() {
         open={creating}
         products={catalog.data ?? []}
         shopName={shop.name}
+        currency={shop.currency}
         onClose={() => setCreating(false)}
         onCreated={() => {
           setCreating(false);

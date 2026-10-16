@@ -1,5 +1,6 @@
 """Продажи из собственного остатка магазина, отдельно от заказов мельницы."""
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import IntegerField, OuterRef, Subquery
 from django.db.models.functions import Coalesce
@@ -9,6 +10,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from apps.catalog.models import ClientPrice, Product
 from apps.catalog.services import with_client_prices
 from apps.clients.models import Client
+from apps.common.money import money_string
 from apps.orders.services import order_items_error
 from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
 from apps.sales.access import scope_by_client_department
@@ -80,14 +82,33 @@ def _sale_client(user, client):
     return client
 
 
+def _sale_unit_price(raw):
+    if isinstance(raw, bool):
+        raise ValidationError({"items": "Укажите допустимую цену"})
+    try:
+        price = ShopSaleItem._meta.get_field("unit_price").clean(raw, None)
+    except DjangoValidationError as exc:
+        raise ValidationError({"items": "Укажите допустимую цену с точностью до копеек"}) from exc
+    if price is None or price <= 0:
+        raise ValidationError({"items": "Цена должна быть больше нуля"})
+    return price
+
+
 @transaction.atomic
 def place_shop_sale(user, *, idempotency_key, items, client=None):
     """Один ключ запроса создаёт ровно одну продажу и одно списание магазина."""
     shop = _locked_shop(user)
+    requested_items = [
+        {
+            "product": item["product"].pk, "quantity": item["quantity"],
+            **({"unit_price": money_string(_sale_unit_price(item["unit_price"]))} if "unit_price" in item else {}),
+        }
+        for item in items
+    ]
     payload = {
         "client": client.pk if client else None,
         "items": sorted(
-            [{"product": item["product"].pk, "quantity": item["quantity"]} for item in items],
+            requested_items,
             key=lambda item: (item["product"], item["quantity"]),
         ),
     }
@@ -102,10 +123,11 @@ def place_shop_sale(user, *, idempotency_key, items, client=None):
         client=shop.client, currency=shop.client.currency,
         product_id__in=[item["product"].pk for item in rows],
     ).values_list("product_id", "price"))
+    prices.update({item["product"]: _sale_unit_price(item["unit_price"]) for item in requested_items if "unit_price" in item})
     unpriced = [str(item["product"]) for item in rows if prices.get(item["product"].pk, 0) <= 0]
     if unpriced:
         raise ValidationError({
-            "detail": "Нет цены в прайсе магазина: " + ", ".join(unpriced) + ". Цену ставит бухгалтер.",
+            "detail": "Нет цены в прайсе магазина: " + ", ".join(unpriced) + ". Укажите цену в заказе.",
             "code": "shop_price_missing",
         })
     deduct_shop_stock(shop, rows)
