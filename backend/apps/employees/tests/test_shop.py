@@ -1,13 +1,12 @@
-from datetime import timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
-from django.utils import timezone
 
 from apps.catalog.models import ClientPrice
-from apps.employees.models import Employee, EmployeeShop
+from apps.employees.models import Employee, EmployeeShop, ShopSale, ShopStock
 from apps.eventlog.models import EventLog
-from apps.orders.models import Order, Payment
+from apps.orders.models import Order
 from apps.shipments.models import Shipment
 from apps.warehouse.models import StockItem, Warehouse
 
@@ -31,8 +30,8 @@ def flour(boss, make_product):
 
 @pytest.fixture
 def worker(user_with_perms, departments):
-    """Сотрудник цеха без прав: доступ к «Моему магазину» даёт сам магазин."""
-    return user_with_perms("worker", department=departments[0])
+    """Оператор, которому разрешено создавать заказы."""
+    return user_with_perms("worker", codes=["orders.create"], department=departments[0])
 
 
 @pytest.fixture
@@ -51,8 +50,23 @@ def _bags(product, warehouse=None):
     return StockItem.objects.get(product=product, warehouse=warehouse).bags
 
 
-def _order(api, product, quantity=10):
-    return api.post("/api/my-shop/orders/", {"items": [{"product": product.pk, "quantity": quantity}]}, format="json")
+def _order(api, product, quantity=10, *, key=None, **extra):
+    return api.post("/api/shop-orders/", {
+        "idempotency_key": str(key or uuid4()),
+        "items": [{"product": product.pk, "quantity": quantity}],
+        **extra,
+    }, format="json")
+
+
+@pytest.fixture
+def stocked_shop(shop, flour):
+    _price(shop, flour)
+    ShopStock.objects.create(shop=shop, product=flour, bags=40)
+    return shop
+
+
+def _shop_bags(shop, product):
+    return ShopStock.objects.get(shop=shop, product=product).bags
 
 
 def test_admin_turns_shop_on_when_creating_employee(admin_api, departments):
@@ -110,7 +124,7 @@ def test_turning_shop_off_keeps_client_and_on_again_reuses_it(admin_api, auth_cl
 
     off = admin_api.patch(url, {"shop": {"enabled": False}}, format="json")
     assert off.data["shop"]["enabled"] is False
-    # Пункт «Мой магазин» пропадает у самого сотрудника, а не у администратора.
+    # Пункт «Заказы магазина» пропадает у самого сотрудника.
     assert auth_client(worker).get("/api/auth/me/").data["shop"] is None
     assert not EmployeeShop.objects.get(pk=shop.pk).is_active
 
@@ -145,140 +159,186 @@ def test_shop_stays_while_its_truck_is_loading(admin_api, worker, shop, departme
     assert worker.employee.sales_department == departments[0]
 
 
-def test_menu_shows_my_shop_only_with_active_shop(auth_client, worker, user_with_perms):
-    assert auth_client(worker).get("/api/auth/me/").data["shop"] is None
-    assert auth_client(worker).get("/api/my-shop/").status_code == 404
+def test_menu_and_api_require_active_shop_and_order_permission(auth_client, worker, shop, user_with_perms, get_permission):
+    api = auth_client(worker)
+    assert api.get("/api/auth/me/").data["shop"] == {
+        "name": shop.client.name, "warehouse_name": shop.warehouse.name,
+    }
+    worker.employee.permissions.remove(get_permission("orders.create"))
+    worker.__dict__.pop("perm_codes", None)
+    assert api.get("/api/auth/me/").data["shop"] is None
+    assert api.get("/api/shop-orders/").status_code == 403
+    assert api.get("/api/shop-orders/catalog/").status_code == 403
+    without_shop = user_with_perms("no-shop", codes=["orders.create"])
+    assert auth_client(without_shop).get("/api/shop-orders/").status_code == 404
 
-    from apps.employees.shop import set_employee_shop
 
-    set_employee_shop(worker.employee, worker, enabled=True)
-    assert auth_client(worker).get("/api/auth/me/").data["shop"] == {
-        "name": "Магазин A B",
-        "warehouse_name": Warehouse.objects.get(is_default=True).name,
+def test_old_my_shop_api_removed(auth_client, worker, shop):
+    api = auth_client(worker)
+    for url in ["/api/my-shop/", "/api/my-shop/catalog/", "/api/my-shop/orders/"]:
+        assert api.get(url).status_code == 404
+
+
+def test_catalog_shows_separate_stock_and_shop_prices(auth_client, worker, stocked_shop, flour, make_product):
+    unpriced = make_product(name="Без цены")
+    archived = make_product(name="Архив", is_active=False)
+    rows = {row["id"]: row for row in auth_client(worker).get("/api/shop-orders/catalog/").data}
+    assert rows[flour.pk]["price"] == "5000.00"
+    assert rows[flour.pk]["stock_bags"] == 40
+    assert rows[unpriced.pk]["price"] is None
+    assert rows[unpriced.pk]["stock_bags"] == 0
+    assert archived.pk not in rows
+
+
+def test_sale_only_deducts_shop_and_keeps_separate_history(auth_client, worker, stocked_shop, flour):
+    api = auth_client(worker)
+    response = _order(api, flour, quantity=30)
+    assert response.status_code == 201, response.data
+    sale = ShopSale.objects.get(pk=response.data["id"])
+    assert sale.status == "completed"
+    assert sale.client is None
+    assert sale.created_by == worker
+    assert _shop_bags(stocked_shop, flour) == 10
+    assert _bags(flour) == 100
+    assert not Order.objects.exists()
+    assert not Shipment.objects.exists()
+    assert response.data["total_amount"] == "150000.00"
+    assert response.data["bags"] == 30
+    assert response.data["client_name"] is None
+    assert [row["id"] for row in api.get("/api/shop-orders/").data] == [sale.pk]
+    summary = api.get("/api/shop-orders/summary/").data
+    assert summary == {
+        "name": stocked_shop.client.name, "currency": "KZT",
+        "client": stocked_shop.client_id, "warehouse_name": stocked_shop.warehouse.name,
     }
 
 
-def test_catalog_shows_shop_prices(auth_client, worker, shop, flour, make_product):
-    _price(shop, flour, "5200")
-    unpriced = make_product(name="Без цены")
-    archived = make_product(name="Архив", is_active=False)
-
-    rows = {row["id"]: row for row in auth_client(worker).get("/api/my-shop/catalog/").data}
-
-    assert rows[flour.pk]["price"] == "5200.00"
-    assert rows[unpriced.pk]["price"] is None
-    assert archived.pk not in rows
-    assert "bags" not in rows[flour.pk]
-
-
-def test_order_ships_from_warehouse_at_once_into_shop_debt(auth_client, worker, shop, flour):
-    _price(shop, flour)
+def test_sale_repeat_is_idempotent_and_changed_payload_rejected(auth_client, worker, stocked_shop, flour):
     api = auth_client(worker)
-
-    response = _order(api, flour, quantity=30)
-
-    assert response.status_code == 201, response.data
-    order = Order.objects.get(pk=response.data["id"])
-    assert order.status == "shipped"
-    assert order.client == shop.client
-    assert order.created_by == worker
-    assert Shipment.objects.get(order=order).bags_loaded == 30
-    assert _bags(flour) == 70
-    assert response.data["total_amount"] == "150000.00"
-    assert response.data["remaining_amount"] == "150000.00"
-    assert response.data["cancel_blocker"] == ""
-    # Грузчику заказ не попадает: он уже отгружен.
-    assert EventLog.objects.filter(event_type="shipment", order=order, user=worker).exists()
-
-    summary = api.get("/api/my-shop/").data
-    assert summary["debt_total"] == "150000.00"
-    assert summary["month_bags"] == 30
-    assert summary["month_amounts"] == {"KZT": "150000.00"}
-    assert [row["id"] for row in api.get("/api/my-shop/orders/").data] == [order.pk]
+    key = uuid4()
+    first = _order(api, flour, key=key)
+    second = _order(api, flour, key=key)
+    assert first.status_code == second.status_code == 201
+    assert first.data == second.data
+    assert ShopSale.objects.count() == 1
+    assert _shop_bags(stocked_shop, flour) == 30
+    assert _order(api, flour, quantity=11, key=key).status_code == 400
+    assert _shop_bags(stocked_shop, flour) == 30
 
 
-def test_order_from_shop_warehouse(admin_api, auth_client, worker, shop, flour, boss):
-    from apps.warehouse.services import receive_stock
-
-    second = Warehouse.objects.create(code="mill-2", name="Мельница 2")
-    receive_stock(flour, 50, boss, warehouse=second)
-    admin_api.patch(
-        f"/api/employees/{worker.employee.pk}/security/", {"shop": {"enabled": True, "warehouse": second.pk}},
-        format="json",
-    )
-    _price(shop, flour)
-
-    assert _order(auth_client(worker), flour, quantity=5).status_code == 201
-    assert _bags(flour, second) == 45
+def test_cancel_and_repeat_create_return_stock_once(auth_client, worker, stocked_shop, flour):
+    api = auth_client(worker)
+    key = uuid4()
+    sale_id = _order(api, flour, key=key).data["id"]
+    url = f"/api/shop-orders/{sale_id}/cancel/"
+    first = api.post(url)
+    second = api.post(url)
+    assert first.status_code == second.status_code == 200
+    assert first.data == second.data
+    assert first.data["status"] == "cancelled"
+    assert _shop_bags(stocked_shop, flour) == 40
     assert _bags(flour) == 100
+    assert _order(api, flour, key=key).data["status"] == "cancelled"
+    assert _shop_bags(stocked_shop, flour) == 40
 
 
-def test_product_without_shop_price_is_not_ordered(auth_client, worker, shop, flour):
-    response = _order(auth_client(worker), flour)
-
+def test_insufficient_stock_rejects_sale_atomically(auth_client, worker, stocked_shop, flour, make_product):
+    other = make_product(name="Другой")
+    _price(stocked_shop, other)
+    api = auth_client(worker)
+    response = api.post("/api/shop-orders/", {
+        "idempotency_key": str(uuid4()),
+        "items": [{"product": flour.pk, "quantity": 5}, {"product": other.pk, "quantity": 1}],
+    }, format="json")
     assert response.status_code == 400
-    assert response.data["code"] == "shop_price_missing"
-    assert not Order.objects.exists()
+    assert not ShopSale.objects.exists()
+    assert _shop_bags(stocked_shop, flour) == 40
     assert _bags(flour) == 100
+    assert _order(api, flour, quantity=41).status_code == 400
 
 
-def test_worker_cancels_own_order_within_an_hour(auth_client, worker, shop, flour):
-    _price(shop, flour)
+def test_unpriced_and_archived_products_are_rejected(auth_client, worker, shop, flour):
+    ShopStock.objects.create(shop=shop, product=flour, bags=20)
     api = auth_client(worker)
-    order_id = _order(api, flour, quantity=10).data["id"]
-
-    response = api.post(f"/api/my-shop/orders/{order_id}/cancel/")
-
-    assert response.status_code == 200, response.data
-    assert response.data["status"] == "cancelled"
-    assert response.data["total_amount"] is None
-    assert _bags(flour) == 100
-    assert api.get("/api/my-shop/").data["debt_total"] == "0.00"
-
-
-def test_cancel_closes_after_an_hour(auth_client, worker, shop, flour):
+    assert _order(api, flour).data["code"] == "shop_price_missing"
     _price(shop, flour)
-    api = auth_client(worker)
-    order_id = _order(api, flour).data["id"]
-    Shipment.objects.filter(order_id=order_id).update(shipped_at=timezone.now() - timedelta(hours=2))
+    flour.is_active = False
+    flour.save(update_fields=["is_active"])
+    assert _order(api, flour).status_code == 400
+    assert _shop_bags(shop, flour) == 20
+    assert not ShopSale.objects.exists()
 
-    assert "больше часа" in api.get("/api/my-shop/orders/").data[0]["cancel_blocker"]
-    response = api.post(f"/api/my-shop/orders/{order_id}/cancel/")
+
+@pytest.mark.parametrize("quantity", [0, -1, 1.5, 1000001])
+def test_sale_rejects_invalid_quantity(auth_client, worker, stocked_shop, flour, quantity):
+    assert _order(auth_client(worker), flour, quantity=quantity).status_code == 400
+    assert _shop_bags(stocked_shop, flour) == 40
+
+
+def test_sale_rejects_duplicate_items(auth_client, worker, stocked_shop, flour):
+    response = auth_client(worker).post("/api/shop-orders/", {
+        "idempotency_key": str(uuid4()),
+        "items": [{"product": flour.pk, "quantity": 1}] * 2,
+    }, format="json")
     assert response.status_code == 400
-    assert Order.objects.get(pk=order_id).status == "shipped"
+    assert not ShopSale.objects.exists()
+    assert _shop_bags(stocked_shop, flour) == 40
 
 
-def test_cancel_refused_when_order_has_money(auth_client, worker, shop, flour):
-    _price(shop, flour)
-    api = auth_client(worker)
-    order_id = _order(api, flour).data["id"]
-    Payment.objects.create(order_id=order_id, amount=Decimal("1000"), method="cash", status="confirmed")
-
-    assert "оплата" in api.get("/api/my-shop/orders/").data[0]["cancel_blocker"]
-    assert api.post(f"/api/my-shop/orders/{order_id}/cancel/").status_code == 400
-    assert Order.objects.get(pk=order_id).status == "shipped"
-
-
-def test_shops_do_not_see_each_others_orders(auth_client, worker, shop, flour, user_with_perms, departments):
+def test_shops_do_not_see_or_cancel_each_others_sales(auth_client, worker, stocked_shop, flour, user_with_perms, departments):
     from apps.employees.shop import set_employee_shop
 
-    _price(shop, flour)
-    order_id = _order(auth_client(worker), flour).data["id"]
-    other = user_with_perms("other", department=departments[0])
-    set_employee_shop(other.employee, other, enabled=True)
+    sale_id = _order(auth_client(worker), flour).data["id"]
+    other = user_with_perms("other-shop", codes=["orders.create"], department=departments[0])
+    other_shop = set_employee_shop(other.employee, other, enabled=True)
+    _price(other_shop, flour)
     api = auth_client(other)
+    assert api.get("/api/shop-orders/").data == []
+    assert api.get("/api/shop-orders/catalog/").data[0]["stock_bags"] == 0
+    assert api.post(f"/api/shop-orders/{sale_id}/cancel/").status_code == 404
+    assert _order(api, flour, shop=stocked_shop.pk).status_code == 400
+    assert _shop_bags(stocked_shop, flour) == 30
 
-    assert api.get("/api/my-shop/orders/").data == []
-    assert api.post(f"/api/my-shop/orders/{order_id}/cancel/").status_code == 404
+
+def test_sale_optional_client_must_be_accessible(auth_client, worker, stocked_shop, flour, departments):
+    from apps.clients.models import Client
+
+    own = Client.objects.create_with_user(first_name="Покупатель", department=departments[0])
+    foreign = Client.objects.create_with_user(first_name="Чужой", department=departments[1])
+    api = auth_client(worker)
+    assert _order(api, flour, client=foreign.pk).status_code == 400
+    response = _order(api, flour, client=own.pk)
+    assert response.status_code == 201, response.data
+    assert response.data["client"] == own.pk
+    assert response.data["client_name"] == "Покупатель"
+    assert _shop_bags(stocked_shop, flour) == 30
 
 
-def test_disabled_shop_cannot_order(auth_client, worker, shop, flour):
-    _price(shop, flour)
-    EmployeeShop.objects.filter(pk=shop.pk).update(is_active=False)
-
+def test_disabled_shop_cannot_sell(auth_client, worker, stocked_shop, flour):
+    EmployeeShop.objects.filter(pk=stocked_shop.pk).update(is_active=False)
     assert _order(auth_client(worker), flour).status_code == 404
-    assert not Order.objects.exists()
+    assert not ShopSale.objects.exists()
+    assert _shop_bags(stocked_shop, flour) == 40
+
+
+def test_legacy_orders_remain_ordinary_history(auth_client, worker, shop, flour):
+    order = Order.objects.create(client=shop.client, created_by=worker, status="shipped")
+    assert auth_client(worker).get("/api/shop-orders/").data == []
+    assert Order.objects.get(pk=order.pk).status == "shipped"
 
 
 def test_client_users_have_no_shop(auth_client, client_user):
-    assert auth_client(client_user).get("/api/my-shop/").status_code == 403
+    assert auth_client(client_user).get("/api/shop-orders/").status_code == 403
+
+def test_repeat_sale_uses_snapshot_after_price_and_product_change(auth_client, worker, stocked_shop, flour):
+    api = auth_client(worker)
+    key = uuid4()
+    original = _order(api, flour, key=key)
+    ClientPrice.objects.filter(client=stocked_shop.client, product=flour).update(price=Decimal("1"))
+    flour.is_active = False
+    flour.name = "Новое название"
+    flour.save(update_fields=["is_active", "name"])
+    repeated = _order(api, flour, key=key)
+    assert repeated.status_code == 201
+    assert repeated.data == original.data
+    assert _shop_bags(stocked_shop, flour) == 30

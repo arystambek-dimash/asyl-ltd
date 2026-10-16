@@ -110,8 +110,8 @@ class MeSerializer(serializers.ModelSerializer):
         return emp.position if emp else None
 
     def get_shop(self, obj):
-        """Свой магазин сотрудника — пункт меню «Мой магазин»; без него — null."""
-        shop = active_shop(obj)
+        """Продажи магазина доступны его сотруднику с правом создания заказов."""
+        shop = active_shop(obj) if obj.has_perm_code("orders.create") else None
         return {"name": shop.client.name, "warehouse_name": shop.warehouse.name} if shop else None
 
     def get_sales_department(self, obj):

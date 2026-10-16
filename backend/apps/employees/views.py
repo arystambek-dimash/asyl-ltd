@@ -1,14 +1,10 @@
 from django.db import transaction
-from django.utils.functional import cached_property
-from rest_framework import mixins, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
-from apps.catalog.serializers import PricedProductSerializer
-from apps.common.pagination import OptInPageNumberPagination
-from apps.common.permissions import HasPerm, IsStaff, PermViewSetMixin
+from apps.common.permissions import HasPerm, PermViewSetMixin
 from apps.common.viewsets import SerializerViewSetMixin
 from apps.eventlog.services import log_event
 
@@ -18,18 +14,8 @@ from .serializers import (
     EmployeePasswordSerializer,
     EmployeeReadSerializer,
     EmployeeSecuritySerializer,
-    ShopOrderCreateSerializer,
-    ShopOrderSerializer,
 )
-from .shop import (
-    cancel_shop_order,
-    place_shop_order,
-    require_shop,
-    shop_catalog,
-    shop_orders,
-    shop_settings,
-    shop_summary,
-)
+from .shop import shop_settings
 
 
 class EmployeeViewSet(
@@ -222,54 +208,3 @@ class EmployeeViewSet(
             user=self.request.user,
             payload={"employee_id": employee_id, "before": snapshot},
         )
-
-
-class MyShopMixin:
-    """«Мой магазин»: доступ — сам включённый магазин сотрудника (карточка
-    сотрудника), отдельного права нет."""
-
-    permission_classes = [IsStaff]
-
-    @cached_property
-    def shop(self):
-        return require_shop(self.request.user)
-
-
-class MyShopSummaryView(MyShopMixin, APIView):
-    """Шапка «Моего магазина»: название, склад, долг и взятое за месяц."""
-
-    def get(self, request):
-        return Response(shop_summary(self.shop))
-
-
-class MyShopCatalogView(MyShopMixin, APIView):
-    """Товары для заказа с ценами прайса магазина."""
-
-    def get(self, request):
-        context = {"request": request, "currency": self.shop.client.currency}
-        return Response(PricedProductSerializer(shop_catalog(self.shop), many=True, context=context).data)
-
-
-class MyShopOrderViewSet(MyShopMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
-    """Заказы своего магазина: новый — сразу со склада, отмена — в течение часа."""
-
-    serializer_class = ShopOrderSerializer
-    pagination_class = OptInPageNumberPagination
-
-    def get_queryset(self):
-        return shop_orders(self.shop)
-
-    def create(self, request):
-        serializer = ShopOrderCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        order = place_shop_order(request.user, serializer.validated_data["items"])
-        return self._order_response(order, status.HTTP_201_CREATED)
-
-    @action(detail=True, methods=["post"])
-    def cancel(self, request, pk=None):
-        return self._order_response(cancel_shop_order(request.user, pk))
-
-    def _order_response(self, order, status_code=status.HTTP_200_OK):
-        # Перечитать со всеми prefetch списка: суммы, оплаты и отгрузка.
-        order = self.get_queryset().get(pk=order.pk)
-        return Response(self.get_serializer(order).data, status=status_code)

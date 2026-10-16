@@ -1,32 +1,16 @@
-"""Магазин сотрудника: включение в карточке сотрудника и заказы «сразу со склада».
-
-Магазин — покупатель (``EmployeeShop.client``): цены — его прайс (ставит
-бухгалтер, как клиентам), неоплаченное — долг магазина в кассе. Заказ не идёт
-грузчику: подтверждается по прайсу и сразу отгружается со склада магазина.
-Свой заказ сотрудник отменяет в течение часа, пока по нему нет денег, — по тому
-же правилу, что грузчик свою отгрузку.
-"""
+"""Настройки магазина сотрудника и его клиента для пополнения с мельницы."""
 
 from django.db import transaction
-from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
-from apps.catalog.models import ClientPrice, Product
-from apps.catalog.services import with_client_prices
 from apps.clients.assignment import move_client_department
 from apps.clients.managers import sync_user_names
 from apps.clients.models import Client
-from apps.common.money import sum_by_currency
-from apps.orders.debt import debt_by_currency, debt_fields, financial_orders
-from apps.orders.models import Order, OrderItem, Payment
-from apps.orders.services import confirm_order, order_items_error
+from apps.clients.services import lock_client_with_orders
 from apps.sales.models import Department
-from apps.shipments.services import loader_rollback_blocker, rollback_shipment, ship_from_warehouse
 from apps.warehouse.services import resolve_warehouse
 
 from .models import EmployeeShop
-
-CANCEL_REASON = "Сотрудник отменил заказ своего магазина"
 
 
 def default_shop_name(employee) -> str:
@@ -64,16 +48,24 @@ def _shop_department(employee) -> Department:
     return department
 
 
+def _lock_shop_client(employee):
+    # Совпадает с отгрузкой и переносом клиента: Order → Client → EmployeeShop.
+    client_id = EmployeeShop.objects.filter(employee=employee).values_list("client_id", flat=True).first()
+    if client_id is not None:
+        lock_client_with_orders(client_id, None)
+
+
 @transaction.atomic
 def set_employee_shop(employee, user, *, enabled: bool, name: str = "", warehouse=None) -> EmployeeShop | None:
     """Включить, настроить или выключить магазин сотрудника.
 
     Первое включение заводит покупателя-магазин (клиента с выключенным входом в
-    портал) в отделе сотрудника. Выключение только прячет «Мой магазин»: клиент,
+    портал) в отделе сотрудника. Выключение только прячет «Заказы магазина»: клиент,
     заказы и долг остаются, а повторное включение берёт того же клиента.
-    ``warehouse`` — склад, с которого списываются заказы; ``None`` — прежний,
+    ``warehouse`` — склад пополнения магазина; ``None`` — прежний,
     у нового магазина — основной.
     """
+    _lock_shop_client(employee)
     shop = (
         EmployeeShop.objects.select_for_update(of=("self",))
         .select_related("client__user", "client__department", "warehouse")
@@ -115,6 +107,7 @@ def _move_with_employee(shop: EmployeeShop, department: Department, user) -> Non
 def follow_employee_department(employee, user) -> None:
     """Сотрудника перевели в другой отдел — его включённый магазин едет за ним:
     иначе заказ магазина оказался бы «чужим». Склад и название не трогает."""
+    _lock_shop_client(employee)
     shop = (
         EmployeeShop.objects.select_for_update(of=("self",))
         .select_related("client")
@@ -136,117 +129,3 @@ def shop_settings(shop: EmployeeShop | None) -> dict | None:
         "warehouse": shop.warehouse_id,
         "warehouse_name": shop.warehouse.name,
     }
-
-
-def shop_catalog(shop: EmployeeShop):
-    """Товары для заказа с ценой из прайса магазина; без цены — ``price`` пустая."""
-    client = shop.client
-    return with_client_prices(
-        Product.objects.filter(is_active=True), client.pk, client.currency,
-    ).order_by("name", "color", "weight_kg")
-
-
-def shop_orders(shop: EmployeeShop):
-    """Заказы магазина, новые сверху (корзину отсекает менеджер заказов)."""
-    return (
-        Order.objects.filter(client=shop.client)
-        .select_related("shipment")
-        .prefetch_related("items__product", "payments")
-        .order_by("-created_at", "-pk")
-    )
-
-
-def shop_summary(shop: EmployeeShop) -> dict:
-    """Шапка «Моего магазина»: долг и взятое за текущий месяц."""
-    client = shop.client
-    orders = list(shop_orders(shop))
-    month_start = timezone.localdate().replace(day=1)
-    month = [
-        order for order in financial_orders(orders)
-        if timezone.localdate(order.sale_at) >= month_start
-    ]
-    return {
-        "name": client.name,
-        "warehouse_name": shop.warehouse.name,
-        "currency": client.currency,
-        **debt_fields(debt_by_currency(orders), fallback=client.currency),
-        "month_bags": sum(order.goods_bags for order in month),
-        "month_amounts": {
-            currency: str(amount)
-            for currency, amount in sum_by_currency(month, lambda order: order.total_amount).items()
-        },
-    }
-
-
-def cancel_blocker(order: Order, user) -> str:
-    """Почему сотрудник не может сам отменить заказ своего магазина; пусто — можно."""
-    if blocker := loader_rollback_blocker(order, user):
-        return blocker
-    # Деньги проверит и сам откат; здесь — чтобы не показывать кнопку зря.
-    if any(
-        payment.status == "confirmed" or payment.status in Payment.IN_PROGRESS_STATUSES
-        for payment in order.payments.all()
-    ):
-        return "По заказу уже есть оплата — отмену оформляет старший в «Заказах»"
-    return ""
-
-
-@transaction.atomic
-def place_shop_order(user, items: list[dict]) -> Order:
-    """Заказ своего магазина: по прайсу магазина и сразу со склада, без грузчика.
-
-    ``items`` — ``[{"product": Product, "quantity": int}]``. Товар без цены в
-    прайсе магазина не заказать: цену ставит бухгалтер. Остаток склада не
-    проверяется — как у любого заказа, списание может уйти в минус.
-    """
-    shop = (
-        EmployeeShop.objects.select_for_update(of=("self",))
-        .select_related("client__department", "warehouse")
-        .filter(pk=require_shop(user).pk, is_active=True)
-        .first()
-    )
-    if shop is None:
-        raise NotFound("У вас нет своего магазина")
-    if not items:
-        raise ValidationError({"items": "Добавьте товары"})
-    if error := order_items_error(items):
-        raise ValidationError({"items": error})
-    client = shop.client
-    prices = dict(
-        ClientPrice.objects.filter(
-            client=client, currency=client.currency, product__in=[item["product"] for item in items],
-        ).values_list("product_id", "price")
-    )
-    unpriced = [str(item["product"]) for item in items if not prices.get(item["product"].pk)]
-    if unpriced:
-        raise ValidationError({
-            "detail": "Нет цены в прайсе магазина: " + ", ".join(unpriced) + ". Цену ставит бухгалтер.",
-            "code": "shop_price_missing",
-        })
-    order = Order.objects.create(
-        client=client,
-        currency=client.currency,
-        department=client.department.code if client.department_id else "",
-        warehouse=resolve_warehouse(shop.warehouse),
-        created_by=user,
-        status="pending",
-    )
-    for item in items:
-        OrderItem.objects.create(
-            order=order, product=item["product"], quantity=item["quantity"], unit_price=prices[item["product"].pk],
-        )
-    confirm_order(order, user)
-    ship_from_warehouse(order, user, label=f"Магазин сотрудника: списано со склада «{shop.warehouse.name}»")
-    return order
-
-
-@transaction.atomic
-def cancel_shop_order(user, order_id) -> Order:
-    """Сотрудник отменяет свой заказ: мешки возвращаются на склад, долг уходит."""
-    shop = require_shop(user)
-    order = shop_orders(shop).filter(pk=order_id).first()
-    if order is None:
-        raise NotFound("Заказ не найден")
-    if blocker := loader_rollback_blocker(order, user):
-        raise ValidationError({"detail": blocker, "code": "cancel_unavailable"})
-    return rollback_shipment(order, user, target_status="cancelled", reason=CANCEL_REASON)
