@@ -28,8 +28,8 @@ const FULL_FRAME: NormalizedRoiPoint[] = [
 ];
 
 /**
- * Зона видимости одной камеры: всё вне полигона закрыто и на экранах CRM, и
- * для AI на ПК камер. Монтируется на время правки (с key по камере).
+ * Зона видимости одной камеры: всё вне полигона закрыто для AI на ПК камер,
+ * экраны CRM показывают кадр целиком. Монтируется на время правки (с key по камере).
  */
 export function CameraVisibilityModal({
   camera,
@@ -62,8 +62,8 @@ export function CameraVisibilityModal({
         };
       }
       return saved.enabled
-        ? { message: "Зона сохранена: AI и экраны видят только выделенную область.", tone: "success" }
-        : { message: "Маска выключена: камера снова видит весь кадр.", tone: "success" };
+        ? { message: "Зона сохранена: AI видит только выделенную область, на экранах кадр целиком.", tone: "success" }
+        : { message: "Маска выключена: AI снова видит весь кадр.", tone: "success" };
     },
   });
   const { editing, saving } = editor;
@@ -98,8 +98,8 @@ export function CameraVisibilityModal({
   const hint = editing
     ? "Перетащите точки · «+» на стороне добавляет точку · двойной клик убирает"
     : active
-      ? "Вне зоны кадр закрыт для AI и на экранах"
-      : "Маска выключена — камера видит весь кадр";
+      ? "Затемнённое AI не видит; на экранах кадр целиком"
+      : "Маска выключена — AI видит весь кадр";
 
   return (
     <Modal
@@ -108,7 +108,7 @@ export function CameraVisibilityModal({
       dismissible={editing ? "escape" : true}
       eyebrow="Только для суперпользователя"
       title="Зона видимости камеры"
-      description={`${camera.zone} · всё вне зоны закрывается на экранах и не попадает в AI.`}
+      description={`${camera.zone} · всё вне зоны не попадает в AI. На экранах камера видна целиком.`}
       className="max-w-4xl"
       footer={
         <>
@@ -161,7 +161,7 @@ export function CameraVisibilityModal({
         <CameraFrameStage src={src} hint={hint} hintColor="#7dd3fc">
           {editing ? (
             <>
-              <CameraVisibilityMask points={editor.draft} preview />
+              <CameraVisibilityMask points={editor.draft} />
               <VehicleRoiOverlay
                 roi={editor.draftRoi}
                 expectedSource="main"

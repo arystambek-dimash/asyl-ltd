@@ -756,7 +756,7 @@ export interface CameraFeed {
   note?: string;
   /** Сохранённая AI-сервисом линия подсчёта, если камера её поддерживает. */
   line_config?: CameraCountingLine | null;
-  /** Зона видимости: вне полигона кадр закрыт и для AI, и на экранах. */
+  /** Зона видимости: вне полигона кадр закрыт для AI; экраны показывают его целиком. */
   visibility_zone?: VehicleRoiConfig | null;
 }
 export interface MonoblockCameraSettings {
