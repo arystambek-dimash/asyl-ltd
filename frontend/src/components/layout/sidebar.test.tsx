@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeMe } from "@/test-utils/factories";
-import { homeFor, Sidebar } from "./sidebar";
+import { canSeeStaffNav, homeFor, Sidebar } from "./sidebar";
 
 const nav = vi.hoisted(() => ({ pathname: "/portal/catalog" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
@@ -175,5 +175,15 @@ describe("mobile Sidebar", () => {
 
     await user.keyboard("{Escape}");
     expect(trigger).toHaveFocus();
+  });
+});
+
+describe("Заказы магазина в меню", () => {
+  const shop = { name: "Свой магазин", warehouse_name: "Мельница" };
+  it("доступны только с активным магазином и правом orders.create", () => {
+    expect(canSeeStaffNav(makeMe({ shop, permissions: ["orders.create"] }), "/shop-orders")).toBe(true);
+    expect(canSeeStaffNav(makeMe({ permissions: ["orders.create"] }), "/shop-orders")).toBe(false);
+    expect(canSeeStaffNav(makeMe({ shop, permissions: ["orders.view"] }), "/shop-orders")).toBe(false);
+    expect(canSeeStaffNav(makeMe({ shop, permissions: ["orders.create"] }), "/my-shop")).toBe(false);
   });
 });

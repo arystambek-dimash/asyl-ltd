@@ -90,9 +90,8 @@ class LoaderViewSet(PermViewSetMixin, viewsets.GenericViewSet):
         # отгрузка, откат и накладная по нему — 404.
         # Плановый день — на каждой строке, в том числе в ответе действия:
         # экран по нему возвращает строку в очередь.
-        # Продажа «Моего магазина» уходит со склада без грузчика — её здесь нет.
         queryset = Order.objects.filter(
-            transport_type__in=allowed_transports(self.request.user), is_shop_sale=False,
+            transport_type__in=allowed_transports(self.request.user),
         ).select_related(
             "client__user", "shipment__report_message", "truck_number_set_by",
         ).prefetch_related(

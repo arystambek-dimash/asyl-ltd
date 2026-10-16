@@ -46,7 +46,7 @@ import {
   newEmployeePermissions,
   type PermissionPreset,
 } from "@/lib/permission-presets";
-import type { Department, Employee, Permission } from "@/lib/types";
+import type { Department, Employee, Permission, Warehouse } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { useConfirmAction } from "@/lib/use-confirm-action";
 import { cn, toggledSet } from "@/lib/utils";
@@ -99,6 +99,7 @@ function EmployeesPageInner() {
 
   const { data: departments } = useApi<Department[]>(open && canManage ? "/departments/?all=1" : null);
   // Без права на склады список не придёт — магазин возьмёт прежний или основной склад.
+  const { data: warehouses } = useApi<Warehouse[]>(open && canEditSecurity ? "/warehouses/" : null);
 
   function openNew() {
     if (!canManageSecurity) return;
@@ -548,6 +549,7 @@ function EmployeesPageInner() {
                 onChange={setShop}
                 existing={editing?.shop}
                 defaultName={`Магазин ${[form.first_name, form.last_name].filter(Boolean).join(" ")}`.trim()}
+                warehouses={warehouses}
                 disabled={!canEditSecurity}
               />
             </section>

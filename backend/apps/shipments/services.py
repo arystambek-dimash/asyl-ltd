@@ -9,6 +9,11 @@ from rest_framework.exceptions import ValidationError
 
 from apps.catalog.models import Product
 from apps.common.money import money_string
+from apps.employees.shop_stock import (
+    lock_replenishment_shop,
+    receive_shop_replenishment,
+    reverse_shop_replenishment,
+)
 from apps.eventlog.services import log_event
 from apps.notifications.services import notify
 from apps.orders.backdate import backdate_events, backdate_moment
@@ -494,7 +499,8 @@ def rollback_shipment(order, user, *, target_status: str, reason: str):
     # Строки складов-источников читаются до удаления Shipment (они уходят с ней
     # каскадом): мешки возвращаются туда, откуда ушли. Старая отгрузка без
     # строк — на склад заказа, фиксация без списания — никуда.
-    # Блокировки: Order → Product → StockItem → Shipment.
+    # Блокировки: Order → EmployeeShop (если есть приход) → Product → StockItem → Shipment.
+    reverse_shop_replenishment(order)
     stock_basis, sources = checked_sources(order, items, user)
     restored = restore_stock(sources, user, note=f"Откат отгрузки заказа #{order.pk}: {reason}")
 
@@ -574,7 +580,6 @@ def _do_ship(
     *,
     shipped_at: datetime | None = None,
     sources: list[ShipmentSource] | None = None,
-    write_off_stock: bool = True,
 ):
     """Списать со склада и зафиксировать отгрузку. Общее для трака и вагона.
 
@@ -585,18 +590,14 @@ def _do_ship(
     ``shipped_at`` — отгрузка по отчёту за прошедший день: момент выезда и
     события отгрузки и долга переносятся на этот день (сводки читают их по
     дате события), склад списывается как обычно.
-    ``write_off_stock=False`` — отгрузка без списания (магазин сотрудника,
-    :func:`ship_without_stock`): ``Shipment.stock_deducted = False``, откат склад не вернёт.
     """
     from apps.orders.transport import client_transport_phrase
 
-    if not write_off_stock:
-        shipment.stock_deducted = False
-        written = []
-    else:
-        if sources is None:
-            sources = default_sources(order, _order_items(order, refusal="Нельзя отгрузить"))
-        written = write_off(order, shipment, sources, user)
+    if sources is None:
+        sources = default_sources(order, _order_items(order, refusal="Нельзя отгрузить"))
+    shop = lock_replenishment_shop(order)
+    written = write_off(order, shipment, sources, user)
+    receive_shop_replenishment(order, shop, _order_items(order, refusal="Нельзя пополнить магазин"))
     shipment.shipped_at = shipped_at or timezone.now()
     shipment.save()
     debt_event = mark_order_shipped(order, user)
@@ -611,8 +612,7 @@ def _do_ship(
                      str(shipment.weigh_in_kg)
                      if shipment.weigh_in_kg is not None else None
                  ),
-                 "sources": written,
-                 **({} if write_off_stock else {"stock_deducted": False})})
+                 "sources": written})
     if shipped_at is not None:
         backdate_events([shipment_event, debt_event], shipped_at)
     # Единственное уведомление клиенту об отгрузке. Машина на территории —
@@ -672,21 +672,6 @@ def dispatch_order(
         else f"Отгружено по накладной №{order.pk}"
     )
     return _do_ship(order, shipment, user, label, sources=plan)
-
-
-@transaction.atomic
-def ship_without_stock(order, user, *, label: str):
-    """Отгрузка без поста, грузчика и списания склада (магазин сотрудника,
-    ``employees/shop.py``): заказ целиком считается отгруженным, остатки не
-    трогаются — и откат их не вернёт (``Shipment.stock_deducted = False``, как
-    у фиксации). Права грузчика не нужны — кто вправе так отгружать, решает
-    вызывающий сервис. Долг и журнал — общие с кнопкой грузчика (``_do_ship``).
-    """
-    order = _locked(order)
-    _assert_awaiting_shipment(order)
-    shipment, _ = Shipment.objects.get_or_create(order=order)
-    shipment.bags_loaded = order.ordered_bags
-    return _do_ship(order, shipment, user, label, write_off_stock=False)
 
 
 def _check_loader_dispatch(order, user, *, truck_number: str, trailer_number: str | None) -> None:

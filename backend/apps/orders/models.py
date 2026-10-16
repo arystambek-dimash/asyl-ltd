@@ -93,9 +93,6 @@ class Order(models.Model):
     # Пробная партия: заказ как обычный (склад, деньги, отгрузка), а грузчик
     # видит пометку «Проба».
     is_trial = models.BooleanField(default=False, db_default=False)
-    # Продажа «Моего магазина» сотрудника: сразу со склада, без поста — грузчик
-    # её не видит. Деньги, долг и отчёты — как у любого заказа.
-    is_shop_sale = models.BooleanField(default=False, db_default=False)
     debt_requested = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,

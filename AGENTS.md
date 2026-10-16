@@ -67,7 +67,9 @@
 | Оплата долга клиента | `orders/debt_payments.py` | `components/payments/client-debt-payment-modal.tsx` |
 | Подключения Kaspi (ApiPay) отделов | `sales/apipay_accounts.py`, `sales.ApiPayAccount`; запросы и вебхуки — `orders/apipay.py`, `orders/webhooks.py` | `components/orders/apipay-accounts.tsx`, `apipay-account-form.tsx` |
 | Возвраты товара | `orders/goods_returns.py` | `components/storekeeper/*` |
-| Магазин сотрудника (заказ по прайсу без грузчика и без списания склада) | `employees/shop.py`, `employees.EmployeeShop`; отгрузка — `shipments.services.ship_without_stock`, грузчику не видна (`Order.is_shop_sale`); чей магазин и запрет «на себя» (оплаты, цены оформленных заказов) — `employees/shop_access.py`; прайс магазина с правом `clients.set_price` сотрудник ставит сам | `app/my-shop`, `components/my-shop/*`, `components/employees/employee-shop-fields.tsx` |
+| Магазин сотрудника: привязка и клиент для пополнения | `employees/shop.py`, `employees.EmployeeShop` | `components/employees/employee-shop-fields.tsx` |
+| Остатки магазина и пополнение подтверждённой отгрузкой мельницы | `employees/shop_stock.py`, `employees.ShopStock`; подтверждение и откат — `shipments/services.py` | `app/shop-orders` |
+| Внутренние продажи магазина (отдельно от заказов и кассы мельницы) | `employees/shop_sales.py`, `employees.ShopSale`; API — `employees/shop_views.py` | `app/shop-orders`, `components/shop-orders/*`; загрузка — `lib/use-api.ts`, `lib/use-paged-api.ts` |
 | Импорт акта сверки 1С | `client_acts/` (`parser.py`, `services.py`) | `lib/client-acts.ts`, `components/clients/client-act-import-modal.tsx` |
 | Задним числом / фиксация | `orders/backdate.py`, `orders/fixation.py` | — |
 | Права | `sys_permissions/perms.py`, `common/permissions.py` | `lib/can.ts` |

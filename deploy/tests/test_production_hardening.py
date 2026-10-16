@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -181,10 +182,10 @@ case "$*" in
   "rev-parse HEAD")
     cat "$FAKE_GIT_HEAD_FILE"
     ;;
-  "rev-parse origin/main")
+  "rev-parse origin/"*)
     printf '%s\\n' "$FAKE_CANDIDATE_SHA"
     ;;
-  "checkout main")
+  "checkout main"|"checkout employee-magazines")
     ;;
   "merge --ff-only "*)
     printf '%s\\n' "$FAKE_CANDIDATE_SHA" >"$FAKE_GIT_HEAD_FILE"
@@ -335,6 +336,25 @@ exit 0
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("without a running db-backup", result.stderr)
         self.assertNotIn(" pull ", docker_log.read_text(encoding="utf-8"))
+
+    def test_feature_branch_deploy_keeps_exact_commit_verification(self) -> None:
+        environment, _, state_file = self._environment()
+        environment["BRANCH"] = "employee-magazines"
+        result = self._run(environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = Path(environment["FAKE_GIT_LOG"]).read_text(encoding="utf-8")
+        self.assertIn("fetch origin employee-magazines", commands)
+        self.assertIn("rev-parse origin/employee-magazines", commands)
+        self.assertIn("checkout employee-magazines", commands)
+        self.assertEqual(self._state(state_file)["CANDIDATE_GIT_SHA"], CANDIDATE_SHA)
+
+        environment, docker_log, _ = self._environment()
+        environment["BRANCH"] = "employee-magazines"
+        environment["FAKE_CANDIDATE_SHA"] = "b" * 40
+        result = self._run(environment)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing to deploy unverified commit", result.stderr)
+        self.assertFalse(docker_log.exists())
 
     def test_deploy_stops_if_predeploy_backup_fails(self) -> None:
         environment, docker_log, _ = self._environment(backup_status=42)
@@ -599,6 +619,33 @@ exit 0
 
 
 class ProductionManifestTests(unittest.TestCase):
+    def test_manual_release_validates_branch_before_remote_interpolation(self) -> None:
+        workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+        validation = workflow.split("      - name: Validate release branch\n", 1)[1]
+        script = textwrap.dedent(validation.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
+        for branch, ref_type, accepted in (
+            ("main", "branch", True),
+            ("employee-magazines", "branch", True),
+            ("codex/shop-release", "branch", True),
+            ("employee-magazines", "tag", False),
+            ("", "branch", False),
+            ("--upload-pack=bad", "branch", False),
+            ("a..b", "branch", False),
+            ("branch'", "branch", False),
+            ("$(false)", "branch", False),
+        ):
+            with self.subTest(branch=branch, ref_type=ref_type):
+                result = subprocess.run(
+                    ["bash", "-eu", "-c", script],
+                    env={**os.environ, "RELEASE_BRANCH": branch, "RELEASE_REF_TYPE": ref_type},
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+        self.assertIn("git fetch origin '+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH'", workflow)
+        self.assertIn("git rev-parse 'refs/remotes/origin/$RELEASE_BRANCH'", workflow)
+        self.assertIn("BRANCH='$RELEASE_BRANCH'", workflow)
+        self.assertIn("github.event.workflow_run.head_branch == 'main'", workflow)
+
     def test_camera_monitor_waits_for_migrated_healthy_backend(self) -> None:
         compose = PROD_COMPOSE.read_text(encoding="utf-8")
         monitor = compose.split("\n  camera-monitor:\n", 1)[1].split(

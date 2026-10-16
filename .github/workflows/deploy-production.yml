@@ -19,6 +19,7 @@ concurrency:
 
 env:
   RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+  RELEASE_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
   SITE_URL: https://asyl-ltd.kz
 
 jobs:
@@ -39,6 +40,22 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_SHA }}
+      - name: Validate release branch
+        env:
+          RELEASE_REF_TYPE: ${{ github.event_name == 'workflow_run' && 'branch' || github.ref_type }}
+        run: |
+          set -eu
+          if [ "$RELEASE_REF_TYPE" != branch ]; then
+            echo "::error::Select a branch for the production release."
+            exit 1
+          fi
+          case "$RELEASE_BRANCH" in
+            ""|-*|*[!a-zA-Z0-9._/-]*)
+              echo "::error::Release branch contains unsupported characters."
+              exit 1
+              ;;
+          esac
+          git check-ref-format "refs/heads/$RELEASE_BRANCH"
       - name: Note an urgent release without CI checks
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_ci_verification }}
         run: echo "::warning::Release $RELEASE_SHA deployed without CI checks (manual urgent release)."
@@ -218,9 +235,9 @@ jobs:
                   GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
                   GIT_CONFIG_VALUE_0=\"AUTHORIZATION: basic \$git_auth_header\" \
                   GIT_TERMINAL_PROMPT=0 \
-                  git fetch origin main \
+                  git fetch origin '+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH' \
                && unset git_auth_header \
-               && test \"\$(git rev-parse origin/main)\" = '$RELEASE_SHA' \
+               && test \"\$(git rev-parse 'refs/remotes/origin/$RELEASE_BRANCH')\" = '$RELEASE_SHA' \
                && runner=\"\$state_dir/candidate-$RELEASE_SHA.runner\" \
                && incoming=\"\$runner.incoming.\$\$\" \
                && trap 'rm -f \"\$incoming\"' EXIT \
@@ -231,7 +248,7 @@ jobs:
                && sync \
                && trap - EXIT \
                && APP_DIR='$PROD_APP_DIR' \
-                  BRANCH=main \
+                  BRANCH='$RELEASE_BRANCH' \
                   EXPECTED_SHA='$RELEASE_SHA' \
                   GHCR_USER='$GHCR_USER' \
                   BACKEND_IMAGE_REF='$BACKEND_IMAGE_REF' \

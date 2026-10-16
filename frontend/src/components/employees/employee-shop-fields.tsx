@@ -3,37 +3,52 @@ import Link from "next/link";
 import { ArrowUpRight, Store } from "lucide-react";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import type { EmployeeShopSettings } from "@/lib/types";
+import { Select } from "@/components/ui/select";
+import type { EmployeeShopSettings, Warehouse } from "@/lib/types";
 
 export interface ShopForm {
   enabled: boolean;
   name: string;
+  /** id склада строкой; пусто — прежний склад магазина, у нового — основной. */
+  warehouse: string;
 }
 
 export function shopFormFrom(shop: EmployeeShopSettings | null | undefined): ShopForm {
-  return shop ? { enabled: shop.enabled, name: shop.name } : { enabled: false, name: "" };
+  return shop
+    ? { enabled: shop.enabled, name: shop.name, warehouse: String(shop.warehouse) }
+    : { enabled: false, name: "", warehouse: "" };
 }
 
 /** Поле ``shop`` запроса: магазин, который не включали и не включают, не трогаем. */
 export function shopPayload(form: ShopForm, existing: EmployeeShopSettings | null | undefined) {
   if (!form.enabled && !existing) return undefined;
-  return { enabled: form.enabled, name: form.name.trim() };
+  return {
+    enabled: form.enabled,
+    name: form.name.trim(),
+    warehouse: form.warehouse ? Number(form.warehouse) : null,
+  };
 }
 
-/** «Свой магазин» в карточке сотрудника: заказы без грузчика и без списания склада. */
+/** «Свой магазин» в карточке сотрудника: получатель пополнений и отдельные продажи. */
 export function EmployeeShopFields({
   value,
   onChange,
   existing,
   defaultName,
+  warehouses,
   disabled,
 }: {
   value: ShopForm;
   onChange: (next: ShopForm) => void;
   existing: EmployeeShopSettings | null | undefined;
   defaultName: string;
+  /** null — список складов не открыт этому администратору: сервер возьмёт склад сам. */
+  warehouses: Warehouse[] | null | undefined;
   disabled: boolean;
 }) {
+  const active = (warehouses ?? []).filter(
+    (warehouse) => warehouse.is_active || String(warehouse.id) === value.warehouse,
+  );
   return (
     <section className="space-y-3">
       <label className="flex cursor-pointer items-start gap-3 rounded-2xl border bg-[var(--muted)]/45 p-4">
@@ -48,8 +63,8 @@ export function EmployeeShopFields({
             <Store className="size-4" /> Свой магазин
           </span>
           <span className="mt-1 block text-xs text-[var(--muted-foreground)]">
-            Сотрудник сам заказывает в «Моём магазине»: без грузчика, склад не списывается. Цены — из прайса магазина,
-            неоплаченное — долг магазина в кассе.
+            Пополнение — обычным заказом на магазин, через грузчика. Продажи в «Заказах магазина» списывают только
+            собственный остаток магазина. Цены — из прайса магазина.
           </span>
         </span>
       </label>
@@ -66,6 +81,23 @@ export function EmployeeShopFields({
               onChange={(event) => onChange({ ...value, name: event.target.value })}
             />
           </Field>
+          {active.length > 1 && (
+            <Field label="Склад пополнения" htmlFor="employee-shop-warehouse">
+              <Select
+                id="employee-shop-warehouse"
+                value={value.warehouse}
+                disabled={disabled}
+                onChange={(event) => onChange({ ...value, warehouse: event.target.value })}
+              >
+                {!value.warehouse && <option value="">Основной склад</option>}
+                {active.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
           <p className="text-xs text-[var(--muted-foreground)] sm:col-span-2">
             {existing ? (
               <Link

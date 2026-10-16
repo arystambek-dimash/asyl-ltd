@@ -4,11 +4,8 @@ import { Card } from "@/components/ui/card";
 import type { PortalProduct } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 
-/**
- * Карточка товара для заказа: фото, фасовка, цена покупателя и «В корзину». Портал и «Мой магазин».
- * ``priceAction`` — кнопка рядом с ценой («Изменить цену» в «Моём магазине»).
- */
-export function ProductCard({ product, priceAction }: { product: PortalProduct; priceAction?: React.ReactNode }) {
+/** Карточка товара для заказа: фото, фасовка, цена покупателя и «В корзину». Каталог портала. */
+export function ProductCard({ product }: { product: PortalProduct }) {
   return (
     <Card className="flex flex-col overflow-hidden">
       <ProductPhoto
@@ -22,17 +19,14 @@ export function ProductCard({ product, priceAction }: { product: PortalProduct; 
           <div className="text-sm font-medium leading-snug sm:text-[15px]">{product.label}</div>
           <div className="mt-0.5 text-xs text-[var(--muted-foreground)]">{Number(product.weight_kg)} кг / мешок</div>
         </div>
-        <div className="flex items-center justify-between gap-2">
-          {product.price ? (
-            <div className="text-lg font-semibold tabular-nums">
-              {formatCurrency(product.price, product.currency)}
-              <span className="ml-1 text-xs font-normal text-[var(--muted-foreground)]">/ мешок</span>
-            </div>
-          ) : (
-            <div className="text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
-          )}
-          {priceAction}
-        </div>
+        {product.price ? (
+          <div className="text-lg font-semibold tabular-nums">
+            {formatCurrency(product.price, product.currency)}
+            <span className="ml-1 text-xs font-normal text-[var(--muted-foreground)]">/ мешок</span>
+          </div>
+        ) : (
+          <div className="text-sm font-medium text-[var(--muted-foreground)]">Цена уточняется</div>
+        )}
         <AddToCart product={product} />
       </div>
     </Card>

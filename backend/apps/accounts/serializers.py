@@ -5,7 +5,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainSerializer
 
-from apps.employees.shop_access import active_shop
+from apps.employees.shop import active_shop
 from apps.sales.access import assigned_department_id
 
 from .credentials import password_change_required
@@ -110,9 +110,9 @@ class MeSerializer(serializers.ModelSerializer):
         return emp.position if emp else None
 
     def get_shop(self, obj):
-        """Свой магазин сотрудника — пункт меню «Мой магазин»; без него — null."""
-        shop = active_shop(obj)
-        return {"name": shop.client.name} if shop else None
+        """Продажи магазина доступны его сотруднику с правом создания заказов."""
+        shop = active_shop(obj) if obj.has_perm_code("orders.create") else None
+        return {"name": shop.client.name, "warehouse_name": shop.warehouse.name} if shop else None
 
     def get_sales_department(self, obj):
         """Отдел, которым сервер ограничивает пользователя (sales.access); у суперюзера — нет."""

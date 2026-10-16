@@ -6,17 +6,12 @@ from rest_framework import serializers
 
 from apps.accounts.credentials import username_taken
 from apps.accounts.passwords import validate_new_password
-from apps.catalog.models import Product
-from apps.common.money import money_string
-from apps.orders.debt import order_remaining
-from apps.orders.models import Order, OrderItem
-from apps.orders.statuses import is_financial, public_status_label
-from apps.portal.serializers import MAX_PORTAL_ITEM_QUANTITY, MAX_PORTAL_ORDER_ITEMS
 from apps.sales.models import Department
 from apps.sys_permissions.models import Permission
+from apps.warehouse.models import Warehouse
 
 from .models import Employee
-from .shop import cancel_blocker, follow_employee_department, set_employee_shop, shop_settings
+from .shop import follow_employee_department, set_employee_shop, shop_settings
 
 User = get_user_model()
 
@@ -85,6 +80,9 @@ class ShopSettingsSerializer(serializers.Serializer):
 
     enabled = serializers.BooleanField()
     name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    warehouse = serializers.PrimaryKeyRelatedField(
+        queryset=Warehouse.objects.all(), required=False, allow_null=True, default=None,
+    )
 
 
 def _save_shop(serializer, employee, shop_data) -> None:
@@ -327,64 +325,3 @@ class EmployeePasswordSerializer(serializers.Serializer):
         employee.user.set_password(self.validated_data["password"])
         employee.user.save(update_fields=["password"])
         return employee
-
-
-# «Мой магазин» сотрудника: заказ сразу со склада и свои заказы (employees/shop.py).
-
-
-class ShopOrderItemInputSerializer(serializers.Serializer):
-    product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all())
-    quantity = serializers.IntegerField(min_value=1, max_value=MAX_PORTAL_ITEM_QUANTITY)
-
-
-class ShopOrderCreateSerializer(serializers.Serializer):
-    # Те же пределы, что у корзины портала: корзина на фронте общая.
-    items = ShopOrderItemInputSerializer(many=True, allow_empty=False, max_length=MAX_PORTAL_ORDER_ITEMS)
-
-
-class ShopOrderItemSerializer(serializers.ModelSerializer):
-    product_label = serializers.CharField(read_only=True)
-
-    class Meta:
-        model = OrderItem
-        fields = ["id", "product", "product_label", "quantity", "unit_price", "is_bonus"]
-
-
-class ShopOrderSerializer(serializers.ModelSerializer):
-    items = ShopOrderItemSerializer(many=True, read_only=True)
-    bags = serializers.IntegerField(source="goods_bags", read_only=True)
-    status_label = serializers.SerializerMethodField()
-    shipped_at = serializers.SerializerMethodField()
-    total_amount = serializers.SerializerMethodField()
-    paid_total = serializers.SerializerMethodField()
-    remaining_amount = serializers.SerializerMethodField()
-    cancel_blocker = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Order
-        fields = [
-            "id", "created_at", "shipped_at", "status", "status_label", "currency",
-            "items", "bags", "total_amount", "paid_total", "remaining_amount",
-            "payment_status", "cancel_blocker",
-        ]
-
-    def get_status_label(self, obj):
-        return public_status_label(obj.status)
-
-    def get_shipped_at(self, obj):
-        shipment = getattr(obj, "shipment", None)
-        return shipment.shipped_at if shipment else None
-
-    # Отменённый заказ ничего не стоит — деньги только у финансовых (как в портале).
-    def get_total_amount(self, obj):
-        return money_string(obj.total_amount) if is_financial(obj.status) else None
-
-    def get_paid_total(self, obj):
-        return money_string(obj.paid_total) if is_financial(obj.status) else None
-
-    def get_remaining_amount(self, obj):
-        return money_string(order_remaining(obj)) if is_financial(obj.status) else None
-
-    def get_cancel_blocker(self, obj):
-        """Пусто — сотрудник может сам отменить заказ (час после списания, без денег)."""
-        return cancel_blocker(obj, self.context["request"].user)
