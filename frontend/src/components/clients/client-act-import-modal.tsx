@@ -11,6 +11,7 @@ import { ProgressBar } from "@/components/ui/progress-bar";
 import { apiError } from "@/lib/api";
 import { importClientActChunk, previewClientAct, type ActPreview } from "@/lib/client-acts";
 import { finiteMoney } from "@/lib/currency-map";
+import { useFileDrop } from "@/lib/use-file-drop";
 import { cn, formatCurrency, formatIsoDate, pluralRu } from "@/lib/utils";
 
 type ClientActImportProps = {
@@ -22,6 +23,8 @@ type ClientActImportProps = {
 };
 
 const DOCUMENT_FORMS: [string, string, string] = ["документ", "документа", "документов"];
+
+const XLSX_ACCEPT = ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 /** Сальдо словами (дебет − кредит): плюс — клиент должен нам, минус — мы клиенту деньгами или товаром. */
 function balanceText(value: string, currency: string): string {
@@ -53,8 +56,9 @@ export function ClientActImportModal({ open, ...props }: ClientActImportProps) {
 }
 
 function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientActImportProps, "open">) {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  // Брошен или выбран не .xlsx: прежний файл и предпросмотр остаются.
+  const [fileError, setFileError] = useState("");
   // «Импортировать с»: `undefined` — дата, которую предложит сервер.
   const [start, setStart] = useState<string | undefined>(undefined);
   const [preview, setPreview] = useState<ActPreview | null>(null);
@@ -102,6 +106,7 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
     setProgress(null);
     setPreviewError("");
     setImportError("");
+    setFileError("");
   }
 
   async function runImport() {
@@ -172,34 +177,7 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
       }
     >
       <div className="flex flex-col gap-4">
-        <div className="flex items-center gap-3 rounded-lg border px-3 py-2.5">
-          <FileSpreadsheet className="size-5 shrink-0 text-emerald-600" />
-          <span className={cn("min-w-0 flex-1 truncate text-sm", !file && "text-[var(--muted-foreground)]")}>
-            {file ? file.name : "Файл не выбран"}
-          </span>
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            className="sr-only"
-            aria-label="Файл акта сверки"
-            disabled={importing}
-            onChange={(event) => {
-              const picked = event.target.files?.[0];
-              if (picked) pick(picked);
-              event.target.value = "";
-            }}
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={importing}
-            onClick={() => inputRef.current?.click()}
-          >
-            {file ? "Заменить" : "Выбрать .xlsx"}
-          </Button>
-        </div>
+        <ActFileField file={file} disabled={importing} onPick={pick} onReject={setFileError} />
 
         {checking && !preview && <p className="text-sm text-[var(--muted-foreground)]">Проверяем акт…</p>}
 
@@ -251,9 +229,83 @@ function ClientActImportDialog({ clientId, onClose, onImported }: Omit<ClientAct
           </div>
         )}
 
-        <FormError message={importError || previewError} />
+        <FormError message={fileError || importError || previewError} />
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Файл акта: перетащить в любое место окна или выбрать кнопкой. Подходит только
+ * .xlsx — `accept` у поля выбора не фильтрует брошенные файлы.
+ */
+function ActFileField({
+  file,
+  disabled,
+  onPick,
+  onReject,
+}: {
+  file: File | null;
+  disabled: boolean;
+  onPick: (file: File) => void;
+  onReject: (message: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function take(files: File[]) {
+    if (disabled || files.length === 0) return;
+    const xlsx = files.find((candidate) => candidate.name.toLowerCase().endsWith(".xlsx"));
+    if (xlsx) onPick(xlsx);
+    else onReject(`«${files[0].name}» — не .xlsx. Нужен акт сверки из 1С, сохранённый в Excel`);
+  }
+
+  const dragging = useFileDrop(take) && !disabled;
+  const browse = () => inputRef.current?.click();
+  const highlight = dragging && "border-[var(--ring)] bg-[var(--ring)]/5";
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={XLSX_ACCEPT}
+        className="sr-only"
+        tabIndex={-1}
+        aria-label="Файл акта сверки"
+        disabled={disabled}
+        onChange={(event) => {
+          take(Array.from(event.target.files ?? []));
+          event.target.value = "";
+        }}
+      />
+      {file ? (
+        <div className={cn("flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors", highlight)}>
+          <FileSpreadsheet className="size-5 shrink-0 text-emerald-600" />
+          <span className="min-w-0 flex-1 truncate text-sm">
+            {dragging ? "Отпустите, чтобы заменить файл" : file.name}
+          </span>
+          <Button type="button" size="sm" variant="outline" disabled={disabled} onClick={browse}>
+            Заменить
+          </Button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={browse}
+          className={cn(
+            "flex w-full cursor-pointer flex-col items-center gap-1.5 rounded-lg border border-dashed border-[var(--muted-foreground)]/35 bg-[var(--muted)]/50 px-4 py-8 text-center transition-colors outline-none hover:border-[var(--muted-foreground)]/60 hover:bg-[var(--accent)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)]/50 disabled:pointer-events-none disabled:opacity-50",
+            highlight,
+          )}
+        >
+          <FileSpreadsheet className="mb-1 size-7 text-emerald-600" />
+          <span className="text-sm font-medium">
+            {dragging ? "Отпустите — проверим акт" : "Перетащите сюда акт сверки"}
+          </span>
+          <span className="text-xs text-[var(--muted-foreground)]">или нажмите, чтобы выбрать файл .xlsx</span>
+        </button>
+      )}
+    </>
   );
 }
 

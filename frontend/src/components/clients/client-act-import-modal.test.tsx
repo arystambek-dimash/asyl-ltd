@@ -212,3 +212,27 @@ it("не крутится вечно, если сервер не продвиг�
   expect(await within(dialog).findByText(/Перенос не продвигается/)).toBeInTheDocument();
   expect(onImported).not.toHaveBeenCalled();
 });
+
+const dropFiles = (...files: File[]) => fireEvent.drop(window, { dataTransfer: { files, types: ["Files"] } });
+
+it("принимает акт, брошенный в любое место окна", async () => {
+  render(<ClientActImportModal clientId={42} open onClose={vi.fn()} onImported={vi.fn()} />);
+  const dialog = screen.getByRole("dialog");
+  expect(within(dialog).getByRole("button", { name: /Перетащите сюда акт сверки/ })).toBeInTheDocument();
+
+  dropFiles(new File(["pdf"], "скан.pdf"), actFile());
+
+  await within(dialog).findByText("Дебет → заказы");
+  expect(sent(0)).toEqual({ preview: "true", start: null, file: "Акт сверки № 509.xlsx" });
+  expect(dialog).toHaveTextContent("Акт сверки № 509.xlsx");
+});
+
+it("брошенный не .xlsx не уходит на проверку и оставляет прежний акт", async () => {
+  const { dialog } = await openWithFile();
+
+  dropFiles(new File(["pdf"], "скан.pdf"));
+
+  expect(within(dialog).getByRole("alert")).toHaveTextContent("«скан.pdf» — не .xlsx");
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(within(dialog).getByText("Акт сверки № 509.xlsx")).toBeInTheDocument();
+});

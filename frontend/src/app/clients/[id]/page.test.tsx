@@ -141,7 +141,7 @@ it("opens the reconciliation act import from the header", async () => {
   await user.click(await screen.findByRole("button", { name: "Импорт акта сверки" }));
 
   expect(screen.getByRole("dialog", { name: "Импорт акта сверки" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Выбрать .xlsx" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Перетащите сюда акт сверки/ })).toBeInTheDocument();
 });
 
 it("sums only financial sales into the list total", async () => {
